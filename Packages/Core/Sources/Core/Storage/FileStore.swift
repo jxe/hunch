@@ -76,6 +76,10 @@ public struct FileStore: Sendable {
         return Document(url: url, title: title, blocks: blocks, modificationDate: mtime)
     }
 
+    public func save(_ document: Document) throws {
+        try write(BlockSerializer.serialize(document.blocks), to: document.url)
+    }
+
     private func relativePath(of url: URL, under root: URL) -> String {
         let rootPath = root.standardizedFileURL.path
         let filePath = url.standardizedFileURL.path

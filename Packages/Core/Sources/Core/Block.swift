@@ -36,4 +36,23 @@ public enum Block: Identifiable, Equatable, Sendable {
             return 0
         }
     }
+
+    /// The block's body text for text-bearing blocks (paragraph, heading, list items, quote,
+    /// toggle title). Returns an empty `AttributedString` for code/divider/subpage. Code's
+    /// `source` is intentionally not surfaced here — code editing is out of M3 scope.
+    public var text: AttributedString {
+        switch self {
+        case .paragraph(_, let text),
+             .heading(_, _, let text),
+             .bullet(_, let text, _),
+             .numbered(_, let text, _),
+             .todo(_, let text, _, _),
+             .quote(_, let text):
+            return text
+        case .toggle(_, let title, _, _):
+            return title
+        case .code, .divider, .subpage:
+            return AttributedString()
+        }
+    }
 }

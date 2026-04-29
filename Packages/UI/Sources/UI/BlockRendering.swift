@@ -50,44 +50,75 @@ public enum InlineRenderer {
 // MARK: - Block row
 
 public struct BlockRow: View {
-    public let block: Block
-    /// True when this row is the document's first block AND it's an H1 — render at page-title size.
+    @Binding var block: Block
     public let isPageTitle: Bool
-    /// 1-indexed position among consecutive sibling `.numbered` blocks at the same indent.
-    /// `nil` for non-numbered blocks; siblings compute it during stacking and pass it in.
     public let numberingIndex: Int?
+    public let isSelected: Bool
+    public let isEditing: Bool
+    @FocusState.Binding var editorFocused: BlockID?
+    let onKey: (BlockKey) -> KeyPress.Result
+    let onEdited: () -> Void
 
-    public init(_ block: Block, isPageTitle: Bool = false, numberingIndex: Int? = nil) {
-        self.block = block
+    public init(
+        block: Binding<Block>,
+        editorFocused: FocusState<BlockID?>.Binding,
+        isPageTitle: Bool = false,
+        numberingIndex: Int? = nil,
+        isSelected: Bool = false,
+        isEditing: Bool = false,
+        onKey: @escaping (BlockKey) -> KeyPress.Result = { _ in .ignored },
+        onEdited: @escaping () -> Void = {}
+    ) {
+        self._block = block
         self.isPageTitle = isPageTitle
         self.numberingIndex = numberingIndex
+        self.isSelected = isSelected
+        self.isEditing = isEditing
+        self._editorFocused = editorFocused
+        self.onKey = onKey
+        self.onEdited = onEdited
     }
 
     public var body: some View {
         content
             .padding(.vertical, BlockSpacing.intrinsicVerticalPadding(block))
+            .background(isSelected && !isEditing ? Color.accentColor.opacity(0.12) : Color.clear)
+    }
+
+    /// String projection of the block's text for editing.
+    private var textBinding: Binding<String> {
+        Binding(
+            get: { String(block.text.characters) },
+            set: { newValue in
+                let oldText = String(block.text.characters)
+                if newValue != oldText {
+                    block = block.withText(AttributedString(newValue))
+                    onEdited()
+                }
+            }
+        )
     }
 
     @ViewBuilder
     private var content: some View {
         switch block {
-        case .paragraph(_, let text):
-            paragraphRow(text)
+        case .paragraph:
+            paragraphRow
 
-        case .heading(_, let level, let text):
-            headingRow(level: level, text: text)
+        case .heading(_, let level, _):
+            headingRow(level: level)
 
-        case .bullet(_, let text, let indent):
-            listMarkerRow(marker: "•", indent: indent, text: text)
+        case .bullet(_, _, let indent):
+            listMarkerRow(marker: "•", indent: indent, font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
 
-        case .numbered(_, let text, let indent):
-            listMarkerRow(marker: "\(numberingIndex ?? 1).", indent: indent, text: text)
+        case .numbered(_, _, let indent):
+            listMarkerRow(marker: "\(numberingIndex ?? 1).", indent: indent, font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
 
-        case .todo(_, let text, let done, let indent):
-            todoRow(text: text, done: done, indent: indent)
+        case .todo(_, _, let done, let indent):
+            todoRow(done: done, indent: indent)
 
-        case .quote(_, let text):
-            quoteRow(text)
+        case .quote:
+            quoteRow
 
         case .code(_, let source, let language):
             codeRow(source: source, language: language)
@@ -95,84 +126,73 @@ public struct BlockRow: View {
         case .divider:
             dividerRow
 
-        case .toggle(_, let title, let expanded, let children):
-            ToggleRowView(title: title, initiallyExpanded: expanded, children: children)
+        case .toggle:
+            toggleRow
 
         case .subpage(_, let title, _):
             subpageRow(title: title)
         }
     }
 
-    // MARK: paragraph
-    private func paragraphRow(_ text: AttributedString) -> some View {
-        Text(InlineRenderer.swiftUIAttributed(text))
-            .font(NotionStyle.body())
-            .foregroundStyle(NotionStyle.foreground)
-            .lineSpacing(NotionStyle.bodyLineSpacing)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    private var paragraphRow: some View {
+        editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
     }
 
-    // MARK: heading
-    private func headingRow(level: Int, text: AttributedString) -> some View {
+    private func headingRow(level: Int) -> some View {
         let size: CGFloat = (isPageTitle && level == 1) ? NotionStyle.pageTitleSize
                           : level == 1 ? NotionStyle.h1Size
                           : level == 2 ? NotionStyle.h2Size
                                        : NotionStyle.h3Size
-        return Text(InlineRenderer.swiftUIAttributed(text, baseFont: NotionStyle.body(size: size)))
-            .font(NotionStyle.body(size: size).weight(NotionStyle.headingWeight))
-            .foregroundStyle(NotionStyle.foreground)
-            .lineSpacing(NotionStyle.headingLineSpacing)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        let font = NotionStyle.body(size: size).weight(NotionStyle.headingWeight)
+        return editableText(font: font, fontSize: size, bold: true, lineSpacing: NotionStyle.headingLineSpacing)
     }
 
-    // MARK: list markers
-    private func listMarkerRow(marker: String, indent: Int, text: AttributedString) -> some View {
+    private func listMarkerRow(marker: String, indent: Int, font: Font, fontSize: CGFloat, bold: Bool, lineSpacing: CGFloat) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(marker)
                 .font(NotionStyle.body())
                 .foregroundStyle(NotionStyle.foreground)
                 .frame(width: 16, alignment: .leading)
-            Text(InlineRenderer.swiftUIAttributed(text))
-                .font(NotionStyle.body())
-                .foregroundStyle(NotionStyle.foreground)
-                .lineSpacing(NotionStyle.bodyLineSpacing)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            editableText(font: font, fontSize: fontSize, bold: bold, lineSpacing: lineSpacing)
         }
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
     }
 
-    private func todoRow(text: AttributedString, done: Bool, indent: Int) -> some View {
+    private func todoRow(done: Bool, indent: Int) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: done ? "checkmark.square.fill" : "square")
-                .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                .frame(width: 16)
-            Text(InlineRenderer.swiftUIAttributed(text))
-                .font(NotionStyle.body())
-                .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                .strikethrough(done)
-                .lineSpacing(NotionStyle.bodyLineSpacing)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                if case .todo(let id, let text, let isDone, let i) = block {
+                    block = .todo(id: id, text: text, done: !isDone, indent: i)
+                    onEdited()
+                }
+            } label: {
+                Image(systemName: done ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                    .frame(width: 16)
+            }
+            .buttonStyle(.plain)
+            editableText(
+                font: NotionStyle.body(),
+                fontSize: 16,
+                bold: false,
+                lineSpacing: NotionStyle.bodyLineSpacing,
+                strikethrough: done,
+                muted: done
+            )
         }
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
     }
 
-    // MARK: quote
-    private func quoteRow(_ text: AttributedString) -> some View {
-        // .notion-quote { font-size: 1.2em; padding: 0.2em 0.9em; border-left: 3px solid currentcolor }
+    private var quoteRow: some View {
         let quoteFontSize: CGFloat = 16 * 1.2
         return HStack(spacing: 14) {
             Rectangle()
                 .fill(NotionStyle.foreground)
                 .frame(width: 3)
-            Text(InlineRenderer.swiftUIAttributed(text, baseFont: NotionStyle.body(size: quoteFontSize)))
-                .font(NotionStyle.body(size: quoteFontSize))
-                .foregroundStyle(NotionStyle.foreground)
-                .lineSpacing(NotionStyle.bodyLineSpacing)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            editableText(font: NotionStyle.body(size: quoteFontSize), fontSize: quoteFontSize, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
         }
     }
 
-    // MARK: code
     private func codeRow(source: String, language: String?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if let language, !language.isEmpty {
@@ -191,14 +211,23 @@ public struct BlockRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    // MARK: divider
     private var dividerRow: some View {
         Rectangle()
             .fill(NotionStyle.dividerColor)
             .frame(height: 1)
     }
 
-    // MARK: subpage
+    private var toggleRow: some View {
+        ToggleRowView(
+            block: $block,
+            editorFocused: $editorFocused,
+            isSelected: isSelected,
+            isEditing: isEditing,
+            onKey: onKey,
+            onEdited: onEdited
+        )
+    }
+
     private func subpageRow(title: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "doc.text")
@@ -211,89 +240,208 @@ public struct BlockRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// Renders the block's text. When `isEditing` is true (this row is the active editor),
+    /// shows a `BlockTextEditor`; otherwise a read-only formatted `Text`. Only ONE editor is
+    /// ever mounted across the whole page — the rest are plain `Text`.
+    @ViewBuilder
+    private func editableText(font: Font, fontSize: CGFloat, bold: Bool, lineSpacing: CGFloat, strikethrough: Bool = false, muted: Bool = false) -> some View {
+        if isEditing {
+            BlockTextEditor(
+                text: textBinding,
+                font: font,
+                fontSize: fontSize,
+                bold: bold,
+                lineSpacing: lineSpacing,
+                focused: $editorFocused,
+                blockID: block.id,
+                onKey: onKey
+            )
+            .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
+            .strikethrough(strikethrough)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: font))
+                .font(font)
+                .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                .lineSpacing(lineSpacing)
+                .strikethrough(strikethrough)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 }
 
 // MARK: - Toggle (recursive)
 
 public struct ToggleRowView: View {
-    let title: AttributedString
-    @State private var expanded: Bool
-    let children: [Block]
+    @Binding var block: Block
+    @FocusState.Binding var editorFocused: BlockID?
+    let isSelected: Bool
+    let isEditing: Bool
+    let onKey: (BlockKey) -> KeyPress.Result
+    let onEdited: () -> Void
 
-    public init(title: AttributedString, initiallyExpanded: Bool, children: [Block]) {
-        self.title = title
-        self._expanded = State(initialValue: initiallyExpanded)
-        self.children = children
+    public init(
+        block: Binding<Block>,
+        editorFocused: FocusState<BlockID?>.Binding,
+        isSelected: Bool,
+        isEditing: Bool,
+        onKey: @escaping (BlockKey) -> KeyPress.Result,
+        onEdited: @escaping () -> Void
+    ) {
+        self._block = block
+        self._editorFocused = editorFocused
+        self.isSelected = isSelected
+        self.isEditing = isEditing
+        self.onKey = onKey
+        self.onEdited = onEdited
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        expanded.toggle()
+                    if case .toggle(let id, let title, let expanded, let children) = block {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            block = .toggle(id: id, title: title, expanded: !expanded, children: children)
+                        }
+                        onEdited()
                     }
                 } label: {
                     Image(systemName: "chevron.right")
                         .font(.system(size: NotionStyle.chevronSize, weight: .medium))
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .foregroundStyle(NotionStyle.foreground)
                         .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
-                Text(InlineRenderer.swiftUIAttributed(title))
-                    .font(NotionStyle.body())
-                    .foregroundStyle(NotionStyle.foreground)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                titleEditableText
             }
 
-            if expanded {
-                BlockStack(blocks: children)
-                    .padding(.leading, NotionStyle.indentStep)
+            if isExpanded {
+                // Toggle children render as Text only — editing toggle children stays out of
+                // the M3 minimum until the page-level edit/select model is solid.
+                ForEach(toggleChildren, id: \.id) { child in
+                    BlockRowReadOnly(block: child)
+                        .padding(.leading, NotionStyle.indentStep)
+                }
             }
+        }
+    }
+
+    private var isExpanded: Bool {
+        if case .toggle(_, _, let expanded, _) = block { return expanded }
+        return false
+    }
+
+    private var toggleChildren: [Block] {
+        if case .toggle(_, _, _, let children) = block { return children }
+        return []
+    }
+
+    private var titleBinding: Binding<String> {
+        Binding(
+            get: {
+                if case .toggle(_, let title, _, _) = block { return String(title.characters) }
+                return ""
+            },
+            set: { newValue in
+                if case .toggle(let id, let title, let expanded, let children) = block {
+                    let old = String(title.characters)
+                    if old != newValue {
+                        block = .toggle(id: id, title: AttributedString(newValue), expanded: expanded, children: children)
+                        onEdited()
+                    }
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var titleEditableText: some View {
+        if isEditing {
+            BlockTextEditor(
+                text: titleBinding,
+                font: NotionStyle.body(),
+                fontSize: 16,
+                bold: false,
+                lineSpacing: NotionStyle.bodyLineSpacing,
+                focused: $editorFocused,
+                blockID: block.id,
+                onKey: onKey
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            let title: AttributedString = {
+                if case .toggle(_, let t, _, _) = block { return t }
+                return AttributedString()
+            }()
+            Text(InlineRenderer.swiftUIAttributed(title))
+                .font(NotionStyle.body())
+                .foregroundStyle(NotionStyle.foreground)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
 
-// MARK: - BlockStack: a vertical list of blocks with sibling-aware gaps
-
-/// Renders a `[Block]` with `BlockSpacing.gap(...)` injected as `.padding(.top, ...)` on each
-/// row except the first. This is the only path through which sibling spacing is applied —
-/// `BlockRow` itself only knows about its own intrinsic padding.
-public struct BlockStack: View {
-    public let blocks: [Block]
-
-    public init(blocks: [Block]) {
-        self.blocks = blocks
-    }
-
-    public var body: some View {
-        let numbering = NumberingContext.compute(blocks)
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
-                BlockRow(block, numberingIndex: numbering[block.id])
-                    .padding(.top, BlockSpacing.gap(
-                        before: block,
-                        after: index > 0 ? blocks[index - 1] : nil
-                    ))
+/// A read-only render of a block — used inside expanded toggles where editing isn't wired up
+/// in the M3 minimum.
+struct BlockRowReadOnly: View {
+    let block: Block
+    var body: some View {
+        switch block {
+        case .paragraph(_, let text), .quote(_, let text):
+            Text(InlineRenderer.swiftUIAttributed(text))
+                .font(NotionStyle.body())
+                .foregroundStyle(NotionStyle.foreground)
+                .lineSpacing(NotionStyle.bodyLineSpacing)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .heading(_, let level, let text):
+            let size: CGFloat = level == 1 ? NotionStyle.h1Size : level == 2 ? NotionStyle.h2Size : NotionStyle.h3Size
+            Text(InlineRenderer.swiftUIAttributed(text, baseFont: NotionStyle.body(size: size)))
+                .font(NotionStyle.body(size: size).weight(NotionStyle.headingWeight))
+                .foregroundStyle(NotionStyle.foreground)
+        case .bullet(_, let text, let indent), .numbered(_, let text, let indent):
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("•").frame(width: 16, alignment: .leading)
+                Text(InlineRenderer.swiftUIAttributed(text))
             }
+            .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+        case .todo(_, let text, let done, let indent):
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: done ? "checkmark.square.fill" : "square")
+                Text(InlineRenderer.swiftUIAttributed(text))
+            }
+            .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+        case .divider:
+            Rectangle().fill(NotionStyle.dividerColor).frame(height: 1)
+        case .code(_, let source, _):
+            Text(source).font(NotionStyle.mono())
+        case .subpage(_, let title, _):
+            HStack { Image(systemName: "doc.text"); Text(title).underline() }
+        case .toggle(_, let title, _, _):
+            HStack { Image(systemName: "chevron.right"); Text(InlineRenderer.swiftUIAttributed(title)) }
         }
     }
+}
+
+func previousBlock(before id: BlockID, in blocks: [Block]) -> Block? {
+    guard let i = blocks.firstIndex(where: { $0.id == id }), i > 0 else { return nil }
+    return blocks[i - 1]
 }
 
 /// Per-block 1-indexed position among consecutive sibling `.numbered` blocks at the same indent.
-/// A non-numbered block resets the run; a different indent starts a fresh run for that level.
 public enum NumberingContext {
     public static func compute(_ blocks: [Block]) -> [BlockID: Int] {
         var result: [BlockID: Int] = [:]
-        var counters: [Int: Int] = [:]   // indent → next number
+        var counters: [Int: Int] = [:]
         for block in blocks {
             switch block {
             case .numbered(_, _, let indent):
                 let next = (counters[indent] ?? 0) + 1
                 counters[indent] = next
                 result[block.id] = next
-                // Deeper indent levels reset on outdent: clear counters > indent.
                 for key in counters.keys where key > indent {
                     counters[key] = 0
                 }

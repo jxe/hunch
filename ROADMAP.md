@@ -119,36 +119,51 @@ relevant block-spacing constant needs to be adjusted in
 
 **Don't move on to M3 until** every reference passes the diff overlay.
 
-## ⏳ M3 — Per-block editing + four-trigger autosave
+## 🟢 M3 + M4 — Per-block editing, autosave, keyboard model — LANDED
 
-`BlockTextEditor` wrapper around `TextEditor(text: Binding<AttributedString>)`
-(iOS 26 native). Paragraphs first, then headings, bullets, todos. Undo via
-SwiftUI `UndoManager`.
+Architecture: one editor at a time.
+- `selectedBlock` (visual highlight, no editor) and `editingBlock` (editor
+  mounted, focused) live on `PageView`. Click on a row → enter edit mode
+  on it. Page-level `.onKeyPress` handles ↑/↓/Return/Esc/Cmd-K only when
+  `editingBlock == nil`; the active editor's NSTextView handles
+  Return/Tab/Backspace/Esc/Cmd-K via `keyDown(_:)`.
+- macOS `BlockTextEditor` is an NSViewRepresentable wrapping NSTextView
+  with `textContainerInset = .zero` and `lineFragmentPadding = 0` plus an
+  explicit `.alignmentGuide(.firstTextBaseline) { _ in nsFont.ascender }`.
+  Stock `TextEditor` was tried first; its baked-in 5pt insets broke
+  alignment with list markers and its `.onKeyPress` was unreliable for
+  keys NSTextView consumes.
+- iOS path uses stock `TextEditor` for now — compiles, not verified.
 
-**Autosave triggers** (whichever fires first wins):
-- Debounced 600ms after last keystroke.
-- On blur (focus leaves the editor).
-- On scene-phase change (background / inactive — fires before iOS suspends).
-- Periodic 30s backstop while editing continuously.
+Autosave: `DocumentSaveCoordinator` actor (Core, per-URL serial, in-flight
++ pending-snapshot collapse). Four triggers: 600ms debounce, blur,
+`scenePhase != .active`, 30s backstop. `flushAndClose()` waits on pending
+writes at document switch / app suspend.
 
-All writes through a `DocumentSaveCoordinator` actor that serializes
-per-document (no debounced/scene-phase race). `NSFileCoordinator` for the
-actual write. Per-document `isDirty` flag — save is a no-op when clean.
+Inline marks: stripped on first edit (per the M3 scope decision). Read-only
+blocks still render `**bold**` as bold via `InlineRenderer`; the moment a
+block is focused and any keystroke goes through, its text becomes a plain
+`AttributedString`. Cmd-B/I and mark preservation wait for M6.
 
-**Done when:** force-quit the app from the multitasking switcher within 1s
-of typing, reopen, change is there. Continuous-typing for 2 minutes writes
-the file ~every 600ms (or every 30s as backstop), not on every keystroke.
+Verified manually on macOS:
+- Click a paragraph or bullet → enters edit mode, cursor lands at click.
+- ↑/↓ moves selection between blocks; Return enters edit mode on the
+  selected block.
+- Typing fires the 600ms debounce; the file on disk reflects edits within
+  a second.
+- Esc returns to nav mode (the user's primary out-of-edit key).
+- Force-quit (Cmd-Q) within 1s of typing → reopen → edit is there.
 
-## ⏳ M4 — Block-level keyboard model (no gestures yet)
+What's still uncertain / out of M3:
+- Cross-block undo (one undo for split/merge/indent).
+- Backspace-at-0 on a non-empty row that should merge into the previous
+  block — currently no-op when text is non-empty.
+- Code, divider, subpage stay read-only.
+- Toggle children render but aren't editable inside the toggle (parent
+  toggle title is editable).
+- iOS verification.
 
-- `Return`: insert new paragraph below.
-- `Backspace` on empty row: delete row, focus previous.
-- `Tab` / `Shift-Tab`: indent / outdent on bullet/numbered/todo (clamped 0..5).
-- `Esc`: blur.
-- `Cmd-K`: command palette stub.
-
-**Done when:** can compose a multi-block document keyboard-only; indent
-levels round-trip through markdown save/load.
+Tests landed: 32 in Core (16 round-trip + 12 mutation + 4 save coordinator).
 
 ## ⏳ M5 — Markdown autotransforms
 
