@@ -59,6 +59,13 @@ public struct BlockRow: View {
     let onKey: (BlockKey) -> KeyPress.Result
     let onEdited: () -> Void
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    /// Called when the user clicks the editable text area while not editing — point is
+    /// in the editor area's local coordinate space (matches what `NSTextView`'s
+    /// `characterIndexForInsertion(at:)` expects).
+    let onClickAtPoint: (CGPoint) -> Void
+    /// Click point captured at tap time, threaded into the BlockTextEditor on its first
+    /// mount so the cursor lands where the user clicked rather than at end-of-text.
+    let initialCursorPoint: CGPoint?
 
     public init(
         block: Binding<Block>,
@@ -69,7 +76,9 @@ public struct BlockRow: View {
         isEditing: Bool = false,
         onKey: @escaping (BlockKey) -> KeyPress.Result = { _ in .ignored },
         onEdited: @escaping () -> Void = {},
-        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in }
+        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
+        onClickAtPoint: @escaping (CGPoint) -> Void = { _ in },
+        initialCursorPoint: CGPoint? = nil
     ) {
         self._block = block
         self.isPageTitle = isPageTitle
@@ -80,6 +89,8 @@ public struct BlockRow: View {
         self.onKey = onKey
         self.onEdited = onEdited
         self.onAutotransform = onAutotransform
+        self.onClickAtPoint = onClickAtPoint
+        self.initialCursorPoint = initialCursorPoint
     }
 
     public var body: some View {
@@ -261,7 +272,8 @@ public struct BlockRow: View {
                 focused: $editorFocused,
                 blockID: block.id,
                 onKey: onKey,
-                onAutotransform: onAutotransform
+                onAutotransform: onAutotransform,
+                initialCursorPoint: initialCursorPoint
             )
             .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
             .strikethrough(strikethrough)
@@ -273,6 +285,10 @@ public struct BlockRow: View {
                 .lineSpacing(lineSpacing)
                 .strikethrough(strikethrough)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(SpatialTapGesture().onEnded { value in
+                    onClickAtPoint(value.location)
+                })
         }
     }
 }

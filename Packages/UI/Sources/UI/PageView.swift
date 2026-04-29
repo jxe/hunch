@@ -21,6 +21,10 @@ public struct PageView: View {
     @FocusState private var editorFocused: BlockID?
     /// Drives the page container's focusability for nav-mode key handling.
     @FocusState private var pageFocused: Bool
+    /// Click point captured the moment a non-editing row was tapped. Forwarded to the
+    /// editor on its first mount so the cursor lands where the user clicked. Stale values
+    /// are harmless — the editor only consumes the point once on `makeNSView`.
+    @State private var pendingCursorPoint: (id: BlockID, point: CGPoint)?
 
     public init(
         document: Binding<Document>,
@@ -175,10 +179,18 @@ public struct PageView: View {
                 onEdited: onEdited,
                 onAutotransform: { transform, remainingText in
                     applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
-                }
+                },
+                onClickAtPoint: { point in
+                    pendingCursorPoint = (block.id, point)
+                    enterEditMode(on: block.id)
+                },
+                initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
             )
             .contentShape(Rectangle())
             .onTapGesture {
+                // Clicks outside the editable text region (markers, paddings) — no
+                // position info, cursor lands at end via the editor's default behavior.
+                pendingCursorPoint = nil
                 enterEditMode(on: block.id)
             }
         }
@@ -348,6 +360,14 @@ public struct PageView: View {
             exitEditMode()
             return .handled
         case .cmdK:
+            return .handled
+        case .exitEditUp:
+            exitEditMode()
+            DispatchQueue.main.async { moveCursor(by: -1) }
+            return .handled
+        case .exitEditDown:
+            exitEditMode()
+            DispatchQueue.main.async { moveCursor(by: +1) }
             return .handled
         }
     }

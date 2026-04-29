@@ -17,6 +17,7 @@ Carry-overs to address in a later milestone:
 - Cross-block undo as a single op (split/merge/indent should coalesce).
 - Backspace-at-0 merge into the previous non-empty row (currently no-op).
 - Toggle-child editing inside the toggle.
+- iOS verification of the M3+ keyboard model.
 
 ---
 
@@ -65,20 +66,26 @@ open /tmp/console-screenshots/<name>-diff.png
 
 ---
 
-## ⏳ M6 — Inline formatting + iOS keyboard accessory bar
+## 🟡 M6 — Inline formatting + iOS keyboard accessory bar — IN PROGRESS
 
-**Hardware keyboard (macOS + iOS):** `Cmd-B/I/U` toggle attributes on the
-selection. `Cmd-K` insert a link. Underpinned by flipping the editor's
-binding from `String` to `AttributedString` so model marks survive
-editing — today they're stripped on first edit per the M3 scope decision
-([`BlockRendering.swift:textBinding`](Packages/UI/Sources/UI/BlockRendering.swift)
-is the lossy projection that needs to go).
+**Hardware keyboard, macOS — DONE.** Editor binding flipped to
+`AttributedString`; `Cmd-B`/`Cmd-I`/`Cmd-E`/`Cmd-Shift-S` toggle bold/
+italic/code/strikethrough on the current selection. The
+`AttributedString` ↔ `NSAttributedString` bridge lives in
+[`InlineMarksNSKit.swift`](Packages/UI/Sources/UI/InlineMarksNSKit.swift)
+and derives marks from font traits on round-trip.
 
-**Inline closing-trigger autotransforms** (lifted out of M5): `**bold**`,
-`*it*` / `_it_`, `` `code` ``, `~~strike~~`, `[text](url)`. Plug into
-the same `Autotransforms.swift` module. Detection runs on each typed
-character; transform applies the model attribute and consumes the
-delimiters.
+**iOS hardware keyboard — TODO.** Same shortcuts, via iOS 26's
+`AttributedTextSelection` and attribute-transform APIs. `Cmd-K` to
+insert a link.
+
+**Inline closing-trigger autotransforms — TODO** (lifted out of M5):
+`**bold**`, `*it*` / `_it_`, `` `code` ``, `~~strike~~`, `[text](url)`.
+Plug into the same `Autotransforms.swift` module — now unblocked by the
+`AttributedString` flip.
+
+**Pre-typing toggles — TODO.** Cmd-B with no selection should bias
+`typingAttributes` so the next typed character is bold.
 
 **iOS soft-keyboard accessory bar** (`.toolbar { ToolbarItemGroup(.keyboard) { … } }`):
 

@@ -12,6 +12,11 @@ public enum BlockKey: Sendable, Equatable {
     case shiftTab
     case escape
     case cmdK
+    /// Up arrow pressed while the cursor is on the editor's first line. PageView
+    /// treats this as Esc + up: exit edit mode and select the previous block.
+    case exitEditUp
+    /// Down arrow pressed while the cursor is on the editor's last line.
+    case exitEditDown
 }
 
 /// A single-block text editor.
@@ -34,6 +39,11 @@ public struct BlockTextEditor: View {
     let blockID: BlockID
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    /// Optional point (in the editor's local coordinate space) where the cursor should
+    /// land on initial focus. When the user clicks on a read-only block, the click
+    /// location is propagated here so the cursor lands where they clicked rather than at
+    /// end-of-text. Consumed once on mount.
+    let initialCursorPoint: CGPoint?
 
     public init(
         text: Binding<AttributedString>,
@@ -44,7 +54,8 @@ public struct BlockTextEditor: View {
         focused: FocusState<BlockID?>.Binding,
         blockID: BlockID,
         onKey: @escaping (BlockKey) -> KeyPress.Result,
-        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in }
+        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
+        initialCursorPoint: CGPoint? = nil
     ) {
         self._text = text
         self.font = font
@@ -55,6 +66,7 @@ public struct BlockTextEditor: View {
         self.blockID = blockID
         self.onKey = onKey
         self.onAutotransform = onAutotransform
+        self.initialCursorPoint = initialCursorPoint
     }
 
     public var body: some View {
@@ -78,7 +90,8 @@ public struct BlockTextEditor: View {
                 }
             },
             onKey: onKey,
-            onAutotransform: onAutotransform
+            onAutotransform: onAutotransform,
+            initialCursorPoint: initialCursorPoint
         )
         .alignmentGuide(.firstTextBaseline) { _ in
             // NSTextView with textContainerInset=.zero, lineFragmentPadding=0 puts its first
@@ -137,6 +150,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let onFocusChange: (Bool) -> Void
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    let initialCursorPoint: CGPoint?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -157,6 +171,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
         loadAttributedString(into: view)
         applyTypingAttributes(to: view)
         view.wantsFocus = isFocused
+        view.pendingInitialCursorPoint = initialCursorPoint
         return view
     }
 
@@ -176,7 +191,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
             if let window = view.window, window.firstResponder !== view {
                 DispatchQueue.main.async {
                     window.makeFirstResponder(view)
-                    view.setSelectedRange(NSRange(location: (view.string as NSString).length, length: 0))
+                    view.applyPendingCursorPositionOrSeekToEnd()
                 }
             }
         }
@@ -242,6 +257,10 @@ final class ContainedTextView: NSTextView {
     /// Set by `updateNSView` whenever the SwiftUI focus state targets this block. Picked up
     /// in `viewDidMoveToWindow` so the second-chance focus grab works on initial mount.
     var wantsFocus: Bool = false
+    /// If non-nil, the cursor is placed at this point (in the view's local coords) on
+    /// initial focus. Cleared after consumption so subsequent focus grabs (e.g. coming
+    /// back from another block) seek to end instead.
+    var pendingInitialCursorPoint: CGPoint?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -249,8 +268,21 @@ final class ContainedTextView: NSTextView {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 window.makeFirstResponder(self)
-                self.setSelectedRange(NSRange(location: (self.string as NSString).length, length: 0))
+                self.applyPendingCursorPositionOrSeekToEnd()
             }
+        }
+    }
+
+    /// Applies `pendingInitialCursorPoint` if set (placing the cursor at the click), or
+    /// falls back to seeking the cursor to the end of the text. Clears the pending point
+    /// after applying.
+    func applyPendingCursorPositionOrSeekToEnd() {
+        if let point = pendingInitialCursorPoint {
+            pendingInitialCursorPoint = nil
+            let charIndex = characterIndexForInsertion(at: point)
+            setSelectedRange(NSRange(location: charIndex, length: 0))
+        } else {
+            setSelectedRange(NSRange(location: (string as NSString).length, length: 0))
         }
     }
 
@@ -293,6 +325,16 @@ final class ContainedTextView: NSTextView {
                     toggleInlineMark(.strikethrough)
                     return
                 }
+            case 126: // Up arrow
+                if !event.modifierFlags.contains([.shift, .option]),
+                   cursorIsOnFirstLine() {
+                    if onKey(.exitEditUp) == .handled { return }
+                }
+            case 125: // Down arrow
+                if !event.modifierFlags.contains([.shift, .option]),
+                   cursorIsOnLastLine() {
+                    if onKey(.exitEditDown) == .handled { return }
+                }
             default:
                 break
             }
@@ -309,6 +351,32 @@ final class ContainedTextView: NSTextView {
         guard range.length > 0 else { return }
         InlineMarksNSKit.toggleMark(mark, on: range, in: storage, baseFontSize: parent.fontSize, baseBold: parent.bold)
         didChangeText()
+    }
+
+    /// Whether the insertion point is on the first wrapped line of the editor's content.
+    /// Single-line content trivially returns true. Used to gate `exitEditUp` so that an up
+    /// arrow in the middle of a multi-line paragraph still moves intra-block.
+    func cursorIsOnFirstLine() -> Bool {
+        guard let lm = layoutManager, let tc = textContainer else { return true }
+        if (textStorage?.length ?? 0) == 0 { return true }
+        let cursor = selectedRange().location
+        let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: cursor, length: 0), actualCharacterRange: nil)
+        var firstLineRange = NSRange()
+        _ = lm.lineFragmentRect(forGlyphAt: 0, effectiveRange: &firstLineRange, withoutAdditionalLayout: false)
+        _ = tc
+        return NSLocationInRange(glyphRange.location, firstLineRange) || glyphRange.location == firstLineRange.location
+    }
+
+    func cursorIsOnLastLine() -> Bool {
+        guard let lm = layoutManager else { return true }
+        let length = textStorage?.length ?? 0
+        if length == 0 { return true }
+        let cursor = selectedRange().location
+        let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: cursor, length: 0), actualCharacterRange: nil)
+        var lastLineRange = NSRange()
+        let lastGlyph = max(0, lm.numberOfGlyphs - 1)
+        _ = lm.lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: &lastLineRange, withoutAdditionalLayout: false)
+        return NSLocationInRange(glyphRange.location, lastLineRange) || glyphRange.location >= lastLineRange.location
     }
 
     override var intrinsicContentSize: NSSize {

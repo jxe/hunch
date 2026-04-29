@@ -102,10 +102,29 @@ xcodebuild -project Console.xcodeproj -scheme Console \
   `cancelOperation(_:)`, and provides an explicit
   `.alignmentGuide(.firstTextBaseline) { _ in nsFont.ascender }` so
   HStack(.firstTextBaseline) lines up.
-- **Inline marks are stripped on first edit.** Editor binding is plain
-  `String`. Read-only blocks render `**bold**` as bold via `InlineRenderer`,
-  but the moment a block is focused and any keystroke goes through, its text
-  becomes a plain `AttributedString`. Marks-aware editing (Cmd-B/I) is M6.
+- **Inline marks survive editing.** The editor's binding is
+  `Binding<AttributedString>`; `InlineMarksNSKit` (UI, macOS) does
+  bidirectional conversion between the model's custom typed `AttributedString`
+  keys and the `NSAttributedString` in `NSTextStorage`. On round-trip back,
+  bold/italic/code are derived from font symbolic traits (because that's
+  what NSTextView mutates during edits) and strike from
+  `.strikethroughStyle`. Cmd-B/I/E/Shift-S toggle the corresponding marks
+  on the current selection (no-op on empty selection — pre-typing toggles
+  via `typingAttributes` are a follow-up).
+- **Click-to-position cursor.** Clicking on a row's editable text region
+  captures the click point via a `SpatialTapGesture` in the `Text` view's
+  local coords, which (since the `BlockTextEditor` mounts in the same
+  HStack slot the `Text` occupied) doubles as `NSTextView` local coords.
+  `MacBlockTextEditor.applyPendingCursorPositionOrSeekToEnd` calls
+  `characterIndexForInsertion(at:)` after the focus grab. Clicks on
+  non-text parts of the row (markers, paddings) fall through to the row's
+  `.onTapGesture` and seek-to-end as before.
+- **Up/Down at editor boundary exits.** When the cursor is on the
+  editor's first line, `↑` is short-circuited to "Esc + ↑" — exit edit
+  mode, then move the nav-mode cursor to the previous block. Symmetric
+  for `↓` on the last line. `cursorIsOnFirstLine()` /
+  `cursorIsOnLastLine()` consult the layout manager so wrapped paragraphs
+  still allow intra-block arrow navigation in the middle.
 - **Markdown autotransforms (M5).** Pure detection in
   `Packages/Core/Sources/Core/Markdown/Autotransforms.swift`; replacement
   blocks built by `BlockTransform.apply(to:)`; spliced into the document by
