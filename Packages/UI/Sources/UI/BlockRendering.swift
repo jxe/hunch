@@ -57,6 +57,12 @@ public struct BlockRow: View {
     }
 
     public var body: some View {
+        content
+            .padding(.vertical, BlockSpacing.intrinsicVerticalPadding(block))
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch block {
         case .paragraph(_, let text):
             paragraphRow(text)
@@ -97,7 +103,6 @@ public struct BlockRow: View {
             .foregroundStyle(NotionStyle.foreground)
             .lineSpacing(NotionStyle.bodyLineSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, NotionStyle.blockVerticalPadding)
     }
 
     // MARK: heading
@@ -110,8 +115,6 @@ public struct BlockRow: View {
             .foregroundStyle(NotionStyle.foreground)
             .lineSpacing(NotionStyle.headingLineSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, NotionStyle.headingTopPadding)
-            .padding(.bottom, NotionStyle.blockVerticalPadding)
     }
 
     // MARK: list markers
@@ -128,7 +131,6 @@ public struct BlockRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        .padding(.vertical, NotionStyle.blockVerticalPadding)
     }
 
     private func todoRow(text: AttributedString, done: Bool, indent: Int) -> some View {
@@ -144,22 +146,22 @@ public struct BlockRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        .padding(.vertical, NotionStyle.blockVerticalPadding)
     }
 
     // MARK: quote
     private func quoteRow(_ text: AttributedString) -> some View {
-        HStack(spacing: 14) {
+        // .notion-quote { font-size: 1.2em; padding: 0.2em 0.9em; border-left: 3px solid currentcolor }
+        let quoteFontSize: CGFloat = 16 * 1.2
+        return HStack(spacing: 14) {
             Rectangle()
                 .fill(NotionStyle.foreground)
                 .frame(width: 3)
-            Text(InlineRenderer.swiftUIAttributed(text))
-                .font(NotionStyle.body())
+            Text(InlineRenderer.swiftUIAttributed(text, baseFont: NotionStyle.body(size: quoteFontSize)))
+                .font(NotionStyle.body(size: quoteFontSize))
                 .foregroundStyle(NotionStyle.foreground)
                 .lineSpacing(NotionStyle.bodyLineSpacing)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, NotionStyle.blockVerticalPadding)
     }
 
     // MARK: code
@@ -169,18 +171,16 @@ public struct BlockRow: View {
                 Text(language)
                     .font(NotionStyle.mono(size: 11))
                     .foregroundStyle(NotionStyle.mutedForeground)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 8)
+                    .padding(.bottom, 8)
             }
             Text(source)
                 .font(NotionStyle.mono())
                 .foregroundStyle(NotionStyle.foreground)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
         }
+        .padding(.horizontal, 16)
         .background(NotionStyle.codeBackground.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .padding(.vertical, 8)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: divider
@@ -188,7 +188,6 @@ public struct BlockRow: View {
         Rectangle()
             .fill(NotionStyle.dividerColor)
             .frame(height: 1)
-            .padding(.vertical, 8)
     }
 
     // MARK: subpage
@@ -202,7 +201,6 @@ public struct BlockRow: View {
                 .foregroundStyle(NotionStyle.foreground)
                 .underline()
         }
-        .padding(.vertical, NotionStyle.blockVerticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -240,15 +238,35 @@ public struct ToggleRowView: View {
                     .foregroundStyle(NotionStyle.foreground)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.vertical, NotionStyle.blockVerticalPadding)
 
             if expanded {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(children) { child in
-                        BlockRow(child)
-                    }
-                }
-                .padding(.leading, NotionStyle.indentStep)
+                BlockStack(blocks: children)
+                    .padding(.leading, NotionStyle.indentStep)
+            }
+        }
+    }
+}
+
+// MARK: - BlockStack: a vertical list of blocks with sibling-aware gaps
+
+/// Renders a `[Block]` with `BlockSpacing.gap(...)` injected as `.padding(.top, ...)` on each
+/// row except the first. This is the only path through which sibling spacing is applied —
+/// `BlockRow` itself only knows about its own intrinsic padding.
+public struct BlockStack: View {
+    public let blocks: [Block]
+
+    public init(blocks: [Block]) {
+        self.blocks = blocks
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
+                BlockRow(block)
+                    .padding(.top, BlockSpacing.gap(
+                        before: block,
+                        after: index > 0 ? blocks[index - 1] : nil
+                    ))
             }
         }
     }
