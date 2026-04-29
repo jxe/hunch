@@ -23,13 +23,14 @@ public enum NotionStyle {
     public static let blockVerticalPadding: CGFloat = 3
     public static let headingTopPadding: CGFloat = 22
     /// Notion uses 700 across page title, H1, H2, H3 — confirmed against pre-2026 reference shots.
-    public static let headingWeight: Font.Weight = .bold
+    public static let headingWeight: Font.Weight = .semibold
 
     /// SwiftUI's `.lineSpacing` is *additional* spacing between baselines, not a multiplier.
-    /// Body 16pt × 1.5em = 24pt target. Default leading on a 16pt font is ~19pt → +5pt.
-    public static let bodyLineSpacing: CGFloat = 5
+    /// Inter's natural 16pt leading already reads a touch airier than Notion's body copy,
+    /// so we stay slightly under the theoretical 1.5em target to keep wrapped paragraphs dense enough.
+    public static let bodyLineSpacing: CGFloat = 3.5
     /// Headings use a tighter line-height (~1.2em) than body so multi-line headings don't sprawl.
-    public static let headingLineSpacing: CGFloat = 2
+    public static let headingLineSpacing: CGFloat = 1
 
     // MARK: Heading sizes
     /// Notion's `.notion-page-title-text { font-size: 40px }`. Used only for the *first* H1 in a
@@ -53,6 +54,14 @@ public enum NotionStyle {
 
     // MARK: List indentation
     public static let indentStep: CGFloat = 24
+    public static let listMarkerGap: CGFloat = 10
+    public static let listMarkerFrameHeight: CGFloat = 16
+    public static let bulletMarkerDiameter: CGFloat = 6
+    public static let bulletMarkerColumnWidth: CGFloat = 18
+    public static let bulletMarkerBaselineOffset: CGFloat = 5
+    public static let numberedMarkerColumnWidth: CGFloat = 24
+    public static let todoMarkerColumnWidth: CGFloat = 20
+    public static let todoCheckboxSize: CGFloat = 16
 
     // MARK: Toggle / subpage
     public static let chevronSize: CGFloat = 12

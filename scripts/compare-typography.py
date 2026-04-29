@@ -102,7 +102,12 @@ def body_line_height(bands: list[tuple[int, int]]) -> float:
 def crop_and_analyse(path: Path, region: tuple[int, int, int, int] | None):
     img = Image.open(path).convert("RGB")
     if region:
-        img = img.crop(region)
+        x0, y0, x1, y1 = region
+        x0 = max(0, min(x0, img.width - 1))
+        y0 = max(0, min(y0, img.height - 1))
+        x1 = max(x0 + 1, min(x1, img.width))
+        y1 = max(y0 + 1, min(y1, img.height))
+        img = img.crop((x0, y0, x1, y1))
     gray = np.asarray(img.convert("L"))
     x0, x1 = detect_content_column(gray)
     pad = 24

@@ -37,7 +37,8 @@ mkdir -p "$out_dir"
 
 # Capture by window ID via CGWindowListCopyWindowInfo so overlapping
 # windows (Claude chat panel, etc.) don't appear in the screenshot.
-window_id="$(swift - <<'SWIFT'
+find_window_id() {
+swift - <<'SWIFT'
 import AppKit
 import CoreGraphics
 let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
@@ -50,7 +51,16 @@ for w in info {
     }
 }
 SWIFT
-)"
+}
+
+window_id=""
+for _ in {1..20}; do
+  window_id="$(find_window_id)"
+  if [[ -n "$window_id" ]]; then
+    break
+  fi
+  sleep 0.5
+done
 
 if [[ -z "$window_id" ]]; then
   echo "Console isn't running. launch with ./scripts/use-fixture.sh $name first." >&2
@@ -70,13 +80,24 @@ if [[ -z "$ref" ]]; then
   exit 0
 fi
 
-# Crop out the Pages sidebar (~230pt logical = 460px on a 2x retina display)
-# and the top toolbar (~50pt = 100px). The diff tool only sees page content.
-python3 "$repo_root/scripts/compare-typography.py" \
-  "$shot" \
-  "$repo_root/References/typography/$ref" \
-  --screenshot-region 460 100 2400 2000 \
+pixel_width="$(sips -g pixelWidth "$shot" 2>/dev/null | awk '/pixelWidth/ { print $2 }')"
+pixel_height="$(sips -g pixelHeight "$shot" 2>/dev/null | awk '/pixelHeight/ { print $2 }')"
+
+compare_args=(
+  "$shot"
+  "$repo_root/References/typography/$ref"
   --out "$diff"
+)
+
+# Large captures come from the full app layout with the Pages sidebar visible.
+# Crop out the sidebar (~230pt logical = 460px on a 2x retina display) and the
+# top toolbar (~50pt = 100px). For narrower windows, fall back to auto-detecting
+# the content column; a fixed crop would cut away most of the page.
+if [[ -n "$pixel_width" && -n "$pixel_height" && "$pixel_width" -ge 2400 && "$pixel_height" -ge 2000 ]]; then
+  compare_args+=(--screenshot-region 460 100 2400 2000)
+fi
+
+python3 "$repo_root/scripts/compare-typography.py" "${compare_args[@]}"
 
 echo
 echo "diff: $diff"

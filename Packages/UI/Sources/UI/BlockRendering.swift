@@ -124,10 +124,10 @@ public struct BlockRow: View {
             headingRow(level: level)
 
         case .bullet(_, _, let indent):
-            listMarkerRow(marker: "•", indent: indent, font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            bulletRow(indent: indent)
 
         case .numbered(_, _, let indent):
-            listMarkerRow(marker: "\(numberingIndex ?? 1).", indent: indent, font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            numberedRow(indent: indent)
 
         case .todo(_, _, let done, let indent):
             todoRow(done: done, indent: indent)
@@ -162,19 +162,33 @@ public struct BlockRow: View {
         return editableText(font: font, fontSize: size, bold: true, lineSpacing: NotionStyle.headingLineSpacing)
     }
 
-    private func listMarkerRow(marker: String, indent: Int, font: Font, fontSize: CGFloat, bold: Bool, lineSpacing: CGFloat) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(marker)
+    private func bulletRow(indent: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+            Circle()
+                .foregroundStyle(NotionStyle.foreground)
+                .frame(width: NotionStyle.bulletMarkerDiameter, height: NotionStyle.bulletMarkerDiameter)
+                .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                .alignmentGuide(.firstTextBaseline) { dimensions in
+                    dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                }
+            editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+        }
+        .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+    }
+
+    private func numberedRow(indent: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+            Text("\(numberingIndex ?? 1).")
                 .font(NotionStyle.body())
                 .foregroundStyle(NotionStyle.foreground)
-                .frame(width: 16, alignment: .leading)
-            editableText(font: font, fontSize: fontSize, bold: bold, lineSpacing: lineSpacing)
+                .frame(width: NotionStyle.numberedMarkerColumnWidth, alignment: .trailing)
+            editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
         }
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
     }
 
     private func todoRow(done: Bool, indent: Int) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
             Button {
                 if case .todo(let id, let text, let isDone, let i) = block {
                     block = .todo(id: id, text: text, done: !isDone, indent: i)
@@ -182,8 +196,9 @@ public struct BlockRow: View {
                 }
             } label: {
                 Image(systemName: done ? "checkmark.square.fill" : "square")
+                    .font(.system(size: NotionStyle.todoCheckboxSize))
                     .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                    .frame(width: 16)
+                    .frame(width: NotionStyle.todoMarkerColumnWidth, alignment: .trailing)
             }
             .buttonStyle(.plain)
             editableText(
@@ -323,6 +338,7 @@ public struct ToggleRowView: View {
     }
 
     public var body: some View {
+        let childNumbering = NumberingContext.compute(toggleChildren)
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Button {
@@ -348,7 +364,7 @@ public struct ToggleRowView: View {
                 // Toggle children render as Text only — editing toggle children stays out of
                 // the M3 minimum until the page-level edit/select model is solid.
                 ForEach(toggleChildren, id: \.id) { child in
-                    BlockRowReadOnly(block: child)
+                    BlockRowReadOnly(block: child, numberingIndex: childNumbering[child.id])
                         .padding(.leading, NotionStyle.indentStep)
                 }
             }
@@ -415,6 +431,13 @@ public struct ToggleRowView: View {
 /// in the M3 minimum.
 struct BlockRowReadOnly: View {
     let block: Block
+    let numberingIndex: Int?
+
+    init(block: Block, numberingIndex: Int? = nil) {
+        self.block = block
+        self.numberingIndex = numberingIndex
+    }
+
     var body: some View {
         switch block {
         case .paragraph(_, let text), .quote(_, let text):
@@ -428,15 +451,33 @@ struct BlockRowReadOnly: View {
             Text(InlineRenderer.swiftUIAttributed(text, baseFont: NotionStyle.body(size: size)))
                 .font(NotionStyle.body(size: size).weight(NotionStyle.headingWeight))
                 .foregroundStyle(NotionStyle.foreground)
-        case .bullet(_, let text, let indent), .numbered(_, let text, let indent):
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("•").frame(width: 16, alignment: .leading)
+        case .bullet(_, let text, let indent):
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+                Circle()
+                    .foregroundStyle(NotionStyle.foreground)
+                    .frame(width: NotionStyle.bulletMarkerDiameter, height: NotionStyle.bulletMarkerDiameter)
+                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .alignmentGuide(.firstTextBaseline) { dimensions in
+                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    }
+                Text(InlineRenderer.swiftUIAttributed(text))
+            }
+            .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+        case .numbered(_, let text, let indent):
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+                Text("\(numberingIndex ?? 1).")
+                    .font(NotionStyle.body())
+                    .foregroundStyle(NotionStyle.foreground)
+                    .frame(width: NotionStyle.numberedMarkerColumnWidth, alignment: .trailing)
                 Text(InlineRenderer.swiftUIAttributed(text))
             }
             .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
         case .todo(_, let text, let done, let indent):
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
                 Image(systemName: done ? "checkmark.square.fill" : "square")
+                    .font(.system(size: NotionStyle.todoCheckboxSize))
+                    .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                    .frame(width: NotionStyle.todoMarkerColumnWidth, alignment: .trailing)
                 Text(InlineRenderer.swiftUIAttributed(text))
             }
             .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)

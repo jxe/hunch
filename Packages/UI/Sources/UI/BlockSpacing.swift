@@ -56,7 +56,7 @@ public enum BlockSpacing {
         case .heading(_, 2, _): return 28     // H2 above body or after another heading
         case .heading(_, 3, _): return 22
         case .heading: return 18
-        case .paragraph: return 6
+        case .paragraph: return 5
         case .quote: return 6
         case .code: return 8
         case .divider: return 12
@@ -68,9 +68,9 @@ public enum BlockSpacing {
 
     private static func bottomMargin(_ block: Block) -> CGFloat {
         switch block {
-        case .heading(_, 1, _): return 4
-        case .heading: return 4
-        case .paragraph: return 6
+        case .heading(_, 1, _): return 6
+        case .heading: return 5
+        case .paragraph: return 5
         case .quote: return 6
         case .code: return 8
         case .divider: return 12
