@@ -4,6 +4,7 @@ import Core
 public struct PageListView: View {
     public let entries: [WorkspaceEntry]
     public let onSelect: (WorkspaceEntry) -> Void
+    @State private var searchText = ""
 
     public init(entries: [WorkspaceEntry], onSelect: @escaping (WorkspaceEntry) -> Void) {
         self.entries = entries
@@ -12,7 +13,7 @@ public struct PageListView: View {
 
     public var body: some View {
         List {
-            ForEach(entries) { entry in
+            ForEach(filteredEntries) { entry in
                 Button {
                     onSelect(entry)
                 } label: {
@@ -29,5 +30,15 @@ public struct PageListView: View {
             }
         }
         .listStyle(.plain)
+        .searchable(text: $searchText, placement: .automatic, prompt: "Search pages")
+    }
+
+    private var filteredEntries: [WorkspaceEntry] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return entries }
+        return entries.filter { entry in
+            entry.title.localizedStandardContains(query) ||
+            entry.relativePath.localizedStandardContains(query)
+        }
     }
 }

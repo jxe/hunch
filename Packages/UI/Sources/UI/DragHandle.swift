@@ -10,13 +10,13 @@ struct DragHandle: View {
     static let gutterWidth: CGFloat = 28
 
     var body: some View {
-        DragGripGlyph(dotSize: 3)
-            .foregroundStyle(NotionStyle.mutedForeground)
+        DragGripGlyph(dotSize: 2.8)
+            .foregroundStyle(NotionStyle.foreground.opacity(0.32))
             .padding(.horizontal, 6)
             .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(NotionStyle.foreground.opacity(0.05))
+                    .fill(NotionStyle.foreground.opacity(0.018))
             )
             .frame(width: Self.gutterWidth, height: 28)
             .contentShape(Rectangle())

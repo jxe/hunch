@@ -1,9 +1,19 @@
-#if os(macOS)
-import AppKit
 import Foundation
 import SwiftUI
 import Core
 
+#if os(macOS)
+import AppKit
+#endif
+
+enum InlineMark {
+    case bold
+    case italic
+    case code
+    case strikethrough
+}
+
+#if os(macOS)
 /// Bidirectional conversion between the model's `AttributedString` (custom inline-mark keys)
 /// and `NSAttributedString` for live editing in NSTextView.
 ///
@@ -223,13 +233,6 @@ enum InlineMarksNSKit {
         }
         return false
     }
-}
-
-enum InlineMark {
-    case bold
-    case italic
-    case code
-    case strikethrough
 }
 
 #endif

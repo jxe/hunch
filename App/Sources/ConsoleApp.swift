@@ -1,6 +1,9 @@
 import SwiftUI
 import Core
 import UI
+#if os(macOS)
+import AppKit
+#endif
 
 @main
 struct ConsoleApp: App {
@@ -28,6 +31,12 @@ struct ConsoleApp: App {
                     model.switchWorkspace()
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
+            }
+            CommandGroup(after: .toolbar) {
+                Button("Toggle Sidebar") {
+                    NSApp.keyWindow?.firstResponder?.tryToPerform(#selector(NSSplitViewController.toggleSidebar(_:)), with: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .option])
             }
             // Replace the system Edit > Undo / Redo with bindings that route through the
             // currently-focused PageView's `DocumentUndoController`. Without this the

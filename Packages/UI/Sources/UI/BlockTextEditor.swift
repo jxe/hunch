@@ -31,6 +31,9 @@ public enum BlockKey: Sendable, Equatable {
 /// scope for M3 and UITextView's insets are different anyway).
 public struct BlockTextEditor: View {
     @Binding var text: AttributedString
+#if os(iOS)
+    @State private var iosSelection = AttributedTextSelection()
+#endif
     let font: Font
     let fontSize: CGFloat
     let bold: Bool
@@ -113,7 +116,7 @@ public struct BlockTextEditor: View {
             focused = blockID
         }
         #else
-        TextEditor(text: $text)
+        TextEditor(text: $text, selection: $iosSelection)
             .font(font)
             .lineSpacing(lineSpacing)
             .focused($focused, equals: blockID)
@@ -126,10 +129,56 @@ public struct BlockTextEditor: View {
                     onAutotransform(result.transform, result.remainingText)
                 }
             }
-            .onKeyPress(keys: [.return, .delete, .tab, .escape, KeyEquivalent("k")]) { press in
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Button { _ = onKey(.shiftTab) } label: { Image(systemName: "outdent") }
+                    Button { _ = onKey(.tab) } label: { Image(systemName: "indent") }
+                    Divider()
+                    Button { toggleIOSMark(.bold) } label: { Image(systemName: "bold") }
+                    Button { toggleIOSMark(.italic) } label: { Image(systemName: "italic") }
+                    Button { toggleIOSMark(.code) } label: { Image(systemName: "chevron.left.forwardslash.chevron.right") }
+                    Button { toggleIOSMark(.strikethrough) } label: { Image(systemName: "strikethrough") }
+                    Divider()
+                    Button { _ = onKey(.cmdK) } label: { Image(systemName: "link") }
+                    Spacer()
+                    Button {
+                        focused = nil
+                        _ = onKey(.escape)
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                }
+            }
+            .onKeyPress(keys: [
+                .return, .delete, .tab, .escape,
+                KeyEquivalent("b"), KeyEquivalent("i"), KeyEquivalent("e"),
+                KeyEquivalent("s"), KeyEquivalent("k")
+            ]) { press in
                 if press.key == KeyEquivalent("k") {
                     if press.modifiers.contains(.command) { return onKey(.cmdK) }
                     return .ignored
+                }
+                if press.modifiers.contains(.command) {
+                    switch press.key {
+                    case KeyEquivalent("b"):
+                        guard !press.modifiers.contains(.shift) else { return .ignored }
+                        toggleIOSMark(.bold)
+                        return .handled
+                    case KeyEquivalent("i"):
+                        guard !press.modifiers.contains(.shift) else { return .ignored }
+                        toggleIOSMark(.italic)
+                        return .handled
+                    case KeyEquivalent("e"):
+                        guard !press.modifiers.contains(.shift) else { return .ignored }
+                        toggleIOSMark(.code)
+                        return .handled
+                    case KeyEquivalent("s"):
+                        guard press.modifiers.contains(.shift) else { return .ignored }
+                        toggleIOSMark(.strikethrough)
+                        return .handled
+                    default:
+                        break
+                    }
                 }
                 let plainCount = text.characters.count
                 switch press.key {
@@ -142,6 +191,68 @@ public struct BlockTextEditor: View {
             }
         #endif
     }
+
+#if os(iOS)
+    private func toggleIOSMark(_ mark: InlineMark) {
+        var selection = iosSelection
+
+        switch selection.indices(in: text) {
+        case .insertionPoint(let insertionPoint):
+            var attributes = selection.typingAttributes(in: text)
+            set(mark, to: !markIsSet(mark, in: attributes), in: &attributes)
+            iosSelection = AttributedTextSelection(insertionPoint: insertionPoint, typingAttributes: attributes)
+        case .ranges:
+            let setting = !selectionHasMark(mark, in: text, selection: selection)
+            text.transformAttributes(in: &selection) { attributes in
+                set(mark, to: setting, in: &attributes)
+            }
+            iosSelection = selection
+        }
+    }
+
+    private func selectionHasMark(_ mark: InlineMark, in text: AttributedString, selection: AttributedTextSelection) -> Bool {
+        switch mark {
+        case .bold:
+            var iterator = selection.attributes(in: text)[InlineAttributes.BoldAttribute.self].makeIterator()
+            return iterator.next() == true
+        case .italic:
+            var iterator = selection.attributes(in: text)[InlineAttributes.ItalicAttribute.self].makeIterator()
+            return iterator.next() == true
+        case .code:
+            var iterator = selection.attributes(in: text)[InlineAttributes.CodeAttribute.self].makeIterator()
+            return iterator.next() == true
+        case .strikethrough:
+            var iterator = selection.attributes(in: text)[InlineAttributes.StrikethroughAttribute.self].makeIterator()
+            return iterator.next() == true
+        }
+    }
+
+    private func markIsSet(_ mark: InlineMark, in attributes: AttributeContainer) -> Bool {
+        switch mark {
+        case .bold:
+            return attributes[InlineAttributes.BoldAttribute.self] == true
+        case .italic:
+            return attributes[InlineAttributes.ItalicAttribute.self] == true
+        case .code:
+            return attributes[InlineAttributes.CodeAttribute.self] == true
+        case .strikethrough:
+            return attributes[InlineAttributes.StrikethroughAttribute.self] == true
+        }
+    }
+
+    private func set(_ mark: InlineMark, to enabled: Bool, in attributes: inout AttributeContainer) {
+        switch mark {
+        case .bold:
+            attributes[InlineAttributes.BoldAttribute.self] = enabled ? true : nil
+        case .italic:
+            attributes[InlineAttributes.ItalicAttribute.self] = enabled ? true : nil
+        case .code:
+            attributes[InlineAttributes.CodeAttribute.self] = enabled ? true : nil
+        case .strikethrough:
+            attributes[InlineAttributes.StrikethroughAttribute.self] = enabled ? true : nil
+        }
+    }
+#endif
 }
 
 #if os(macOS)

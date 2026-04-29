@@ -15,7 +15,9 @@ final class WorkspaceModel {
     private let saver = DocumentSaveCoordinator()
     private var debounceTask: Task<Void, Never>?
     private var backstopTask: Task<Void, Never>?
+    private var filePresenter: DocumentFilePresenter?
     private var isDirty = false
+    private var isSaving = false
 
     func tryRestore() {
         if let url = WorkspaceBookmark.resolve() {
@@ -64,6 +66,7 @@ final class WorkspaceModel {
             openDocument = try store.loadDocument(at: entry.url)
             UserDefaults.standard.set(entry.relativePath, forKey: "console.lastOpenPage")
             isDirty = false
+            installFilePresenter(for: entry.url)
             startBackstop()
         } catch {
             self.error = "Failed to load \(entry.relativePath): \(error.localizedDescription)"
@@ -77,6 +80,7 @@ final class WorkspaceModel {
         do {
             openDocument = try store.loadDocument(at: target)
             isDirty = false
+            installFilePresenter(for: target)
             startBackstop()
         } catch {
             self.error = "Subpage \(relativePath) not found"
@@ -85,6 +89,7 @@ final class WorkspaceModel {
 
     func closeDocument() {
         flushAndClose()
+        removeFilePresenter()
         openDocument = nil
     }
 
@@ -103,8 +108,14 @@ final class WorkspaceModel {
         debounceTask = nil
         guard isDirty, let doc = openDocument else { return }
         do {
+            isSaving = true
+            defer { isSaving = false }
             try await saver.save(doc)
+            if openDocument?.url == doc.url {
+                openDocument?.modificationDate = modificationDate(for: doc.url)
+            }
             isDirty = false
+            rescan()
         } catch {
             self.error = "Save failed: \(error.localizedDescription)"
         }
@@ -115,10 +126,52 @@ final class WorkspaceModel {
         debounceTask = nil
         backstopTask?.cancel()
         backstopTask = nil
+        removeFilePresenter()
         guard let doc = openDocument else { return }
         Task { [saver, doc] in
             try? await saver.flush(url: doc.url)
         }
+    }
+
+    private func installFilePresenter(for url: URL) {
+        removeFilePresenter()
+        let presenter = DocumentFilePresenter(url: url) { [weak self] in
+            Task { @MainActor in
+                await self?.handlePresentedFileChange()
+            }
+        }
+        NSFileCoordinator.addFilePresenter(presenter)
+        filePresenter = presenter
+    }
+
+    private func removeFilePresenter() {
+        if let filePresenter {
+            NSFileCoordinator.removeFilePresenter(filePresenter)
+        }
+        filePresenter = nil
+    }
+
+    private func handlePresentedFileChange() async {
+        guard !isSaving, !isDirty, let doc = openDocument else { return }
+        try? await Task.sleep(for: .milliseconds(250))
+        guard !Task.isCancelled, !isSaving, !isDirty, openDocument?.url == doc.url else { return }
+
+        let currentMTime = modificationDate(for: doc.url)
+        if currentMTime == doc.modificationDate {
+            rescan()
+            return
+        }
+
+        do {
+            openDocument = try store.loadDocument(at: doc.url)
+            rescan()
+        } catch {
+            self.error = "Failed to reload external changes: \(error.localizedDescription)"
+        }
+    }
+
+    private func modificationDate(for url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
     private func startBackstop() {
@@ -130,6 +183,26 @@ final class WorkspaceModel {
                 await self?.saveNow()
             }
         }
+    }
+}
+
+private final class DocumentFilePresenter: NSObject, NSFilePresenter {
+    let presentedItemURL: URL?
+    let presentedItemOperationQueue = OperationQueue.main
+    private let onChange: @Sendable () -> Void
+
+    init(url: URL, onChange: @escaping @Sendable () -> Void) {
+        self.presentedItemURL = url
+        self.onChange = onChange
+        super.init()
+    }
+
+    func presentedItemDidChange() {
+        onChange()
+    }
+
+    func presentedItemDidMove(to newURL: URL) {
+        onChange()
     }
 }
 
@@ -241,6 +314,9 @@ private struct PageDetailContainer: View {
                 },
                 onBlur: {
                     Task { await model.saveNow() }
+                },
+                onPinchClose: {
+                    model.closeDocument()
                 }
             )
         }

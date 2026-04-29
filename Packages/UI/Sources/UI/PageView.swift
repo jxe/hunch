@@ -6,6 +6,7 @@ public struct PageView: View {
     public let onSubpageTap: (String) -> Void
     public let onEdited: () -> Void
     public let onBlur: () -> Void
+    public let onPinchClose: () -> Void
 
     /// Set of currently-selected blocks in nav mode. Always contiguous in document order
     /// (we only build it via cursor/anchor extension). Empty in edit mode.
@@ -43,17 +44,21 @@ public struct PageView: View {
     /// Insertion index between rows where a drop is currently being targeted. Drives
     /// the visual drop indicator. nil when no drop is in progress.
     @State private var dropHoverIndex: Int?
+    @State private var rowFrames: [BlockID: CGRect] = [:]
+    @State private var actionToast: String?
 
     public init(
         document: Binding<Document>,
         onSubpageTap: @escaping (String) -> Void = { _ in },
         onEdited: @escaping () -> Void = {},
-        onBlur: @escaping () -> Void = {}
+        onBlur: @escaping () -> Void = {},
+        onPinchClose: @escaping () -> Void = {}
     ) {
         self._document = document
         self.onSubpageTap = onSubpageTap
         self.onEdited = onEdited
         self.onBlur = onBlur
+        self.onPinchClose = onPinchClose
     }
 
     public var body: some View {
@@ -71,6 +76,7 @@ public struct PageView: View {
                         )
                         rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
                             .padding(.top, gap)
+                            .background(rowFrameReporter(id: block.id))
                             .overlay(alignment: .top) {
                                 if dropHoverIndex == i {
                                     Rectangle()
@@ -102,8 +108,30 @@ public struct PageView: View {
                 .padding(.horizontal, horizontalPadding)
                 .padding(.top, 32)
                 .frame(maxWidth: .infinity, alignment: .center)
+                .onPreferenceChange(RowFramePreferenceKey.self) { frames in
+                    rowFrames = frames
+                }
             }
+            .coordinateSpace(name: PageHoverCoordinateSpace.name)
+            .macNearestRowHover(rowFrames: rowFrames, hoveredBlockID: $hoveredBlockID)
             .background(NotionStyle.background)
+            .iosPinchCloseToPageList(onPinchClose)
+            .overlay(alignment: .bottom) {
+                if let actionToast {
+                    HStack(spacing: 12) {
+                        Text(actionToast)
+                        Button("Undo") {
+                            undoController.undoManager.undo()
+                            self.actionToast = nil
+                        }
+                    }
+                    .font(NotionStyle.body(size: 13))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, 18)
+                }
+            }
             // Hand the shared UndoManager + controller down through the environment.
             // BlockTextEditor reads the controller to register a typing-session snapshot
             // when an editor loses focus; the manager is used to route Cmd-Z through the
@@ -249,6 +277,21 @@ public struct PageView: View {
                 },
                 initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
             )
+            .macBlockDragSource(
+                payload: BlockDragPayload(ids: dragIDs(for: block.id)),
+                isEnabled: !isEditing
+            )
+            .iosBlockTouchActions(
+                payload: BlockDragPayload(ids: dragIDs(for: block.id)),
+                isEnabled: !isEditing,
+                onDelete: {
+                    deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
+                    showActionToast("Deleted")
+                },
+                onCycleIndent: {
+                    cycleIndent(blockID: block.id)
+                }
+            )
             .contentShape(Rectangle())
             .onTapGesture {
                 // Clicks outside the editable text region (markers, paddings) — no
@@ -256,18 +299,7 @@ public struct PageView: View {
                 pendingCursorPoint = nil
                 enterEditMode(on: block.id)
             }
-            .onHover { hovering in
-                if hovering {
-                    hoveredBlockID = block.id
-                } else if hoveredBlockID == block.id {
-                    hoveredBlockID = nil
-                }
-            }
             .overlay(alignment: .topLeading) {
-                // Drag handle overlay (zero layout impact). It owns its own hover signal
-                // so the reveal stays alive while the cursor is over it — without that,
-                // moving from row content onto the handle exits the row's hover region
-                // and the handle vanishes mid-grab.
                 DragHandle()
                     .opacity(showHandleOverlay(for: block.id) && !isEditing ? 1 : 0)
                     .offset(x: -DragHandle.gutterWidth, y: 2)
@@ -281,12 +313,32 @@ public struct PageView: View {
                     .draggable(BlockDragPayload(ids: dragIDs(for: block.id))) {
                         DragPreviewChip(count: dragIDs(for: block.id).count)
                     }
+                    .allowsHitTesting(showHandleOverlay(for: block.id))
             }
         }
     }
 
+    private func topSelectedBlockID() -> BlockID? {
+        for block in document.blocks where selection.contains(block.id) {
+            return block.id
+        }
+        return nil
+    }
+
     private func showHandleOverlay(for id: BlockID) -> Bool {
-        hoveredBlockID == id || hoveredHandleBlockID == id
+        if selection.count > 1 {
+            return id == topSelectedBlockID()
+        }
+        return hoveredBlockID == id || hoveredHandleBlockID == id
+    }
+
+    private func rowFrameReporter(id: BlockID) -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: RowFramePreferenceKey.self,
+                value: [id: proxy.frame(in: .named(PageHoverCoordinateSpace.name))]
+            )
+        }
     }
 
     /// Drop target rendered inside a row's existing top-gap area (or the trailing
@@ -317,6 +369,9 @@ public struct PageView: View {
                 } else if dropHoverIndex == index {
                     dropHoverIndex = nil
                 }
+            }
+            .iosPinchOpenToInsert {
+                insertParagraph(at: index)
             }
     }
 
@@ -363,6 +418,27 @@ public struct PageView: View {
                 }
                 blocks.insert(contentsOf: movingBlocks, at: adjustedTarget)
                 document.blocks = blocks
+            }
+        }
+    }
+
+    private func insertParagraph(at index: Int) {
+        let newBlock = Block.paragraph(text: AttributedString())
+        let insertionIndex = max(0, min(index, document.blocks.count))
+        mutate("Insert Block") {
+            document.blocks.insert(newBlock, at: insertionIndex)
+        }
+        setCursor(newBlock.id)
+        editingBlock = newBlock.id
+        editorFocused = newBlock.id
+    }
+
+    private func showActionToast(_ message: String) {
+        actionToast = message
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            if actionToast == message {
+                actionToast = nil
             }
         }
     }
@@ -557,6 +633,42 @@ public struct PageView: View {
         }
     }
 
+    private func deleteBlocks(ids: [BlockID], actionName: String) {
+        let idSet = Set(ids)
+        let indices = document.blocks.enumerated()
+            .compactMap { (i, block) in idSet.contains(block.id) ? i : nil }
+        guard !indices.isEmpty, indices.count < document.blocks.count else { return }
+
+        let firstIndex = indices.first!
+        mutate(actionName) {
+            var blocks = document.blocks
+            for i in indices.reversed() {
+                blocks.remove(at: i)
+            }
+            document.blocks = blocks
+        }
+
+        let nextIndex = max(0, min(firstIndex - 1, document.blocks.count - 1))
+        if !document.blocks.isEmpty {
+            setCursor(document.blocks[nextIndex].id)
+        }
+    }
+
+    private func cycleIndent(blockID: BlockID) {
+        guard let i = document.index(of: blockID) else { return }
+        let block = document.blocks[i]
+        switch block {
+        case .bullet, .numbered, .todo:
+            let nextIndent = block.indent >= 3 ? 0 : block.indent + 1
+            guard nextIndent != block.indent else { return }
+            mutate("Indent") {
+                document.blocks[i] = block.withIndent(nextIndent)
+            }
+        default:
+            break
+        }
+    }
+
     /// Apply Tab / Shift-Tab indent change to every list-item block in the selection. Non-
     /// list blocks are skipped silently.
     private func indentSelection(by delta: Int) {
@@ -717,4 +829,123 @@ public struct PageView: View {
             return .ignored
         }
     }
+}
+
+private extension View {
+    @ViewBuilder
+    func macNearestRowHover(rowFrames: [BlockID: CGRect], hoveredBlockID: Binding<BlockID?>) -> some View {
+        #if os(macOS)
+        self.onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                hoveredBlockID.wrappedValue = nearestRowID(to: location, in: rowFrames)
+            case .ended:
+                hoveredBlockID.wrappedValue = nil
+            }
+        }
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func macBlockDragSource(payload: BlockDragPayload, isEnabled: Bool) -> some View {
+        #if os(macOS)
+        if isEnabled {
+            self.draggable(payload) {
+                DragPreviewChip(count: payload.ids.count)
+            }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func iosBlockTouchActions(
+        payload: BlockDragPayload,
+        isEnabled: Bool,
+        onDelete: @escaping () -> Void,
+        onCycleIndent: @escaping () -> Void
+    ) -> some View {
+        #if os(iOS)
+        if isEnabled {
+            self
+                .draggable(payload) {
+                    DragPreviewChip(count: payload.ids.count)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        onDelete()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    Button {
+                        onCycleIndent()
+                    } label: {
+                        Label("Indent", systemImage: "indent")
+                    }
+                    .tint(.blue)
+                }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func iosPinchOpenToInsert(_ action: @escaping () -> Void) -> some View {
+        #if os(iOS)
+        self.gesture(
+            MagnifyGesture(minimumScaleDelta: 0.08)
+                .onEnded { value in
+                    if value.magnification > 1.18 {
+                        action()
+                    }
+                }
+        )
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func iosPinchCloseToPageList(_ action: @escaping () -> Void) -> some View {
+        #if os(iOS)
+        self.simultaneousGesture(
+            MagnifyGesture(minimumScaleDelta: 0.08)
+                .onEnded { value in
+                    if value.magnification < 0.82 {
+                        action()
+                    }
+                }
+        )
+        #else
+        self
+        #endif
+    }
+}
+
+private enum PageHoverCoordinateSpace {
+    static let name = "PageView.hover"
+}
+
+private struct RowFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [BlockID: CGRect] = [:]
+
+    static func reduce(value: inout [BlockID: CGRect], nextValue: () -> [BlockID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> BlockID? {
+    frames.min { lhs, rhs in
+        abs(lhs.value.midY - point.y) < abs(rhs.value.midY - point.y)
+    }?.key
 }
