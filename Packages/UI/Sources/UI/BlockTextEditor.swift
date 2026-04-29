@@ -151,6 +151,17 @@ public struct BlockTextEditor: View {
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
+        .alignmentGuide(.firstTextBaseline) { _ in
+            // UITextView with textContainerInset=.zero and lineFragmentPadding=0
+            // puts its first baseline at `font.ascender` from the top of the view.
+            // SwiftUI's `Text` puts its first baseline at `lineHeight - |descender|`
+            // — i.e. `ascender + leading`. Using `ascender` here (what macOS does
+            // with NSFont) leaves a sub-pixel gap on iOS for fonts with non-zero
+            // leading (Inter ≈ 0.7pt at 16pt), which shows up as the list marker
+            // hopping down ~0.5pt on focus. Match `Text`'s formula instead.
+            let uiFont = IOSBlockTextEditorView.resolveUIFont(size: fontSize, bold: bold)
+            return uiFont.lineHeight - abs(uiFont.descender)
+        }
         .onAppear {
             focused = blockID
         }
@@ -576,6 +587,18 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         return tv
     }
 
+    /// SwiftUI sizes the editor by calling this with the proposed width. We
+    /// hand that width to UITextView's text container, then ask UITextView
+    /// what height fits — that's what `Text` does too. Without this, we'd
+    /// fall back to `intrinsicContentSize`, whose height depends on whatever
+    /// frame width UITextView happened to be measured with last (often zero
+    /// or a single-line width), so multi-line blocks would clip.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: ContainedTextViewIOS, context: Context) -> CGSize? {
+        guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
+        let fitting = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: fitting.height)
+    }
+
     func updateUIView(_ tv: ContainedTextViewIOS, context: Context) {
         context.coordinator.parent = self
         // Only re-sync textStorage from the binding when its plain content has drifted
@@ -629,10 +652,14 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
         tv.typingAttributes = [
-            .font: InlineMarksKit.interFont(size: fontSize, bold: bold, italic: false),
+            .font: Self.resolveUIFont(size: fontSize, bold: bold),
             .paragraphStyle: style,
             .foregroundColor: UIColor(NotionStyle.foreground)
         ]
+    }
+
+    nonisolated static func resolveUIFont(size: CGFloat, bold: Bool) -> UIFont {
+        InlineMarksKit.interFont(size: size, bold: bold, italic: false)
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -694,6 +721,21 @@ final class ContainedTextViewIOS: UITextView {
     /// mount — at the time `updateUIView` runs, `window` may still be nil and
     /// `becomeFirstResponder` would silently no-op.
     var wantsFocus: Bool = false
+
+    /// With `isScrollEnabled = false` (required so SwiftUI sizes us to content
+    /// height), UITextView's default intrinsicContentSize reports the width
+    /// needed to fit all text on a single line. SwiftUI's VStack picks that up
+    /// and expands the entire content column to match — which means tapping
+    /// into one block reflows EVERY sibling read-only Text to the new wider
+    /// column. Returning `noIntrinsicMetric` for width tells SwiftUI we have
+    /// no horizontal preference; the parent's offered width wins, the
+    /// textContainer wraps to it, and our height is computed from that
+    /// wrapped layout. Width-flex, height-fixed — same shape as the read-only
+    /// `Text` we're replacing.
+    override var intrinsicContentSize: CGSize {
+        let s = super.intrinsicContentSize
+        return CGSize(width: UIView.noIntrinsicMetric, height: s.height)
+    }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
