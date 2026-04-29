@@ -9,6 +9,12 @@ public enum WorkspaceBookmark {
         #else
         let options: URL.BookmarkCreationOptions = []
         #endif
+        let didStartAccessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
         let data = try url.bookmarkData(options: options, includingResourceValuesForKeys: nil, relativeTo: nil)
         UserDefaults.standard.set(data, forKey: defaultsKey)
     }

@@ -16,11 +16,13 @@ final class WorkspaceModel {
     private var debounceTask: Task<Void, Never>?
     private var backstopTask: Task<Void, Never>?
     private var filePresenter: DocumentFilePresenter?
+    private var accessedWorkspaceURL: URL?
     private var isDirty = false
     private var isSaving = false
 
     func tryRestore() {
         if let url = WorkspaceBookmark.resolve() {
+            accessedWorkspaceURL = url
             workspaceURL = url
             rescan()
             if let lastPath = UserDefaults.standard.string(forKey: "console.lastOpenPage"),
@@ -33,6 +35,7 @@ final class WorkspaceModel {
     func setWorkspace(_ url: URL) {
         do {
             try WorkspaceBookmark.save(url: url)
+            activateWorkspaceAccess(for: url)
             workspaceURL = url
             rescan()
         } catch {
@@ -46,6 +49,7 @@ final class WorkspaceModel {
         flushAndClose()
         WorkspaceBookmark.clear()
         UserDefaults.standard.removeObject(forKey: "console.lastOpenPage")
+        releaseWorkspaceAccess()
         workspaceURL = nil
         entries = []
         openDocument = nil
@@ -183,6 +187,17 @@ final class WorkspaceModel {
                 await self?.saveNow()
             }
         }
+    }
+
+    private func activateWorkspaceAccess(for url: URL) {
+        releaseWorkspaceAccess()
+        _ = url.startAccessingSecurityScopedResource()
+        accessedWorkspaceURL = url
+    }
+
+    private func releaseWorkspaceAccess() {
+        accessedWorkspaceURL?.stopAccessingSecurityScopedResource()
+        accessedWorkspaceURL = nil
     }
 }
 
