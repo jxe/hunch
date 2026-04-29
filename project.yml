@@ -1,0 +1,55 @@
+name: Console
+options:
+  bundleIdPrefix: com.joe.console
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+
+packages:
+  Core:
+    path: Packages/Core
+  UI:
+    path: Packages/UI
+
+targets:
+  Console:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: App/Sources
+      - path: App/Resources
+        type: folder
+    dependencies:
+      - package: Core
+      - package: UI
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Console
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        LSSupportsOpeningDocumentsInPlace: YES
+        UIFileSharingEnabled: YES
+        NSHumanReadableCopyright: "© 2026 Joe Edelman"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joe.console
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        GENERATE_INFOPLIST_FILE: NO
