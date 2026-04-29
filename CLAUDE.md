@@ -105,7 +105,16 @@ xcodebuild -project Console.xcodeproj -scheme Console \
 - **Inline marks are stripped on first edit.** Editor binding is plain
   `String`. Read-only blocks render `**bold**` as bold via `InlineRenderer`,
   but the moment a block is focused and any keystroke goes through, its text
-  becomes a plain `AttributedString`. Marks-aware editing (Cmd-B/I) is M5/M6.
+  becomes a plain `AttributedString`. Marks-aware editing (Cmd-B/I) is M6.
+- **Markdown autotransforms (M5).** Pure detection in
+  `Packages/Core/Sources/Core/Markdown/Autotransforms.swift`; replacement
+  blocks built by `BlockTransform.apply(to:)`; spliced into the document by
+  `PageView.applyAutotransform`. Prefix triggers (`# `, `## `, `### `, `- `,
+  `* `, `1. `, `[] `, `[ ] `, `> ` for toggle, `" ` for quote) fire from the
+  coordinator's `textDidChange` — IME-marked-text guarded — before the
+  binding propagates. Enter triggers (`---`, ` ``` `) fire from `splitBlock`
+  when the row's tail is empty. The detector accepts both `"` and `\u{201C}`
+  because NSTextView's smart-quote substitution runs by default.
 - **Autosave fans into `DocumentSaveCoordinator`** (Core actor, per-URL
   in-flight + pending snapshot). Triggers: 600ms debounce after any
   `markEdited()`, blur (focus → nil), `scenePhase != .active`, 30s backstop
@@ -149,14 +158,14 @@ margins/padding, sibling-aware gaps). When tuning, change these and rebuild
 ## What's done, what's next
 
 See `ROADMAP.md`. As of the most recent commit:
-- **M1** (workspace + read-only render) — done, verified.
-- **M2** (Notion typography) — first pass; the user has flagged that it
-  doesn't match Notion closely enough. Iterate against `References/typography/`
-  (see `skills/m2-typography-iterate/`).
-- **M3** (per-block editing + autosave) and **M4** (block-level keyboard
-  model) — landed in this session. Edit / nav / split / delete-empty /
-  Tab-indent all working on macOS via the NSTextView wrapper. iOS path
-  compiles but is not verified for M3.
+- **M1** (workspace + read-only render), **M3 + M4** (per-block editing,
+  autosave, multi-select keyboard model), **M5** (markdown prefix
+  autotransforms) — landed.
+- **M2** (Notion typography) — in progress; iterate against
+  `References/typography/` via the `skills/m2-typography-iterate/` loop.
+- **M6** is next (inline formatting + AttributedString-binding flip),
+  followed by M7 (gestures + Mac drag handles) and M8 (toggle/subpage
+  editing).
 
 When debugging UI runtime issues, see `skills/ui-debug-loop/SKILL.md` —
 launch from terminal with stderr redirected, sprinkle `print("[CLI] ...")`,
