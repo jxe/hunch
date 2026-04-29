@@ -80,6 +80,7 @@ public struct PageView: View {
         }
         .onKeyPress(keys: [
             .upArrow, .downArrow, .return, .escape, .tab,
+            KeyEquivalent("\u{19}"),  // NSBackTabCharacter — Shift+Tab on macOS
             .delete,
             KeyEquivalent("\u{8}"),
             KeyEquivalent("\u{7F}"),
@@ -90,6 +91,12 @@ public struct PageView: View {
 
             if press.key == .delete || press.key == KeyEquivalent("\u{8}") || press.key == KeyEquivalent("\u{7F}") {
                 deleteSelection()
+                return .handled
+            }
+            // Shift+Tab arrives as a distinct character (BackTab, U+0019), not as
+            // .tab + shift modifier — SwiftUI's `.onKeyPress(.tab)` won't match it.
+            if press.key == KeyEquivalent("\u{19}") {
+                indentSelection(by: -1)
                 return .handled
             }
 
