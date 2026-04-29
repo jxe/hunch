@@ -121,18 +121,31 @@ relevant block-spacing constant needs to be adjusted in
 
 ## 🟢 M3 + M4 — Per-block editing, autosave, keyboard model — LANDED
 
-Architecture: one editor at a time.
-- `selectedBlock` (visual highlight, no editor) and `editingBlock` (editor
-  mounted, focused) live on `PageView`. Click on a row → enter edit mode
-  on it. Page-level `.onKeyPress` handles ↑/↓/Return/Esc/Cmd-K only when
-  `editingBlock == nil`; the active editor's NSTextView handles
-  Return/Tab/Backspace/Esc/Cmd-K via `keyDown(_:)`.
+Architecture: one editor at a time, multi-select in nav mode.
+- `PageView` holds `selection: Set<BlockID>`, `cursor` (moving end of a
+  Shift-extend), `anchor` (fixed end), and `editingBlock` (the single
+  mounted editor). Click on a row → enter edit mode on it. Page-level
+  `.onKeyPress` handles nav keys only when `editingBlock == nil`; the
+  active editor's NSTextView handles Return/Tab/Backspace/Cmd-K via
+  `keyDown(_:)` and Esc via `cancelOperation(_:)`.
+- Nav-mode keyboard: ↑/↓ moves cursor (single-block selection);
+  Shift+↑/↓ extends selection from anchor; Return enters edit mode (only
+  when `selection.count == 1`); Esc clears selection; Delete removes every
+  selected block; Option+↑/↓ slides the contiguous selection up/down by a
+  row; Tab/Shift-Tab indent/outdent every list-item block in the selection.
 - macOS `BlockTextEditor` is an NSViewRepresentable wrapping NSTextView
   with `textContainerInset = .zero` and `lineFragmentPadding = 0` plus an
   explicit `.alignmentGuide(.firstTextBaseline) { _ in nsFont.ascender }`.
   Stock `TextEditor` was tried first; its baked-in 5pt insets broke
   alignment with list markers and its `.onKeyPress` was unreliable for
   keys NSTextView consumes.
+- Three load-bearing focus-reliability hacks worth knowing about: the
+  editor mounts with `isFocused: true` unconditionally (because
+  `@FocusState` writes are deferred past `makeNSView`); `cancelOperation`
+  calls `window.makeFirstResponder(nil)` before the escape handler runs
+  (so SwiftUI can re-bind the page container after the editor unmounts);
+  `exitEditMode` toggles `pageFocused = false → true` on the next runloop
+  tick (a same-value setter doesn't trigger a focus rebind on its own).
 - iOS path uses stock `TextEditor` for now — compiles, not verified.
 
 Autosave: `DocumentSaveCoordinator` actor (Core, per-URL serial, in-flight
@@ -145,13 +158,16 @@ blocks still render `**bold**` as bold via `InlineRenderer`; the moment a
 block is focused and any keystroke goes through, its text becomes a plain
 `AttributedString`. Cmd-B/I and mark preservation wait for M6.
 
+Menu items: File → Reload Pages (Cmd-R) and File → Switch Workspace…
+(Cmd-Shift-O). Replace the in-sidebar refresh button.
+
 Verified manually on macOS:
 - Click a paragraph or bullet → enters edit mode, cursor lands at click.
-- ↑/↓ moves selection between blocks; Return enters edit mode on the
-  selected block.
+- ↑/↓ moves cursor; Shift+↑/↓ extends; Return enters edit mode.
 - Typing fires the 600ms debounce; the file on disk reflects edits within
   a second.
-- Esc returns to nav mode (the user's primary out-of-edit key).
+- Esc returns to nav mode reliably; arrow keys keep working post-Esc.
+- Delete in nav mode removes the selection. Option+↑/↓ moves it.
 - Force-quit (Cmd-Q) within 1s of typing → reopen → edit is there.
 
 What's still uncertain / out of M3:

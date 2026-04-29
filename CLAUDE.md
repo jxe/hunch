@@ -47,8 +47,10 @@ xcodebuild -project Console.xcodeproj -scheme Console \
 xcodebuild -project Console.xcodeproj -scheme Console \
   -destination 'generic/platform=iOS Simulator' -configuration Debug build
 
-# Run the macOS app (after build)
-open ~/Library/Developer/Xcode/DerivedData/Console-*/Build/Products/Debug/Console.app
+# Run the macOS app — picks the newest build by binary mtime and kills any
+# running instance first. Don't `open ~/.../Console-*/Console.app` directly:
+# stale DerivedData folders can linger and the wildcard launches all of them.
+./scripts/run.sh
 ```
 
 ## Editing architecture (M3+)
@@ -57,17 +59,49 @@ open ~/Library/Developer/Xcode/DerivedData/Console-*/Build/Products/Debug/Consol
   When `editingBlock == block.id`, that single row swaps in a
   `BlockTextEditor`. N simultaneous TextEditors are a focus-arbitration / hit-
   test footgun on macOS — don't go back to that.
-- **Two states, on the page level:** `selectedBlock` (highlight, no editor)
-  and `editingBlock` (editor mounted, focused). ↑/↓ moves selection, Return
-  enters edit mode, click jumps straight to edit. Esc exits edit mode and
-  returns to nav (the user's habitual key — keep it that way).
+- **Nav mode supports multi-select.** PageView holds `selection: Set<BlockID>`,
+  `cursor: BlockID?` (moving end), `anchor: BlockID?` (fixed end of a Shift-
+  extend). `editingBlock: BlockID?` mounts the single editor. ↑/↓ collapses
+  to a single-block selection at the new cursor; Shift+↑/↓ extends from the
+  anchor; Return enters edit mode (only when `selection.count == 1`); Esc
+  exits edit mode and returns to nav. Click jumps straight to edit and
+  resets selection to that one block.
+- **Selection-wide operations.** In nav mode: Delete removes every block in
+  the selection; Option+↑/↓ slides the contiguous selection up/down by one
+  row; Tab / Shift-Tab indent/outdent every list-item block in the selection
+  (paragraph/heading rows are skipped). Single-block edits (split, delete-
+  empty, indent inside the editor) all flow through the editor's `keyDown`
+  path, not the page-level handler.
+- **Focus reliability is fragile on macOS.** Three load-bearing details in
+  `BlockTextEditor`:
+  - `MacBlockTextEditor` is constructed with `isFocused: true`
+    unconditionally, because `@FocusState` writes from `enterEditMode` are
+    deferred and don't propagate before `makeNSView` / `viewDidMoveToWindow`
+    fire. With `isFocused: focused == blockID`, `wantsFocus` was still
+    `false` when the view was added to the window and the focus grab
+    silently no-op'd.
+  - `ContainedTextView.viewDidMoveToWindow` retries `makeFirstResponder`
+    when `wantsFocus` is true. This is the second-chance path; the first
+    chance is in `updateNSView` if the view is already in a window.
+  - `cancelOperation(_:)` is overridden to fire the `.escape` handler.
+    NSTextView routes Esc through `cancelOperation`, NOT through
+    `keyDown`'s normal switch, so a plain `keyDown` override misses it. The
+    override also calls `window?.makeFirstResponder(nil)` before delegating
+    so the window's first-responder slot is cleared synchronously before
+    SwiftUI re-renders — without this, NSTextView remains nominal first
+    responder during the unmount and SwiftUI can't re-bind the page
+    container, leaving arrow-key nav broken post-Esc.
+  - `exitEditMode` toggles `pageFocused = false` then `true` on the next
+    runloop tick. A same-value setter is a no-op in SwiftUI's focus state,
+    so without the toggle the page never re-takes focus after Esc.
 - **macOS `BlockTextEditor` is an NSViewRepresentable around NSTextView**,
   not stock `TextEditor`. Stock TextEditor on macOS bakes in
   `textContainerInset = (5, 0)` and `lineFragmentPadding = 5` which break
   `firstTextBaseline` alignment with list markers. The wrapper zeros both,
-  intercepts Return/Tab/Backspace/Esc/Cmd-K via `keyDown(_:)`, and provides
-  an explicit `.alignmentGuide(.firstTextBaseline) { _ in nsFont.ascender }`
-  so HStack(.firstTextBaseline) lines up.
+  intercepts Return/Tab/Backspace/Cmd-K via `keyDown(_:)`, hooks Esc via
+  `cancelOperation(_:)`, and provides an explicit
+  `.alignmentGuide(.firstTextBaseline) { _ in nsFont.ascender }` so
+  HStack(.firstTextBaseline) lines up.
 - **Inline marks are stripped on first edit.** Editor binding is plain
   `String`. Read-only blocks render `**bold**` as bold via `InlineRenderer`,
   but the moment a block is focused and any keystroke goes through, its text
