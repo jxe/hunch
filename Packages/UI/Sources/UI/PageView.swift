@@ -172,7 +172,10 @@ public struct PageView: View {
                 isSelected: isSelected,
                 isEditing: isEditing,
                 onKey: { key in handleEditorKey(key, blockID: block.id) },
-                onEdited: onEdited
+                onEdited: onEdited,
+                onAutotransform: { transform, remainingText in
+                    applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
+                }
             )
             .contentShape(Rectangle())
             .onTapGesture {
@@ -358,6 +361,14 @@ public struct PageView: View {
         let head = String(plain[..<splitIndex])
         let tail = String(plain[splitIndex...])
 
+        // Enter-triggered autotransforms (`---`, ` ``` `) only fire when the cursor is at
+        // the end of the row (tail empty) and the head matches a whole-row trigger.
+        if tail.isEmpty,
+           let result = detectEnterAutotransform(text: AttributedString(head)) {
+            applyAutotransform(result.transform, remainingText: result.remainingText, blockID: blockID)
+            return .handled
+        }
+
         let updatedCurrent = block.withText(AttributedString(head))
         let newBlock = followUpBlock(after: block, withText: tail)
 
@@ -370,6 +381,31 @@ public struct PageView: View {
             editorFocused = newBlock.id
         }
         return .handled
+    }
+
+    /// Replace the block whose row's editor just fired an autotransform. The transform's
+    /// `apply(to:)` returns the new block(s); we splice via `document.replace` and refocus
+    /// on the block at `transform.focusReplacementIndex` (which is the fresh paragraph for
+    /// divider/codeFence and the transformed block otherwise).
+    private func applyAutotransform(_ transform: BlockTransform, remainingText: AttributedString, blockID: BlockID) {
+        let replacements = transform.apply(to: remainingText)
+        guard !replacements.isEmpty else { return }
+        document.replace(blockID: blockID, with: replacements)
+        onEdited()
+        let focusTarget = replacements[transform.focusReplacementIndex]
+        DispatchQueue.main.async {
+            setCursor(focusTarget.id)
+            // Code/divider rows aren't editable in M3 (`enterEditMode` skips them); for
+            // those transforms the focus target is the empty paragraph, which is editable.
+            switch focusTarget {
+            case .code, .divider, .subpage:
+                editingBlock = nil
+                editorFocused = nil
+            default:
+                editingBlock = focusTarget.id
+                editorFocused = focusTarget.id
+            }
+        }
     }
 
     private func followUpBlock(after block: Block, withText text: String) -> Block {

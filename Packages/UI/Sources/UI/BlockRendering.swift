@@ -58,6 +58,7 @@ public struct BlockRow: View {
     @FocusState.Binding var editorFocused: BlockID?
     let onKey: (BlockKey) -> KeyPress.Result
     let onEdited: () -> Void
+    let onAutotransform: (BlockTransform, AttributedString) -> Void
 
     public init(
         block: Binding<Block>,
@@ -67,7 +68,8 @@ public struct BlockRow: View {
         isSelected: Bool = false,
         isEditing: Bool = false,
         onKey: @escaping (BlockKey) -> KeyPress.Result = { _ in .ignored },
-        onEdited: @escaping () -> Void = {}
+        onEdited: @escaping () -> Void = {},
+        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in }
     ) {
         self._block = block
         self.isPageTitle = isPageTitle
@@ -77,6 +79,7 @@ public struct BlockRow: View {
         self._editorFocused = editorFocused
         self.onKey = onKey
         self.onEdited = onEdited
+        self.onAutotransform = onAutotransform
     }
 
     public var body: some View {
@@ -224,7 +227,8 @@ public struct BlockRow: View {
             isSelected: isSelected,
             isEditing: isEditing,
             onKey: onKey,
-            onEdited: onEdited
+            onEdited: onEdited,
+            onAutotransform: onAutotransform
         )
     }
 
@@ -255,7 +259,8 @@ public struct BlockRow: View {
                 lineSpacing: lineSpacing,
                 focused: $editorFocused,
                 blockID: block.id,
-                onKey: onKey
+                onKey: onKey,
+                onAutotransform: onAutotransform
             )
             .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
             .strikethrough(strikethrough)
@@ -280,6 +285,7 @@ public struct ToggleRowView: View {
     let isEditing: Bool
     let onKey: (BlockKey) -> KeyPress.Result
     let onEdited: () -> Void
+    let onAutotransform: (BlockTransform, AttributedString) -> Void
 
     public init(
         block: Binding<Block>,
@@ -287,7 +293,8 @@ public struct ToggleRowView: View {
         isSelected: Bool,
         isEditing: Bool,
         onKey: @escaping (BlockKey) -> KeyPress.Result,
-        onEdited: @escaping () -> Void
+        onEdited: @escaping () -> Void,
+        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in }
     ) {
         self._block = block
         self._editorFocused = editorFocused
@@ -295,6 +302,7 @@ public struct ToggleRowView: View {
         self.isEditing = isEditing
         self.onKey = onKey
         self.onEdited = onEdited
+        self.onAutotransform = onAutotransform
     }
 
     public var body: some View {
@@ -369,7 +377,8 @@ public struct ToggleRowView: View {
                 lineSpacing: NotionStyle.bodyLineSpacing,
                 focused: $editorFocused,
                 blockID: block.id,
-                onKey: onKey
+                onKey: onKey,
+                onAutotransform: onAutotransform
             )
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {

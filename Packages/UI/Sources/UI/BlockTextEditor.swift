@@ -33,6 +33,7 @@ public struct BlockTextEditor: View {
     @FocusState.Binding var focused: BlockID?
     let blockID: BlockID
     let onKey: (BlockKey) -> KeyPress.Result
+    let onAutotransform: (BlockTransform, AttributedString) -> Void
 
     public init(
         text: Binding<String>,
@@ -42,7 +43,8 @@ public struct BlockTextEditor: View {
         lineSpacing: CGFloat,
         focused: FocusState<BlockID?>.Binding,
         blockID: BlockID,
-        onKey: @escaping (BlockKey) -> KeyPress.Result
+        onKey: @escaping (BlockKey) -> KeyPress.Result,
+        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in }
     ) {
         self._text = text
         self.font = font
@@ -52,6 +54,7 @@ public struct BlockTextEditor: View {
         self._focused = focused
         self.blockID = blockID
         self.onKey = onKey
+        self.onAutotransform = onAutotransform
     }
 
     public var body: some View {
@@ -74,7 +77,8 @@ public struct BlockTextEditor: View {
                     focused = nil
                 }
             },
-            onKey: onKey
+            onKey: onKey,
+            onAutotransform: onAutotransform
         )
         .alignmentGuide(.firstTextBaseline) { _ in
             // NSTextView with textContainerInset=.zero, lineFragmentPadding=0 puts its first
@@ -94,6 +98,15 @@ public struct BlockTextEditor: View {
             .focused($focused, equals: blockID)
             .onAppear {
                 focused = blockID
+            }
+            .onChange(of: text) { _, newValue in
+                // iOS doesn't expose cursor offset from `.onChange`, so we approximate with
+                // `count`. That's correct for the typical typing-prefix flow (cursor is at
+                // the end after each keystroke). Pasted longer text won't fire the trigger
+                // because cursor would not equal the trigger's length.
+                if let result = detectPrefixAutotransform(text: AttributedString(newValue), cursor: newValue.count) {
+                    onAutotransform(result.transform, result.remainingText)
+                }
             }
             .onKeyPress(keys: [.return, .delete, .tab, .escape, KeyEquivalent("k")]) { press in
                 if press.key == KeyEquivalent("k") {
@@ -125,6 +138,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let isFocused: Bool
     let onFocusChange: (Bool) -> Void
     let onKey: (BlockKey) -> KeyPress.Result
+    let onAutotransform: (BlockTransform, AttributedString) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -214,7 +228,20 @@ struct MacBlockTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
+            // IME composition fires textDidChange on every marked-text update. Skip
+            // autotransform detection there — typing `# ` mid-CJK-composition must not
+            // be consumed — and just propagate the current string through to the binding.
+            let isComposing = tv.hasMarkedText()
             let new = tv.string
+            if !isComposing {
+                let cursor = tv.selectedRange().location
+                if let result = detectPrefixAutotransform(text: AttributedString(new), cursor: cursor) {
+                    parent.onAutotransform(result.transform, result.remainingText)
+                    // Don't push the trigger characters to the binding — the row is about
+                    // to be replaced wholesale by PageView's apply-transform handler.
+                    return
+                }
+            }
             if new != parent.text {
                 parent.text = new
             }
