@@ -51,9 +51,16 @@ public enum InlineRenderer {
 
 public struct BlockRow: View {
     public let block: Block
+    /// True when this row is the document's first block AND it's an H1 — render at page-title size.
+    public let isPageTitle: Bool
+    /// 1-indexed position among consecutive sibling `.numbered` blocks at the same indent.
+    /// `nil` for non-numbered blocks; siblings compute it during stacking and pass it in.
+    public let numberingIndex: Int?
 
-    public init(_ block: Block) {
+    public init(_ block: Block, isPageTitle: Bool = false, numberingIndex: Int? = nil) {
         self.block = block
+        self.isPageTitle = isPageTitle
+        self.numberingIndex = numberingIndex
     }
 
     public var body: some View {
@@ -74,7 +81,7 @@ public struct BlockRow: View {
             listMarkerRow(marker: "•", indent: indent, text: text)
 
         case .numbered(_, let text, let indent):
-            listMarkerRow(marker: "1.", indent: indent, text: text)
+            listMarkerRow(marker: "\(numberingIndex ?? 1).", indent: indent, text: text)
 
         case .todo(_, let text, let done, let indent):
             todoRow(text: text, done: done, indent: indent)
@@ -107,9 +114,10 @@ public struct BlockRow: View {
 
     // MARK: heading
     private func headingRow(level: Int, text: AttributedString) -> some View {
-        let size: CGFloat = level == 1 ? NotionStyle.h1Size
-                         : level == 2 ? NotionStyle.h2Size
-                                      : NotionStyle.h3Size
+        let size: CGFloat = (isPageTitle && level == 1) ? NotionStyle.pageTitleSize
+                          : level == 1 ? NotionStyle.h1Size
+                          : level == 2 ? NotionStyle.h2Size
+                                       : NotionStyle.h3Size
         return Text(InlineRenderer.swiftUIAttributed(text, baseFont: NotionStyle.body(size: size)))
             .font(NotionStyle.body(size: size).weight(NotionStyle.headingWeight))
             .foregroundStyle(NotionStyle.foreground)
@@ -260,14 +268,39 @@ public struct BlockStack: View {
     }
 
     public var body: some View {
+        let numbering = NumberingContext.compute(blocks)
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
-                BlockRow(block)
+                BlockRow(block, numberingIndex: numbering[block.id])
                     .padding(.top, BlockSpacing.gap(
                         before: block,
                         after: index > 0 ? blocks[index - 1] : nil
                     ))
             }
         }
+    }
+}
+
+/// Per-block 1-indexed position among consecutive sibling `.numbered` blocks at the same indent.
+/// A non-numbered block resets the run; a different indent starts a fresh run for that level.
+public enum NumberingContext {
+    public static func compute(_ blocks: [Block]) -> [BlockID: Int] {
+        var result: [BlockID: Int] = [:]
+        var counters: [Int: Int] = [:]   // indent → next number
+        for block in blocks {
+            switch block {
+            case .numbered(_, _, let indent):
+                let next = (counters[indent] ?? 0) + 1
+                counters[indent] = next
+                result[block.id] = next
+                // Deeper indent levels reset on outdent: clear counters > indent.
+                for key in counters.keys where key > indent {
+                    counters[key] = 0
+                }
+            default:
+                counters.removeAll()
+            }
+        }
+        return result
     }
 }

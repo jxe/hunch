@@ -22,17 +22,24 @@ public enum NotionStyle {
     public static let lineHeightMultiple: CGFloat = 1.5
     public static let blockVerticalPadding: CGFloat = 3
     public static let headingTopPadding: CGFloat = 22
-    public static let headingWeight: Font.Weight = .semibold
+    /// Notion uses 700 across page title, H1, H2, H3 — confirmed against pre-2026 reference shots.
+    public static let headingWeight: Font.Weight = .bold
 
     /// SwiftUI's `.lineSpacing` is *additional* spacing between baselines, not a multiplier.
     /// Body 16pt × 1.5em = 24pt target. Default leading on a 16pt font is ~19pt → +5pt.
     public static let bodyLineSpacing: CGFloat = 5
-    /// Headings use a tighter line-height (~1.25em) than body so multi-line headings don't sprawl.
+    /// Headings use a tighter line-height (~1.2em) than body so multi-line headings don't sprawl.
     public static let headingLineSpacing: CGFloat = 2
 
-    // MARK: Heading sizes (em-relative to 16px base)
+    // MARK: Heading sizes
+    /// Notion's `.notion-page-title-text { font-size: 40px }`. Used only for the *first* H1 in a
+    /// document when it sits at the top — that's how Notion treats the document title.
+    public static let pageTitleSize: CGFloat = 40
+    /// `.notion-h1 { font-size: 1.875em }` → 30pt. Inline H1 (rare; not the page title).
     public static let h1Size: CGFloat = 30
+    /// `.notion-h2 { font-size: 1.5em }` → 24pt.
     public static let h2Size: CGFloat = 24
+    /// `.notion-h3 { font-size: 1.25em }` → 20pt.
     public static let h3Size: CGFloat = 20
 
     // MARK: Page layout

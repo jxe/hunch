@@ -20,19 +20,88 @@ Commit `94937f0`.
 
 ## 🟡 M2 — Pixel-correct Notion typography — IN PROGRESS
 
-**Status:** First two passes landed (commits `1df180f`, `9b96acd`):
-- Inter Variable bundled and registered via CoreText.
-- `BlockSpacing` introduced for sibling-aware gaps (CSS-margin-collapse style).
-- Quote at 1.2em, code radius 8pt, list-item padding 6pt.
+The visual target is **pre-March-2026 Notion**. The four reference
+screenshots in `References/typography/` are the source of truth — *not*
+`react-notion-x`'s CSS, which doesn't match real Notion in subtle ways.
 
-**Remaining:** Spacing still doesn't match real Notion. The values were
-derived from `react-notion-x`'s CSS, which the user has flagged as not an
-exact match. **Re-tune against the actual screenshots in
-`References/typography/`** (see that folder's README for what to drop in
-there).
+**Goal:** screenshot diff vs each reference is visually indistinguishable
+at 1× and 2×. Done when each `compare-typography.py` overlay shows text
+bands aligning row-for-row across both halves.
 
-**Done when:** screenshot diff against a reference Notion page is visually
-indistinguishable at 1× and 2×.
+### What's already landed
+
+| pass | constants confirmed correct |
+|------|----------------------------|
+| `1df180f` | Inter Variable bundled and registered via CoreText. |
+| `9b96acd` | `BlockSpacing` introduced for sibling-aware gaps. |
+| (this branch) | Page-title H1 = 40pt; inline H1 = 30pt; H2 = 24pt; H3 = 20pt; all headings weight 700. List items pad 5pt top/bottom. Numbered lists actually number sequentially. |
+
+### Iteration loop (run this every time you touch a typography constant)
+
+The infrastructure is already in place — *use it*. Don't eyeball, measure.
+
+```sh
+# 0. one-time prep — make sure /tmp/console-fixture/everything.md is the
+#    workspace's only file and that com.joe.console.workspace.bookmark
+#    points at /tmp/console-fixture. The app auto-opens the last page,
+#    so after the first manual click you never click again.
+
+# 1. switch to a specific reference fixture
+./scripts/use-fixture.sh rfc_prompt           # → notion_prompt_example.png
+./scripts/use-fixture.sh notion_page_example  # → notion_example_page_formatting.jpg
+./scripts/use-fixture.sh blog_post_draft      # → notion_full_width_page.png
+./scripts/use-fixture.sh ai_for_docs          # → notion_ai_for_docs.webp
+
+# 2. capture the Console window (you need Screen Recording permission)
+osascript -e 'tell application "System Events" to tell process "Console"
+  set p to position of window 1
+  set s to size of window 1
+  return (item 1 of p as string) & "," & (item 2 of p as string) & ","
+       & (item 1 of s as string) & "," & (item 2 of s as string)
+end tell'
+# → e.g. 151,58,1089,812
+screencapture -R "<that-rect>" -x /tmp/console-screenshots/<name>-current.png
+
+# 3. produce the side-by-side diff
+python3 scripts/compare-typography.py \
+  /tmp/console-screenshots/<name>-current.png \
+  References/typography/<reference-image> \
+  --out /tmp/console-screenshots/<name>-diff.png
+
+# 4. open the diff and read the text bands. Reference is on the LEFT,
+#    your screenshot scaled to matching body-line-height on the RIGHT.
+#    Red rule = top of each text band, blue rule = bottom. If a red line
+#    on the reference doesn't have a matching red line at the same y on
+#    your half, the gap above that band is wrong — adjust topMargin /
+#    bottomMargin / intrinsicVerticalPadding for the relevant block type.
+
+# 5. edit ONLY Packages/UI/Sources/UI/NotionStyle.swift and
+#    Packages/UI/Sources/UI/BlockSpacing.swift. Rebuild + relaunch with:
+xcodebuild -project Console.xcodeproj -scheme Console \
+  -destination 'platform=macOS' -configuration Debug build
+./scripts/use-fixture.sh <name>   # also kills + relaunches Console
+
+# 6. re-screenshot, re-diff, repeat.
+```
+
+**Pixel measurement primitives:**
+- `scripts/measure-typography.py <image>` prints raw band positions and
+  expresses each gap as a multiple of the body line-height. Useful when
+  the visual diff isn't clear enough — numbers don't lie about which
+  gap is 1.4× vs 1.8× of body-LH.
+- `scripts/compare-typography.py <screenshot> <reference>` produces the
+  side-by-side overlay described above.
+
+**Editing rules (don't break these):**
+- Only edit `NotionStyle.swift` and `BlockSpacing.swift`. No magic
+  numbers in `BlockRendering.swift`.
+- Don't touch `Packages/Core/`. Don't change the parser or serializer.
+- After every change: `swift test --package-path Packages/Core` — all
+  16 round-trip tests must still pass.
+- The "Round-corner inline code chip rendering" chip is OUT OF SCOPE.
+  Inline code stays as flat-background until that task lands separately.
+
+**Don't move on to M3 until** every reference passes the diff overlay.
 
 ## ⏳ M3 — Per-block editing + four-trigger autosave
 

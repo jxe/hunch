@@ -17,6 +17,10 @@ final class WorkspaceModel {
         if let url = WorkspaceBookmark.resolve() {
             workspaceURL = url
             rescan()
+            if let lastPath = UserDefaults.standard.string(forKey: "console.lastOpenPage"),
+               let entry = entries.first(where: { $0.relativePath == lastPath }) {
+                open(entry)
+            }
         }
     }
 
@@ -42,6 +46,7 @@ final class WorkspaceModel {
     func open(_ entry: WorkspaceEntry) {
         do {
             openDocument = try store.loadDocument(at: entry.url)
+            UserDefaults.standard.set(entry.relativePath, forKey: "console.lastOpenPage")
         } catch {
             self.error = "Failed to load \(entry.relativePath): \(error.localizedDescription)"
         }

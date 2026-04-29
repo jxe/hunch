@@ -1,0 +1,42 @@
+#!/bin/zsh
+# scripts/use-fixture.sh <fixture-name>
+#
+# Copies References/typography/fixtures/<name>.md → /tmp/console-fixture/everything.md
+# and relaunches Console. The app's auto-open-last-page brings up the new content
+# without any clicks.
+#
+# Usage: ./scripts/use-fixture.sh rfc_prompt
+#        ./scripts/use-fixture.sh notion_page_example
+#        ./scripts/use-fixture.sh blog_post_draft
+#        ./scripts/use-fixture.sh ai_for_docs
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <fixture-name>"
+  echo "available:"
+  ls "$(dirname "$0")/../References/typography/fixtures/" | sed 's/\.md$//' | sed 's/^/  /'
+  exit 1
+fi
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+src="$repo_root/References/typography/fixtures/$1.md"
+
+if [[ ! -f "$src" ]]; then
+  echo "no such fixture: $src"
+  exit 1
+fi
+
+mkdir -p /tmp/console-fixture
+cp "$src" /tmp/console-fixture/everything.md
+echo "fixture: $1"
+
+# Relaunch the most recently built Console.app so the new fixture loads.
+pkill -9 -f "Console.app/Contents/MacOS/Console" 2>/dev/null || true
+sleep 1
+app="$(ls -td ~/Library/Developer/Xcode/DerivedData/Console-*/Build/Products/Debug/Console.app 2>/dev/null | head -1)"
+if [[ -z "$app" ]]; then
+  echo "no built Console.app found — run xcodebuild first"
+  exit 1
+fi
+open "$app"

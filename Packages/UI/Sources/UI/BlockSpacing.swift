@@ -37,42 +37,45 @@ public enum BlockSpacing {
     /// `.padding(.vertical, …)`.
     public static func intrinsicVerticalPadding(_ block: Block) -> CGFloat {
         switch block {
-        // .notion-list li { padding: 6px 0 }
-        case .bullet, .numbered, .todo: return 6
+        // List items: ~5pt above/below per item — measured against notion_prompt_example.png,
+        // gives an item-to-item gap that's ~1.5× the within-paragraph line height.
+        case .bullet, .numbered, .todo: return 5
         // .notion-code { padding: 1em }
         case .code: return 16
-        // global .notion > * { padding: 3px 0 }
+        // Default block padding — matches Notion's `.notion > * { padding: 3px 2px }`.
         default: return 3
         }
     }
 
-    /// `margin-top` from `react-notion-x` styles.css. Values are in points (em × 16).
+    /// Top-margins reverse-engineered from real Notion screenshots (not from react-notion-x's CSS,
+    /// which doesn't match). Headings carry generous breathing room above; paragraphs sit on a
+    /// 6-7pt margin so two stacked paragraphs show a clear blank-line-style gap.
     private static func topMargin(_ block: Block) -> CGFloat {
         switch block {
-        case .heading(_, 1, _): return 17     // .notion-h1 { margin-top: 1.08em } → 17.28
-        case .heading(_, 2, _): return 18     // .notion-h2 { margin-top: 1.1em }  → 17.6
-        case .heading(_, 3, _): return 16     // .notion-h3 { margin-top: 1em }    → 16
-        case .heading: return 16
-        case .paragraph: return 1             // .notion-text { margin: 1px 0 }
-        case .quote: return 6                 // .notion-quote { margin: 6px 0 }
-        case .code: return 4                  // .notion-code { margin: 4px 0 }
-        case .divider: return 6               // .notion-hr { margin: 6px 0 }
-        case .toggle: return 0                // .notion-toggle has no margin
-        case .subpage: return 1               // .notion-page-link { margin: 1px 0 }
-        case .bullet, .numbered, .todo: return 0  // list items have no margin
+        case .heading(_, 1, _): return 32     // page-title H1: ~2em above when there is something
+        case .heading(_, 2, _): return 28     // H2 above body or after another heading
+        case .heading(_, 3, _): return 22
+        case .heading: return 18
+        case .paragraph: return 6
+        case .quote: return 6
+        case .code: return 8
+        case .divider: return 12
+        case .toggle: return 2
+        case .subpage: return 2
+        case .bullet, .numbered, .todo: return 0
         }
     }
 
-    /// `margin-bottom` (or the implicit "1px from `.notion-h`" for headings).
     private static func bottomMargin(_ block: Block) -> CGFloat {
         switch block {
-        case .heading: return 1               // .notion-h { margin-bottom: 1px }
-        case .paragraph: return 1             // .notion-text { margin: 1px 0 }
+        case .heading(_, 1, _): return 4
+        case .heading: return 4
+        case .paragraph: return 6
         case .quote: return 6
-        case .code: return 4
-        case .divider: return 6
-        case .toggle: return 0
-        case .subpage: return 1
+        case .code: return 8
+        case .divider: return 12
+        case .toggle: return 2
+        case .subpage: return 2
         case .bullet, .numbered, .todo: return 0
         }
     }
