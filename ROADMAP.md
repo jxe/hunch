@@ -25,74 +25,81 @@ screenshots in `References/typography/` are the source of truth — *not*
 `react-notion-x`'s CSS, which doesn't match real Notion in subtle ways.
 
 **Goal:** screenshot diff vs each reference is visually indistinguishable
-at 1× and 2×. Done when each `compare-typography.py` overlay shows text
-bands aligning row-for-row across both halves.
+at 1× and 2×. Done when every `snap-diff` overlay reads as the same page
+on both halves.
 
-### What's already landed
+### What's confirmed-correct
 
-| pass | constants confirmed correct |
-|------|----------------------------|
-| `1df180f` | Inter Variable bundled and registered via CoreText. |
-| `9b96acd` | `BlockSpacing` introduced for sibling-aware gaps. |
-| (this branch) | Page-title H1 = 40pt; inline H1 = 30pt; H2 = 24pt; H3 = 20pt; all headings weight 700. List items pad 5pt top/bottom. Numbered lists actually number sequentially. |
+| constant | value | source |
+|----------|-------|--------|
+| Body font | Inter Variable, 16pt | confirmed against `notion_example_page_formatting.jpg` |
+| Body lineSpacing | 5pt (→ 24pt baseline-to-baseline = 1.5em) | matches Notion's `line-height: 1.5` |
+| Heading font weight | 700 (`.bold`) | all four references show heavy headings |
+| Page-title H1 (first H1 in file) | 40pt bold | matches `.notion-page-title-text` and renders right against `rfc_prompt` reference |
+| Inline H1 | 30pt bold | not visually verified — derived from `1.875em × 16` |
+| H2 | 24pt bold | matches `1.5em × 16` and renders right against `rfc_prompt` reference |
+| H3 | 20pt bold | not visually verified — derived from `1.25em × 16` |
+| Numbered list sequential numbering | yes (`NumberingContext`) | now matches `notion_prompt_example.png` |
+| List item intrinsic vertical padding | 5pt | a 5pt-vs-3pt-vs-6pt sweep against `rfc_prompt` landed on 5 |
 
-### Iteration loop (run this every time you touch a typography constant)
+### What's still uncertain
 
-The infrastructure is already in place — *use it*. Don't eyeball, measure.
+- Paragraph→paragraph gap. Currently 6pt top + 6pt bottom margin → ~21pt
+  total visible gap. Looked OK in the rfc_prompt diff but only a single
+  reference-pass — re-run against `notion_page_example` and `blog_post_draft`.
+- Heading→heading and heading→paragraph margins. Currently 28pt above an
+  H2, 6pt below — guessed, not measured.
+- Quote, code, divider, toggle, subpage spacing. Untouched since
+  `9b96acd` and not yet verified against any reference.
+- Reference body line-heights. Only `notion_prompt_example.png` (43px)
+  was actually measured; the other three values in
+  `scripts/compare-typography.py:REFERENCE_BODY_LH_PX` are guesses. Open
+  each reference image in Preview, measure body baseline-to-baseline,
+  and replace the guess. Until you do that the side-by-side diff for
+  those references will be at the wrong scale.
+- Inline code chip rendering. **Out of scope** for M2 — see "Spawned-task
+  chips" below for the round-corner refactor that owns it.
+
+### Iteration loop
+
+Tooling shipped in this milestone (`ec3f0a0`, `59a2407`):
+
+- `References/typography/fixtures/<name>.md` — checked-in markdown that
+  mirrors a reference screenshot. Currently four: `rfc_prompt`,
+  `notion_page_example`, `blog_post_draft`, `ai_for_docs`.
+- `scripts/use-fixture.sh <name>` — copies the fixture into
+  `/tmp/console-fixture/everything.md` and relaunches Console. The app
+  auto-restores `console.lastOpenPage` on launch, so no clicks needed.
+- `scripts/snap-diff.sh <name>` — captures the Console window via
+  `screencapture -l <window-id>` (so overlapping windows don't show up),
+  then runs `compare-typography.py` to produce a side-by-side PNG with
+  the reference on the left and the screenshot scaled so its body
+  line-height matches. The output lands in `/tmp/console-screenshots/<name>-diff.png`.
+- `scripts/compare-typography.py` — does the cropping + scaling. Body
+  line-heights are hardcoded per reference (see `REFERENCE_BODY_LH_PX`).
 
 ```sh
-# 0. one-time prep — make sure /tmp/console-fixture/everything.md is the
-#    workspace's only file and that com.joe.console.workspace.bookmark
-#    points at /tmp/console-fixture. The app auto-opens the last page,
-#    so after the first manual click you never click again.
-
-# 1. switch to a specific reference fixture
 ./scripts/use-fixture.sh rfc_prompt           # → notion_prompt_example.png
 ./scripts/use-fixture.sh notion_page_example  # → notion_example_page_formatting.jpg
 ./scripts/use-fixture.sh blog_post_draft      # → notion_full_width_page.png
 ./scripts/use-fixture.sh ai_for_docs          # → notion_ai_for_docs.webp
 
-# 2. capture the Console window (you need Screen Recording permission)
-osascript -e 'tell application "System Events" to tell process "Console"
-  set p to position of window 1
-  set s to size of window 1
-  return (item 1 of p as string) & "," & (item 2 of p as string) & ","
-       & (item 1 of s as string) & "," & (item 2 of s as string)
-end tell'
-# → e.g. 151,58,1089,812
-screencapture -R "<that-rect>" -x /tmp/console-screenshots/<name>-current.png
-
-# 3. produce the side-by-side diff
-python3 scripts/compare-typography.py \
-  /tmp/console-screenshots/<name>-current.png \
-  References/typography/<reference-image> \
-  --out /tmp/console-screenshots/<name>-diff.png
-
-# 4. open the diff and read the text bands. Reference is on the LEFT,
-#    your screenshot scaled to matching body-line-height on the RIGHT.
-#    Red rule = top of each text band, blue rule = bottom. If a red line
-#    on the reference doesn't have a matching red line at the same y on
-#    your half, the gap above that band is wrong — adjust topMargin /
-#    bottomMargin / intrinsicVerticalPadding for the relevant block type.
-
-# 5. edit ONLY Packages/UI/Sources/UI/NotionStyle.swift and
-#    Packages/UI/Sources/UI/BlockSpacing.swift. Rebuild + relaunch with:
+# rebuild the app whenever you touch UI sources
 xcodebuild -project Console.xcodeproj -scheme Console \
   -destination 'platform=macOS' -configuration Debug build
-./scripts/use-fixture.sh <name>   # also kills + relaunches Console
 
-# 6. re-screenshot, re-diff, repeat.
+# capture + diff against the matching reference
+./scripts/snap-diff.sh rfc_prompt
+open /tmp/console-screenshots/rfc_prompt-diff.png
 ```
 
-**Pixel measurement primitives:**
-- `scripts/measure-typography.py <image>` prints raw band positions and
-  expresses each gap as a multiple of the body line-height. Useful when
-  the visual diff isn't clear enough — numbers don't lie about which
-  gap is 1.4× vs 1.8× of body-LH.
-- `scripts/compare-typography.py <screenshot> <reference>` produces the
-  side-by-side overlay described above.
+**To pixel-compare:** open the diff PNG. If body type, headings, or
+gaps don't sit at the same y-coordinate across the two halves, the
+relevant block-spacing constant needs to be adjusted in
+`Packages/UI/Sources/UI/BlockSpacing.swift` or
+`Packages/UI/Sources/UI/NotionStyle.swift`.
 
-**Editing rules (don't break these):**
+**Editing rules:**
 - Only edit `NotionStyle.swift` and `BlockSpacing.swift`. No magic
   numbers in `BlockRendering.swift`.
 - Don't touch `Packages/Core/`. Don't change the parser or serializer.

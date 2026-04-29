@@ -115,15 +115,19 @@ def crop_and_analyse(path: Path, region: tuple[int, int, int, int] | None):
     return cropped, bands, body_lh
 
 
-"""Hardcoded reference body line-heights. Measured once by inspecting a body
-paragraph in each reference image with Preview's pixel ruler. Putting these
-in code is way cleaner than re-detecting bands on every run, and removes the
-flaky-OCR step from the iteration loop."""
+"""Hardcoded reference body line-heights. ONLY the first entry has been
+measured against the actual image — the other three are guesses based on
+image dimensions and *will give the wrong scale* until someone opens the
+reference in Preview, picks a body paragraph, and measures the pixel
+distance between the bottom of one line and the bottom of the next.
+
+If a diff comes out with the screenshot text obviously larger or smaller
+than the reference text, fix the corresponding entry here."""
 REFERENCE_BODY_LH_PX = {
-    "notion_prompt_example.png":          43,
-    "notion_example_page_formatting.jpg": 26,   # 1900px-wide, smaller body type
-    "notion_full_width_page.png":         22,   # mac-window screenshot, smaller scale
-    "notion_ai_for_docs.webp":            32,
+    "notion_prompt_example.png":          43,   # MEASURED — trustworthy
+    "notion_example_page_formatting.jpg": 26,   # GUESS — verify by inspection
+    "notion_full_width_page.png":         22,   # GUESS — verify by inspection
+    "notion_ai_for_docs.webp":            32,   # GUESS — verify by inspection
 }
 
 # Console renders body at 16pt with `bodyLineSpacing = 5`, so SwiftUI emits
