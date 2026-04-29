@@ -54,9 +54,10 @@ sips --resampleHeight 1900 input.png --out resized.png   # if height > width
 
 If higher-quality references appear, look for:
 
-- A page with **consecutive bullets at the same indent** (verify list-item
-  to list-item gap)
-- **Nested bullets** (indent step verification)
+- A page mirroring `fixtures/headings_and_bullets.md` — exercises
+  paragraph↔list, H2→list-directly, nested bullets, and stacked H3s.
+  Recreating that markdown in Notion and screenshotting would give us a
+  real diff target for every heading/list transition we currently lack.
 - A **blockquote** with the left bar (1.2em font-size, 3pt border)
 - A **fenced code block** with rounded corners and the language label
 - **Inline code chip** within a paragraph (rounded background per run)

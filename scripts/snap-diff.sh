@@ -23,10 +23,11 @@ fi
 
 name="$1"
 case "$name" in
-  rfc_prompt)          ref="notion_prompt_example.png" ;;
-  notion_page_example) ref="notion_example_page_formatting.jpg" ;;
-  blog_post_draft)     ref="notion_full_width_page.png" ;;
-  ai_for_docs)         ref="notion_ai_for_docs.webp" ;;
+  rfc_prompt)            ref="notion_prompt_example.png" ;;
+  notion_page_example)   ref="notion_example_page_formatting.jpg" ;;
+  blog_post_draft)       ref="notion_full_width_page.png" ;;
+  ai_for_docs)           ref="notion_ai_for_docs.webp" ;;
+  headings_and_bullets)  ref="" ;;   # no Notion reference yet — capture-only
   *) echo "unknown fixture: $name" >&2; exit 1 ;;
 esac
 
@@ -61,6 +62,13 @@ diff="$out_dir/$name-diff.png"
 
 screencapture -l "$window_id" -x "$shot"
 echo "captured: $shot (window $window_id)"
+
+if [[ -z "$ref" ]]; then
+  echo
+  echo "no Notion reference for '$name' yet — capture-only."
+  echo "open with:  open '$shot'"
+  exit 0
+fi
 
 # Crop out the Pages sidebar (~230pt logical = 460px on a 2x retina display)
 # and the top toolbar (~50pt = 100px). The diff tool only sees page content.

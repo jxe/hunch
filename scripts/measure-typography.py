@@ -65,23 +65,46 @@ def detect_content_column(arr: np.ndarray) -> tuple[int, int]:
 
 def find_text_bands(arr: np.ndarray, x0: int, x1: int) -> list[tuple[int, int]]:
     """Project ink darkness over [x0, x1] onto the y-axis and return a list
-    of (y_top, y_bot) bounds, one per text band (line of text)."""
+    of (y_top, y_bot) bounds, one per text band (line of text).
+
+    Uses a strict ink threshold (`<150`) plus a 1D morphological-closing pass
+    that bridges the small white gap between a line's cap-row and its
+    descender-row, so a single line of text counts as one band rather than
+    several artifact sub-bands. Without this, a paragraph with descenders
+    yields N×2-ish bands and the 25th-percentile delta falls into the
+    cap-to-descender gap (a few px) instead of the actual baseline-to-baseline
+    line-height. Mirrors `compare-typography.py:find_text_bands`."""
     column = arr[:, x0:x1]
-    ink = (column < 200).sum(axis=1)
-    has_ink = ink > max(ink.max() * 0.02, 1)
+    ink = (column < 150).sum(axis=1)
+    median = float(np.median(ink))
+    threshold = median + max((ink.max() - median) * 0.10, 4)
+    has_ink = ink > threshold
+
+    close_distance = 6
+    closed = has_ink.copy()
+    run_zero = 0
+    last_one_idx = -1
+    for i in range(len(closed)):
+        if closed[i]:
+            if 0 < run_zero <= close_distance and last_one_idx >= 0:
+                closed[last_one_idx + 1 : i] = True
+            run_zero = 0
+            last_one_idx = i
+        else:
+            run_zero += 1
+
     bands: list[tuple[int, int]] = []
     in_band = False
     band_start = 0
-    for y, present in enumerate(has_ink):
+    for y, present in enumerate(closed):
         if present and not in_band:
-            in_band = True
-            band_start = y
+            in_band, band_start = True, y
         elif not present and in_band:
             in_band = False
             bands.append((band_start, y))
     if in_band:
-        bands.append((band_start, len(has_ink)))
-    return bands
+        bands.append((band_start, len(closed)))
+    return [b for b in bands if (b[1] - b[0]) >= 5]
 
 
 def measure(path: Path, xrange: tuple[int, int] | None, yrange: tuple[int, int] | None) -> dict:

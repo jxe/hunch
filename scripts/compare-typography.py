@@ -115,19 +115,17 @@ def crop_and_analyse(path: Path, region: tuple[int, int, int, int] | None):
     return cropped, bands, body_lh
 
 
-"""Hardcoded reference body line-heights. ONLY the first entry has been
-measured against the actual image — the other three are guesses based on
-image dimensions and *will give the wrong scale* until someone opens the
-reference in Preview, picks a body paragraph, and measures the pixel
-distance between the bottom of one line and the bottom of the next.
-
-If a diff comes out with the screenshot text obviously larger or smaller
-than the reference text, fix the corresponding entry here."""
+"""Hardcoded reference body line-heights. All four were measured by running
+`measure-typography.py` with explicit --xrange (content column) and --yrange
+(a multi-line body paragraph), then taking the bottom-to-bottom delta of
+within-paragraph consecutive lines. If a diff comes out with the screenshot
+text obviously larger or smaller than the reference text, re-measure and
+fix the corresponding entry here."""
 REFERENCE_BODY_LH_PX = {
-    "notion_prompt_example.png":          43,   # MEASURED — trustworthy
-    "notion_example_page_formatting.jpg": 26,   # GUESS — verify by inspection
-    "notion_full_width_page.png":         22,   # GUESS — verify by inspection
-    "notion_ai_for_docs.webp":            32,   # GUESS — verify by inspection
+    "notion_prompt_example.png":          43,
+    "notion_example_page_formatting.jpg": 31,
+    "notion_full_width_page.png":         48,
+    "notion_ai_for_docs.webp":            30,
 }
 
 # Console renders body at 16pt with `bodyLineSpacing = 5`, so SwiftUI emits
@@ -156,31 +154,47 @@ def main() -> None:
             sys.exit(1)
     scr_lh = args.screenshot_body_lh
 
-    s_img, _, _ = crop_and_analyse(Path(args.screenshot), tuple(args.screenshot_region) if args.screenshot_region else None)
-    r_img, _, _ = crop_and_analyse(Path(args.reference), tuple(args.reference_region) if args.reference_region else None)
+    s_img, s_bands, _ = crop_and_analyse(Path(args.screenshot), tuple(args.screenshot_region) if args.screenshot_region else None)
+    r_img, r_bands, _ = crop_and_analyse(Path(args.reference), tuple(args.reference_region) if args.reference_region else None)
 
     # Scale screenshot so its body line-height matches the reference's.
     scale = ref_lh / scr_lh
     new_w = max(1, int(round(s_img.width * scale)))
     new_h = max(1, int(round(s_img.height * scale)))
     s_scaled = s_img.resize((new_w, new_h), Image.LANCZOS)
+    s_bands_scaled = [(int(round(t * scale)), int(round(b * scale))) for t, b in s_bands]
 
+    header_h = 28
     gap = 16
     out_w = r_img.width + gap + s_scaled.width
-    out_h = max(r_img.height, s_scaled.height) + 28
+    out_h = max(r_img.height, s_scaled.height) + header_h
     canvas = Image.new("RGB", (out_w, out_h), "white")
-    canvas.paste(r_img, (0, 28))
-    canvas.paste(s_scaled, (r_img.width + gap, 28))
+    canvas.paste(r_img, (0, header_h))
+    canvas.paste(s_scaled, (r_img.width + gap, header_h))
 
     draw = ImageDraw.Draw(canvas)
-    draw.rectangle([(0, 0), (r_img.width, 28)], fill="#fff8c8")
+    draw.rectangle([(0, 0), (r_img.width, header_h)], fill="#fff8c8")
     draw.text((6, 6), f"reference: {Path(args.reference).name}  body-LH={ref_lh}px", fill="#444")
-    draw.rectangle([(r_img.width + gap, 0), (out_w, 28)], fill="#e8f0ff")
+    draw.rectangle([(r_img.width + gap, 0), (out_w, header_h)], fill="#e8f0ff")
     draw.text(
         (r_img.width + gap + 6, 6),
         f"screenshot scaled ×{scale:.3f} (so body-LH matches at {ref_lh}px)",
         fill="#444",
     )
+
+    # Red horizontal rule across the FULL diff width at every band edge in
+    # each side. Misaligned gaps show up as a red line that lands in
+    # different vertical positions on the two halves. Top edges in red,
+    # bottoms in a paler red so the within-band height is also visible.
+    def draw_rules(bands: list[tuple[int, int]], x_start: int, x_end: int) -> None:
+        for top, bot in bands:
+            y_top = top + header_h
+            y_bot = bot + header_h
+            draw.line([(x_start, y_top), (x_end, y_top)], fill=(255, 0, 0, 90), width=1)
+            draw.line([(x_start, y_bot), (x_end, y_bot)], fill=(255, 180, 180, 90), width=1)
+
+    draw_rules(r_bands, 0, r_img.width)
+    draw_rules(s_bands_scaled, r_img.width + gap, out_w)
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     canvas.save(args.out)
