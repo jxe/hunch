@@ -224,19 +224,19 @@ private final class DocumentFilePresenter: NSObject, NSFilePresenter {
 struct ContentView: View {
     @Bindable var model: WorkspaceModel
     @Environment(\.scenePhase) private var scenePhase
+    #if os(iOS)
+    @State private var showingSwitchPicker = false
+    #endif
 
     var body: some View {
         Group {
             if model.workspaceURL == nil {
                 WorkspacePickerView(model: model)
-            } else if model.openDocument != nil {
-                PageDetailContainer(model: model)
             } else {
                 NavigationSplitView {
                     sidebar
                 } detail: {
-                    Text("Select a page")
-                        .foregroundStyle(NotionStyle.mutedForeground)
+                    detail
                 }
             }
         }
@@ -260,6 +260,25 @@ struct ContentView: View {
         )
     }
 
+    /// Drives `PageListView`'s selection. Reading reflects whichever document
+    /// is currently open; writing fans out to `model.open` / `model.closeDocument`
+    /// so iOS NavigationSplitView's column-push (and its auto-pop on the back
+    /// chevron) round-trip through the model.
+    private var pageSelection: Binding<WorkspaceEntry.ID?> {
+        Binding(
+            get: { model.openDocument?.url },
+            set: { newID in
+                if let id = newID, let entry = model.entries.first(where: { $0.id == id }) {
+                    if model.openDocument?.url != entry.url {
+                        model.open(entry)
+                    }
+                } else if model.openDocument != nil {
+                    model.closeDocument()
+                }
+            }
+        )
+    }
+
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Pages")
@@ -267,54 +286,40 @@ struct ContentView: View {
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-            PageListView(entries: model.entries) { entry in
-                model.open(entry)
-            }
+            PageListView(entries: model.entries, selection: pageSelection)
         }
         .navigationTitle(model.workspaceURL?.lastPathComponent ?? "Workspace")
-    }
-}
-
-private struct PageDetailContainer: View {
-    @Bindable var model: WorkspaceModel
-
-    var body: some View {
-        NavigationSplitView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Pages")
-                    .font(NotionStyle.body(size: 13).weight(.semibold))
-                    .foregroundStyle(NotionStyle.mutedForeground)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                PageListView(entries: model.entries) { entry in
-                    model.open(entry)
+        #if os(iOS)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingSwitchPicker = true
+                } label: {
+                    Image(systemName: "folder.badge.gearshape")
                 }
+                .accessibilityLabel("Switch Workspace")
             }
-            .navigationTitle(model.workspaceURL?.lastPathComponent ?? "Workspace")
-        } detail: {
-            #if os(iOS)
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Button {
-                        model.closeDocument()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                        Text("Pages")
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                pageContent
-            }
-            #else
-            pageContent
-            #endif
         }
+        .fileImporter(
+            isPresented: $showingSwitchPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first, url != model.workspaceURL {
+                    model.switchWorkspace()
+                    model.setWorkspace(url)
+                }
+            case .failure(let error):
+                model.error = error.localizedDescription
+            }
+        }
+        #endif
     }
 
     @ViewBuilder
-    private var pageContent: some View {
+    private var detail: some View {
         if model.openDocument != nil {
             PageView(
                 document: Binding(
@@ -334,6 +339,9 @@ private struct PageDetailContainer: View {
                     model.closeDocument()
                 }
             )
+        } else {
+            Text("Select a page")
+                .foregroundStyle(NotionStyle.mutedForeground)
         }
     }
 }

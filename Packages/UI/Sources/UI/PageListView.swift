@@ -3,30 +3,27 @@ import Core
 
 public struct PageListView: View {
     public let entries: [WorkspaceEntry]
-    public let onSelect: (WorkspaceEntry) -> Void
+    @Binding public var selection: WorkspaceEntry.ID?
     @State private var searchText = ""
 
-    public init(entries: [WorkspaceEntry], onSelect: @escaping (WorkspaceEntry) -> Void) {
+    public init(entries: [WorkspaceEntry], selection: Binding<WorkspaceEntry.ID?>) {
         self.entries = entries
-        self.onSelect = onSelect
+        self._selection = selection
     }
 
     public var body: some View {
-        List {
+        List(selection: $selection) {
             ForEach(filteredEntries) { entry in
-                Button {
-                    onSelect(entry)
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(entry.title)
-                            .font(NotionStyle.body())
-                            .foregroundStyle(NotionStyle.foreground)
-                        Text(entry.relativePath)
-                            .font(NotionStyle.body(size: 12))
-                            .foregroundStyle(NotionStyle.mutedForeground)
-                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.title)
+                        .font(NotionStyle.body())
+                        .foregroundStyle(NotionStyle.foreground)
+                    Text(entry.relativePath)
+                        .font(NotionStyle.body(size: 12))
+                        .foregroundStyle(NotionStyle.mutedForeground)
                 }
-                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .tag(entry.id)
             }
         }
         .listStyle(.plain)

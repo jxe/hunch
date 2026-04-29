@@ -241,7 +241,14 @@ public struct PageView: View {
     @ViewBuilder
     private func rowView(for binding: Binding<Block>, snapshot: [Block], numberingIndex: Int?) -> some View {
         let block = binding.wrappedValue
+        // iOS has no nav-mode multi-select — there's no hardware keyboard arrow nav and the
+        // blue tint after dismissing the keyboard is just visual noise. Hardcode false to
+        // suppress it (the underlying nav state still updates; nothing reads it on iOS).
+        #if os(iOS)
+        let isSelected = false
+        #else
         let isSelected = selection.contains(block.id)
+        #endif
         let isEditing = editingBlock == block.id
 
         if case .subpage(_, _, let path) = block {
@@ -369,9 +376,6 @@ public struct PageView: View {
                 } else if dropHoverIndex == index {
                     dropHoverIndex = nil
                 }
-            }
-            .iosPinchOpenToInsert {
-                insertParagraph(at: index)
             }
     }
 
@@ -876,40 +880,10 @@ private extension View {
                 .draggable(payload) {
                     DragPreviewChip(count: payload.ids.count)
                 }
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) {
-                        onDelete()
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                }
-                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                    Button {
-                        onCycleIndent()
-                    } label: {
-                        Label("Indent", systemImage: "indent")
-                    }
-                    .tint(.blue)
-                }
+                .modifier(IOSRowSwipeActions(onDelete: onDelete, onIndent: onCycleIndent))
         } else {
             self
         }
-        #else
-        self
-        #endif
-    }
-
-    @ViewBuilder
-    func iosPinchOpenToInsert(_ action: @escaping () -> Void) -> some View {
-        #if os(iOS)
-        self.gesture(
-            MagnifyGesture(minimumScaleDelta: 0.08)
-                .onEnded { value in
-                    if value.magnification > 1.18 {
-                        action()
-                    }
-                }
-        )
         #else
         self
         #endif
@@ -949,3 +923,72 @@ private func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> Bl
         abs(lhs.value.midY - point.y) < abs(rhs.value.midY - point.y)
     }?.key
 }
+
+#if os(iOS)
+/// Horizontal-swipe actions on a row: leading swipe (right) cycles indent,
+/// trailing swipe (left) deletes. SwiftUI's `.swipeActions` only fires inside
+/// a `List`, but the page is built on a `VStack` to keep typography control,
+/// so this is a manual `DragGesture` that tracks the row offset, reveals
+/// per-edge action labels, and commits past a threshold.
+private struct IOSRowSwipeActions: ViewModifier {
+    let onDelete: () -> Void
+    let onIndent: () -> Void
+
+    @GestureState private var drag: CGFloat = 0
+
+    private let trigger: CGFloat = 96
+    private let revealCap: CGFloat = 140
+
+    func body(content: Content) -> some View {
+        let total = drag
+        let clamped = max(-revealCap, min(revealCap, total))
+
+        content
+            .offset(x: clamped)
+            .background(alignment: .trailing) {
+                if total < 0 {
+                    actionLabel(systemName: "trash", tint: .red, leading: false)
+                        .frame(width: max(0, -clamped))
+                }
+            }
+            .background(alignment: .leading) {
+                if total > 0 {
+                    actionLabel(systemName: "increase.indent", tint: .blue, leading: true)
+                        .frame(width: max(0, clamped))
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 18, coordinateSpace: .local)
+                    .updating($drag) { value, state, _ in
+                        let h = value.translation.width
+                        let v = value.translation.height
+                        // Commit horizontal motion only when the drag is clearly
+                        // sideways — keeps vertical scroll free.
+                        guard abs(h) > abs(v) * 1.4 else { return }
+                        state = h
+                    }
+                    .onEnded { value in
+                        let h = value.translation.width
+                        let v = value.translation.height
+                        guard abs(h) > abs(v) * 1.4 else { return }
+                        if h <= -trigger {
+                            onDelete()
+                        } else if h >= trigger {
+                            onIndent()
+                        }
+                    }
+            )
+    }
+
+    @ViewBuilder
+    private func actionLabel(systemName: String, tint: Color, leading: Bool) -> some View {
+        ZStack(alignment: leading ? .leading : .trailing) {
+            tint
+            Image(systemName: systemName)
+                .foregroundStyle(.white)
+                .font(.system(size: 18, weight: .semibold))
+                .padding(.horizontal, 22)
+        }
+    }
+}
+#endif

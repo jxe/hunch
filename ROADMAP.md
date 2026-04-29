@@ -25,6 +25,109 @@ Carry-overs nibbling around the edges:
 
 ---
 
+## Next up
+
+### M9 — Clear.app-grade iOS gestural polish
+
+**Goal:** every iOS gesture feels inevitable and tactile — Clear.app
+(2012) is the bar. The plumbing for swipe-delete/swipe-indent,
+pinch-open insert, pinch-close to page list, and long-press reorder is
+in place but mechanical: thresholds fire boolean actions with no
+preview, no haptics, no springs. Done when each gesture has a visible
+promise of its outcome before commit, a haptic at threshold, and a
+spring at release.
+
+**What "Clear-grade" means here:**
+
+1. **Swipe progressive reveal.** As the row tracks the finger, the
+   action icon (trash / increase.indent) scales from ~0.6 → 1.0 and the
+   tint background deepens as distance approaches threshold. Past
+   threshold the icon pops to 1.05 and a medium haptic fires. Release
+   past threshold animates the commit (row slides off-screen on left
+   swipe, indent ramps in on right swipe; neighbour rows close the gap
+   on a spring). Below threshold, rubber-band back with
+   `interpolatingSpring(stiffness: 280, damping: 22)`.
+
+2. **Reorder lift + drift.** The current `.draggable` lift is the
+   system default — flat chip preview, no haptic. Replace with an
+   in-place lift: row scales to ~1.03, soft shadow, light haptic on
+   lift. Adjacent rows shift to make room with a stagger; drop springs
+   into place rather than the default ease. Likely needs UIKit
+   `UIDragInteraction` via `UIViewRepresentable` since SwiftUI's stock
+   lift isn't tunable.
+
+3. **Pinch-open inline expansion.** This is the hard one and the
+   reason M9 exists as its own milestone — neither the gap-target nor
+   row-attached `MagnifyGesture` worked because SwiftUI's `MagnifyGesture`
+   gives a single scalar (magnification) with no per-finger position
+   info, and a bare `.gesture` on a row that's also `.draggable` /
+   `.onTapGesture` loses arbitration. Real shape:
+
+   - **Page-level recognizer.** A UIKit `UIPinchGestureRecognizer`
+     installed on the page's underlying `UIScrollView` (reach via
+     `UIViewRepresentable` host wrapping the SwiftUI tree, or
+     `Introspect`-style scrollview lookup). Set `cancelsTouchesInView =
+     false` so taps and `.draggable` still work. Implement
+     `gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:)` to
+     coexist with the scroll-view's pan and the editor's text gestures.
+   - **Two-finger position math.** From the recognizer get
+     `location(ofTouch: 0/1, in: scrollContentView)`. The midpoint
+     between the two fingers in document coordinates is the insert
+     anchor. Look up which adjacent row pair it falls between using
+     the `rowFrames` preference dict the page already maintains
+     ([PageView.swift](Packages/UI/Sources/UI/PageView.swift)
+     `RowFramePreferenceKey`). The vertical distance between the two
+     fingers (or the recognizer's `scale` × initial distance) drives
+     the gap-open amount.
+   - **Live gap.** During the pinch, push a state that inserts a
+     phantom row of variable height between the two adjacent rows.
+     SwiftUI re-layout per frame is fine for content this size, but if
+     it stutters, drop down to `CALayer` transforms on a snapshotted
+     row tree (do the structural insert only on commit; during the
+     pinch, animate transforms on existing layers).
+   - **Commit / cancel.** Past a pixel threshold (e.g., gap height ≥
+     row height) on `.ended`, do the real `insertParagraph(at:)` and
+     fade the new block's text into focus. Below threshold, spring the
+     gap closed.
+   - **Edge cases.** Pinch that starts inside an editing block —
+     ignore. Pinch where one finger is on a row and the other is below
+     the last row — insert at end. Pinch that converges (close
+     gesture) instead of diverges — fall through to
+     `iosPinchCloseToPageList`.
+
+4. **Pinch-close to page list.** Currently `magnification < 0.82` snaps
+   back to the sidebar. Promote to a coordinated morph: the page scales
+   toward the page-list cell it came from, page list peeks through
+   underneath, full commit on release past threshold. Below threshold,
+   spring back to full size.
+
+5. **Haptics layer.** Light at gesture begin, medium at threshold
+   cross, heavy on commit. Use `UIImpactFeedbackGenerator` and
+   `.prepare()` it on touch-down to avoid first-fire latency. Centralise
+   in a thin `Haptics.swift` so call sites read clean.
+
+**Files in scope:**
+
+- `IOSRowSwipeActions` in `Packages/UI/Sources/UI/PageView.swift` —
+  reveal animation, haptics, commit/rubber-band, threshold pop.
+- `iosBlockTouchActions` — replace `.draggable` with custom UIKit lift
+  if needed.
+- `iosPinchOpenToInsert` — track magnification live, open an inline gap.
+- `iosPinchCloseToPageList` — morph coordinated with the parent
+  `NavigationSplitView`.
+- New `Packages/UI/Sources/UI/Haptics.swift` — wrapper.
+
+**Iteration loop:** iPhone simulator + a real device, side-by-side with
+Clear.app on identical hardware. Record 60fps video for frame-by-frame
+review — visual stutter at gesture boundaries is the only failure mode
+that doesn't show up in screenshots. No automated assertion exists for
+"feels right."
+
+**Out of scope for M9:** macOS hover/drag polish. macOS is already
+mouse-precise; the felt-quality gap is an iOS problem.
+
+---
+
 ## Later
 
 ### Deferred editor affordances

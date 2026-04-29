@@ -124,7 +124,20 @@ public struct BlockTextEditor: View {
                 focused = blockID
             }
             .onChange(of: text) { _, newValue in
-                let plainCount = newValue.characters.count
+                // Return on iOS: SwiftUI's TextEditor consumes the key and inserts a "\n"
+                // before .onKeyPress can intercept it. Detect the newline in the binding,
+                // strip it, and dispatch the same .enter event the macOS keyDown override
+                // raises — so the page-level handler splits the block.
+                let chars = newValue.characters
+                if let nl = chars.firstIndex(of: "\n") {
+                    let offset = chars.distance(from: chars.startIndex, to: nl)
+                    var stripped = newValue
+                    stripped.characters.remove(at: nl)
+                    text = stripped
+                    _ = onKey(.enter(cursorOffset: offset))
+                    return
+                }
+                let plainCount = chars.count
                 if let result = detectPrefixAutotransform(text: newValue, cursor: plainCount) {
                     onAutotransform(result.transform, result.remainingText)
                 }
@@ -150,7 +163,7 @@ public struct BlockTextEditor: View {
                 }
             }
             .onKeyPress(keys: [
-                .return, .delete, .tab, .escape,
+                .delete, .tab, .escape,
                 KeyEquivalent("b"), KeyEquivalent("i"), KeyEquivalent("e"),
                 KeyEquivalent("s"), KeyEquivalent("k")
             ]) { press in
@@ -182,7 +195,6 @@ public struct BlockTextEditor: View {
                 }
                 let plainCount = text.characters.count
                 switch press.key {
-                case .return: return onKey(.enter(cursorOffset: plainCount))
                 case .delete: return plainCount == 0 ? onKey(.backspaceAtStart) : .ignored
                 case .tab: return onKey(press.modifiers.contains(.shift) ? .shiftTab : .tab)
                 case .escape: return onKey(.escape)
