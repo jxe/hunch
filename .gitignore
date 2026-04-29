@@ -19,3 +19,7 @@ Console.xcodeproj/
 
 ## Claude session worktrees / metadata
 .claude/
+
+## Original full-resolution Notion reference screenshots — working copies
+## (resized to <1900px) live in References/typography/ and are committed
+notion-screenshots/
