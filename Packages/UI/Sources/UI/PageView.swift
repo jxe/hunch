@@ -312,11 +312,16 @@ public struct PageView: View {
         guard !indices.isEmpty else { return }
         guard indices.count < document.blocks.count else { return }
 
+        // Snapshot, mutate locally, write once. Removing through the @Binding
+        // in a loop dropped all but the first removal — match the pattern
+        // used by `moveSelectionInDocument`.
         let firstIndex = indices.first!
-        // Remove highest indices first so earlier indices stay valid.
+        var blocks = document.blocks
         for i in indices.reversed() {
-            document.blocks.remove(at: i)
+            blocks.remove(at: i)
         }
+        document.blocks = blocks
+
         let nextIndex = max(0, min(firstIndex - 1, document.blocks.count - 1))
         if !document.blocks.isEmpty {
             setCursor(document.blocks[nextIndex].id)
