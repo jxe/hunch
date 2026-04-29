@@ -46,6 +46,16 @@ public struct PageView: View {
     @State private var dropHoverIndex: Int?
     @State private var rowFrames: [BlockID: CGRect] = [:]
     @State private var actionToast: String?
+    /// Active pinch-open-to-insert preview state. Drives an inline gap that grows
+    /// between two rows as the user spreads their fingers; nil when no pinch is
+    /// in progress (or when the pinch's startLocation didn't pin to a row pair).
+    /// Committed on release past threshold; spring-closed below threshold.
+    @State private var pinchPreview: PinchPreviewState?
+
+    struct PinchPreviewState: Equatable {
+        var insertIndex: Int
+        var gapHeight: CGFloat
+    }
 
     public init(
         document: Binding<Document>,
@@ -74,8 +84,9 @@ public struct PageView: View {
                             before: block,
                             after: previousBlock(before: block.id, in: snapshot)
                         )
+                        let pinchExtraTopGap: CGFloat = (pinchPreview?.insertIndex == i) ? (pinchPreview?.gapHeight ?? 0) : 0
                         rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
-                            .padding(.top, gap)
+                            .padding(.top, gap + pinchExtraTopGap)
                             .background(rowFrameReporter(id: block.id))
                             .overlay(alignment: .top) {
                                 if dropHoverIndex == i {
@@ -102,7 +113,8 @@ public struct PageView: View {
                     // Trailing slot for "insert at end" — claims the existing bottom 32pt
                     // page padding. Total visual spacing unchanged: the outer
                     // `.padding(.vertical, 32)` becomes `.padding(.top, 32)` only.
-                    gapDropTarget(at: snapshot.count, height: 32)
+                    let trailingPinchGap: CGFloat = (pinchPreview?.insertIndex == snapshot.count) ? (pinchPreview?.gapHeight ?? 0) : 0
+                    gapDropTarget(at: snapshot.count, height: 32 + trailingPinchGap)
                 }
                 .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
                 .padding(.horizontal, horizontalPadding)
@@ -115,7 +127,11 @@ public struct PageView: View {
             .coordinateSpace(name: PageHoverCoordinateSpace.name)
             .macNearestRowHover(rowFrames: rowFrames, hoveredBlockID: $hoveredBlockID)
             .background(NotionStyle.background)
-            .iosPinchCloseToPageList(onPinchClose)
+            .iosPagePinch(
+                isEnabled: editingBlock == nil,
+                onUpdate: { value in handlePinchUpdate(value) },
+                onCommit: { value in handlePinchCommit(value) }
+            )
             .overlay(alignment: .bottom) {
                 if let actionToast {
                     HStack(spacing: 12) {
@@ -435,6 +451,70 @@ public struct PageView: View {
         setCursor(newBlock.id)
         editingBlock = newBlock.id
         editorFocused = newBlock.id
+    }
+
+    // MARK: - Pinch-open-to-insert (iOS)
+
+    /// Track the live magnification: above 1, open an inline gap at the row pair
+    /// the gesture's startLocation falls between; below 1, no preview (the close
+    /// gesture takes the commit path on release). Width-cap the gap so the
+    /// preview never pushes the rest of the page off-screen.
+    private func handlePinchUpdate(_ value: MagnifyGesture.Value) {
+        guard editingBlock == nil else {
+            if pinchPreview != nil { pinchPreview = nil }
+            return
+        }
+        let mag = value.magnification
+        if mag > 1 {
+            let raw = (mag - 1) * 220
+            let gapHeight = min(180, max(0, raw))
+            let insertIndex = pinchInsertIndex(for: value.startLocation)
+            pinchPreview = PinchPreviewState(insertIndex: insertIndex, gapHeight: gapHeight)
+        } else if pinchPreview != nil {
+            pinchPreview = nil
+        }
+    }
+
+    private func handlePinchCommit(_ value: MagnifyGesture.Value) {
+        let mag = value.magnification
+        let preview = pinchPreview
+
+        if mag > 1.18, editingBlock == nil {
+            let insertIndex = preview?.insertIndex ?? pinchInsertIndex(for: value.startLocation)
+            // Bundle the structural insert and the gap collapse into the same
+            // spring transaction so the new row appears inside the opened gap
+            // and the surrounding rows close in around it. Without the shared
+            // animation transaction the gap snap-closes first and the new row
+            // pops in afterwards — visually disjoint.
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                insertParagraph(at: insertIndex)
+                pinchPreview = nil
+            }
+        } else if mag < 0.82 {
+            withAnimation(.easeOut(duration: 0.2)) {
+                pinchPreview = nil
+            }
+            onPinchClose()
+        } else {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.72)) {
+                pinchPreview = nil
+            }
+        }
+    }
+
+    /// The insert index for a pinch whose start midpoint is at `point` (in the
+    /// page's hover-named coordinate space — same space rowFrames live in).
+    /// Returns the index of the first row whose mid-Y is below the point; if
+    /// every row sits above the point, returns `blocks.count` (insert at end).
+    private func pinchInsertIndex(for point: CGPoint) -> Int {
+        let blocks = document.blocks
+        guard !blocks.isEmpty else { return 0 }
+        for (i, block) in blocks.enumerated() {
+            if let frame = rowFrames[block.id], point.y < frame.midY {
+                return i
+            }
+        }
+        return blocks.count
     }
 
     private func showActionToast(_ message: String) {
@@ -805,8 +885,32 @@ public struct PageView: View {
         }
     }
 
+    /// Backspace fired at offset 0 of a *blank* row (only entry path: macOS
+    /// `keyDown` and the iOS hardware-keyboard `.onKeyPress(.delete)` gate on
+    /// the block being empty). Two-step:
+    ///
+    ///   1. If the row is anything other than `.paragraph` (heading, bullet,
+    ///      numbered, todo, quote, toggle), collapse it to an empty paragraph
+    ///      in place — same id, same editor focus, just the marker / sizing
+    ///      goes away.
+    ///   2. If the row is already an empty paragraph, remove it and move the
+    ///      cursor to the previous block.
     private func deleteEmptyBlock(_ blockID: BlockID) -> KeyPress.Result {
         guard let i = document.index(of: blockID) else { return .ignored }
+        let block = document.blocks[i]
+
+        let isParagraph: Bool = {
+            if case .paragraph = block { return true }
+            return false
+        }()
+
+        if !isParagraph {
+            mutate("Convert to Paragraph") {
+                document.blocks[i] = .paragraph(id: block.id, text: AttributedString())
+            }
+            return .handled
+        }
+
         guard document.blocks.count > 1 else { return .ignored }
         let previous = i > 0 ? document.blocks[i - 1].id : document.blocks.first?.id
         mutate("Delete Block") {
@@ -889,17 +993,27 @@ private extension View {
         #endif
     }
 
+    /// Unified page-level pinch: forwards every magnification update so the page
+    /// can drive a live insert-gap preview, and forwards `.onEnded` so it can
+    /// commit insert (open) or close-to-page-list. Replaces the prior
+    /// open-on-row + close-on-page split — both directions now arbitrate
+    /// through a single gesture.
     @ViewBuilder
-    func iosPinchCloseToPageList(_ action: @escaping () -> Void) -> some View {
+    func iosPagePinch(
+        isEnabled: Bool,
+        onUpdate: @escaping (MagnifyGesture.Value) -> Void,
+        onCommit: @escaping (MagnifyGesture.Value) -> Void
+    ) -> some View {
         #if os(iOS)
-        self.simultaneousGesture(
-            MagnifyGesture(minimumScaleDelta: 0.08)
-                .onEnded { value in
-                    if value.magnification < 0.82 {
-                        action()
-                    }
-                }
-        )
+        if isEnabled {
+            self.simultaneousGesture(
+                MagnifyGesture(minimumScaleDelta: 0.04)
+                    .onChanged { value in onUpdate(value) }
+                    .onEnded { value in onCommit(value) }
+            )
+        } else {
+            self
+        }
         #else
         self
         #endif

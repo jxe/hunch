@@ -3,6 +3,9 @@ import Core
 #if canImport(AppKit)
 import AppKit
 #endif
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Block-level keyboard events the page-level handler reacts to.
 public enum BlockKey: Sendable, Equatable {
@@ -27,12 +30,18 @@ public enum BlockKey: Sendable, Equatable {
 /// read-only `Text`, which breaks `.firstTextBaseline` alignment with list markers and
 /// throws the typography off. Going to NSTextView lets us zero those out.
 ///
-/// On iOS we fall back to plain `TextEditor` for now (we don't have iOS verification in
-/// scope for M3 and UITextView's insets are different anyway).
+/// On iOS we wrap a `UITextView` directly via `UIViewRepresentable` for the same reasons
+/// (insets, focus, key-event control). The iOS path also needs a real subclass so we can
+/// override `deleteBackward()` — SwiftUI's `TextEditor` swallows soft-keyboard backspace
+/// events on empty text, which broke "delete blank block to remove it".
 public struct BlockTextEditor: View {
     @Binding var text: AttributedString
 #if os(iOS)
-    @State private var iosSelection = AttributedTextSelection()
+    /// Side-channel held by reference so the SwiftUI keyboard toolbar can drive
+    /// mark toggles on the underlying UITextView's textStorage. Persists across
+    /// re-renders; `makeUIView` / `updateUIView` keep `textView` pointed at the
+    /// live view.
+    @State private var iosBridge = IOSEditorBridge()
 #endif
     let font: Font
     let fontSize: CGFloat
@@ -116,155 +125,40 @@ public struct BlockTextEditor: View {
             focused = blockID
         }
         #else
-        TextEditor(text: $text, selection: $iosSelection)
-            .font(font)
-            .lineSpacing(lineSpacing)
-            .focused($focused, equals: blockID)
-            .onAppear {
-                focused = blockID
-            }
-            .onChange(of: text) { _, newValue in
-                // Return on iOS: SwiftUI's TextEditor consumes the key and inserts a "\n"
-                // before .onKeyPress can intercept it. Detect the newline in the binding,
-                // strip it, and dispatch the same .enter event the macOS keyDown override
-                // raises — so the page-level handler splits the block.
-                let chars = newValue.characters
-                if let nl = chars.firstIndex(of: "\n") {
-                    let offset = chars.distance(from: chars.startIndex, to: nl)
-                    var stripped = newValue
-                    stripped.characters.remove(at: nl)
-                    text = stripped
-                    _ = onKey(.enter(cursorOffset: offset))
-                    return
+        // Mirrors the macOS path: the view only mounts when this row is the
+        // active editor (PageView gates via `isEditing`), so request focus
+        // unconditionally on mount. `onFocusChange` reflects the UITextView's
+        // first-responder state back into SwiftUI's `@FocusState`.
+        IOSBlockTextEditorView(
+            text: $text,
+            fontSize: fontSize,
+            bold: bold,
+            lineSpacing: lineSpacing,
+            isFocused: true,
+            onFocusChange: { newFocused in
+                if newFocused {
+                    focused = blockID
+                } else if focused == blockID {
+                    focused = nil
                 }
-                let plainCount = chars.count
-                if let result = detectPrefixAutotransform(text: newValue, cursor: plainCount) {
-                    onAutotransform(result.transform, result.remainingText)
-                }
-            }
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Button { _ = onKey(.shiftTab) } label: { Image(systemName: "outdent") }
-                    Button { _ = onKey(.tab) } label: { Image(systemName: "indent") }
-                    Divider()
-                    Button { toggleIOSMark(.bold) } label: { Image(systemName: "bold") }
-                    Button { toggleIOSMark(.italic) } label: { Image(systemName: "italic") }
-                    Button { toggleIOSMark(.code) } label: { Image(systemName: "chevron.left.forwardslash.chevron.right") }
-                    Button { toggleIOSMark(.strikethrough) } label: { Image(systemName: "strikethrough") }
-                    Divider()
-                    Button { _ = onKey(.cmdK) } label: { Image(systemName: "link") }
-                    Spacer()
-                    Button {
-                        focused = nil
-                        _ = onKey(.escape)
-                    } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                    }
-                }
-            }
-            .onKeyPress(keys: [
-                .delete, .tab, .escape,
-                KeyEquivalent("b"), KeyEquivalent("i"), KeyEquivalent("e"),
-                KeyEquivalent("s"), KeyEquivalent("k")
-            ]) { press in
-                if press.key == KeyEquivalent("k") {
-                    if press.modifiers.contains(.command) { return onKey(.cmdK) }
-                    return .ignored
-                }
-                if press.modifiers.contains(.command) {
-                    switch press.key {
-                    case KeyEquivalent("b"):
-                        guard !press.modifiers.contains(.shift) else { return .ignored }
-                        toggleIOSMark(.bold)
-                        return .handled
-                    case KeyEquivalent("i"):
-                        guard !press.modifiers.contains(.shift) else { return .ignored }
-                        toggleIOSMark(.italic)
-                        return .handled
-                    case KeyEquivalent("e"):
-                        guard !press.modifiers.contains(.shift) else { return .ignored }
-                        toggleIOSMark(.code)
-                        return .handled
-                    case KeyEquivalent("s"):
-                        guard press.modifiers.contains(.shift) else { return .ignored }
-                        toggleIOSMark(.strikethrough)
-                        return .handled
-                    default:
-                        break
-                    }
-                }
-                let plainCount = text.characters.count
-                switch press.key {
-                case .delete: return plainCount == 0 ? onKey(.backspaceAtStart) : .ignored
-                case .tab: return onKey(press.modifiers.contains(.shift) ? .shiftTab : .tab)
-                case .escape: return onKey(.escape)
-                default: return .ignored
-                }
-            }
+            },
+            blockID: blockID,
+            bridge: iosBridge,
+            onKey: onKey,
+            onAutotransform: onAutotransform,
+            initialCursorPoint: initialCursorPoint,
+            documentUndoController: documentUndoController
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .onAppear {
+            focused = blockID
+        }
+        // The keyboard accessory bar is set as the UITextView's `inputAccessoryView`
+        // inside `IOSBlockTextEditorView` — SwiftUI's `.toolbar(placement: .keyboard)`
+        // doesn't reach a UIKit-hosted text view.
         #endif
     }
-
-#if os(iOS)
-    private func toggleIOSMark(_ mark: InlineMark) {
-        var selection = iosSelection
-
-        switch selection.indices(in: text) {
-        case .insertionPoint(let insertionPoint):
-            var attributes = selection.typingAttributes(in: text)
-            set(mark, to: !markIsSet(mark, in: attributes), in: &attributes)
-            iosSelection = AttributedTextSelection(insertionPoint: insertionPoint, typingAttributes: attributes)
-        case .ranges:
-            let setting = !selectionHasMark(mark, in: text, selection: selection)
-            text.transformAttributes(in: &selection) { attributes in
-                set(mark, to: setting, in: &attributes)
-            }
-            iosSelection = selection
-        }
-    }
-
-    private func selectionHasMark(_ mark: InlineMark, in text: AttributedString, selection: AttributedTextSelection) -> Bool {
-        switch mark {
-        case .bold:
-            var iterator = selection.attributes(in: text)[InlineAttributes.BoldAttribute.self].makeIterator()
-            return iterator.next() == true
-        case .italic:
-            var iterator = selection.attributes(in: text)[InlineAttributes.ItalicAttribute.self].makeIterator()
-            return iterator.next() == true
-        case .code:
-            var iterator = selection.attributes(in: text)[InlineAttributes.CodeAttribute.self].makeIterator()
-            return iterator.next() == true
-        case .strikethrough:
-            var iterator = selection.attributes(in: text)[InlineAttributes.StrikethroughAttribute.self].makeIterator()
-            return iterator.next() == true
-        }
-    }
-
-    private func markIsSet(_ mark: InlineMark, in attributes: AttributeContainer) -> Bool {
-        switch mark {
-        case .bold:
-            return attributes[InlineAttributes.BoldAttribute.self] == true
-        case .italic:
-            return attributes[InlineAttributes.ItalicAttribute.self] == true
-        case .code:
-            return attributes[InlineAttributes.CodeAttribute.self] == true
-        case .strikethrough:
-            return attributes[InlineAttributes.StrikethroughAttribute.self] == true
-        }
-    }
-
-    private func set(_ mark: InlineMark, to enabled: Bool, in attributes: inout AttributeContainer) {
-        switch mark {
-        case .bold:
-            attributes[InlineAttributes.BoldAttribute.self] = enabled ? true : nil
-        case .italic:
-            attributes[InlineAttributes.ItalicAttribute.self] = enabled ? true : nil
-        case .code:
-            attributes[InlineAttributes.CodeAttribute.self] = enabled ? true : nil
-        case .strikethrough:
-            attributes[InlineAttributes.StrikethroughAttribute.self] = enabled ? true : nil
-        }
-    }
-#endif
 }
 
 #if os(macOS)
@@ -337,7 +231,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     }
 
     private func loadAttributedString(into view: ContainedTextView) {
-        let ns = InlineMarksNSKit.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
+        let ns = InlineMarksKit.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
         view.textStorage?.setAttributedString(ns)
     }
 
@@ -346,14 +240,14 @@ struct MacBlockTextEditor: NSViewRepresentable {
         style.lineSpacing = lineSpacing
         view.defaultParagraphStyle = style
         view.typingAttributes = [
-            .font: InlineMarksNSKit.interFont(size: fontSize, bold: bold, italic: false),
+            .font: InlineMarksKit.interFont(size: fontSize, bold: bold, italic: false),
             .paragraphStyle: style,
             .foregroundColor: NSColor(NotionStyle.foreground)
         ]
     }
 
     nonisolated static func resolveNSFont(size: CGFloat, bold: Bool) -> NSFont {
-        InlineMarksNSKit.interFont(size: size, bold: bold, italic: false)
+        InlineMarksKit.interFont(size: size, bold: bold, italic: false)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -382,7 +276,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
             // The BlockRow setter dedupes via `attributedStringMarksEqual` so we don't
             // chunk autosave debounces on no-op keystrokes.
             let nsAttr = tv.textStorage ?? NSTextStorage()
-            parent.text = InlineMarksNSKit.toModel(nsAttr)
+            parent.text = InlineMarksKit.toModel(nsAttr)
         }
 
         func textDidBeginEditing(_ notification: Notification) {
@@ -499,7 +393,7 @@ final class ContainedTextView: NSTextView {
               let parent = coordinator?.parent else { return }
         let range = selectedRange()
         guard range.length > 0 else { return }
-        InlineMarksNSKit.toggleMark(mark, on: range, in: storage, baseFontSize: parent.fontSize, baseBold: parent.bold)
+        InlineMarksKit.toggleMark(mark, on: range, in: storage, baseFontSize: parent.fontSize, baseBold: parent.bold)
         didChangeText()
     }
 
@@ -556,6 +450,302 @@ final class ContainedTextView: NSTextView {
             return
         }
         super.cancelOperation(sender)
+    }
+}
+
+#endif
+
+// MARK: - iOS
+
+#if os(iOS)
+
+/// SwiftUI accessory bar hosted as the UITextView's `inputAccessoryView`. The
+/// closures are refreshed by `updateUIView` so each render swaps in the
+/// freshest `onKey` / `bridge` references.
+struct KeyboardAccessoryBar: View {
+    var onShiftTab: () -> Void
+    var onTab: () -> Void
+    var onToggleMark: (InlineMark) -> Void
+    var onCmdK: () -> Void
+    var onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 18) {
+                    Button(action: onShiftTab) { Image(systemName: "decrease.indent") }
+                    Button(action: onTab) { Image(systemName: "increase.indent") }
+                    Divider().frame(height: 20)
+                    Button { onToggleMark(.bold) } label: { Image(systemName: "bold") }
+                    Button { onToggleMark(.italic) } label: { Image(systemName: "italic") }
+                    Button { onToggleMark(.code) } label: { Image(systemName: "chevron.left.forwardslash.chevron.right") }
+                    Button { onToggleMark(.strikethrough) } label: { Image(systemName: "strikethrough") }
+                    Divider().frame(height: 20)
+                    Button(action: onCmdK) { Image(systemName: "link") }
+                }
+                .padding(.horizontal, 12)
+            }
+            Button(action: onDismiss) {
+                Image(systemName: "keyboard.chevron.compact.down")
+            }
+            .padding(.horizontal, 12)
+        }
+        .frame(height: 44)
+        .frame(maxWidth: .infinity)
+        .background(.thickMaterial)
+    }
+}
+
+/// Side-channel held by reference so the SwiftUI keyboard toolbar can drive
+/// mark toggles on the underlying UITextView's textStorage. The toolbar lives
+/// on the SwiftUI view, but mark toggling needs to read/write the platform
+/// text view's selectedRange + textStorage — pass-by-reference is the simplest
+/// way to bridge.
+@MainActor
+final class IOSEditorBridge {
+    weak var textView: ContainedTextViewIOS?
+    var fontSize: CGFloat = 16
+    var bold: Bool = false
+
+    func toggleMark(_ mark: InlineMark) {
+        guard let tv = textView else { return }
+        let range = tv.selectedRange
+        guard range.length > 0 else {
+            // Pre-typing toggles (Cmd-B with no selection biasing typingAttributes)
+            // aren't wired yet — same gap as macOS, deferred to the M6 follow-up.
+            return
+        }
+        let storage = tv.textStorage
+        InlineMarksKit.toggleMark(mark, on: range, in: storage, baseFontSize: fontSize, baseBold: bold)
+        // Notify the delegate so the binding picks up the new attributes.
+        tv.delegate?.textViewDidChange?(tv)
+    }
+}
+
+/// `UITextView`-based single-block editor. Strips the default insets to match
+/// the macOS editor's typography alignment with the row's read-only `Text`.
+struct IOSBlockTextEditorView: UIViewRepresentable {
+    @Binding var text: AttributedString
+    let fontSize: CGFloat
+    let bold: Bool
+    let lineSpacing: CGFloat
+    let isFocused: Bool
+    let onFocusChange: (Bool) -> Void
+    let blockID: BlockID
+    let bridge: IOSEditorBridge
+    let onKey: (BlockKey) -> KeyPress.Result
+    let onAutotransform: (BlockTransform, AttributedString) -> Void
+    let initialCursorPoint: CGPoint?
+    let documentUndoController: DocumentUndoController?
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> ContainedTextViewIOS {
+        let tv = ContainedTextViewIOS()
+        tv.delegate = context.coordinator
+        tv.coordinator = context.coordinator
+        tv.isEditable = true
+        tv.isSelectable = true
+        tv.backgroundColor = .clear
+        tv.textContainerInset = .zero
+        tv.textContainer.lineFragmentPadding = 0
+        tv.isScrollEnabled = false
+        tv.allowsEditingTextAttributes = true
+        tv.adjustsFontForContentSizeCategory = false
+        loadAttributedString(into: tv)
+        applyTypingAttributes(to: tv)
+        tv.wantsFocus = isFocused
+        tv.pendingInitialCursorPoint = initialCursorPoint
+        bridge.textView = tv
+        bridge.fontSize = fontSize
+        bridge.bold = bold
+        // Build the keyboard accessory bar and host it on the UITextView. UIKit
+        // shows this above the keyboard. SwiftUI's `.toolbar(placement: .keyboard)`
+        // doesn't reach a UIViewRepresentable, so we set it directly.
+        let host = UIHostingController(rootView: makeAccessoryBar(for: tv))
+        host.view.translatesAutoresizingMaskIntoConstraints = true
+        host.view.autoresizingMask = [.flexibleWidth]
+        // UIKit re-pins the inputAccessoryView's width to the keyboard's actual
+        // width via the autoresizing mask, so the initial width just needs to be
+        // generous enough to cover any device. Height (44) is the bar's intrinsic
+        // height and what UIKit reserves above the keyboard.
+        host.view.frame = CGRect(x: 0, y: 0, width: 1024, height: 44)
+        host.view.backgroundColor = .clear
+        tv.inputAccessoryView = host.view
+        context.coordinator.accessoryHost = host
+        return tv
+    }
+
+    func updateUIView(_ tv: ContainedTextViewIOS, context: Context) {
+        context.coordinator.parent = self
+        // Only re-sync textStorage from the binding when its plain content has drifted
+        // out of sync — attribute changes that originated inside this editor were
+        // already pushed back via the delegate, so re-loading would clobber the cursor.
+        let storedPlain = tv.textStorage.string
+        let bindingPlain = String(text.characters)
+        if storedPlain != bindingPlain {
+            loadAttributedString(into: tv)
+        }
+        applyTypingAttributes(to: tv)
+        bridge.textView = tv
+        bridge.fontSize = fontSize
+        bridge.bold = bold
+
+        // Refresh the accessory bar's closures so they capture the latest
+        // `onKey` / `bridge` references — both are recreated on every parent
+        // re-render.
+        context.coordinator.accessoryHost?.rootView = makeAccessoryBar(for: tv)
+
+        tv.wantsFocus = isFocused
+        if isFocused, tv.window != nil, !tv.isFirstResponder {
+            // Already in the window hierarchy — grab focus synchronously so the
+            // keyboard transfer between rows doesn't dismiss/re-show. UIKit only
+            // keeps the keyboard alive when a new first responder takes over
+            // within the same runloop as the previous one resigning.
+            _ = tv.becomeFirstResponder()
+            tv.applyPendingCursorPositionOrSeekToEnd()
+        }
+    }
+
+    private func makeAccessoryBar(for tv: ContainedTextViewIOS) -> KeyboardAccessoryBar {
+        KeyboardAccessoryBar(
+            onShiftTab: { _ = onKey(.shiftTab) },
+            onTab: { _ = onKey(.tab) },
+            onToggleMark: { mark in bridge.toggleMark(mark) },
+            onCmdK: { _ = onKey(.cmdK) },
+            onDismiss: {
+                tv.resignFirstResponder()
+                _ = onKey(.escape)
+            }
+        )
+    }
+
+    private func loadAttributedString(into tv: ContainedTextViewIOS) {
+        let ns = InlineMarksKit.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
+        tv.textStorage.setAttributedString(ns)
+    }
+
+    private func applyTypingAttributes(to tv: ContainedTextViewIOS) {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = lineSpacing
+        tv.typingAttributes = [
+            .font: InlineMarksKit.interFont(size: fontSize, bold: bold, italic: false),
+            .paragraphStyle: style,
+            .foregroundColor: UIColor(NotionStyle.foreground)
+        ]
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: IOSBlockTextEditorView
+        /// Retains the SwiftUI accessory bar hosted as the UITextView's
+        /// `inputAccessoryView`. UIKit retains the view itself but the
+        /// hosting controller needs an owner with the right lifecycle —
+        /// the Coordinator lives as long as the Representable does.
+        var accessoryHost: UIHostingController<KeyboardAccessoryBar>?
+
+        init(parent: IOSBlockTextEditorView) {
+            self.parent = parent
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            // IME composition: skip autotransform but still push the binding so
+            // SwiftUI redraws the in-progress text.
+            let composing = (textView.markedTextRange != nil)
+            let plain = textView.text ?? ""
+
+            if !composing {
+                let cursor = textView.selectedRange.location
+                if let result = detectPrefixAutotransform(text: AttributedString(plain), cursor: cursor) {
+                    parent.onAutotransform(result.transform, result.remainingText)
+                    return
+                }
+            }
+            // Register the BEFORE state with the document undo manager — same
+            // pattern as the macOS coordinator.
+            parent.documentUndoController?
+                .registerTextChange(blockID: parent.blockID, oldText: parent.text)
+            let model = InlineMarksKit.toModel(textView.textStorage)
+            parent.text = model
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            parent.documentUndoController?.breakTextCoalescing()
+            parent.onFocusChange(true)
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            parent.documentUndoController?.breakTextCoalescing()
+            parent.onFocusChange(false)
+        }
+    }
+}
+
+/// UITextView subclass that intercepts soft-keyboard delete and return so they
+/// can be handled at the page level (block split / block delete-or-collapse)
+/// rather than inserting characters into the row.
+final class ContainedTextViewIOS: UITextView {
+    weak var coordinator: IOSBlockTextEditorView.Coordinator?
+    /// If non-nil, the cursor is placed at this point (in the view's local coords)
+    /// on initial focus. Cleared after consumption so subsequent focus grabs
+    /// fall through to seek-to-end.
+    var pendingInitialCursorPoint: CGPoint?
+    /// Set by `updateUIView` whenever this row should be the active editor. Picked
+    /// up in `didMoveToWindow` so the second-chance focus grab works on initial
+    /// mount — at the time `updateUIView` runs, `window` may still be nil and
+    /// `becomeFirstResponder` would silently no-op.
+    var wantsFocus: Bool = false
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        // Grab focus synchronously inside the same runloop the previous editor
+        // resigned in — UIKit only keeps the keyboard alive when first-responder
+        // transfer is synchronous. Async dispatch (the obvious-looking choice)
+        // makes the keyboard dismiss + re-show every time the user taps a
+        // different row.
+        if wantsFocus, window != nil, !isFirstResponder {
+            _ = becomeFirstResponder()
+            applyPendingCursorPositionOrSeekToEnd()
+        }
+    }
+
+    override func deleteBackward() {
+        // Empty-block backspace fires `.backspaceAtStart`. The page-level handler
+        // converts the row to a paragraph (first press on a non-paragraph) or
+        // removes it (second press / paragraph case).
+        let isEmpty = (text ?? "").isEmpty
+        if isEmpty,
+           let coordinator,
+           coordinator.parent.onKey(.backspaceAtStart) == .handled {
+            return
+        }
+        super.deleteBackward()
+    }
+
+    override func insertText(_ text: String) {
+        if text == "\n",
+           let coordinator {
+            // Soft-keyboard return: split the block at the current cursor.
+            let cursor = selectedRange.location
+            if coordinator.parent.onKey(.enter(cursorOffset: cursor)) == .handled {
+                return
+            }
+        }
+        super.insertText(text)
+    }
+
+    /// Mirrors the macOS helper — places the cursor at a captured tap point on
+    /// initial focus, or seeks to end if there's no pending point.
+    func applyPendingCursorPositionOrSeekToEnd() {
+        if let point = pendingInitialCursorPoint {
+            pendingInitialCursorPoint = nil
+            if let position = closestPosition(to: point) {
+                let offset = self.offset(from: beginningOfDocument, to: position)
+                selectedRange = NSRange(location: offset, length: 0)
+                return
+            }
+        }
+        let end = (text as NSString?)?.length ?? 0
+        selectedRange = NSRange(location: end, length: 0)
     }
 }
 

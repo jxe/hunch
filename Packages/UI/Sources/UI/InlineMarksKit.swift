@@ -4,7 +4,44 @@ import Core
 
 #if os(macOS)
 import AppKit
+typealias PlatformColor = NSColor
+typealias PlatformFont = NSFont
+typealias PlatformFontDescriptor = NSFontDescriptor
+typealias PlatformFontWeight = NSFont.Weight
+#elseif os(iOS)
+import UIKit
+typealias PlatformColor = UIColor
+typealias PlatformFont = UIFont
+typealias PlatformFontDescriptor = UIFontDescriptor
+typealias PlatformFontWeight = UIFont.Weight
 #endif
+
+/// `SymbolicTraits` is the same OptionSet shape on both platforms, but Apple spelled
+/// the cases differently (macOS: `.bold`, iOS: `.traitBold`). These wrappers paper over
+/// the discrepancy so call sites can stay platform-agnostic.
+extension PlatformFontDescriptor.SymbolicTraits {
+    static var boldTrait: Self {
+        #if os(macOS)
+        return .bold
+        #else
+        return .traitBold
+        #endif
+    }
+    static var italicTrait: Self {
+        #if os(macOS)
+        return .italic
+        #else
+        return .traitItalic
+        #endif
+    }
+    static var monoSpaceTrait: Self {
+        #if os(macOS)
+        return .monoSpace
+        #else
+        return .traitMonoSpace
+        #endif
+    }
+}
 
 enum InlineMark {
     case bold
@@ -13,15 +50,14 @@ enum InlineMark {
     case strikethrough
 }
 
-#if os(macOS)
 /// Bidirectional conversion between the model's `AttributedString` (custom inline-mark keys)
-/// and `NSAttributedString` for live editing in NSTextView.
+/// and `NSAttributedString` for live editing in the platform text view (NSTextView on
+/// macOS, UITextView on iOS).
 ///
-/// We deliberately drive bold/italic/code/strike off of *Cocoa* attributes (font traits,
-/// strikethrough style) when reading back, because that's what NSTextView mutates during
-/// edits and via its built-in `toggleBold(_:)` / `toggleItalic(_:)` actions. The custom
-/// attribute keys live only in the model.
-enum InlineMarksNSKit {
+/// We deliberately drive bold/italic/code/strike off of platform attributes (font traits,
+/// strikethrough style) when reading back, because that's what the platform text view
+/// mutates during edits. The custom typed `AttributedStringKey`s live only in the model.
+enum InlineMarksKit {
 
     /// Convert a model `AttributedString` into the `NSAttributedString` for textStorage.
     /// `baseFontSize` and `baseBold` come from the row's typography (e.g. an H2 row has
@@ -33,7 +69,7 @@ enum InlineMarksNSKit {
 
         if source.characters.isEmpty {
             // Empty AttributedString — return an empty NSAttributedString. Typing attributes
-            // (set separately on the NSTextView) will provide the font / paragraph style.
+            // (set separately on the text view) will provide the font / paragraph style.
             return result
         }
 
@@ -48,13 +84,13 @@ enum InlineMarksNSKit {
 
             var attrs: [NSAttributedString.Key: Any] = [
                 .paragraphStyle: paragraphStyle,
-                .foregroundColor: NSColor(NotionStyle.foreground)
+                .foregroundColor: PlatformColor(NotionStyle.foreground)
             ]
 
             if code {
                 attrs[.font] = monoFont(size: NotionStyle.inlineCodeSize)
-                attrs[.foregroundColor] = NSColor(NotionStyle.codeForeground)
-                attrs[.backgroundColor] = NSColor(NotionStyle.codeBackground)
+                attrs[.foregroundColor] = PlatformColor(NotionStyle.codeForeground)
+                attrs[.backgroundColor] = PlatformColor(NotionStyle.codeBackground)
             } else {
                 attrs[.font] = interFont(size: baseFontSize, bold: bold, italic: italic)
             }
@@ -64,7 +100,7 @@ enum InlineMarksNSKit {
             if let link {
                 attrs[.link] = link
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
-                attrs[.foregroundColor] = NSColor.systemBlue
+                attrs[.foregroundColor] = PlatformColor.systemBlue
             }
             result.append(NSAttributedString(string: plain, attributes: attrs))
         }
@@ -86,11 +122,11 @@ enum InlineMarksNSKit {
             var bold = false
             var italic = false
             var code = false
-            if let font = attrs[.font] as? NSFont {
+            if let font = attrs[.font] as? PlatformFont {
                 let traits = font.fontDescriptor.symbolicTraits
-                bold = traits.contains(.bold) || isFontSemiboldOrHeavier(font)
-                italic = traits.contains(.italic)
-                code = traits.contains(.monoSpace)
+                bold = traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font)
+                italic = traits.contains(.italicTrait)
+                code = traits.contains(.monoSpaceTrait)
             }
             if bold {
                 piece[InlineAttributes.BoldAttribute.self] = true
@@ -130,29 +166,29 @@ enum InlineMarksNSKit {
             var newAttrs = attrs
             switch mark {
             case .bold:
-                let font = (attrs[.font] as? NSFont) ?? interFont(size: baseFontSize, bold: baseBold, italic: false)
+                let font = (attrs[.font] as? PlatformFont) ?? interFont(size: baseFontSize, bold: baseBold, italic: false)
                 let traits = font.fontDescriptor.symbolicTraits
-                let italic = traits.contains(.italic)
-                let isCode = traits.contains(.monoSpace)
+                let italic = traits.contains(.italicTrait)
+                let isCode = traits.contains(.monoSpaceTrait)
                 if !isCode {
                     newAttrs[.font] = interFont(size: baseFontSize, bold: setting, italic: italic)
                 }
             case .italic:
-                let font = (attrs[.font] as? NSFont) ?? interFont(size: baseFontSize, bold: baseBold, italic: false)
+                let font = (attrs[.font] as? PlatformFont) ?? interFont(size: baseFontSize, bold: baseBold, italic: false)
                 let traits = font.fontDescriptor.symbolicTraits
-                let bold = traits.contains(.bold) || isFontSemiboldOrHeavier(font) || baseBold
-                let isCode = traits.contains(.monoSpace)
+                let bold = traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font) || baseBold
+                let isCode = traits.contains(.monoSpaceTrait)
                 if !isCode {
                     newAttrs[.font] = interFont(size: baseFontSize, bold: bold, italic: setting)
                 }
             case .code:
                 if setting {
                     newAttrs[.font] = monoFont(size: NotionStyle.inlineCodeSize)
-                    newAttrs[.foregroundColor] = NSColor(NotionStyle.codeForeground)
-                    newAttrs[.backgroundColor] = NSColor(NotionStyle.codeBackground)
+                    newAttrs[.foregroundColor] = PlatformColor(NotionStyle.codeForeground)
+                    newAttrs[.backgroundColor] = PlatformColor(NotionStyle.codeBackground)
                 } else {
                     newAttrs[.font] = interFont(size: baseFontSize, bold: baseBold, italic: false)
-                    newAttrs[.foregroundColor] = NSColor(NotionStyle.foreground)
+                    newAttrs[.foregroundColor] = PlatformColor(NotionStyle.foreground)
                     newAttrs.removeValue(forKey: .backgroundColor)
                 }
             case .strikethrough:
@@ -174,19 +210,19 @@ enum InlineMarksNSKit {
         let attrs = storage.attributes(at: probeRange.location, effectiveRange: nil)
         switch mark {
         case .bold:
-            if let font = attrs[.font] as? NSFont {
+            if let font = attrs[.font] as? PlatformFont {
                 let traits = font.fontDescriptor.symbolicTraits
-                return traits.contains(.bold) || isFontSemiboldOrHeavier(font)
+                return traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font)
             }
             return false
         case .italic:
-            if let font = attrs[.font] as? NSFont {
-                return font.fontDescriptor.symbolicTraits.contains(.italic)
+            if let font = attrs[.font] as? PlatformFont {
+                return font.fontDescriptor.symbolicTraits.contains(.italicTrait)
             }
             return false
         case .code:
-            if let font = attrs[.font] as? NSFont {
-                return font.fontDescriptor.symbolicTraits.contains(.monoSpace)
+            if let font = attrs[.font] as? PlatformFont {
+                return font.fontDescriptor.symbolicTraits.contains(.monoSpaceTrait)
             }
             return false
         case .strikethrough:
@@ -197,21 +233,23 @@ enum InlineMarksNSKit {
 
     // MARK: - Font resolution
 
-    static func interFont(size: CGFloat, bold: Bool, italic: Bool) -> NSFont {
-        let weight: NSFont.Weight = bold ? .semibold : .regular
-        var attributes: [NSFontDescriptor.AttributeName: Any] = [
+    static func interFont(size: CGFloat, bold: Bool, italic: Bool) -> PlatformFont {
+        let weight: PlatformFontWeight = bold ? .semibold : .regular
+        var attributes: [PlatformFontDescriptor.AttributeName: Any] = [
             .family: "Inter",
-            .traits: [NSFontDescriptor.TraitKey.weight: weight.rawValue]
+            .traits: [PlatformFontDescriptor.TraitKey.weight: weight.rawValue]
         ]
         if italic {
             attributes[.traits] = [
-                NSFontDescriptor.TraitKey.weight: weight.rawValue,
-                NSFontDescriptor.TraitKey.slant: 1.0
+                PlatformFontDescriptor.TraitKey.weight: weight.rawValue,
+                PlatformFontDescriptor.TraitKey.slant: 1.0
             ]
         }
-        let descriptor = NSFontDescriptor(fontAttributes: attributes)
+        let descriptor = PlatformFontDescriptor(fontAttributes: attributes)
+
+        #if os(macOS)
         if italic {
-            let italicized = descriptor.withSymbolicTraits(.italic)
+            let italicized = descriptor.withSymbolicTraits(.italicTrait)
             if let font = NSFont(descriptor: italicized, size: size) {
                 return font
             }
@@ -220,19 +258,23 @@ enum InlineMarksNSKit {
             return font
         }
         return NSFont.systemFont(ofSize: size, weight: weight)
+        #else
+        if italic, let italicized = descriptor.withSymbolicTraits(.italicTrait) {
+            return UIFont(descriptor: italicized, size: size)
+        }
+        return UIFont(descriptor: descriptor, size: size)
+        #endif
     }
 
-    static func monoFont(size: CGFloat) -> NSFont {
-        NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    static func monoFont(size: CGFloat) -> PlatformFont {
+        PlatformFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
-    private static func isFontSemiboldOrHeavier(_ font: NSFont) -> Bool {
-        let traits = font.fontDescriptor.fontAttributes[.traits] as? [NSFontDescriptor.TraitKey: Any]
+    private static func isFontSemiboldOrHeavier(_ font: PlatformFont) -> Bool {
+        let traits = font.fontDescriptor.fontAttributes[.traits] as? [PlatformFontDescriptor.TraitKey: Any]
         if let weight = traits?[.weight] as? CGFloat {
-            return weight >= NSFont.Weight.semibold.rawValue
+            return weight >= PlatformFontWeight.semibold.rawValue
         }
         return false
     }
 }
-
-#endif
