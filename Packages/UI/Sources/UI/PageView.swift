@@ -25,6 +25,11 @@ public struct PageView: View {
     /// editor on its first mount so the cursor lands where the user clicked. Stale values
     /// are harmless — the editor only consumes the point once on `makeNSView`.
     @State private var pendingCursorPoint: (id: BlockID, point: CGPoint)?
+    /// Document-level undo coordinator. Owns the shared `UndoManager` that NSTextView
+    /// typing-undo and structural ops (split/merge/indent/slide/delete/autotransform/
+    /// drag-drop) all register against. Recreated implicitly when PageView's identity
+    /// resets; explicitly cleared on document switch via `.onChange(of: document.id)`.
+    @State private var undoController = DocumentUndoController()
 
     public init(
         document: Binding<Document>,
@@ -57,6 +62,18 @@ public struct PageView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(NotionStyle.background)
+        // Hand the shared UndoManager + controller down through the environment.
+        // BlockTextEditor reads the controller to register a typing-session snapshot
+        // when an editor loses focus; the manager is used to route Cmd-Z through the
+        // shared timeline.
+        .environment(\.documentUndoManager, undoController.undoManager)
+        .environment(\.documentUndoController, undoController)
+        // Publish for App-level CommandGroup so Cmd-Z routes through this PageView's
+        // undo manager regardless of where focus actually lives. Uses scene-level
+        // exposure (rather than `.focusedValue`) because in edit mode the NSTextView
+        // holds AppKit-level focus, which SwiftUI's per-view focus tracking misses —
+        // scene-level remains visible to the menu commands.
+        .focusedSceneValue(\.documentUndoController, undoController)
         .focusable()
         .focused($pageFocused)
         .onAppear {
@@ -64,6 +81,7 @@ public struct PageView: View {
                 setCursor(first.id)
             }
             pageFocused = true
+            installUndoApply()
         }
         .onChange(of: editorFocused) { old, new in
             if new == nil && old != nil {
@@ -81,6 +99,8 @@ public struct PageView: View {
                 cursor = nil
             }
             pageFocused = true
+            // Captured undo entries reference the previous document's blocks — drop them.
+            undoController.reset()
         }
         .onKeyPress(keys: [
             .upArrow, .downArrow, .return, .escape, .tab,
@@ -202,6 +222,61 @@ public struct PageView: View {
         return first.id == block.id
     }
 
+    // MARK: - Undo
+
+    /// Wrap a structural mutation so its inverse is registered with `undoController`.
+    /// Callers must only call `mutate` when actually changing something — the helper
+    /// doesn't equality-check. Snapshots `document.blocks` before the change, runs
+    /// the change, then registers the previous snapshot as the undo. Redo is
+    /// re-registered by the apply closure during `isUndoing`.
+    private func mutate(_ name: String, _ change: () -> Void) {
+        let before = document.blocks
+        change()
+        undoController.register(before, name: name)
+        onEdited()
+    }
+
+    /// Install the closure that the undo controller calls on Cmd-Z (and on redo).
+    /// Restores `document.blocks` and fixes up cursor/selection against the new
+    /// block set. Re-registers the inverse so redo works.
+    private func installUndoApply() {
+        undoController.apply = { newBlocks in
+            let beforeRedo = document.blocks
+            document.blocks = newBlocks
+
+            // Validate cursor/selection against the new block set.
+            let validIDs = Set(newBlocks.map { $0.id })
+            selection = selection.intersection(validIDs)
+            if let c = cursor, !validIDs.contains(c) { cursor = newBlocks.first?.id }
+            if let a = anchor, !validIDs.contains(a) { anchor = cursor }
+            if let e = editingBlock, !validIDs.contains(e) {
+                // The block under edit is gone. Exit edit mode and bounce focus through
+                // false→true so SwiftUI re-binds the page as first responder — same dance
+                // exitEditMode uses, for the same reason (NSTextView's responder slot
+                // doesn't release otherwise).
+                editingBlock = nil
+                editorFocused = nil
+                pageFocused = false
+                DispatchQueue.main.async {
+                    pageFocused = true
+                }
+            }
+            if selection.isEmpty, let c = cursor { selection = [c] }
+
+            // Re-register inverse — when this runs during isUndoing, UndoManager pushes
+            // it to the redo stack; during isRedoing, it goes back on the undo stack.
+            undoController.register(beforeRedo, name: undoController.undoManager.undoActionName)
+            onEdited()
+        }
+        undoController.applyTextChange = { blockID, oldText in
+            guard let i = document.blocks.firstIndex(where: { $0.id == blockID }) else { return }
+            let beforeRedoText = document.blocks[i].text
+            document.blocks[i] = document.blocks[i].withText(oldText)
+            undoController.registerTextChange(blockID: blockID, oldText: beforeRedoText)
+            onEdited()
+        }
+    }
+
     // MARK: - Selection state helpers
 
     /// Collapse selection to a single block. The next Shift-extend will pivot off this block.
@@ -295,13 +370,14 @@ public struct PageView: View {
         let lastTarget = last + delta
         guard target >= 0, lastTarget < document.blocks.count else { return }
 
-        // Pull the slice, splice back at the target index.
-        var blocks = document.blocks
-        let slice = Array(blocks[first...last])
-        blocks.removeSubrange(first...last)
-        blocks.insert(contentsOf: slice, at: target)
-        document.blocks = blocks
-        onEdited()
+        mutate("Move Block") {
+            // Pull the slice, splice back at the target index.
+            var blocks = document.blocks
+            let slice = Array(blocks[first...last])
+            blocks.removeSubrange(first...last)
+            blocks.insert(contentsOf: slice, at: target)
+            document.blocks = blocks
+        }
     }
 
     /// Delete every block in the current selection. Selection collapses to the block just
@@ -312,21 +388,22 @@ public struct PageView: View {
         guard !indices.isEmpty else { return }
         guard indices.count < document.blocks.count else { return }
 
-        // Snapshot, mutate locally, write once. Removing through the @Binding
-        // in a loop dropped all but the first removal — match the pattern
-        // used by `moveSelectionInDocument`.
         let firstIndex = indices.first!
-        var blocks = document.blocks
-        for i in indices.reversed() {
-            blocks.remove(at: i)
+        mutate("Delete") {
+            // Snapshot, mutate locally, write once. Removing through the @Binding
+            // in a loop dropped all but the first removal — match the pattern
+            // used by `moveSelectionInDocument`.
+            var blocks = document.blocks
+            for i in indices.reversed() {
+                blocks.remove(at: i)
+            }
+            document.blocks = blocks
         }
-        document.blocks = blocks
 
         let nextIndex = max(0, min(firstIndex - 1, document.blocks.count - 1))
         if !document.blocks.isEmpty {
             setCursor(document.blocks[nextIndex].id)
         }
-        onEdited()
     }
 
     /// Apply Tab / Shift-Tab indent change to every list-item block in the selection. Non-
@@ -334,19 +411,27 @@ public struct PageView: View {
     private func indentSelection(by delta: Int) {
         let indices = selectedIndices()
         guard !indices.isEmpty else { return }
-        var changed = false
-        for i in indices {
-            let block = document.blocks[i]
-            switch block {
-            case .bullet, .numbered, .todo:
-                let newIndent = block.indent + delta
-                document.blocks[i] = block.withIndent(newIndent)
-                changed = true
-            default:
-                break
+        // Detect whether anything will actually change before opening an undo entry.
+        let willChange = indices.contains { i in
+            switch document.blocks[i] {
+            case .bullet, .numbered, .todo: return true
+            default: return false
             }
         }
-        if changed { onEdited() }
+        guard willChange else { return }
+        mutate(delta > 0 ? "Indent" : "Outdent") {
+            var blocks = document.blocks
+            for i in indices {
+                let block = blocks[i]
+                switch block {
+                case .bullet, .numbered, .todo:
+                    blocks[i] = block.withIndent(block.indent + delta)
+                default:
+                    break
+                }
+            }
+            document.blocks = blocks
+        }
     }
 
     // MARK: - Editor-side keyboard handling (delegated from the active BlockTextEditor)
@@ -397,9 +482,12 @@ public struct PageView: View {
         let updatedCurrent = block.withText(AttributedString(head))
         let newBlock = followUpBlock(after: block, withText: tail)
 
-        document.blocks[i] = updatedCurrent
-        document.blocks.insert(newBlock, at: i + 1)
-        onEdited()
+        mutate("Split Block") {
+            var blocks = document.blocks
+            blocks[i] = updatedCurrent
+            blocks.insert(newBlock, at: i + 1)
+            document.blocks = blocks
+        }
         DispatchQueue.main.async {
             setCursor(newBlock.id)
             editingBlock = newBlock.id
@@ -415,8 +503,9 @@ public struct PageView: View {
     private func applyAutotransform(_ transform: BlockTransform, remainingText: AttributedString, blockID: BlockID) {
         let replacements = transform.apply(to: remainingText)
         guard !replacements.isEmpty else { return }
-        document.replace(blockID: blockID, with: replacements)
-        onEdited()
+        mutate("Format Block") {
+            document.replace(blockID: blockID, with: replacements)
+        }
         let focusTarget = replacements[transform.focusReplacementIndex]
         DispatchQueue.main.async {
             setCursor(focusTarget.id)
@@ -453,8 +542,9 @@ public struct PageView: View {
         guard let i = document.index(of: blockID) else { return .ignored }
         guard document.blocks.count > 1 else { return .ignored }
         let previous = i > 0 ? document.blocks[i - 1].id : document.blocks.first?.id
-        document.blocks.remove(at: i)
-        onEdited()
+        mutate("Delete Block") {
+            document.blocks.remove(at: i)
+        }
         if let previous {
             setCursor(previous)
             editingBlock = previous
@@ -468,9 +558,9 @@ public struct PageView: View {
         let block = document.blocks[i]
         switch block {
         case .bullet, .numbered, .todo:
-            let newIndent = block.indent + delta
-            document.blocks[i] = block.withIndent(newIndent)
-            onEdited()
+            mutate(delta > 0 ? "Indent" : "Outdent") {
+                document.blocks[i] = block.withIndent(block.indent + delta)
+            }
             return .handled
         default:
             return .ignored

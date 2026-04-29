@@ -44,6 +44,12 @@ public struct BlockTextEditor: View {
     /// location is propagated here so the cursor lands where they clicked rather than at
     /// end-of-text. Consumed once on mount.
     let initialCursorPoint: CGPoint?
+    /// Document-level undo controller. NSTextView keeps its own per-instance typing-undo
+    /// (used while the editor is mounted, fine-grained character-by-character). On focus
+    /// loss, the Coordinator registers ONE coarse "Type" entry on this controller's shared
+    /// manager — that's how typing survives editor unmount without keeping dangling
+    /// pointers to a deallocated NSTextView.
+    @Environment(\.documentUndoController) private var documentUndoController
 
     public init(
         text: Binding<AttributedString>,
@@ -91,7 +97,9 @@ public struct BlockTextEditor: View {
             },
             onKey: onKey,
             onAutotransform: onAutotransform,
-            initialCursorPoint: initialCursorPoint
+            initialCursorPoint: initialCursorPoint,
+            blockID: blockID,
+            documentUndoController: documentUndoController
         )
         .alignmentGuide(.firstTextBaseline) { _ in
             // NSTextView with textContainerInset=.zero, lineFragmentPadding=0 puts its first
@@ -151,6 +159,8 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     let initialCursorPoint: CGPoint?
+    let blockID: BlockID
+    let documentUndoController: DocumentUndoController?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -161,7 +171,13 @@ struct MacBlockTextEditor: NSViewRepresentable {
         view.coordinator = context.coordinator
         view.delegate = context.coordinator
         view.isRichText = true
-        view.allowsUndo = true
+        // NSTextView's native typing-undo registers actions that hold strong refs to the
+        // NSTextView itself; SwiftUI's view lifecycle (one-editor-at-a-time, unmount on
+        // Esc/cursor-out) frees those entries' inner state and the next Cmd-Z crashes
+        // with `_undoRedoTextOperation:` on a freed pointer. We disable NSTextView's
+        // local manager entirely and route everything through the document-level
+        // `DocumentUndoController` (registered on first text change of each session).
+        view.allowsUndo = false
         view.drawsBackground = false
         view.textContainerInset = .zero
         view.textContainer?.lineFragmentPadding = 0
@@ -232,6 +248,13 @@ struct MacBlockTextEditor: NSViewRepresentable {
                     return
                 }
             }
+            // Register a text-change undo against the document-level manager BEFORE
+            // mutating the binding. `parent.text` is the previous text (the binding
+            // hasn't been updated yet for this keystroke). The controller's coalescing
+            // folds rapid consecutive keystrokes into a single ~1s "Type" entry, while
+            // the entry itself references only the model — no NSTextView in sight.
+            parent.documentUndoController?
+                .registerTextChange(blockID: parent.blockID, oldText: parent.text)
             // Convert NSAttributedString → model AttributedString and push to binding.
             // The BlockRow setter dedupes via `attributedStringMarksEqual` so we don't
             // chunk autosave debounces on no-op keystrokes.
@@ -240,10 +263,14 @@ struct MacBlockTextEditor: NSViewRepresentable {
         }
 
         func textDidBeginEditing(_ notification: Notification) {
+            // Break coalescing across edit-session boundaries — typing in block A then
+            // clicking into block B should not merge into one undo entry.
+            parent.documentUndoController?.breakTextCoalescing()
             parent.onFocusChange(true)
         }
 
         func textDidEndEditing(_ notification: Notification) {
+            parent.documentUndoController?.breakTextCoalescing()
             parent.onFocusChange(false)
         }
     }
