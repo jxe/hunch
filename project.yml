@@ -32,7 +32,6 @@ targets:
     sources:
       - path: App/Sources
       - path: App/Resources
-        type: folder
     dependencies:
       - package: Core
       - package: UI

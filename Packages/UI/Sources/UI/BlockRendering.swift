@@ -95,6 +95,7 @@ public struct BlockRow: View {
         Text(InlineRenderer.swiftUIAttributed(text))
             .font(NotionStyle.body())
             .foregroundStyle(NotionStyle.foreground)
+            .lineSpacing(NotionStyle.bodyLineSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, NotionStyle.blockVerticalPadding)
     }
@@ -107,6 +108,7 @@ public struct BlockRow: View {
         return Text(InlineRenderer.swiftUIAttributed(text, baseFont: NotionStyle.body(size: size)))
             .font(NotionStyle.body(size: size).weight(NotionStyle.headingWeight))
             .foregroundStyle(NotionStyle.foreground)
+            .lineSpacing(NotionStyle.headingLineSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, NotionStyle.headingTopPadding)
             .padding(.bottom, NotionStyle.blockVerticalPadding)
@@ -122,6 +124,7 @@ public struct BlockRow: View {
             Text(InlineRenderer.swiftUIAttributed(text))
                 .font(NotionStyle.body())
                 .foregroundStyle(NotionStyle.foreground)
+                .lineSpacing(NotionStyle.bodyLineSpacing)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
@@ -137,6 +140,7 @@ public struct BlockRow: View {
                 .font(NotionStyle.body())
                 .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
                 .strikethrough(done)
+                .lineSpacing(NotionStyle.bodyLineSpacing)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
@@ -152,6 +156,7 @@ public struct BlockRow: View {
             Text(InlineRenderer.swiftUIAttributed(text))
                 .font(NotionStyle.body())
                 .foregroundStyle(NotionStyle.foreground)
+                .lineSpacing(NotionStyle.bodyLineSpacing)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, NotionStyle.blockVerticalPadding)

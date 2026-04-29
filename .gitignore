@@ -16,3 +16,6 @@ Console.xcodeproj/
 .DS_Store
 *.swp
 *.bak
+
+## Claude session worktrees / metadata
+.claude/

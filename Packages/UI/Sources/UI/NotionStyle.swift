@@ -24,6 +24,12 @@ public enum NotionStyle {
     public static let headingTopPadding: CGFloat = 22
     public static let headingWeight: Font.Weight = .semibold
 
+    /// SwiftUI's `.lineSpacing` is *additional* spacing between baselines, not a multiplier.
+    /// Body 16pt × 1.5em = 24pt target. Default leading on a 16pt font is ~19pt → +5pt.
+    public static let bodyLineSpacing: CGFloat = 5
+    /// Headings use a tighter line-height (~1.25em) than body so multi-line headings don't sprawl.
+    public static let headingLineSpacing: CGFloat = 2
+
     // MARK: Heading sizes (em-relative to 16px base)
     public static let h1Size: CGFloat = 30
     public static let h2Size: CGFloat = 24
