@@ -25,7 +25,7 @@ public enum BlockKey: Sendable, Equatable {
 /// On iOS we fall back to plain `TextEditor` for now (we don't have iOS verification in
 /// scope for M3 and UITextView's insets are different anyway).
 public struct BlockTextEditor: View {
-    @Binding var text: String
+    @Binding var text: AttributedString
     let font: Font
     let fontSize: CGFloat
     let bold: Bool
@@ -36,7 +36,7 @@ public struct BlockTextEditor: View {
     let onAutotransform: (BlockTransform, AttributedString) -> Void
 
     public init(
-        text: Binding<String>,
+        text: Binding<AttributedString>,
         font: Font,
         fontSize: CGFloat = 16,
         bold: Bool = false,
@@ -100,11 +100,8 @@ public struct BlockTextEditor: View {
                 focused = blockID
             }
             .onChange(of: text) { _, newValue in
-                // iOS doesn't expose cursor offset from `.onChange`, so we approximate with
-                // `count`. That's correct for the typical typing-prefix flow (cursor is at
-                // the end after each keystroke). Pasted longer text won't fire the trigger
-                // because cursor would not equal the trigger's length.
-                if let result = detectPrefixAutotransform(text: AttributedString(newValue), cursor: newValue.count) {
+                let plainCount = newValue.characters.count
+                if let result = detectPrefixAutotransform(text: newValue, cursor: plainCount) {
                     onAutotransform(result.transform, result.remainingText)
                 }
             }
@@ -113,9 +110,10 @@ public struct BlockTextEditor: View {
                     if press.modifiers.contains(.command) { return onKey(.cmdK) }
                     return .ignored
                 }
+                let plainCount = text.characters.count
                 switch press.key {
-                case .return: return onKey(.enter(cursorOffset: text.count))
-                case .delete: return text.isEmpty ? onKey(.backspaceAtStart) : .ignored
+                case .return: return onKey(.enter(cursorOffset: plainCount))
+                case .delete: return plainCount == 0 ? onKey(.backspaceAtStart) : .ignored
                 case .tab: return onKey(press.modifiers.contains(.shift) ? .shiftTab : .tab)
                 case .escape: return onKey(.escape)
                 default: return .ignored
@@ -131,7 +129,7 @@ public struct BlockTextEditor: View {
 /// alignment matches a sibling `Text` because we strip both `textContainerInset` and the
 /// per-fragment padding.
 struct MacBlockTextEditor: NSViewRepresentable {
-    @Binding var text: String
+    @Binding var text: AttributedString
     let fontSize: CGFloat
     let bold: Bool
     let lineSpacing: CGFloat
@@ -148,7 +146,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
         let view = ContainedTextView()
         view.coordinator = context.coordinator
         view.delegate = context.coordinator
-        view.isRichText = false
+        view.isRichText = true
         view.allowsUndo = true
         view.drawsBackground = false
         view.textContainerInset = .zero
@@ -156,70 +154,52 @@ struct MacBlockTextEditor: NSViewRepresentable {
         view.isVerticallyResizable = true
         view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
-        view.string = text
-        // Seed wantsFocus from the initial `isFocused` so that `viewDidMoveToWindow` —
-        // which can fire BEFORE `updateNSView` — has the right signal to take focus.
+        loadAttributedString(into: view)
+        applyTypingAttributes(to: view)
         view.wantsFocus = isFocused
-        applyFont(to: view)
         return view
     }
 
     func updateNSView(_ view: ContainedTextView, context: Context) {
-        // Keep coordinator's parent in sync (closures capture by value).
         context.coordinator.parent = self
-        if view.string != text {
-            view.string = text
+        // Only re-sync textStorage from the binding when its plain content has drifted
+        // out of sync — attribute changes that originated inside this editor were already
+        // pushed back via textDidChange, so re-loading would clobber the cursor.
+        let storedPlain = view.textStorage?.string ?? ""
+        let bindingPlain = String(text.characters)
+        if storedPlain != bindingPlain {
+            loadAttributedString(into: view)
         }
-        applyFont(to: view)
-        // Track desired focus on the view itself so `viewDidMoveToWindow` can grab focus
-        // *after* the view is added to a window. Without this, a Return-to-edit transition
-        // can hit `updateNSView` before the view is in the window, the dispatched
-        // makeFirstResponder runs against window=nil, and focus silently fails to attach.
+        applyTypingAttributes(to: view)
         view.wantsFocus = isFocused
         if isFocused {
-            // First-chance attempt: if we're already in a window, take focus now.
             if let window = view.window, window.firstResponder !== view {
                 DispatchQueue.main.async {
                     window.makeFirstResponder(view)
-                    // Move cursor to end so typing continues from where the user left off.
                     view.setSelectedRange(NSRange(location: (view.string as NSString).length, length: 0))
                 }
             }
         }
     }
 
-    private func applyFont(to view: NSTextView) {
-        view.font = nsFont()
-        // Reset paragraph style for line spacing match.
+    private func loadAttributedString(into view: ContainedTextView) {
+        let ns = InlineMarksNSKit.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
+        view.textStorage?.setAttributedString(ns)
+    }
+
+    private func applyTypingAttributes(to view: NSTextView) {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
         view.defaultParagraphStyle = style
-        if !view.string.isEmpty {
-            // Apply paragraph style + font over existing content (string assignment loses attrs).
-            let range = NSRange(location: 0, length: (view.string as NSString).length)
-            view.textStorage?.setAttributes([
-                .font: nsFont(),
-                .paragraphStyle: style,
-                .foregroundColor: NSColor(NotionStyle.foreground)
-            ], range: range)
-        }
-    }
-
-    private func nsFont() -> NSFont {
-        Self.resolveNSFont(size: fontSize, bold: bold)
+        view.typingAttributes = [
+            .font: InlineMarksNSKit.interFont(size: fontSize, bold: bold, italic: false),
+            .paragraphStyle: style,
+            .foregroundColor: NSColor(NotionStyle.foreground)
+        ]
     }
 
     nonisolated static func resolveNSFont(size: CGFloat, bold: Bool) -> NSFont {
-        // Inter Variable is registered globally via FontRegistration; resolve by family name.
-        let weight: NSFont.Weight = bold ? .bold : .regular
-        if let descriptor = NSFontDescriptor(fontAttributes: [
-            .family: "Inter",
-            .traits: [NSFontDescriptor.TraitKey.weight: weight.rawValue]
-        ]) as NSFontDescriptor?,
-           let font = NSFont(descriptor: descriptor, size: size) {
-            return font
-        }
-        return NSFont.systemFont(ofSize: size, weight: weight)
+        InlineMarksNSKit.interFont(size: size, bold: bold, italic: false)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -228,23 +208,20 @@ struct MacBlockTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
-            // IME composition fires textDidChange on every marked-text update. Skip
-            // autotransform detection there — typing `# ` mid-CJK-composition must not
-            // be consumed — and just propagate the current string through to the binding.
             let isComposing = tv.hasMarkedText()
-            let new = tv.string
+            let plain = tv.string
             if !isComposing {
                 let cursor = tv.selectedRange().location
-                if let result = detectPrefixAutotransform(text: AttributedString(new), cursor: cursor) {
+                if let result = detectPrefixAutotransform(text: AttributedString(plain), cursor: cursor) {
                     parent.onAutotransform(result.transform, result.remainingText)
-                    // Don't push the trigger characters to the binding — the row is about
-                    // to be replaced wholesale by PageView's apply-transform handler.
                     return
                 }
             }
-            if new != parent.text {
-                parent.text = new
-            }
+            // Convert NSAttributedString → model AttributedString and push to binding.
+            // The BlockRow setter dedupes via `attributedStringMarksEqual` so we don't
+            // chunk autosave debounces on no-op keystrokes.
+            let nsAttr = tv.textStorage ?? NSTextStorage()
+            parent.text = InlineMarksNSKit.toModel(nsAttr)
         }
 
         func textDidBeginEditing(_ notification: Notification) {
@@ -296,11 +273,42 @@ final class ContainedTextView: NSTextView {
                 if event.modifierFlags.contains(.command) {
                     if onKey(.cmdK) == .handled { return }
                 }
+            case 11: // B — Cmd-B → bold
+                if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) {
+                    toggleInlineMark(.bold)
+                    return
+                }
+            case 34: // I — Cmd-I → italic
+                if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) {
+                    toggleInlineMark(.italic)
+                    return
+                }
+            case 14: // E — Cmd-E → inline code (matching Notion)
+                if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) {
+                    toggleInlineMark(.code)
+                    return
+                }
+            case 1: // S — Cmd-Shift-S → strikethrough (matching Notion)
+                if event.modifierFlags.contains([.command, .shift]) {
+                    toggleInlineMark(.strikethrough)
+                    return
+                }
             default:
                 break
             }
         }
         super.keyDown(with: event)
+    }
+
+    /// Toggles an inline mark on the current selection. No-op if the selection is empty —
+    /// pre-typing toggles via `typingAttributes` aren't wired yet (M6 follow-up).
+    private func toggleInlineMark(_ mark: InlineMark) {
+        guard let storage = textStorage,
+              let parent = coordinator?.parent else { return }
+        let range = selectedRange()
+        guard range.length > 0 else { return }
+        InlineMarksNSKit.toggleMark(mark, on: range, in: storage, baseFontSize: parent.fontSize, baseBold: parent.bold)
+        didChangeText()
     }
 
     override var intrinsicContentSize: NSSize {

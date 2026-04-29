@@ -88,14 +88,15 @@ public struct BlockRow: View {
             .background(isSelected && !isEditing ? Color.accentColor.opacity(0.12) : Color.clear)
     }
 
-    /// String projection of the block's text for editing.
-    private var textBinding: Binding<String> {
+    /// AttributedString projection of the block's text for editing. Marks (bold/italic/
+    /// code/strike/link) survive editing now — no more lossy String round-trip.
+    private var textBinding: Binding<AttributedString> {
         Binding(
-            get: { String(block.text.characters) },
+            get: { block.text },
             set: { newValue in
-                let oldText = String(block.text.characters)
-                if newValue != oldText {
-                    block = block.withText(AttributedString(newValue))
+                if String(newValue.characters) != String(block.text.characters) ||
+                   !attributedStringMarksEqual(newValue, block.text) {
+                    block = block.withText(newValue)
                     onEdited()
                 }
             }
@@ -348,17 +349,17 @@ public struct ToggleRowView: View {
         return []
     }
 
-    private var titleBinding: Binding<String> {
+    private var titleBinding: Binding<AttributedString> {
         Binding(
             get: {
-                if case .toggle(_, let title, _, _) = block { return String(title.characters) }
-                return ""
+                if case .toggle(_, let title, _, _) = block { return title }
+                return AttributedString()
             },
             set: { newValue in
                 if case .toggle(let id, let title, let expanded, let children) = block {
-                    let old = String(title.characters)
-                    if old != newValue {
-                        block = .toggle(id: id, title: AttributedString(newValue), expanded: expanded, children: children)
+                    if String(newValue.characters) != String(title.characters) ||
+                       !attributedStringMarksEqual(newValue, title) {
+                        block = .toggle(id: id, title: newValue, expanded: expanded, children: children)
                         onEdited()
                     }
                 }
@@ -433,6 +434,25 @@ struct BlockRowReadOnly: View {
             HStack { Image(systemName: "chevron.right"); Text(InlineRenderer.swiftUIAttributed(title)) }
         }
     }
+}
+
+/// Compare two AttributedStrings on the marks the editor cares about (bold/italic/code/
+/// strike/link). We can't rely on `==` because the editor's NSAttributedString round-trip
+/// drops scope-unaware Cocoa attrs (paragraph style, font), and we need the binding
+/// setter to fire iff a *meaningful* mark changed.
+func attributedStringMarksEqual(_ a: AttributedString, _ b: AttributedString) -> Bool {
+    let aRuns = Array(a.runs)
+    let bRuns = Array(b.runs)
+    guard aRuns.count == bRuns.count else { return false }
+    for (ra, rb) in zip(aRuns, bRuns) {
+        if String(a[ra.range].characters) != String(b[rb.range].characters) { return false }
+        if (ra[InlineAttributes.BoldAttribute.self] == true) != (rb[InlineAttributes.BoldAttribute.self] == true) { return false }
+        if (ra[InlineAttributes.ItalicAttribute.self] == true) != (rb[InlineAttributes.ItalicAttribute.self] == true) { return false }
+        if (ra[InlineAttributes.CodeAttribute.self] == true) != (rb[InlineAttributes.CodeAttribute.self] == true) { return false }
+        if (ra[InlineAttributes.StrikethroughAttribute.self] == true) != (rb[InlineAttributes.StrikethroughAttribute.self] == true) { return false }
+        if ra.link != rb.link { return false }
+    }
+    return true
 }
 
 func previousBlock(before id: BlockID, in blocks: [Block]) -> Block? {
