@@ -30,6 +30,19 @@ public struct PageView: View {
     /// drag-drop) all register against. Recreated implicitly when PageView's identity
     /// resets; explicitly cleared on document switch via `.onChange(of: document.id)`.
     @State private var undoController = DocumentUndoController()
+    /// The block whose row currently has cursor hover. Combined with
+    /// `hoveredHandleBlockID` to decide whether to reveal the drag handle — needs
+    /// two signals because the handle is an overlay positioned in the leading gutter
+    /// (outside the row's hit area), so the cursor leaves the row when it moves
+    /// onto the handle.
+    @State private var hoveredBlockID: BlockID?
+    /// The block whose drag handle currently has cursor hover. The handle's own
+    /// `.onHover` keeps the reveal state alive while the cursor is over it, even
+    /// though `hoveredBlockID` has gone nil.
+    @State private var hoveredHandleBlockID: BlockID?
+    /// Insertion index between rows where a drop is currently being targeted. Drives
+    /// the visual drop indicator. nil when no drop is in progress.
+    @State private var dropHoverIndex: Int?
 
     public init(
         document: Binding<Document>,
@@ -48,17 +61,43 @@ public struct PageView: View {
         let snapshot = document.blocks
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach($document.blocks) { $block in
-                    rowView(for: $block, snapshot: snapshot, numberingIndex: numbering[block.id])
-                        .padding(.top, BlockSpacing.gap(
-                            before: block,
-                            after: previousBlock(before: block.id, in: snapshot)
-                        ))
+                ForEach(Array(snapshot.enumerated()), id: \.element.id) { (i, block) in
+                    let gap = BlockSpacing.gap(
+                        before: block,
+                        after: previousBlock(before: block.id, in: snapshot)
+                    )
+                    rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
+                        .padding(.top, gap)
+                        .overlay(alignment: .top) {
+                            if dropHoverIndex == i {
+                                Rectangle()
+                                    .fill(Color.accentColor)
+                                    .frame(height: 2)
+                                    .offset(y: -gap / 2)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .dropDestination(for: BlockDragPayload.self) { payloads, _ in
+                            guard let payload = payloads.first else { return false }
+                            moveBlocks(ids: payload.ids, toIndexBefore: i)
+                            dropHoverIndex = nil
+                            return true
+                        } isTargeted: { hovering in
+                            if hovering {
+                                dropHoverIndex = i
+                            } else if dropHoverIndex == i {
+                                dropHoverIndex = nil
+                            }
+                        }
                 }
+                // Trailing slot for "insert at end" — claims the existing bottom 32pt
+                // page padding. Total visual spacing unchanged: the outer
+                // `.padding(.vertical, 32)` becomes `.padding(.top, 32)` only.
+                gapDropTarget(at: snapshot.count, height: 32)
             }
             .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
             .padding(.horizontal, NotionStyle.pageHorizontalPadding)
-            .padding(.vertical, 32)
+            .padding(.top, 32)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(NotionStyle.background)
@@ -212,6 +251,114 @@ public struct PageView: View {
                 // position info, cursor lands at end via the editor's default behavior.
                 pendingCursorPoint = nil
                 enterEditMode(on: block.id)
+            }
+            .onHover { hovering in
+                if hovering {
+                    hoveredBlockID = block.id
+                } else if hoveredBlockID == block.id {
+                    hoveredBlockID = nil
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                // Drag handle overlay (zero layout impact). It owns its own hover signal
+                // so the reveal stays alive while the cursor is over it — without that,
+                // moving from row content onto the handle exits the row's hover region
+                // and the handle vanishes mid-grab.
+                DragHandle()
+                    .opacity(showHandleOverlay(for: block.id) && !isEditing ? 1 : 0)
+                    .offset(x: -DragHandle.gutterWidth, y: 2)
+                    .onHover { hovering in
+                        if hovering {
+                            hoveredHandleBlockID = block.id
+                        } else if hoveredHandleBlockID == block.id {
+                            hoveredHandleBlockID = nil
+                        }
+                    }
+                    .draggable(BlockDragPayload(ids: dragIDs(for: block.id))) {
+                        DragPreviewChip(count: dragIDs(for: block.id).count)
+                    }
+            }
+        }
+    }
+
+    private func showHandleOverlay(for id: BlockID) -> Bool {
+        hoveredBlockID == id || hoveredHandleBlockID == id
+    }
+
+    /// Drop target rendered inside a row's existing top-gap area (or the trailing
+    /// page-bottom area). Adds no layout space — the hit area is provided by an
+    /// in-flow `Color.clear` whose vertical extent exactly matches the existing gap.
+    /// A 2pt accent line shows while this slot is being targeted.
+    @ViewBuilder
+    private func gapDropTarget(at index: Int, height: CGFloat) -> some View {
+        Color.clear
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .contentShape(Rectangle())
+            .overlay(alignment: .center) {
+                if dropHoverIndex == index {
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(height: 2)
+                }
+            }
+            .dropDestination(for: BlockDragPayload.self) { payloads, _ in
+                guard let payload = payloads.first else { return false }
+                moveBlocks(ids: payload.ids, toIndexBefore: index)
+                dropHoverIndex = nil
+                return true
+            } isTargeted: { hovering in
+                if hovering {
+                    dropHoverIndex = index
+                } else if dropHoverIndex == index {
+                    dropHoverIndex = nil
+                }
+            }
+    }
+
+    /// Compute the BlockIDs to include in a drag started from `blockID`. If the row
+    /// is part of a multi-block selection, drag the whole selection (in document
+    /// order); otherwise just the single row.
+    private func dragIDs(for blockID: BlockID) -> [BlockID] {
+        if selection.contains(blockID) && selection.count > 1 {
+            return document.blocks.compactMap { selection.contains($0.id) ? $0.id : nil }
+        }
+        return [blockID]
+    }
+
+    /// Move the contiguous-or-not set of blocks identified by `ids` so they're
+    /// inserted starting at `target` (an index in the *current* document blocks). The
+    /// dragged blocks come out of the old positions and go in at `target`, with `target`
+    /// adjusted for the count of dragged blocks that came from before it. No-op if the
+    /// drop is into the dragged range itself.
+    private func moveBlocks(ids: [BlockID], toIndexBefore target: Int) {
+        let idSet = Set(ids)
+        let sourceIndices = document.blocks.enumerated()
+            .compactMap { (i, block) in idSet.contains(block.id) ? i : nil }
+        guard !sourceIndices.isEmpty else { return }
+
+        // Reject drops onto the dragged range — would be a visual no-op anyway and
+        // saves a useless undo entry.
+        if let first = sourceIndices.first, let last = sourceIndices.last,
+           target >= first && target <= last + 1 {
+            return
+        }
+
+        let removalsBeforeTarget = sourceIndices.filter { $0 < target }.count
+        let adjustedTarget = target - removalsBeforeTarget
+
+        // Suppress SwiftUI's default ForEach move-animation. Without this, the row
+        // crawls to its new position over the default animation duration after the
+        // drop completes, which feels sluggish for a discrete reorder.
+        withAnimation(nil) {
+            mutate("Move Block") {
+                let movingBlocks = sourceIndices.map { document.blocks[$0] }
+                var blocks = document.blocks
+                for i in sourceIndices.reversed() {
+                    blocks.remove(at: i)
+                }
+                blocks.insert(contentsOf: movingBlocks, at: adjustedTarget)
+                document.blocks = blocks
             }
         }
     }
