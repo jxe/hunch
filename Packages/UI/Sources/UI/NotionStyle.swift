@@ -45,7 +45,10 @@ public enum NotionStyle {
 
     // MARK: Page layout
     public static let maxContentWidth: CGFloat = 708
-    public static let pageHorizontalPadding: CGFloat = 16
+    /// Minimum side breathing room before the centered page column takes over on wider windows.
+    public static func pageHorizontalPadding(for availableWidth: CGFloat) -> CGFloat {
+        min(48, max(20, availableWidth * 0.055))
+    }
 
     // MARK: Inline code
     public static let inlineCodeSize: CGFloat = 13.6

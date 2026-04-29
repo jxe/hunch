@@ -7,14 +7,43 @@ struct DragHandle: View {
     /// Visible width of the handle. The row's hit area extends this far into the
     /// leading gutter via a custom `contentShape`, so hovering the handle keeps the
     /// row's hover state alive.
-    static let gutterWidth: CGFloat = 26
+    static let gutterWidth: CGFloat = 28
 
     var body: some View {
-        Image(systemName: "line.3.horizontal")
-            .font(.system(size: 16, weight: .semibold))
+        DragGripGlyph(dotSize: 3)
             .foregroundStyle(NotionStyle.mutedForeground)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(NotionStyle.foreground.opacity(0.05))
+            )
             .frame(width: Self.gutterWidth, height: 28)
             .contentShape(Rectangle())
+    }
+}
+
+private struct DragGripGlyph: View {
+    let dotSize: CGFloat
+
+    var body: some View {
+        HStack(spacing: dotSize) {
+            gripColumn
+            gripColumn
+        }
+    }
+
+    private var gripColumn: some View {
+        VStack(spacing: dotSize) {
+            gripDot
+            gripDot
+            gripDot
+        }
+    }
+
+    private var gripDot: some View {
+        RoundedRectangle(cornerRadius: dotSize / 2, style: .continuous)
+            .frame(width: dotSize, height: dotSize)
     }
 }
 
@@ -26,8 +55,7 @@ struct DragPreviewChip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 11, weight: .medium))
+            DragGripGlyph(dotSize: 2.5)
             Text(count == 1 ? "Block" : "\(count) blocks")
                 .font(NotionStyle.body(size: 12))
         }

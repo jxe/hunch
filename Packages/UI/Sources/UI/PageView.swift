@@ -57,149 +57,153 @@ public struct PageView: View {
     }
 
     public var body: some View {
-        let numbering = NumberingContext.compute(document.blocks)
-        let snapshot = document.blocks
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(snapshot.enumerated()), id: \.element.id) { (i, block) in
-                    let gap = BlockSpacing.gap(
-                        before: block,
-                        after: previousBlock(before: block.id, in: snapshot)
-                    )
-                    rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
-                        .padding(.top, gap)
-                        .overlay(alignment: .top) {
-                            if dropHoverIndex == i {
-                                Rectangle()
-                                    .fill(Color.accentColor)
-                                    .frame(height: 2)
-                                    .offset(y: -gap / 2)
-                                    .allowsHitTesting(false)
+        GeometryReader { geometry in
+            let numbering = NumberingContext.compute(document.blocks)
+            let snapshot = document.blocks
+            let horizontalPadding = NotionStyle.pageHorizontalPadding(for: geometry.size.width)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(snapshot.enumerated()), id: \.element.id) { (i, block) in
+                        let gap = BlockSpacing.gap(
+                            before: block,
+                            after: previousBlock(before: block.id, in: snapshot)
+                        )
+                        rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
+                            .padding(.top, gap)
+                            .overlay(alignment: .top) {
+                                if dropHoverIndex == i {
+                                    Rectangle()
+                                        .fill(Color.accentColor)
+                                        .frame(height: 2)
+                                        .offset(y: -gap / 2)
+                                        .allowsHitTesting(false)
+                                }
                             }
-                        }
-                        .dropDestination(for: BlockDragPayload.self) { payloads, _ in
-                            guard let payload = payloads.first else { return false }
-                            moveBlocks(ids: payload.ids, toIndexBefore: i)
-                            dropHoverIndex = nil
-                            return true
-                        } isTargeted: { hovering in
-                            if hovering {
-                                dropHoverIndex = i
-                            } else if dropHoverIndex == i {
+                            .dropDestination(for: BlockDragPayload.self) { payloads, _ in
+                                guard let payload = payloads.first else { return false }
+                                moveBlocks(ids: payload.ids, toIndexBefore: i)
                                 dropHoverIndex = nil
+                                return true
+                            } isTargeted: { hovering in
+                                if hovering {
+                                    dropHoverIndex = i
+                                } else if dropHoverIndex == i {
+                                    dropHoverIndex = nil
+                                }
                             }
-                        }
+                    }
+                    // Trailing slot for "insert at end" — claims the existing bottom 32pt
+                    // page padding. Total visual spacing unchanged: the outer
+                    // `.padding(.vertical, 32)` becomes `.padding(.top, 32)` only.
+                    gapDropTarget(at: snapshot.count, height: 32)
                 }
-                // Trailing slot for "insert at end" — claims the existing bottom 32pt
-                // page padding. Total visual spacing unchanged: the outer
-                // `.padding(.vertical, 32)` becomes `.padding(.top, 32)` only.
-                gapDropTarget(at: snapshot.count, height: 32)
+                .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
+                .padding(.horizontal, horizontalPadding)
+                .padding(.top, 32)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
-            .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
-            .padding(.horizontal, NotionStyle.pageHorizontalPadding)
-            .padding(.top, 32)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(NotionStyle.background)
-        // Hand the shared UndoManager + controller down through the environment.
-        // BlockTextEditor reads the controller to register a typing-session snapshot
-        // when an editor loses focus; the manager is used to route Cmd-Z through the
-        // shared timeline.
-        .environment(\.documentUndoManager, undoController.undoManager)
-        .environment(\.documentUndoController, undoController)
-        // Publish for App-level CommandGroup so Cmd-Z routes through this PageView's
-        // undo manager regardless of where focus actually lives. Uses scene-level
-        // exposure (rather than `.focusedValue`) because in edit mode the NSTextView
-        // holds AppKit-level focus, which SwiftUI's per-view focus tracking misses —
-        // scene-level remains visible to the menu commands.
-        .focusedSceneValue(\.documentUndoController, undoController)
-        .focusable()
-        .focused($pageFocused)
-        .onAppear {
-            if cursor == nil, let first = document.blocks.first {
-                setCursor(first.id)
+            .background(NotionStyle.background)
+            // Hand the shared UndoManager + controller down through the environment.
+            // BlockTextEditor reads the controller to register a typing-session snapshot
+            // when an editor loses focus; the manager is used to route Cmd-Z through the
+            // shared timeline.
+            .environment(\.documentUndoManager, undoController.undoManager)
+            .environment(\.documentUndoController, undoController)
+            // Publish for App-level CommandGroup so Cmd-Z routes through this PageView's
+            // undo manager regardless of where focus actually lives. Uses scene-level
+            // exposure (rather than `.focusedValue`) because in edit mode the NSTextView
+            // holds AppKit-level focus, which SwiftUI's per-view focus tracking misses —
+            // scene-level remains visible to the menu commands.
+            .focusedSceneValue(\.documentUndoController, undoController)
+            .focusable()
+            .focused($pageFocused)
+            .onAppear {
+                if cursor == nil, let first = document.blocks.first {
+                    setCursor(first.id)
+                }
+                pageFocused = true
+                installUndoApply()
             }
-            pageFocused = true
-            installUndoApply()
-        }
-        .onChange(of: editorFocused) { old, new in
-            if new == nil && old != nil {
-                onBlur()
+            .onChange(of: editorFocused) { old, new in
+                if new == nil && old != nil {
+                    onBlur()
+                }
             }
-        }
-        .onChange(of: document.id) { _, _ in
-            editingBlock = nil
-            editorFocused = nil
-            if let first = document.blocks.first {
-                setCursor(first.id)
-            } else {
-                selection = []
-                anchor = nil
-                cursor = nil
-            }
-            pageFocused = true
-            // Captured undo entries reference the previous document's blocks — drop them.
-            undoController.reset()
-        }
-        .onKeyPress(keys: [
-            .upArrow, .downArrow, .return, .escape, .tab,
-            KeyEquivalent("\u{19}"),  // NSBackTabCharacter — Shift+Tab on macOS
-            .delete,
-            KeyEquivalent("\u{8}"),
-            KeyEquivalent("\u{7F}"),
-            KeyEquivalent("k")
-        ]) { press in
-            guard editingBlock == nil else { return .ignored }
-            let modifiers = press.modifiers
-
-            if press.key == .delete || press.key == KeyEquivalent("\u{8}") || press.key == KeyEquivalent("\u{7F}") {
-                deleteSelection()
-                return .handled
-            }
-            // Shift+Tab arrives as a distinct character (BackTab, U+0019), not as
-            // .tab + shift modifier — SwiftUI's `.onKeyPress(.tab)` won't match it.
-            if press.key == KeyEquivalent("\u{19}") {
-                indentSelection(by: -1)
-                return .handled
-            }
-
-            switch press.key {
-            case .upArrow:
-                if modifiers.contains(.option) {
-                    moveSelectionInDocument(by: -1)
-                } else if modifiers.contains(.shift) {
-                    extendSelection(by: -1)
+            .onChange(of: document.id) { _, _ in
+                editingBlock = nil
+                editorFocused = nil
+                if let first = document.blocks.first {
+                    setCursor(first.id)
                 } else {
-                    moveCursor(by: -1)
+                    selection = []
+                    anchor = nil
+                    cursor = nil
                 }
-                return .handled
-            case .downArrow:
-                if modifiers.contains(.option) {
-                    moveSelectionInDocument(by: +1)
-                } else if modifiers.contains(.shift) {
-                    extendSelection(by: +1)
-                } else {
-                    moveCursor(by: +1)
-                }
-                return .handled
-            case .tab:
-                indentSelection(by: modifiers.contains(.shift) ? -1 : +1)
-                return .handled
-            case .return:
-                if let id = cursor, selection.count == 1 {
-                    enterEditMode(on: id)
-                }
-                return .handled
-            case .escape:
-                selection = []
-                anchor = nil
-                cursor = nil
-                return .handled
-            default:
-                if press.key == KeyEquivalent("k"), modifiers.contains(.command) {
+                pageFocused = true
+                // Captured undo entries reference the previous document's blocks — drop them.
+                undoController.reset()
+            }
+            .onKeyPress(keys: [
+                .upArrow, .downArrow, .return, .escape, .tab,
+                KeyEquivalent("\u{19}"),  // NSBackTabCharacter — Shift+Tab on macOS
+                .delete,
+                KeyEquivalent("\u{8}"),
+                KeyEquivalent("\u{7F}"),
+                KeyEquivalent("k")
+            ]) { press in
+                guard editingBlock == nil else { return .ignored }
+                let modifiers = press.modifiers
+
+                if press.key == .delete || press.key == KeyEquivalent("\u{8}") || press.key == KeyEquivalent("\u{7F}") {
+                    deleteSelection()
                     return .handled
                 }
-                return .ignored
+                // Shift+Tab arrives as a distinct character (BackTab, U+0019), not as
+                // .tab + shift modifier — SwiftUI's `.onKeyPress(.tab)` won't match it.
+                if press.key == KeyEquivalent("\u{19}") {
+                    indentSelection(by: -1)
+                    return .handled
+                }
+
+                switch press.key {
+                case .upArrow:
+                    if modifiers.contains(.option) {
+                        moveSelectionInDocument(by: -1)
+                    } else if modifiers.contains(.shift) {
+                        extendSelection(by: -1)
+                    } else {
+                        moveCursor(by: -1)
+                    }
+                    return .handled
+                case .downArrow:
+                    if modifiers.contains(.option) {
+                        moveSelectionInDocument(by: +1)
+                    } else if modifiers.contains(.shift) {
+                        extendSelection(by: +1)
+                    } else {
+                        moveCursor(by: +1)
+                    }
+                    return .handled
+                case .tab:
+                    indentSelection(by: modifiers.contains(.shift) ? -1 : +1)
+                    return .handled
+                case .return:
+                    if let id = cursor, selection.count == 1 {
+                        enterEditMode(on: id)
+                    }
+                    return .handled
+                case .escape:
+                    selection = []
+                    anchor = nil
+                    cursor = nil
+                    return .handled
+                default:
+                    if press.key == KeyEquivalent("k"), modifiers.contains(.command) {
+                        return .handled
+                    }
+                    return .ignored
+                }
             }
         }
     }
