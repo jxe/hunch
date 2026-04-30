@@ -10,6 +10,11 @@ final class WorkspaceModel {
     var entries: [WorkspaceEntry] = []
     var openDocument: Document?
     var error: String?
+    /// Stack of pushed document URLs, root → top. Empty = page list root visible.
+    /// Bound to `NavigationStack(path:)`; mutating drives push/pop, and the
+    /// NavigationStack writes back here on edge-swipe / system back.
+    var path: [URL] = []
+    var canGoBack: Bool { !path.isEmpty }
 
     private let store = FileStore()
     private let saver = DocumentSaveCoordinator()
@@ -61,6 +66,7 @@ final class WorkspaceModel {
         workspaceURL = nil
         entries = []
         openDocument = nil
+        path = []
     }
 
     func rescan() {
@@ -72,37 +78,71 @@ final class WorkspaceModel {
         }
     }
 
+    /// Sidebar tap: reset the stack to just this entry. The list is only visible
+    /// at `path == []`, so this is effectively the "open from the root" path.
     func open(_ entry: WorkspaceEntry) {
+        UserDefaults.standard.set(entry.relativePath, forKey: "console.lastOpenPage")
+        if path == [entry.url] { return }
+        path = [entry.url]
+    }
+
+    /// Subpage / inline link: push deeper.
+    func openSubpage(relativePath: String) {
+        guard let workspaceURL else { return }
+        let target = workspaceURL.appendingPathComponent(relativePath)
+        UserDefaults.standard.set(relativePath, forKey: "console.lastOpenPage")
+        if path.last == target { return }
+        path.append(target)
+    }
+
+    func goBack() {
+        guard !path.isEmpty else { return }
+        path.removeLast()
+    }
+
+    /// Reconcile `openDocument` with `path.last`. Call from a `.onChange(of: path)`
+    /// observer in the view layer. Handles all three transitions (push, pop,
+    /// drain to empty); flushes the outgoing doc before loading the new one.
+    func handlePathChange() {
+        let topURL = path.last
+        if openDocument?.url == topURL { return }
         flushAndClose()
+        guard let url = topURL else {
+            openDocument = nil
+            backstopTask?.cancel()
+            backstopTask = nil
+            return
+        }
         do {
-            openDocument = try store.loadDocument(at: entry.url)
-            UserDefaults.standard.set(entry.relativePath, forKey: "console.lastOpenPage")
+            openDocument = try store.loadDocument(at: url)
             isDirty = false
-            installFilePresenter(for: entry.url)
+            installFilePresenter(for: url)
             startBackstop()
         } catch {
-            self.error = "Failed to load \(entry.relativePath): \(error.localizedDescription)"
+            self.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
         }
     }
 
-    func openSubpage(relativePath: String) {
-        guard let workspaceURL else { return }
-        flushAndClose()
-        let target = workspaceURL.appendingPathComponent(relativePath)
+    func createSubpage(title: String, requestedPath: String?) -> String? {
+        guard let workspaceURL else { return requestedPath }
+        let path = requestedPath ?? availableSubpagePath(for: title)
+        let target = workspaceURL.appendingPathComponent(path)
         do {
-            openDocument = try store.loadDocument(at: target)
-            isDirty = false
-            installFilePresenter(for: target)
-            startBackstop()
+            let parent = target.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: target.path) {
+                try "# \(title)\n".write(to: target, atomically: true, encoding: .utf8)
+            }
+            rescan()
+            return path
         } catch {
-            self.error = "Subpage \(relativePath) not found"
+            self.error = "Failed to create \(path): \(error.localizedDescription)"
+            return requestedPath
         }
     }
 
     func closeDocument() {
-        flushAndClose()
-        removeFilePresenter()
-        openDocument = nil
+        path = []
     }
 
     func markEdited() {
@@ -184,6 +224,26 @@ final class WorkspaceModel {
 
     private func modificationDate(for url: URL) -> Date? {
         try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    private func availableSubpagePath(for title: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let chars = title.unicodeScalars.map { scalar -> Character in
+            allowed.contains(scalar) ? Character(scalar) : "-"
+        }
+        let collapsed = String(chars)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        let stem = collapsed.isEmpty ? "Untitled" : collapsed
+
+        var candidate = stem + ".md"
+        var suffix = 2
+        while let workspaceURL,
+              FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent(candidate).path) {
+            candidate = "\(stem)-\(suffix).md"
+            suffix += 1
+        }
+        return candidate
     }
 
     private func startBackstop() {
@@ -299,10 +359,18 @@ struct ContentView: View {
             if model.workspaceURL == nil {
                 WorkspacePickerView(model: model)
             } else {
-                NavigationSplitView {
+                NavigationStack(path: $model.path) {
                     sidebar
-                } detail: {
-                    detail
+                        .navigationDestination(for: URL.self) { url in
+                            pageDetail(for: url)
+                        }
+                }
+                // `initial: true` covers the path-restored-by-tryRestore case where
+                // the NavigationStack mounts with a non-empty path; without it
+                // `openDocument` would never load and `pageDetail` would render
+                // the ProgressView fallback forever.
+                .onChange(of: model.path, initial: true) { _, _ in
+                    model.handlePathChange()
                 }
             }
         }
@@ -326,20 +394,17 @@ struct ContentView: View {
         )
     }
 
-    /// Drives `PageListView`'s selection. Reading reflects whichever document
-    /// is currently open; writing fans out to `model.open` / `model.closeDocument`
-    /// so iOS NavigationSplitView's column-push (and its auto-pop on the back
-    /// chevron) round-trip through the model.
+    /// Drives `PageListView`'s selection. The list is only visible at
+    /// `path == []` (NavigationStack root), so the highlight reflects the
+    /// root-pushed doc and tapping a row pushes onto the stack via
+    /// `model.open`. Nil writes (auto-deselect on stack pop) are ignored —
+    /// NavigationStack itself owns the path.
     private var pageSelection: Binding<WorkspaceEntry.ID?> {
         Binding(
-            get: { model.openDocument?.url },
+            get: { model.path.first },
             set: { newID in
                 if let id = newID, let entry = model.entries.first(where: { $0.id == id }) {
-                    if model.openDocument?.url != entry.url {
-                        model.open(entry)
-                    }
-                } else if model.openDocument != nil {
-                    model.closeDocument()
+                    model.open(entry)
                 }
             }
         )
@@ -385,8 +450,8 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var detail: some View {
-        if model.openDocument != nil {
+    private func pageDetail(for url: URL) -> some View {
+        if let openDoc = model.openDocument, openDoc.url == url {
             PageView(
                 document: Binding(
                     get: { model.openDocument ?? Document(url: URL(fileURLWithPath: "/dev/null"), title: "", blocks: []) },
@@ -395,19 +460,23 @@ struct ContentView: View {
                 onSubpageTap: { relativePath in
                     model.openSubpage(relativePath: relativePath)
                 },
+                onCreateSubpage: { title, requestedPath in
+                    model.createSubpage(title: title, requestedPath: requestedPath)
+                },
+                onNavigateBack: {
+                    model.goBack()
+                },
                 onEdited: {
                     model.markEdited()
                 },
                 onBlur: {
                     Task { await model.saveNow() }
-                },
-                onPinchClose: {
-                    model.closeDocument()
                 }
             )
         } else {
-            Text("Select a page")
-                .foregroundStyle(NotionStyle.mutedForeground)
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(NotionStyle.background)
         }
     }
 }

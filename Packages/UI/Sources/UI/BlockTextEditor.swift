@@ -14,7 +14,8 @@ public enum BlockKey: Sendable, Equatable {
     case tab
     case shiftTab
     case escape
-    case cmdK
+    case cmdK(selectedText: String?)
+    case navigateBack
     /// Up arrow pressed while the cursor is on the editor's first line. PageView
     /// treats this as Esc + up: exit edit mode and select the previous block.
     case exitEditUp
@@ -358,7 +359,18 @@ final class ContainedTextView: NSTextView {
                 if onKey(.escape) == .handled { return }
             case 40: // K
                 if event.modifierFlags.contains(.command) {
-                    if onKey(.cmdK) == .handled { return }
+                    let selectedText: String?
+                    let range = selectedRange()
+                    if range.length > 0, let textRange = Range(range, in: string) {
+                        selectedText = String(string[textRange])
+                    } else {
+                        selectedText = nil
+                    }
+                    if onKey(.cmdK(selectedText: selectedText)) == .handled { return }
+                }
+            case 33: // [ — Cmd-[ → navigate back
+                if event.modifierFlags.contains(.command) {
+                    if onKey(.navigateBack) == .handled { return }
                 }
             case 11: // B — Cmd-B → bold
                 if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) {
@@ -635,7 +647,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             onShiftTab: { _ = onKey(.shiftTab) },
             onTab: { _ = onKey(.tab) },
             onToggleMark: { mark in bridge.toggleMark(mark) },
-            onCmdK: { _ = onKey(.cmdK) },
+            onCmdK: { _ = onKey(.cmdK(selectedText: nil)) },
             onDismiss: {
                 tv.resignFirstResponder()
                 _ = onKey(.escape)

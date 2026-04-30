@@ -43,6 +43,9 @@ private let prefixTriggers: [(prefix: String, transform: BlockTransform)] = [
 /// new block. `cursor` is the character offset (UTF-16-equivalent for ASCII triggers).
 public func detectPrefixAutotransform(text: AttributedString, cursor: Int) -> AutotransformResult? {
     let plain = String(text.characters)
+    if cursor == 3, plain == "---" {
+        return AutotransformResult(transform: .divider, remainingText: AttributedString())
+    }
     for (prefix, transform) in prefixTriggers {
         guard cursor == prefix.count else { continue }
         guard plain.hasPrefix(prefix) else { continue }

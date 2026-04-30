@@ -266,14 +266,19 @@ public struct BlockRow: View {
     }
 
     private func subpageRow(title: String, indent: Int) -> some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
             Image(systemName: "doc.text")
                 .font(.system(size: NotionStyle.pageIconSize))
                 .foregroundStyle(NotionStyle.mutedForeground)
+                .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                .alignmentGuide(.firstTextBaseline) { dimensions in
+                    dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                }
             Text(title)
-                .font(NotionStyle.body())
+                .font(NotionStyle.body().weight(.medium))
                 .foregroundStyle(NotionStyle.foreground)
-                .underline()
+                .lineSpacing(NotionStyle.bodyLineSpacing)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
@@ -497,7 +502,21 @@ struct BlockRowReadOnly: View {
             Text(source).font(NotionStyle.mono())
                 .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
         case .subpage(_, let title, _, let indent):
-            HStack { Image(systemName: "doc.text"); Text(title).underline() }
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: NotionStyle.pageIconSize))
+                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .alignmentGuide(.firstTextBaseline) { dimensions in
+                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    }
+                Text(title)
+                    .font(NotionStyle.body().weight(.medium))
+                    .foregroundStyle(NotionStyle.foreground)
+                    .lineSpacing(NotionStyle.bodyLineSpacing)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
         case .toggle(_, let title, _, _, let indent):
             HStack { Image(systemName: "chevron.right"); Text(InlineRenderer.swiftUIAttributed(title)) }

@@ -41,6 +41,19 @@ xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform
 simultaneous TextEditors are a focus-arbitration footgun on macOS — don't
 go back to that.
 
+**Page navigation is a `NavigationStack(path: [URL])`.** `WorkspaceModel.path`
+is the source of truth for what's open: `path == []` shows the page list root,
+`path.last` is the visible doc, and a `.onChange(of: path)` calls
+`handlePathChange()` to flush the outgoing doc and load the new top.
+Subpage taps (`onSubpageTap` → `model.openSubpage`) append to `path`, pushing
+deeper. Sidebar taps (`model.open`) reset `path` to a single entry.
+`model.goBack()` pops; on iOS this is also driven by edge-swipe-from-left,
+on macOS by the Cmd+[ menu and the system back chevron. Subpage rows are
+the existing render path: a paragraph that is a single `.md` link is
+detected in `BlockParser` and rendered via `subpageRow` in
+`BlockRendering.swift`. (Inline `[text](path.md)` clicks inside body text
+don't navigate yet — see `tasks/inline-link-click-navigation.md`.)
+
 **Nav mode is multi-select.** `PageView` holds `selection: Set<BlockID>`,
 `cursor` (moving end), `anchor` (fixed end). ↑/↓ collapses to a single
 block, Shift+↑/↓ extends, Return enters edit mode (only when

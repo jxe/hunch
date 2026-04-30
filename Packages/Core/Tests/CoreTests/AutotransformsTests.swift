@@ -45,6 +45,12 @@ struct PrefixAutotransformTests {
         #expect(r?.transform == .bullet)
     }
 
+    @Test func dividerOnThirdDash() {
+        let r = detect("---")
+        #expect(r?.transform == .divider)
+        #expect(plain(r) == "")
+    }
+
     @Test func numbered() {
         let r = detect("1. ")
         #expect(r?.transform == .numbered)

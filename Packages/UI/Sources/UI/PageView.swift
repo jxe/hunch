@@ -24,9 +24,10 @@ private struct PageScrollMetrics: Equatable {
 public struct PageView: View {
     @Binding public var document: Document
     public let onSubpageTap: (String) -> Void
+    public let onCreateSubpage: (_ title: String, _ requestedPath: String?) -> String?
+    public let onNavigateBack: () -> Void
     public let onEdited: () -> Void
     public let onBlur: () -> Void
-    public let onPinchClose: () -> Void
 
     /// Set of currently-selected blocks in nav mode. Always contiguous in document order
     /// (we only build it via cursor/anchor extension). Empty in edit mode.
@@ -92,15 +93,17 @@ public struct PageView: View {
     public init(
         document: Binding<Document>,
         onSubpageTap: @escaping (String) -> Void = { _ in },
+        onCreateSubpage: @escaping (_ title: String, _ requestedPath: String?) -> String? = { _, requestedPath in requestedPath },
+        onNavigateBack: @escaping () -> Void = {},
         onEdited: @escaping () -> Void = {},
-        onBlur: @escaping () -> Void = {},
-        onPinchClose: @escaping () -> Void = {}
+        onBlur: @escaping () -> Void = {}
     ) {
         self._document = document
         self.onSubpageTap = onSubpageTap
+        self.onCreateSubpage = onCreateSubpage
+        self.onNavigateBack = onNavigateBack
         self.onEdited = onEdited
         self.onBlur = onBlur
-        self.onPinchClose = onPinchClose
     }
 
     public var body: some View {
@@ -244,10 +247,16 @@ public struct PageView: View {
                 KeyEquivalent("\u{8}"),
                 KeyEquivalent("\u{7F}"),
                 KeyEquivalent("c"),
-                KeyEquivalent("k")
+                KeyEquivalent("k"),
+                KeyEquivalent("[")
             ]) { press in
                 guard editingBlock == nil else { return .ignored }
                 let modifiers = press.modifiers
+
+                if press.key == KeyEquivalent("["), modifiers.contains(.command) {
+                    onNavigateBack()
+                    return .handled
+                }
 
                 if press.key == KeyEquivalent("c"), modifiers.contains(.command) {
                     return copySelectionToPasteboard() ? .handled : .ignored
@@ -288,6 +297,9 @@ public struct PageView: View {
                     return .handled
                 case .return:
                     if let id = cursor, selection.count == 1 {
+                        if navigateIntoSubpage(id) {
+                            return .handled
+                        }
                         enterEditMode(on: id)
                     }
                     return .handled
@@ -298,7 +310,8 @@ public struct PageView: View {
                     return .handled
                 default:
                     if press.key == KeyEquivalent("k"), modifiers.contains(.command) {
-                        return .handled
+                        guard let id = cursor, selection.count == 1 else { return .ignored }
+                        return convertBlockToSubpage(blockID: id, preferredTitle: nil)
                     }
                     return .ignored
                 }
@@ -321,39 +334,24 @@ public struct PageView: View {
         #endif
         let isEditing = editingBlock == block.id
 
-        if case .subpage(_, _, let path, _) = block {
-            Button {
-                onSubpageTap(path)
-            } label: {
-                BlockRow(
-                    block: binding,
-                    editorFocused: $editorFocused,
-                    isPageTitle: false,
-                    numberingIndex: numberingIndex,
-                    isSelected: isSelected,
-                    isEditing: false
-                )
-            }
-            .buttonStyle(.plain)
-        } else {
-            BlockRow(
-                block: binding,
-                editorFocused: $editorFocused,
-                isPageTitle: isPageTitleBlock(block, snapshot: snapshot),
-                numberingIndex: numberingIndex,
-                isSelected: isSelected,
-                isEditing: isEditing,
-                onKey: { key in handleEditorKey(key, blockID: block.id) },
-                onEdited: onEdited,
-                onAutotransform: { transform, remainingText in
-                    applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
-                },
-                onClickAtPoint: { point in
-                    pendingCursorPoint = (block.id, point)
-                    enterEditMode(on: block.id)
-                },
-                initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
-            )
+        BlockRow(
+            block: binding,
+            editorFocused: $editorFocused,
+            isPageTitle: isPageTitleBlock(block, snapshot: snapshot),
+            numberingIndex: numberingIndex,
+            isSelected: isSelected,
+            isEditing: isEditing,
+            onKey: { key in handleEditorKey(key, blockID: block.id) },
+            onEdited: onEdited,
+            onAutotransform: { transform, remainingText in
+                applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
+            },
+            onClickAtPoint: { point in
+                pendingCursorPoint = (block.id, point)
+                enterEditMode(on: block.id)
+            },
+            initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
+        )
             // Whole-row reorder on macOS. Coexists with click-to-edit
             // (.onTapGesture below) because of the 4pt minimumDistance: a
             // click without movement enters edit mode; movement past 4pt
@@ -390,6 +388,10 @@ public struct PageView: View {
             .accessibilityLabel(accessibilityLabel(for: block))
             .accessibilityValue(reorderLift?.ids.contains(block.id) == true ? "reorder-source" : "")
             .onTapGesture {
+                if case .subpage(_, _, let path, _) = block {
+                    onSubpageTap(path)
+                    return
+                }
                 // Clicks outside the editable text region (markers, paddings) — no
                 // position info, cursor lands at end via the editor's default behavior.
                 pendingCursorPoint = nil
@@ -429,7 +431,6 @@ public struct PageView: View {
                     )
                     .allowsHitTesting(showHandleOverlay(for: block.id) || isMacDraggingFromRow(block.id))
             }
-        }
     }
 
     private func topSelectedBlockID() -> BlockID? {
@@ -817,7 +818,6 @@ public struct PageView: View {
     }
 
     private func handlePinchCommit(_ value: PagePinchValue) {
-        let mag = value.magnification
         let preview = pinchPreview
 
         if value.spreadDelta * 0.9 >= pinchInsertCommitGap, editingBlock == nil {
@@ -832,11 +832,6 @@ public struct PageView: View {
                 insertParagraph(at: insertIndex)
                 pinchPreview = nil
             }
-        } else if mag < 0.82 {
-            withAnimation(.easeOut(duration: 0.2)) {
-                pinchPreview = nil
-            }
-            onPinchClose()
         } else {
             withAnimation(.spring(response: 0.34, dampingFraction: 0.72)) {
                 pinchPreview = nil
@@ -1271,7 +1266,10 @@ public struct PageView: View {
         case .escape:
             exitEditMode()
             return .handled
-        case .cmdK:
+        case .cmdK(let selectedText):
+            return convertBlockToSubpage(blockID: blockID, preferredTitle: selectedText)
+        case .navigateBack:
+            onNavigateBack()
             return .handled
         case .exitEditUp:
             exitEditMode()
@@ -1316,6 +1314,94 @@ public struct PageView: View {
             editorFocused = newBlock.id
         }
         return .handled
+    }
+
+    private func navigateIntoSubpage(_ blockID: BlockID) -> Bool {
+        guard let block = document.blocks.first(where: { $0.id == blockID }),
+              case .subpage(_, _, let path, _) = block else {
+            return false
+        }
+        onSubpageTap(path)
+        return true
+    }
+
+    private func convertBlockToSubpage(blockID: BlockID, preferredTitle: String?) -> KeyPress.Result {
+        guard let i = document.index(of: blockID) else { return .ignored }
+        let block = document.blocks[i]
+        guard !isStructuralBlock(block) else { return .ignored }
+
+        let existingLink = wholeBlockMarkdownLink(in: block.text)
+        let title = cleanedTitle(preferredTitle)
+            ?? existingLink?.title
+            ?? cleanedTitle(String(block.text.characters))
+            ?? "Untitled"
+        let requestedPath = existingLink?.path
+        let path = onCreateSubpage(title, requestedPath)
+            ?? requestedPath
+            ?? defaultSubpagePath(for: title)
+
+        mutate("Create Subpage") {
+            document.blocks[i] = .subpage(id: blockID, title: title, path: path, indent: block.indent)
+        }
+        DispatchQueue.main.async {
+            editingBlock = nil
+            editorFocused = nil
+            setCursor(blockID)
+        }
+        return .handled
+    }
+
+    private func isStructuralBlock(_ block: Block) -> Bool {
+        switch block {
+        case .code, .divider, .subpage:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func cleanedTitle(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? nil : title
+    }
+
+    private func wholeBlockMarkdownLink(in text: AttributedString) -> (title: String, path: String)? {
+        var linkTitle = ""
+        var linkPath: String?
+        var hasNonLinkText = false
+
+        for run in text.runs {
+            let segment = String(text[run.range].characters)
+            if let link = run.link {
+                let destination = link.absoluteString
+                guard destination.hasSuffix(".md") else { return nil }
+                if let existingPath = linkPath, existingPath != destination {
+                    return nil
+                }
+                linkPath = destination
+                linkTitle += segment
+            } else if !segment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                hasNonLinkText = true
+            }
+        }
+
+        guard !hasNonLinkText, let linkPath, let title = cleanedTitle(linkTitle) else {
+            return nil
+        }
+        return (title, linkPath)
+    }
+
+    private func defaultSubpagePath(for title: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let chars = title.unicodeScalars.map { scalar -> Character in
+            allowed.contains(scalar) ? Character(scalar) : "-"
+        }
+        let collapsed = String(chars)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        let stem = collapsed.isEmpty ? "Untitled" : collapsed
+        return stem + ".md"
     }
 
     /// Replace the block whose row's editor just fired an autotransform. The transform's
