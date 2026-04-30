@@ -38,10 +38,15 @@ file is for _what's left_.
   typealiases.
 - Two-step empty-row backspace: blank heading/bullet/etc. collapses to
   empty paragraph; empty paragraph removes the row.
-- Page-level `MagnifyGesture` with a live gap preview drives
-  pinch-to-insert. Functional but not Clear.app-grade — see M9 §3.
+- Page-level pinch-to-insert has a live gap preview. Functional but not
+  Clear.app-grade — see M9 §3.
 - Custom `IOSRowSwipeActions` (DragGesture-based) replaces SwiftUI's
   `.swipeActions`, which silently no-ops outside a `List`.
+- iOS pinch-to-insert has threshold / commit haptics. UIKit
+  per-finger tracking was attempted and backed out because it didn't
+  reliably drive the SwiftUI row-frame coordinate space.
+- First pass at iOS reorder drift: targeted drop slots open a small
+  springy gap while keeping SwiftUI's stock long-tap drag path intact.
 
 Carry-overs nibbling around the edges:
 - Cross-block undo as a single op (split/merge/indent should coalesce).
@@ -75,31 +80,26 @@ and a spring at release.
    22)` — currently snaps instantly because the offset is `@GestureState`
    only.
 
-2. **Reorder lift + drift.** The current `.draggable` lift is the
-   system default — flat chip preview, no haptic. Replace with an
-   in-place lift: row scales to ~1.03, soft shadow, light haptic on
-   lift. Adjacent rows shift to make room with a stagger; drop springs
-   into place rather than the default ease. Likely needs UIKit
-   `UIDragInteraction` via `UIViewRepresentable` since SwiftUI's stock
-   lift isn't tunable.
+2. **Reorder lift + drift.** First-pass drift exists: targeted drop slots
+   open a small springy gap while SwiftUI's stock long-tap drag remains in
+   charge. Still missing: replacing SwiftUI's stock drag preview with a
+   fully custom UIKit lift, row scale/shadow + lift haptic, staggered
+   adjacent row motion, and a tuned drop spring instead of the default
+   drag stack.
 
-3. **Pinch-open inline expansion polish.** A SwiftUI `MagnifyGesture` on
-   the page chain already drives a live `pinchPreview` gap that opens
-   between the two rows the gesture's `startLocation` falls between
-   (`pinchInsertIndex` walks `rowFrames` to find the pair). Commit on
-   release past `magnification > 1.18` runs `insertParagraph` and the
-   gap-collapse inside one spring transaction so the new row appears in
-   the open gap. **What's left:**
+3. **Pinch-open inline expansion polish.** A SwiftUI `MagnifyGesture`
+   still drives the live `pinchPreview` gap because it reliably shares
+   the page's row-frame coordinate space. Commit on release past the
+   gap-height threshold runs `insertParagraph` and the gap-collapse inside
+   one spring transaction so the new row appears in the open gap.
+   Medium/heavy haptics fire on threshold cross and commit. **What's
+   left:**
 
    - **Tactile feel.** Per-finger spread distance (rather than the
-     scalar `magnification`) for tighter physics — promote to a UIKit
-     `UIPinchGestureRecognizer` (reach via `UIViewRepresentable` host
-     or `Introspect` style). Use `location(ofTouch: 0/1, in:)` to get
-     the actual finger positions. Set `cancelsTouchesInView = false`
-     and implement `gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:)`
-     so taps + `.draggable` still work alongside it.
-   - **Haptics.** Light on gesture begin, medium when the gap crosses
-     the commit threshold height, heavy on the actual commit.
+     scalar `magnification`) for tighter physics still needs a different
+     UIKit bridge or instrumentation pass; the first `UIPinchGestureRecognizer`
+     bridge recognized touches but didn't reliably move the SwiftUI gap.
+
    - **New-row entrance.** Currently SwiftUI's default opacity fade.
      Replace with a slide-from-gap or scale-in that reads as "the row
      materialised in the space you opened."

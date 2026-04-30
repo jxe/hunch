@@ -1,6 +1,20 @@
 import SwiftUI
 import Core
 
+private struct PagePinchValue {
+    var startLocation: CGPoint
+    var location: CGPoint
+    var magnification: CGFloat
+    var spread: CGFloat
+    var spreadDelta: CGFloat
+}
+
+private struct PageScrollMetrics: Equatable {
+    var viewportHeight: CGFloat = 0
+    var contentHeight: CGFloat = 0
+    var contentOffsetY: CGFloat = 0
+}
+
 public struct PageView: View {
     @Binding public var document: Document
     public let onSubpageTap: (String) -> Void
@@ -51,6 +65,11 @@ public struct PageView: View {
     /// in progress (or when the pinch's startLocation didn't pin to a row pair).
     /// Committed on release past threshold; spring-closed below threshold.
     @State private var pinchPreview: PinchPreviewState?
+    @State private var pinchGestureActive = false
+    @State private var pinchCrossedInsertThreshold = false
+    @State private var scrollMetrics = PageScrollMetrics()
+    @State private var pinchAutoScrollTask: Task<Void, Never>?
+    @State private var pinchAutoScrollVelocity: CGFloat = 0
 
     struct PinchPreviewState: Equatable {
         var insertIndex: Int
@@ -85,8 +104,10 @@ public struct PageView: View {
                             after: previousBlock(before: block.id, in: snapshot)
                         )
                         let pinchExtraTopGap: CGFloat = (pinchPreview?.insertIndex == i) ? (pinchPreview?.gapHeight ?? 0) : 0
+                        let reorderExtraTopGap = iosReorderDriftGap(for: i)
                         rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
-                            .padding(.top, gap + pinchExtraTopGap)
+                            .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
+                            .animation(.spring(response: 0.26, dampingFraction: 0.76), value: dropHoverIndex)
                             .background(rowFrameReporter(id: block.id))
                             .overlay(alignment: .top) {
                                 if dropHoverIndex == i {
@@ -114,7 +135,8 @@ public struct PageView: View {
                     // page padding. Total visual spacing unchanged: the outer
                     // `.padding(.vertical, 32)` becomes `.padding(.top, 32)` only.
                     let trailingPinchGap: CGFloat = (pinchPreview?.insertIndex == snapshot.count) ? (pinchPreview?.gapHeight ?? 0) : 0
-                    gapDropTarget(at: snapshot.count, height: 32 + trailingPinchGap)
+                    gapDropTarget(at: snapshot.count, height: 32 + trailingPinchGap + iosReorderDriftGap(for: snapshot.count))
+                        .animation(.spring(response: 0.26, dampingFraction: 0.76), value: dropHoverIndex)
                 }
                 .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
                 .padding(.horizontal, horizontalPadding)
@@ -125,6 +147,7 @@ public struct PageView: View {
                 }
             }
             .coordinateSpace(name: PageHoverCoordinateSpace.name)
+            .iosScrollMetrics($scrollMetrics)
             .macNearestRowHover(rowFrames: rowFrames, hoveredBlockID: $hoveredBlockID)
             .background(NotionStyle.background)
             .iosPagePinch(
@@ -132,6 +155,9 @@ public struct PageView: View {
                 onUpdate: { value in handlePinchUpdate(value) },
                 onCommit: { value in handlePinchCommit(value) }
             )
+            .iosTapBelowRows {
+                handleTapBelowRows(at: $0)
+            }
             .overlay(alignment: .bottom) {
                 if let actionToast {
                     HStack(spacing: 12) {
@@ -306,7 +332,7 @@ public struct PageView: View {
             )
             .iosBlockTouchActions(
                 payload: BlockDragPayload(ids: dragIDs(for: block.id)),
-                isEnabled: !isEditing,
+                isEnabled: !isEditing && !pinchGestureActive,
                 onDelete: {
                     deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
                     showActionToast("Deleted")
@@ -362,6 +388,14 @@ public struct PageView: View {
                 value: [id: proxy.frame(in: .named(PageHoverCoordinateSpace.name))]
             )
         }
+    }
+
+    private func iosReorderDriftGap(for index: Int) -> CGFloat {
+        #if os(iOS)
+        return dropHoverIndex == index ? 18 : 0
+        #else
+        return 0
+        #endif
     }
 
     /// Drop target rendered inside a row's existing top-gap area (or the trailing
@@ -455,37 +489,72 @@ public struct PageView: View {
 
     // MARK: - Pinch-open-to-insert (iOS)
 
-    /// Track the live magnification: above 1, open an inline gap at the row pair
-    /// the gesture's startLocation falls between; below 1, no preview (the close
-    /// gesture takes the commit path on release). Width-cap the gap so the
-    /// preview never pushes the rest of the page off-screen.
+    private let pinchInsertCommitGap: CGFloat = 40
+
     private func handlePinchUpdate(_ value: MagnifyGesture.Value) {
+        handlePinchUpdate(
+            PagePinchValue(
+                startLocation: value.startLocation,
+                location: value.startLocation,
+                magnification: value.magnification,
+                spread: value.magnification,
+                spreadDelta: (value.magnification - 1) * 220
+            )
+        )
+    }
+
+    /// Track the live finger spread: above the starting distance, open an inline
+    /// gap at the row pair under the current midpoint; below the starting
+    /// distance, no insert preview (pinch-close commits on release).
+    private func handlePinchUpdate(_ value: PagePinchValue) {
+        pinchGestureActive = true
         guard editingBlock == nil else {
             if pinchPreview != nil { pinchPreview = nil }
+            stopPinchAutoScroll()
             return
         }
-        let mag = value.magnification
-        if mag > 1 {
-            let raw = (mag - 1) * 220
+        updatePinchAutoScroll(for: value.location)
+        if value.spreadDelta > 0 {
+            let raw = value.spreadDelta * 0.9
             let gapHeight = min(180, max(0, raw))
             let insertIndex = pinchInsertIndex(for: value.startLocation)
             pinchPreview = PinchPreviewState(insertIndex: insertIndex, gapHeight: gapHeight)
+            if gapHeight >= pinchInsertCommitGap, !pinchCrossedInsertThreshold {
+                pinchCrossedInsertThreshold = true
+                Haptics.medium()
+            } else if gapHeight < pinchInsertCommitGap {
+                pinchCrossedInsertThreshold = false
+            }
         } else if pinchPreview != nil {
             pinchPreview = nil
+            pinchCrossedInsertThreshold = false
         }
     }
 
     private func handlePinchCommit(_ value: MagnifyGesture.Value) {
+        handlePinchCommit(
+            PagePinchValue(
+                startLocation: value.startLocation,
+                location: value.startLocation,
+                magnification: value.magnification,
+                spread: value.magnification,
+                spreadDelta: (value.magnification - 1) * 220
+            )
+        )
+    }
+
+    private func handlePinchCommit(_ value: PagePinchValue) {
         let mag = value.magnification
         let preview = pinchPreview
 
-        if mag > 1.18, editingBlock == nil {
+        if value.spreadDelta * 0.9 >= pinchInsertCommitGap, editingBlock == nil {
             let insertIndex = preview?.insertIndex ?? pinchInsertIndex(for: value.startLocation)
             // Bundle the structural insert and the gap collapse into the same
             // spring transaction so the new row appears inside the opened gap
             // and the surrounding rows close in around it. Without the shared
             // animation transaction the gap snap-closes first and the new row
             // pops in afterwards — visually disjoint.
+            Haptics.heavy()
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                 insertParagraph(at: insertIndex)
                 pinchPreview = nil
@@ -500,6 +569,68 @@ public struct PageView: View {
                 pinchPreview = nil
             }
         }
+        pinchCrossedInsertThreshold = false
+        pinchGestureActive = false
+        stopPinchAutoScroll()
+    }
+
+    private func updatePinchAutoScroll(for location: CGPoint) {
+        let threshold: CGFloat = 88
+        let maxVelocity: CGFloat = 520
+        let viewportHeight = scrollMetrics.viewportHeight
+        guard viewportHeight > threshold * 2 else {
+            stopPinchAutoScroll()
+            return
+        }
+
+        let topDistance = location.y
+        let bottomDistance = viewportHeight - location.y
+        let velocity: CGFloat
+        if topDistance < threshold {
+            let progress = min(1, max(0, (threshold - topDistance) / threshold))
+            velocity = -maxVelocity * progress * progress
+        } else if bottomDistance < threshold {
+            let progress = min(1, max(0, (threshold - bottomDistance) / threshold))
+            velocity = maxVelocity * progress * progress
+        } else {
+            velocity = 0
+        }
+
+        pinchAutoScrollVelocity = velocity
+        if abs(velocity) > 1 {
+            startPinchAutoScrollIfNeeded()
+        } else {
+            stopPinchAutoScroll()
+        }
+    }
+
+    private func startPinchAutoScrollIfNeeded() {
+        guard pinchAutoScrollTask == nil else { return }
+        pinchAutoScrollTask = Task { @MainActor in
+            let frameDuration: TimeInterval = 1.0 / 60.0
+            while !Task.isCancelled {
+                let velocity = pinchAutoScrollVelocity
+                if abs(velocity) <= 1 { break }
+                scrollBy(velocity * frameDuration)
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+            pinchAutoScrollTask = nil
+        }
+    }
+
+    private func stopPinchAutoScroll() {
+        pinchAutoScrollVelocity = 0
+        pinchAutoScrollTask?.cancel()
+        pinchAutoScrollTask = nil
+    }
+
+    private func scrollBy(_ deltaY: CGFloat) {
+        let maxOffset = max(0, scrollMetrics.contentHeight - scrollMetrics.viewportHeight)
+        let nextOffset = min(maxOffset, max(0, scrollMetrics.contentOffsetY + deltaY))
+        guard abs(nextOffset - scrollMetrics.contentOffsetY) > 0.5 else { return }
+        #if os(iOS)
+        PageScrollController.shared.scroll(toY: nextOffset)
+        #endif
     }
 
     /// The insert index for a pinch whose start midpoint is at `point` (in the
@@ -515,6 +646,16 @@ public struct PageView: View {
             }
         }
         return blocks.count
+    }
+
+    private func handleTapBelowRows(at point: CGPoint) {
+        guard editingBlock == nil else { return }
+        guard let lastBlock = document.blocks.last, let frame = rowFrames[lastBlock.id] else {
+            insertParagraph(at: document.blocks.count)
+            return
+        }
+        guard point.y > frame.maxY + 12 else { return }
+        insertParagraph(at: document.blocks.count)
     }
 
     private func showActionToast(_ message: String) {
@@ -1007,13 +1148,36 @@ private extension View {
         #if os(iOS)
         if isEnabled {
             self.simultaneousGesture(
-                MagnifyGesture(minimumScaleDelta: 0.04)
+                MagnifyGesture(minimumScaleDelta: 0.01)
                     .onChanged { value in onUpdate(value) }
                     .onEnded { value in onCommit(value) }
             )
         } else {
             self
         }
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func iosScrollMetrics(_ metrics: Binding<PageScrollMetrics>) -> some View {
+        #if os(iOS)
+        self.background(IOSScrollMetricsReader(metrics: metrics))
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func iosTapBelowRows(_ onTap: @escaping (CGPoint) -> Void) -> some View {
+        #if os(iOS)
+        self.simultaneousGesture(
+            SpatialTapGesture()
+                .onEnded { value in
+                    onTap(value.location)
+                }
+        )
         #else
         self
         #endif
@@ -1039,6 +1203,135 @@ private func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> Bl
 }
 
 #if os(iOS)
+@MainActor
+private final class PageScrollController {
+    static let shared = PageScrollController()
+
+    weak var scrollView: UIScrollView?
+
+    func scroll(toY y: CGFloat) {
+        guard let scrollView else { return }
+        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: y), animated: false)
+    }
+}
+
+private struct IOSScrollMetricsReader: UIViewRepresentable {
+    @Binding var metrics: PageScrollMetrics
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(metrics: $metrics)
+    }
+
+    func makeUIView(context: Context) -> ReaderView {
+        let view = ReaderView()
+        view.coordinator = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ uiView: ReaderView, context: Context) {
+        context.coordinator.metrics = $metrics
+        uiView.coordinator = context.coordinator
+        uiView.installIfNeeded()
+    }
+
+    @MainActor
+    final class ReaderView: UIView {
+        weak var coordinator: Coordinator?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            isUserInteractionEnabled = false
+        }
+
+        override func didMoveToSuperview() {
+            super.didMoveToSuperview()
+            installIfNeeded()
+            DispatchQueue.main.async { [weak self] in
+                self?.installIfNeeded()
+            }
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            installIfNeeded()
+            DispatchQueue.main.async { [weak self] in
+                self?.installIfNeeded()
+            }
+        }
+
+        func installIfNeeded() {
+            guard let scrollView = nearestScrollView() else { return }
+            PageScrollController.shared.scrollView = scrollView
+            coordinator?.update(from: scrollView)
+        }
+
+        private func nearestScrollView() -> UIScrollView? {
+            var current = superview
+            while let view = current {
+                if let scrollView = view as? UIScrollView {
+                    return scrollView
+                }
+                current = view.superview
+            }
+            return nil
+        }
+    }
+
+    @MainActor
+    final class Coordinator {
+        var metrics: Binding<PageScrollMetrics>
+        private weak var observedScrollView: UIScrollView?
+        private var observation: NSKeyValueObservation?
+        private var boundsObservation: NSKeyValueObservation?
+        private var contentSizeObservation: NSKeyValueObservation?
+
+        init(metrics: Binding<PageScrollMetrics>) {
+            self.metrics = metrics
+        }
+
+        func update(from scrollView: UIScrollView) {
+            if observedScrollView !== scrollView {
+                observedScrollView = scrollView
+                observation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self, weak scrollView] _, _ in
+                    Task { @MainActor in
+                        guard let self, let scrollView else { return }
+                        self.publish(scrollView)
+                    }
+                }
+                boundsObservation = scrollView.observe(\.bounds, options: [.new]) { [weak self, weak scrollView] _, _ in
+                    Task { @MainActor in
+                        guard let self, let scrollView else { return }
+                        self.publish(scrollView)
+                    }
+                }
+                contentSizeObservation = scrollView.observe(\.contentSize, options: [.new]) { [weak self, weak scrollView] _, _ in
+                    Task { @MainActor in
+                        guard let self, let scrollView else { return }
+                        self.publish(scrollView)
+                    }
+                }
+            }
+            publish(scrollView)
+        }
+
+        private func publish(_ scrollView: UIScrollView) {
+            let next = PageScrollMetrics(
+                viewportHeight: scrollView.bounds.height,
+                contentHeight: scrollView.contentSize.height,
+                contentOffsetY: scrollView.contentOffset.y
+            )
+            if metrics.wrappedValue != next {
+                metrics.wrappedValue = next
+            }
+        }
+    }
+}
+
 /// Horizontal-swipe actions on a row: leading swipe (right) cycles indent,
 /// trailing swipe (left) deletes. SwiftUI's `.swipeActions` only fires inside
 /// a `List`, but the page is built on a `VStack` to keep typography control,
