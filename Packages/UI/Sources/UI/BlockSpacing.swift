@@ -52,9 +52,9 @@ public enum BlockSpacing {
     /// 6-7pt margin so two stacked paragraphs show a clear blank-line-style gap.
     private static func topMargin(_ block: Block) -> CGFloat {
         switch block {
-        case .heading(_, 1, _): return 32     // page-title H1: ~2em above when there is something
-        case .heading(_, 2, _): return 28     // H2 above body or after another heading
-        case .heading(_, 3, _): return 22
+        case .heading(_, 1, _, _): return 32  // page-title H1: ~2em above when there is something
+        case .heading(_, 2, _, _): return 28  // H2 above body or after another heading
+        case .heading(_, 3, _, _): return 22
         case .heading: return 18
         case .paragraph: return 5
         case .quote: return 6
@@ -68,7 +68,7 @@ public enum BlockSpacing {
 
     private static func bottomMargin(_ block: Block) -> CGFloat {
         switch block {
-        case .heading(_, 1, _): return 6
+        case .heading(_, 1, _, _): return 6
         case .heading: return 5
         case .paragraph: return 5
         case .quote: return 6

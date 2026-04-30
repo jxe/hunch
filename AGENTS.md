@@ -27,10 +27,16 @@ user-picked workspace folder.
 ```sh
 swift test --package-path Packages/Core
 xcodegen generate --spec project.yml --project .
-xcodebuild -project Console.xcodeproj -scheme Console -destination 'platform=macOS' -configuration Debug build
-xcodebuild -project Console.xcodeproj -scheme Console -destination 'generic/platform=iOS Simulator' -configuration Debug build
-./scripts/run.sh   # macOS — kills any running Console.app, launches the newest build
+xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -configuration Debug build
+xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform=iOS Simulator' -configuration Debug build
+./scripts/run.sh   # macOS — kills any running Hunch.app, launches the newest build
 ```
+
+Use the `Hunch` scheme for macOS builds. Its build post-action copies the
+newest macOS build to `~/Applications/Hunch.app`; prefer that path whenever
+the user asks for a build they can run. If that copy ever stops happening,
+check that the post-action is under `schemes.Hunch.build.postActions` in
+`project.yml`, then regenerate the project with XcodeGen.
 
 ## Architecture you need to know to make changes
 

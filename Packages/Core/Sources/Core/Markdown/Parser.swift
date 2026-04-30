@@ -35,7 +35,7 @@ public enum BlockParser {
                     j += 1
                 }
                 let inner = assemble(children, indent: indent).blocks
-                out.append(.toggle(title: title, expanded: true, children: inner))
+                out.append(.toggle(title: title, expanded: true, children: inner, indent: indent))
                 i = j + 1   // skip past closing </details>
                 continue
             }
@@ -70,21 +70,21 @@ public enum BlockParser {
         switch markup {
         case let heading as Heading:
             let level = max(1, min(3, heading.level))
-            return [.heading(level: level, text: inlineToAttributed(Array(heading.inlineChildren)))]
+            return [.heading(level: level, text: inlineToAttributed(Array(heading.inlineChildren)), indent: indent)]
 
         case let paragraph as Paragraph:
             let inlines = Array(paragraph.inlineChildren)
             if let subpage = detectSubpage(inlines) {
-                return [subpage]
+                return [subpage.withIndent(indent)]
             }
-            return [.paragraph(text: inlineToAttributed(inlines))]
+            return [.paragraph(text: inlineToAttributed(inlines), indent: indent)]
 
         case let blockQuote as BlockQuote:
             // Each paragraph child becomes a separate `.quote` block in our model.
             var out: [Block] = []
             for child in blockQuote.children {
                 if let p = child as? Paragraph {
-                    out.append(.quote(text: inlineToAttributed(Array(p.inlineChildren))))
+                    out.append(.quote(text: inlineToAttributed(Array(p.inlineChildren)), indent: indent))
                 } else {
                     out.append(contentsOf: convertBlock(child, indent: indent))
                 }
@@ -98,15 +98,15 @@ public enum BlockParser {
             return convertList(list, ordered: true, indent: indent)
 
         case let codeBlock as CodeBlock:
-            return [.code(source: codeBlock.code, language: codeBlock.language)]
+            return [.code(source: codeBlock.code, language: codeBlock.language, indent: indent)]
 
         case _ as ThematicBreak:
-            return [.divider()]
+            return [.divider(indent: indent)]
 
         case let html as HTMLBlock:
             // Toggle HTML blocks (<details>) are handled by `assemble`; any HTMLBlock that reaches
             // here is unrecognised — round-trip it as a paragraph of its raw source.
-            return [.paragraph(text: AttributedString(html.rawHTML))]
+            return [.paragraph(text: AttributedString(html.rawHTML), indent: indent)]
 
         default:
             // Tables, images-as-blocks, and other unsupported nodes fall back to plain text.
@@ -114,7 +114,7 @@ public enum BlockParser {
             if plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return []
             }
-            return [.paragraph(text: AttributedString(plain))]
+            return [.paragraph(text: AttributedString(plain), indent: indent)]
         }
     }
 

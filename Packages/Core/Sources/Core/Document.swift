@@ -17,7 +17,7 @@ public struct Document: Identifiable, Sendable {
 
     public static func deriveTitle(from blocks: [Block], fallback: String) -> String {
         for block in blocks {
-            if case .heading(_, 1, let text) = block {
+            if case .heading(_, 1, let text, _) = block {
                 let s = String(text.characters)
                 if !s.isEmpty { return s }
             }

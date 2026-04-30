@@ -94,3 +94,30 @@ struct ReorderDropResolverTests {
         }
     }
 }
+
+@Suite("iOS page reorder geometry")
+struct IOSPageReorderGeometryTests {
+    @Test func convertsScrollViewLocationToPageCoordinateAfterScroll() {
+        let scrollViewLocation = CGPoint(x: 160, y: 620)
+
+        #expect(
+            IOSPageReorderGeometry.pageLocation(
+                forScrollViewLocation: scrollViewLocation,
+                contentOffset: CGPoint(x: 0, y: 300),
+                adjustedTopInset: 100
+            ) == CGPoint(x: 160, y: 220)
+        )
+    }
+
+    @Test func doesNotShiftTopPositionForAdjustedInsetAtRest() {
+        let scrollViewLocation = CGPoint(x: 160, y: 220)
+
+        #expect(
+            IOSPageReorderGeometry.pageLocation(
+                forScrollViewLocation: scrollViewLocation,
+                contentOffset: CGPoint(x: 0, y: -100),
+                adjustedTopInset: 100
+            ) == CGPoint(x: 160, y: 220)
+        )
+    }
+}

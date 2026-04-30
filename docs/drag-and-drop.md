@@ -34,19 +34,13 @@ Two SwiftUI gesture experiments were tried first and abandoned:
 
 Only UIKit-level `require(toFail:)` lets pan and long-press coexist correctly.
 
-**Touch-to-row mapping** — the recognizer is attached to the scroll view, not per-row. On `.began`, the bridge resolves which row was touched by finding the `rowFrame` whose rect contains `recognizer.location(in: scrollView)`. From there `preliftReorder(blockID:)` and `tickReorderLift` proceed exactly as before. Per-row state isn't needed — the lift's `sourceFrame`/`sourceIndex`/`touchOffset` come from `rowFrames` and the `.began` location.
+**Touch-to-row mapping** — the recognizer is attached to the scroll view, not per-row. UIKit reports `recognizer.location(in: scrollView)` in the scroll view's shifted content coordinates, while SwiftUI `rowFrames` are measured in the page's visible named coordinate space. The bridge subtracts `scrollView.contentOffset` before row lookup, lift anchoring, and drop-slot resolution; otherwise a scrolled page double-counts the vertical offset and starts the drag from a lower row.
 
 **Cancellation** — `UILongPressGestureRecognizer.state == .cancelled` or `.failed` fires for system cancellation (touch leaves window, gesture interrupted) AND for "user moved before timer" — but in the latter case `.began` never fired, so we suppress `onCancel` unless we have an `activeBlockID`. SwiftUI tap-to-edit still works because `cancelsTouchesInView = false` lets touches continue flowing to per-row gestures.
 
 **Coexistence** — the bridge's `gestureRecognizerShouldRecognizeSimultaneouslyWith` returns `true`, so other recognizers (per-row swipe-actions, tap-to-edit) can recognize alongside our long-press.
 
-**Source frame freeze** — when the lift first materialises (first `.second` event from the sequence), `updateIOSReorderLift` captures `sourceFrame`, `sourceIndex`, and `touchOffset` once and re-uses them for the duration of the drag. Subsequent events update only `lift.location`. If we instead read `rowFrames[id]` on each event, the lift would drift downward as the 42pt drift gap animates open above the source — every recomputed `touchOffset.height = startLocation.y - sourceFrame.minY` would be smaller than the last.
-
-**Touch offset uses `drag.location`, not `drag.startLocation`** — during the 0.34s long-press the finger may drift up to 36pt within the long-press tolerance. Anchoring touchOffset to `drag.location` (where the finger is at lift time) keeps the lift under the *current* finger position, not the original press point.
-
-**Cancellation** — the sequenced gesture exposes `.onEnded` for both successful drops and cancels. `onReorderCancel` clears state if the long-press fires but the drag never produces a `.second` event.
-
-**Coexistence** — `simultaneousGesture` lets the row's swipe-actions still fire short horizontal swipes before the long-press completes. The pinch-to-insert gesture is disabled while a reorder drag is active (`pinchGestureActive` flag) so the two don't fight for the same touch.
+**Source frame freeze** — when the lift first materialises, `preliftReorder` / `tickReorderLift` captures `sourceFrame`, `sourceIndex`, `sourceEndIndex`, and `touchOffset` once and re-uses them for the duration of the drag. Subsequent events update only `lift.location`. If we instead read `rowFrames[id]` on each event, the lift would drift downward as the 42pt drift gap animates open above the source — every recomputed `touchOffset.height = startLocation.y - sourceFrame.minY` would be smaller than the last.
 
 **Haptics** — `Haptics.light()` fires on lift begin and on each `dropHoverIndex` slot transition.
 
@@ -56,7 +50,7 @@ Only UIKit-level `require(toFail:)` lets pan and long-press coexist correctly.
 
 The handle is normally only hit-testable while the row is hovered. **During an active drag the handle's hit-testing is forced on for the source row**, even though `hoveredBlockID` shifts to whichever row the cursor is currently over. Without this, SwiftUI silently cancels the in-flight gesture (no `.onEnded` fires) the moment `allowsHitTesting(false)` flips on the still-tracking view, leaving the lift stuck on screen with no recovery. See `isMacDraggingFromRow(_:)` in [PageView.swift](../Packages/UI/Sources/UI/PageView.swift).
 
-**Source frame freeze + anchor** — same pattern as iOS: `updateMacReorderLift` captures `sourceFrame`, `sourceIndex`, and `touchOffset` once on the first event, then only updates `location`. `touchOffset` uses `value.startLocation` here (no long-press, so it's where the click landed). Because the click typically lands in the gutter (left of `sourceFrame.minX`), `touchOffset.width` is negative — the cursor floats just left of the lift's leading edge throughout the drag, exactly as it sat against the gutter at click time.
+**Source frame freeze + anchor** — same pattern as iOS: `tickReorderLift` captures `sourceFrame`, `sourceIndex`, `sourceEndIndex`, and `touchOffset` once on the first event, then only updates `location`. `touchOffset` uses `value.startLocation` here (no long-press, so it's where the click landed). Because the click typically lands in the gutter (left of `sourceFrame.minX`), `touchOffset.width` is negative — the cursor floats just left of the lift's leading edge throughout the drag, exactly as it sat against the gutter at click time.
 
 **No drag preview from `.draggable`** — SwiftUI's `.draggable(_:preview:)` centers its preview on the cursor with no anchor control. We implement the lift as a SwiftUI `.overlay` on the page positioned by `.position(x:y:)` derived from `lift.location` and `lift.touchOffset`. This sacrifices cross-app drag (the system pasteboard isn't involved) — re-add `.draggable` separately if cross-app reorder ever becomes a goal.
 
@@ -72,16 +66,16 @@ A single `reorderLift: ReorderLift?` carries the lift across both platforms. Its
 
 - `block: Block` — the lead block, used for the lift overlay's content.
 - `ids: [BlockID]` — every block participating in the drag (one for a single-row drag; the whole selection for a multi-block drag).
-- `sourceFrame`, `sourceIndex`, `touchOffset`, `location` — geometry, frozen except for `location`.
-- `pendingAnchor: Bool` — true while the lift is mounted but `touchOffset` is a placeholder waiting for a real cursor location. Set on iOS at long-press completion (where `LongPressGesture.Value` carries no location), cleared on the first `.second` drag event.
+- `sourceFrame`, `sourceIndex`, `sourceEndIndex`, `touchOffset`, `location` — geometry, frozen except for `location`.
+- `pendingAnchor: Bool` — true while the lift is mounted but `touchOffset` is a placeholder waiting for a real cursor location. Used on iOS when prelift state is mounted before the first concrete touch point is applied.
 
 The shared methods are:
 
 - `preliftReorder(blockID:snapshot:)` — pre-mounts the lift centered on the source row with `pendingAnchor: true`. iOS-only entry point (called from `onReorderBegin`).
-- `tickReorderLift(blockID:at location:anchorAt anchor:snapshot:)` — per-event update. Creates the lift lazily if missing (macOS path), re-anchors `touchOffset` if pending, then sets `location` and recomputes `dropHoverIndex`. iOS passes `drag.location` for both `at` and `anchorAt`; macOS passes `value.location` for `at` and `value.startLocation` for `anchorAt` (the click point, before the 4pt minimum-distance kicked in).
+- `tickReorderLift(blockID:at location:anchorAt anchor:snapshot:)` — per-event update. Creates the lift lazily if missing (macOS path), re-anchors `touchOffset` if pending, then sets `location` and recomputes `dropHoverIndex`. iOS passes the recognizer location for both `at` and `anchorAt`; macOS passes `value.location` for `at` and `value.startLocation` for `anchorAt` (the click point, before the 4pt minimum-distance kicked in).
 - `endReorderLift(atY:snapshot:)` / `cancelReorderLift()` — both wrap their state changes (and `moveBlocks` in the end case) in one `Transaction(animation: nil, disablesAnimations: true)`.
 
-`reorderDriftGap(for:)` and `reorderSourceOpacity(for:)` consult `reorderLift?.sourceIndex` and `reorderLift?.ids` directly — no `#if` fork. Multi-block drag dims all selected source rows on both platforms.
+`reorderDriftGap(for:)` and `reorderSourceOpacity(for:)` consult `reorderLift` directly — no `#if` fork. Multi-block and section drags dim every source row on both platforms. The lift also stores `sourceEndIndex`, so gap animation is suppressed for every insertion slot inside the source section, not just the lead row.
 
 ## Parity opportunities
 

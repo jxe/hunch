@@ -34,6 +34,86 @@ struct RoundTripTests {
         #expect(indents == [0, 1, 2, 0])
     }
 
+    @Test func bulletWithParagraphChild() {
+        let src = """
+        - parent
+
+          child paragraph
+        """
+        let blocks = BlockParser.parse(src)
+        guard blocks.count == 2 else {
+            Issue.record("expected 2 blocks, got \(blocks.count)")
+            return
+        }
+        if case .paragraph(_, let text, let indent) = blocks[1] {
+            #expect(String(text.characters) == "child paragraph")
+            #expect(indent == 1)
+        } else {
+            Issue.record("expected paragraph child")
+        }
+        roundTrip(src)
+    }
+
+    @Test func bulletWithQuoteChild() {
+        let src = """
+        - parent
+          > child quote
+        """
+        let blocks = BlockParser.parse(src)
+        #expect(blocks.count == 2)
+        if case .quote(_, let text, let indent) = blocks[1] {
+            #expect(String(text.characters) == "child quote")
+            #expect(indent == 1)
+        } else {
+            Issue.record("expected quote child")
+        }
+        roundTrip(src)
+    }
+
+    @Test func bulletWithCodeChild() {
+        let src = """
+        - parent
+
+          ```swift
+          let x = 1
+          ```
+        """
+        let blocks = BlockParser.parse(src)
+        guard blocks.count == 2 else {
+            Issue.record("expected 2 blocks, got \(blocks.count)")
+            return
+        }
+        if case .code(_, let source, let language, let indent) = blocks[1] {
+            #expect(language == "swift")
+            #expect(source.contains("let x = 1"))
+            #expect(indent == 1)
+        } else {
+            Issue.record("expected code child")
+        }
+        roundTrip(src)
+    }
+
+    @Test func nestedBulletWithParagraphChild() {
+        let src = """
+        - parent
+          - child
+
+            paragraph
+        """
+        let blocks = BlockParser.parse(src)
+        guard blocks.count == 3 else {
+            Issue.record("expected 3 blocks, got \(blocks.count)")
+            return
+        }
+        if case .paragraph(_, let text, let indent) = blocks[2] {
+            #expect(String(text.characters) == "paragraph")
+            #expect(indent == 2)
+        } else {
+            Issue.record("expected paragraph child")
+        }
+        roundTrip(src)
+    }
+
     @Test func numbered() {
         roundTrip("1. one\n1. two\n")
     }
@@ -53,7 +133,7 @@ struct RoundTripTests {
     @Test func quote() {
         let blocks = BlockParser.parse("> a quote\n")
         #expect(blocks.count == 1)
-        if case .quote(_, let text) = blocks[0] {
+        if case .quote(_, let text, _) = blocks[0] {
             #expect(String(text.characters) == "a quote")
         } else {
             Issue.record("not a quote")
@@ -63,7 +143,7 @@ struct RoundTripTests {
     @Test func codeBlock() {
         let blocks = BlockParser.parse("```swift\nlet x = 1\n```\n")
         #expect(blocks.count == 1)
-        if case .code(_, let source, let lang) = blocks[0] {
+        if case .code(_, let source, let lang, _) = blocks[0] {
             #expect(lang == "swift")
             #expect(source.contains("let x = 1"))
         } else {
@@ -88,7 +168,7 @@ struct RoundTripTests {
         """
         let blocks = BlockParser.parse(src)
         #expect(blocks.count == 1)
-        guard case .toggle(_, let title, _, let children) = blocks[0] else {
+        guard case .toggle(_, let title, _, let children, _) = blocks[0] else {
             Issue.record("not a toggle")
             return
         }
@@ -100,7 +180,7 @@ struct RoundTripTests {
     @Test func subpage() {
         let blocks = BlockParser.parse("[Notes](folder/page.md)\n")
         #expect(blocks.count == 1)
-        if case .subpage(_, let title, let path) = blocks[0] {
+        if case .subpage(_, let title, let path, _) = blocks[0] {
             #expect(title == "Notes")
             #expect(path == "folder/page.md")
         } else {
@@ -120,7 +200,7 @@ struct RoundTripTests {
     @Test func inlineEmphasisRoundTrip() {
         let blocks = BlockParser.parse("This is **bold** and *italic* and `code`.\n")
         #expect(blocks.count == 1)
-        guard case .paragraph(_, let text) = blocks[0] else {
+        guard case .paragraph(_, let text, _) = blocks[0] else {
             Issue.record("not paragraph")
             return
         }
@@ -138,7 +218,7 @@ struct RoundTripTests {
         // Re-serialize and re-parse: emphases survive
         let serialized = BlockSerializer.serialize(blocks)
         let parsed2 = BlockParser.parse(serialized)
-        guard case .paragraph(_, let text2) = parsed2[0] else {
+        guard case .paragraph(_, let text2, _) = parsed2[0] else {
             Issue.record("re-parse not paragraph")
             return
         }
@@ -170,7 +250,7 @@ struct RoundTripTests {
         """
         let blocks = BlockParser.parse(src)
         #expect(blocks.count == 1)
-        guard case .toggle(_, _, _, let outerChildren) = blocks[0] else {
+        guard case .toggle(_, _, _, let outerChildren, _) = blocks[0] else {
             Issue.record("outer not toggle")
             return
         }
@@ -194,29 +274,29 @@ struct RoundTripTests {
 
     private func blockKind(_ b: Block) -> String {
         switch b {
-        case .paragraph: return "paragraph"
-        case .heading(_, let level, _): return "heading-\(level)"
+        case .paragraph(_, _, let i): return "paragraph-\(i)"
+        case .heading(_, let level, _, let i): return "heading-\(level)-\(i)"
         case .bullet(_, _, let i): return "bullet-\(i)"
         case .numbered(_, _, let i): return "numbered-\(i)"
         case .todo(_, _, _, let i): return "todo-\(i)"
-        case .quote: return "quote"
-        case .code(_, _, let lang): return "code-\(lang ?? "nil")"
-        case .divider: return "divider"
-        case .toggle: return "toggle"
-        case .subpage: return "subpage"
+        case .quote(_, _, let i): return "quote-\(i)"
+        case .code(_, _, let lang, let i): return "code-\(lang ?? "nil")-\(i)"
+        case .divider(_, let i): return "divider-\(i)"
+        case .toggle(_, _, _, _, let i): return "toggle-\(i)"
+        case .subpage(_, _, _, let i): return "subpage-\(i)"
         }
     }
 
     private func plainText(_ b: Block) -> String {
         switch b {
-        case .paragraph(_, let t), .heading(_, _, let t),
+        case .paragraph(_, let t, _), .heading(_, _, let t, _),
              .bullet(_, let t, _), .numbered(_, let t, _),
-             .todo(_, let t, _, _), .quote(_, let t),
-             .toggle(_, let t, _, _):
+             .todo(_, let t, _, _), .quote(_, let t, _),
+             .toggle(_, let t, _, _, _):
             return String(t.characters)
-        case .code(_, let s, _): return s.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .code(_, let s, _, _): return s.trimmingCharacters(in: .whitespacesAndNewlines)
         case .divider: return ""
-        case .subpage(_, let title, _): return title
+        case .subpage(_, let title, _, _): return title
         }
     }
 }

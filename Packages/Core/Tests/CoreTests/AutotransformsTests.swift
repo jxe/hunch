@@ -139,7 +139,7 @@ struct BlockTransformApplyTests {
     @Test func headingProducesHeadingBlock() {
         let blocks = BlockTransform.heading(level: 2).apply(to: attr("Section"))
         #expect(blocks.count == 1)
-        if case .heading(_, let level, let text) = blocks[0] {
+        if case .heading(_, let level, let text, _) = blocks[0] {
             #expect(level == 2)
             #expect(String(text.characters) == "Section")
         } else {
@@ -180,7 +180,7 @@ struct BlockTransformApplyTests {
 
     @Test func quote() {
         let blocks = BlockTransform.quote.apply(to: attr("said it"))
-        if case .quote(_, let text) = blocks[0] {
+        if case .quote(_, let text, _) = blocks[0] {
             #expect(String(text.characters) == "said it")
         } else {
             Issue.record("expected quote")
@@ -189,7 +189,7 @@ struct BlockTransformApplyTests {
 
     @Test func toggleCollapsedNoChildren() {
         let blocks = BlockTransform.toggle.apply(to: attr("Details"))
-        if case .toggle(_, let title, let expanded, let children) = blocks[0] {
+        if case .toggle(_, let title, let expanded, let children, _) = blocks[0] {
             #expect(String(title.characters) == "Details")
             #expect(expanded == false)
             #expect(children.isEmpty)
@@ -202,7 +202,7 @@ struct BlockTransformApplyTests {
         let blocks = BlockTransform.divider.apply(to: attr(""))
         #expect(blocks.count == 2)
         if case .divider = blocks[0] {} else { Issue.record("expected divider at 0") }
-        if case .paragraph(_, let text) = blocks[1] {
+        if case .paragraph(_, let text, _) = blocks[1] {
             #expect(String(text.characters) == "")
         } else {
             Issue.record("expected paragraph at 1")
@@ -213,7 +213,7 @@ struct BlockTransformApplyTests {
     @Test func codeFenceProducesTwoBlocks() {
         let blocks = BlockTransform.codeFence.apply(to: attr(""))
         #expect(blocks.count == 2)
-        if case .code(_, let source, let language) = blocks[0] {
+        if case .code(_, let source, let language, _) = blocks[0] {
             #expect(source == "")
             #expect(language == nil)
         } else {

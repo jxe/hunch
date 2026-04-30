@@ -307,11 +307,11 @@ public struct PageView: View {
         #if os(iOS)
         let isSelected = false
         #else
-        let isSelected = selection.contains(block.id)
+        let isSelected = effectiveSelectedIDs().contains(block.id)
         #endif
         let isEditing = editingBlock == block.id
 
-        if case .subpage(_, _, let path) = block {
+        if case .subpage(_, _, let path, _) = block {
             Button {
                 onSubpageTap(path)
             } label: {
@@ -370,7 +370,7 @@ public struct PageView: View {
                     showActionToast("Deleted")
                 },
                 onCycleIndent: {
-                    cycleIndent(blockID: block.id)
+                    indentByOne(blockID: block.id)
                 }
             )
             .opacity(reorderSourceOpacity(for: block.id))
@@ -456,8 +456,8 @@ public struct PageView: View {
         // Dropping the source row at its own slot is a no-op — don't open a
         // gap there. (Also avoids layout churn that would destabilise the
         // lift's frozen sourceFrame.)
-        if let sourceIndex = reorderLift?.sourceIndex,
-           sourceIndex == index || sourceIndex == index - 1 {
+        if let lift = reorderLift,
+           index >= lift.sourceIndex && index <= lift.sourceEndIndex + 1 {
             return 0
         }
         return 42
@@ -508,11 +508,16 @@ public struct PageView: View {
               let sourceFrame = rowFrames[blockID],
               let sourceIndex = snapshot.firstIndex(where: { $0.id == blockID })
         else { return }
+        let ids = dragIDs(for: blockID)
+        let idSet = Set(ids)
+        let sourceIndices = snapshot.enumerated()
+            .compactMap { idSet.contains($0.element.id) ? $0.offset : nil }
         reorderLift = ReorderLift(
             block: block,
-            ids: dragIDs(for: blockID),
+            ids: ids,
             sourceFrame: sourceFrame,
             sourceIndex: sourceIndex,
+            sourceEndIndex: sourceIndices.last ?? sourceIndex,
             touchOffset: CGSize(width: sourceFrame.width / 2, height: sourceFrame.height / 2),
             location: CGPoint(x: sourceFrame.midX, y: sourceFrame.midY),
             pendingAnchor: true
@@ -541,11 +546,16 @@ public struct PageView: View {
                   let sourceFrame = rowFrames[blockID],
                   let sourceIndex = snapshot.firstIndex(where: { $0.id == blockID })
             else { return }
+            let ids = dragIDs(for: blockID)
+            let idSet = Set(ids)
+            let sourceIndices = snapshot.enumerated()
+                .compactMap { idSet.contains($0.element.id) ? $0.offset : nil }
             reorderLift = ReorderLift(
                 block: block,
-                ids: dragIDs(for: blockID),
+                ids: ids,
                 sourceFrame: sourceFrame,
                 sourceIndex: sourceIndex,
+                sourceEndIndex: sourceIndices.last ?? sourceIndex,
                 touchOffset: CGSize(
                     width: anchor.x - sourceFrame.minX,
                     height: anchor.y - sourceFrame.minY
@@ -632,9 +642,9 @@ public struct PageView: View {
     /// order); otherwise just the single row.
     private func dragIDs(for blockID: BlockID) -> [BlockID] {
         if selection.contains(blockID) && selection.count > 1 {
-            return document.blocks.compactMap { selection.contains($0.id) ? $0.id : nil }
+            return effectiveSelectedIDsInDocumentOrder()
         }
-        return [blockID]
+        return document.indicesIncludingSections(of: [blockID]).map { document.blocks[$0].id }
     }
 
     private func accessibilityLabel(for block: Block) -> String {
@@ -656,11 +666,11 @@ public struct PageView: View {
 
     private func accessibilityText(for block: Block) -> String {
         switch block {
-        case .code(_, let source, _):
+        case .code(_, let source, _, _):
             return source
         case .divider:
             return ""
-        case .subpage(_, let title, _):
+        case .subpage(_, let title, _, _):
             return title
         default:
             return String(block.text.characters)
@@ -671,7 +681,7 @@ public struct PageView: View {
         switch block {
         case .paragraph:
             return "Paragraph"
-        case .heading(_, let level, _):
+        case .heading(_, let level, _, _):
             return "Heading \(level)"
         case .bullet:
             return "Bullet"
@@ -922,7 +932,7 @@ public struct PageView: View {
     }
 
     private func isPageTitleBlock(_ block: Block, snapshot: [Block]) -> Bool {
-        guard case .heading(_, 1, _) = block else { return false }
+        guard case .heading(_, 1, _, _) = block else { return false }
         guard let first = snapshot.first else { return false }
         return first.id == block.id
     }
@@ -1031,6 +1041,18 @@ public struct PageView: View {
             .compactMap { (i, block) in selection.contains(block.id) ? i : nil }
     }
 
+    private func effectiveSelectedIndices() -> [Int] {
+        document.indicesIncludingSections(of: selection)
+    }
+
+    private func effectiveSelectedIDs() -> Set<BlockID> {
+        Set(effectiveSelectedIDsInDocumentOrder())
+    }
+
+    private func effectiveSelectedIDsInDocumentOrder() -> [BlockID] {
+        effectiveSelectedIndices().map { document.blocks[$0].id }
+    }
+
     // MARK: - Edit-mode transitions
 
     private func enterEditMode(on id: BlockID) {
@@ -1069,7 +1091,7 @@ public struct PageView: View {
     /// Move the contiguous selection up or down by `delta` rows. No-op if doing so would
     /// push the head past 0 or the tail past the last index.
     private func moveSelectionInDocument(by delta: Int) {
-        let indices = selectedIndices()
+        let indices = effectiveSelectedIndices()
         guard !indices.isEmpty, let first = indices.first, let last = indices.last else { return }
         let target = first + delta
         let lastTarget = last + delta
@@ -1089,7 +1111,7 @@ public struct PageView: View {
     /// before the deleted range (or the first remaining if we removed the head). No-op if
     /// the selection covers every block in the document.
     private func deleteSelection() {
-        let indices = selectedIndices()
+        let indices = effectiveSelectedIndices()
         guard !indices.isEmpty else { return }
         guard indices.count < document.blocks.count else { return }
 
@@ -1112,9 +1134,7 @@ public struct PageView: View {
     }
 
     private func deleteBlocks(ids: [BlockID], actionName: String) {
-        let idSet = Set(ids)
-        let indices = document.blocks.enumerated()
-            .compactMap { (i, block) in idSet.contains(block.id) ? i : nil }
+        let indices = document.indicesIncludingSections(of: ids)
         guard !indices.isEmpty, indices.count < document.blocks.count else { return }
 
         let firstIndex = indices.first!
@@ -1132,46 +1152,37 @@ public struct PageView: View {
         }
     }
 
-    private func cycleIndent(blockID: BlockID) {
-        guard let i = document.index(of: blockID) else { return }
-        let block = document.blocks[i]
-        switch block {
-        case .bullet, .numbered, .todo:
-            let nextIndent = block.indent >= 3 ? 0 : block.indent + 1
-            guard nextIndent != block.indent else { return }
-            mutate("Indent") {
-                document.blocks[i] = block.withIndent(nextIndent)
+    private func indentByOne(blockID: BlockID) {
+        let indices = document.indicesIncludingSections(of: [blockID])
+        guard canChangeIndent(at: indices, by: 1) else { return }
+        mutate("Indent") {
+            var blocks = document.blocks
+            for i in indices {
+                blocks[i] = blocks[i].withIndent(blocks[i].indent + 1)
             }
-        default:
-            break
+            document.blocks = blocks
         }
     }
 
-    /// Apply Tab / Shift-Tab indent change to every list-item block in the selection. Non-
-    /// list blocks are skipped silently.
+    /// Apply Tab / Shift-Tab indent change to the effective selection.
     private func indentSelection(by delta: Int) {
-        let indices = selectedIndices()
+        let indices = effectiveSelectedIndices()
         guard !indices.isEmpty else { return }
-        // Detect whether anything will actually change before opening an undo entry.
-        let willChange = indices.contains { i in
-            switch document.blocks[i] {
-            case .bullet, .numbered, .todo: return true
-            default: return false
-            }
-        }
-        guard willChange else { return }
+        guard canChangeIndent(at: indices, by: delta) else { return }
         mutate(delta > 0 ? "Indent" : "Outdent") {
             var blocks = document.blocks
             for i in indices {
-                let block = blocks[i]
-                switch block {
-                case .bullet, .numbered, .todo:
-                    blocks[i] = block.withIndent(block.indent + delta)
-                default:
-                    break
-                }
+                blocks[i] = blocks[i].withIndent(blocks[i].indent + delta)
             }
             document.blocks = blocks
+        }
+    }
+
+    private func canChangeIndent(at indices: [Int], by delta: Int) -> Bool {
+        guard !indices.isEmpty else { return false }
+        return indices.allSatisfy { i in
+            let next = document.blocks[i].indent + delta
+            return next >= 0 && next <= 5
         }
     }
 
@@ -1242,7 +1253,8 @@ public struct PageView: View {
     /// on the block at `transform.focusReplacementIndex` (which is the fresh paragraph for
     /// divider/codeFence and the transformed block otherwise).
     private func applyAutotransform(_ transform: BlockTransform, remainingText: AttributedString, blockID: BlockID) {
-        let replacements = transform.apply(to: remainingText)
+        guard let source = document.blocks.first(where: { $0.id == blockID }) else { return }
+        let replacements = transform.apply(to: remainingText).map { $0.withIndent(source.indent) }
         guard !replacements.isEmpty else { return }
         mutate("Format Block") {
             document.replace(blockID: blockID, with: replacements)
@@ -1272,10 +1284,15 @@ public struct PageView: View {
             return .numbered(text: attr, indent: indent)
         case .todo(_, _, _, let indent):
             return .todo(text: attr, done: false, indent: indent)
-        case .quote:
-            return .quote(text: attr)
-        case .heading, .paragraph, .toggle, .code, .divider, .subpage:
-            return .paragraph(text: attr)
+        case .quote(_, _, let indent):
+            return .quote(text: attr, indent: indent)
+        case .heading(_, _, _, let indent),
+             .paragraph(_, _, let indent),
+             .toggle(_, _, _, _, let indent),
+             .code(_, _, _, let indent),
+             .divider(_, let indent),
+             .subpage(_, _, _, let indent):
+            return .paragraph(text: attr, indent: indent)
         }
     }
 
@@ -1300,7 +1317,7 @@ public struct PageView: View {
 
         if !isParagraph {
             mutate("Convert to Paragraph") {
-                document.blocks[i] = .paragraph(id: block.id, text: AttributedString())
+                document.blocks[i] = .paragraph(id: block.id, text: AttributedString(), indent: block.indent)
             }
             return .handled
         }
@@ -1319,17 +1336,16 @@ public struct PageView: View {
     }
 
     private func changeIndent(_ blockID: BlockID, by delta: Int) -> KeyPress.Result {
-        guard let i = document.index(of: blockID) else { return .ignored }
-        let block = document.blocks[i]
-        switch block {
-        case .bullet, .numbered, .todo:
-            mutate(delta > 0 ? "Indent" : "Outdent") {
-                document.blocks[i] = block.withIndent(block.indent + delta)
+        let indices = document.indicesIncludingSections(of: [blockID])
+        guard canChangeIndent(at: indices, by: delta) else { return .ignored }
+        mutate(delta > 0 ? "Indent" : "Outdent") {
+            var blocks = document.blocks
+            for i in indices {
+                blocks[i] = blocks[i].withIndent(blocks[i].indent + delta)
             }
-            return .handled
-        default:
-            return .ignored
+            document.blocks = blocks
         }
+        return .handled
     }
 }
 
@@ -1515,14 +1531,34 @@ struct ReorderLift {
     var ids: [BlockID]
     var sourceFrame: CGRect
     var sourceIndex: Int
+    var sourceEndIndex: Int
     var touchOffset: CGSize
     var location: CGPoint
     /// True while the lift is mounted but `touchOffset` is a placeholder
     /// (centered on the source row) waiting for a real cursor location to
-    /// re-anchor against. Only used on iOS — set at long-press completion
-    /// (where `LongPressGesture.Value` carries no location), cleared on the
-    /// first `.second` drag event.
+    /// re-anchor against. Used on iOS when prelift state is mounted before
+    /// the first concrete touch point is applied.
     var pendingAnchor: Bool
+}
+
+struct IOSPageReorderGeometry {
+    static func pageLocation(
+        forScrollViewLocation location: CGPoint,
+        contentOffset: CGPoint,
+        adjustedTopInset: CGFloat
+    ) -> CGPoint {
+        CGPoint(
+            x: location.x - contentOffset.x,
+            y: location.y - effectiveScrollOffsetY(
+                contentOffsetY: contentOffset.y,
+                adjustedTopInset: adjustedTopInset
+            )
+        )
+    }
+
+    private static func effectiveScrollOffsetY(contentOffsetY: CGFloat, adjustedTopInset: CGFloat) -> CGFloat {
+        max(0, contentOffsetY + adjustedTopInset)
+    }
 }
 
 #if os(iOS)
@@ -1619,7 +1655,7 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
 
         @objc func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
             guard let scrollView else { return }
-            let location = recognizer.location(in: scrollView)
+            let location = pageCoordinateLocation(for: recognizer, scrollView: scrollView)
             switch recognizer.state {
             case .began:
                 guard let blockID = nearestRowID(to: location, frames: parent.rowFrames) else {
@@ -1644,6 +1680,17 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
             default:
                 break
             }
+        }
+
+        private func pageCoordinateLocation(
+            for recognizer: UIGestureRecognizer,
+            scrollView: UIScrollView
+        ) -> CGPoint {
+            IOSPageReorderGeometry.pageLocation(
+                forScrollViewLocation: recognizer.location(in: scrollView),
+                contentOffset: scrollView.contentOffset,
+                adjustedTopInset: scrollView.adjustedContentInset.top
+            )
         }
 
         private func nearestRowID(to point: CGPoint, frames: [BlockID: CGRect]) -> BlockID? {

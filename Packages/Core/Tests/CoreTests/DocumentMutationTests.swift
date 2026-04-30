@@ -53,12 +53,12 @@ struct DocumentMutationTests {
             .paragraph(text: AttributedString("tail"))
         ])
         #expect(doc.blocks.count == 5)
-        if case .paragraph(_, let t) = doc.blocks[0] {
+        if case .paragraph(_, let t, _) = doc.blocks[0] {
             #expect(String(t.characters) == "head")
         } else {
             Issue.record("expected paragraph at 0")
         }
-        if case .paragraph(_, let t) = doc.blocks[1] {
+        if case .paragraph(_, let t, _) = doc.blocks[1] {
             #expect(String(t.characters) == "tail")
         } else {
             Issue.record("expected paragraph at 1")
@@ -82,7 +82,7 @@ struct DocumentMutationTests {
         let original = Block.paragraph(text: AttributedString("old"))
         let updated = original.withText(AttributedString("new"))
         #expect(updated.id == original.id)
-        if case .paragraph(_, let t) = updated {
+        if case .paragraph(_, let t, _) = updated {
             #expect(String(t.characters) == "new")
         } else {
             Issue.record("expected paragraph")
@@ -92,7 +92,7 @@ struct DocumentMutationTests {
     @Test func withTextPreservesHeadingLevel() {
         let original = Block.heading(level: 2, text: AttributedString("old"))
         let updated = original.withText(AttributedString("new"))
-        if case .heading(_, let level, let t) = updated {
+        if case .heading(_, let level, let t, _) = updated {
             #expect(level == 2)
             #expect(String(t.characters) == "new")
         } else {
@@ -118,7 +118,7 @@ struct DocumentMutationTests {
             children: [.paragraph(text: AttributedString("kid"))]
         )
         let updated = original.withText(AttributedString("new title"))
-        if case .toggle(_, let title, let expanded, let children) = updated {
+        if case .toggle(_, let title, let expanded, let children, _) = updated {
             #expect(String(title.characters) == "new title")
             #expect(expanded == true)
             #expect(children.count == 1)
@@ -137,9 +137,53 @@ struct DocumentMutationTests {
         } else { Issue.record("expected bullet") }
     }
 
-    @Test func withIndentNoopOnNonListBlock() {
+    @Test func withIndentUpdatesNonListBlock() {
         let p = Block.paragraph(text: AttributedString("x"))
         let updated = p.withIndent(2)
-        #expect(updated.indent == 0)
+        #expect(updated.indent == 2)
+    }
+
+    @Test func sectionRangeEmptySectionIncludesOnlyBlock() {
+        let doc = makeDoc()
+        let range = doc.sectionRange(of: doc.blocks[0].id)
+        #expect(range == 0..<1)
+    }
+
+    @Test func sectionRangeIncludesSingleDescendant() {
+        let doc = makeDoc()
+        let range = doc.sectionRange(of: doc.blocks[1].id)
+        #expect(range == 1..<3)
+    }
+
+    @Test func sectionRangeStopsAtFirstSiblingOrAncestor() {
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            title: "Test",
+            blocks: [
+                .bullet(text: AttributedString("root"), indent: 1),
+                .bullet(text: AttributedString("child"), indent: 2),
+                .paragraph(text: AttributedString("grandchild"), indent: 3),
+                .quote(text: AttributedString("sibling"), indent: 1),
+                .paragraph(text: AttributedString("after"), indent: 0)
+            ]
+        )
+        #expect(doc.sectionRange(of: doc.blocks[0].id) == 0..<3)
+    }
+
+    @Test func indicesIncludingSectionsDedupesInDocumentOrder() {
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            title: "Test",
+            blocks: [
+                .bullet(text: AttributedString("parent"), indent: 0),
+                .paragraph(text: AttributedString("child"), indent: 1),
+                .quote(text: AttributedString("grandchild"), indent: 2),
+                .paragraph(text: AttributedString("sibling"), indent: 0),
+                .bullet(text: AttributedString("paragraph child"), indent: 1)
+            ]
+        )
+        let indices = doc.indicesIncludingSections(of: [doc.blocks[0].id, doc.blocks[1].id])
+        #expect(indices == [0, 1, 2])
+        #expect(doc.sectionRange(of: doc.blocks[3].id) == 3..<5)
     }
 }

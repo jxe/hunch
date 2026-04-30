@@ -82,7 +82,7 @@ struct DocumentSaveCoordinatorTests {
 
         let reloaded = try FileStore().loadDocument(at: url)
         #expect(reloaded.blocks.count == 4)
-        if case .heading(_, _, let t) = reloaded.blocks[0] {
+        if case .heading(_, _, let t, _) = reloaded.blocks[0] {
             #expect(String(t.characters) == "Title")
         } else { Issue.record("expected heading first") }
         if case .bullet(_, _, let i) = reloaded.blocks[3] {

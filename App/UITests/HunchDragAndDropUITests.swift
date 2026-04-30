@@ -21,6 +21,23 @@ final class HunchDragAndDropUITests: XCTestCase {
         assertRowOrder(["Alpha", "Charlie", "Delta", "Bravo", "Echo", "Foxtrot"])
     }
 
+    func testLongPressReorderAfterScrollTargetsTouchedRow() {
+        launchTallDocApp()
+
+        let row12 = row(containing: "Row 12")
+        XCTAssertTrue(scrollUntilHittable(row12), "Expected Row 12 to be visible after scrolling")
+
+        let row15 = row(containing: "Row 15")
+        XCTAssertTrue(row15.waitForExistence(timeout: 3))
+        XCTAssertTrue(row15.isHittable, "Expected Row 15 to be visible as the drop target")
+
+        let start = row12.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5))
+        let end = row15.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5))
+        start.press(forDuration: 0.55, thenDragTo: end)
+
+        assertRowOrder(["Row 13", "Row 14", "Row 12", "Row 15"])
+    }
+
     func testHorizontalSwipeDoesNotStartReorder() {
         launchApp()
 
@@ -143,6 +160,16 @@ final class HunchDragAndDropUITests: XCTestCase {
 
     private func row(containing text: String) -> XCUIElement {
         app.descendants(matching: .any)["block-row-\(slug(text))"]
+    }
+
+    private func scrollUntilHittable(_ element: XCUIElement, attempts: Int = 8) -> Bool {
+        for _ in 0..<attempts {
+            if element.exists && element.isHittable {
+                return true
+            }
+            app.swipeUp()
+        }
+        return element.exists && element.isHittable
     }
 
     private func assertRowOrder(_ expected: [String], timeout: TimeInterval = 3, file: StaticString = #filePath, line: UInt = #line) {

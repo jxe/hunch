@@ -124,6 +124,18 @@ the paragraph should still sit visually inside the same nested column).
 
 [Packages/UI/Sources/UI/PageView.swift](Packages/UI/Sources/UI/PageView.swift):
 
+- **macOS nav selection highlight** — the blue row highlight should cover
+  every selected row's full section, not just the explicitly selected
+  parent rows. Keep `selection`, `anchor`, and `cursor` as the logical
+  keyboard endpoints so Shift+↑/↓ still extends by visible row. Add one
+  shared effective-selection helper, backed by
+  `indicesIncludingSections(of: selection)`, and use it for both
+  `rowView`'s `isSelected` check and every section-aware operation below.
+  Example: selecting a parent list item with collapsed single-row nav
+  selection highlights that parent plus all contiguous descendants.
+  Shift-selecting across two parents highlights both parents and both
+  sections, deduped in document order, and operations act on that exact
+  same expanded set.
 - **Move (Option+↑/↓)** — `moveSelectionInDocument(by:)` at line 981:
   expand selection to `indicesIncludingSections`, slide min..max range.
 - **Drag** — `dragIDs(for:)` at line 543: expand the returned `[BlockID]`
@@ -169,7 +181,7 @@ atomic — no change there.
   [BlockSpacing.swift](Packages/UI/Sources/UI/BlockSpacing.swift) —
   uniform indent padding.
 - [Packages/UI/Sources/UI/PageView.swift](Packages/UI/Sources/UI/PageView.swift)
-  — six call sites listed above.
+  — nav highlight plus the operation call sites listed above.
 - [Packages/UI/Sources/UI/BlockDragPayload.swift](Packages/UI/Sources/UI/BlockDragPayload.swift)
   — no change; `ids` already carries multi-block payloads.
 
@@ -201,19 +213,23 @@ On a doc shaped like:
 - sibling         (bullet, indent 0)
 ```
 
-1. Click `parent`, press Option+↓. All four descendants slide with it
-   past `sibling`.
-2. Press Tab on `parent`. Every section row's indent increments by 1.
+1. Click `parent`, press Option+↓. `parent` and its three descendants
+   slide together past `sibling`.
+2. On macOS, select `parent` in nav mode. The blue highlight covers
+   `parent`, `child A`, `paragraph`, and `child B`; `sibling` remains
+   unhighlighted. Shift+↓ to include `sibling`; the highlight now covers
+   `parent`'s section plus `sibling`.
+3. Press Tab on `parent`. Every section row's indent increments by 1.
    Press Tab again — `paragraph` would hit 6, so the whole op is a
    no-op.
-3. Press Shift-Tab on `parent`. Whole section decrements; pressing again
+4. Press Shift-Tab on `parent`. Whole section decrements; pressing again
    from indent-0 parent is a no-op.
-4. Drag `parent`'s handle. Chip reads "5 blocks". Drop above `sibling`;
-   all five land in order, indents preserved.
-5. Select `parent`, press Delete. Section gone. Undo restores all five.
-6. iOS: tap drag-handle on `parent`. Section indents by 1; at max, tap
+5. Drag `parent`'s handle. Chip reads "4 blocks". Drop above `sibling`;
+   all four land in order, indents preserved.
+6. Select `parent`, press Delete. Section gone. Undo restores all four.
+7. iOS: tap drag-handle on `parent`. Section indents by 1; at max, tap
    is a no-op (no wraparound).
-7. Save the doc, kill the app, re-open. Confirm the `paragraph` at
+8. Save the doc, kill the app, re-open. Confirm the `paragraph` at
    indent 2 round-trips.
 
 iOS build sanity:

@@ -22,11 +22,11 @@ public enum BlockSerializer {
 
     public static func serialize(_ block: Block) -> String {
         switch block {
-        case .paragraph(_, let text):
-            return inlineString(text) + "\n\n"
+        case .paragraph(_, let text, let indent):
+            return indentPrefix(indent) + inlineString(text) + "\n\n"
 
-        case .heading(_, let level, let text):
-            return String(repeating: "#", count: level) + " " + inlineString(text) + "\n\n"
+        case .heading(_, let level, let text, let indent):
+            return indentPrefix(indent) + String(repeating: "#", count: level) + " " + inlineString(text) + "\n\n"
 
         case .bullet(_, let text, let indent):
             return indentPrefix(indent) + "- " + inlineString(text) + "\n"
@@ -37,31 +37,41 @@ public enum BlockSerializer {
         case .todo(_, let text, let done, let indent):
             return indentPrefix(indent) + "- [" + (done ? "x" : " ") + "] " + inlineString(text) + "\n"
 
-        case .quote(_, let text):
-            return "> " + inlineString(text) + "\n\n"
+        case .quote(_, let text, let indent):
+            return indentPrefix(indent) + "> " + inlineString(text) + "\n\n"
 
-        case .code(_, let source, let language):
+        case .code(_, let source, let language, let indent):
             let fence = "```" + (language ?? "")
             let body = source.hasSuffix("\n") ? source : source + "\n"
-            return fence + "\n" + body + "```\n\n"
+            return indentLines(fence + "\n" + body + "```\n\n", indent: indent)
 
-        case .divider:
-            return "---\n\n"
+        case .divider(_, let indent):
+            return indentPrefix(indent) + "---\n\n"
 
-        case .toggle(_, let title, _, let children):
+        case .toggle(_, let title, _, let children, let indent):
             var inner = serialize(children)
             // serialize() ensures a trailing newline; trim back to a single newline
             while inner.hasSuffix("\n\n") { inner.removeLast() }
             if !inner.hasSuffix("\n") { inner += "\n" }
-            return "<details><summary>" + inlineString(title) + "</summary>\n\n" + inner + "\n</details>\n\n"
+            let raw = "<details><summary>" + inlineString(title) + "</summary>\n\n" + inner + "\n</details>\n\n"
+            return indentLines(raw, indent: indent)
 
-        case .subpage(_, let title, let path):
-            return "[" + title + "](" + path + ")\n\n"
+        case .subpage(_, let title, let path, let indent):
+            return indentPrefix(indent) + "[" + title + "](" + path + ")\n\n"
         }
     }
 
     private static func indentPrefix(_ indent: Int) -> String {
         String(repeating: "  ", count: max(0, indent))
+    }
+
+    private static func indentLines(_ source: String, indent: Int) -> String {
+        let prefix = indentPrefix(indent)
+        guard !prefix.isEmpty else { return source }
+        return source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in line.isEmpty ? "" : prefix + line }
+            .joined(separator: "\n")
     }
 
     // MARK: - AttributedString → markdown inline
