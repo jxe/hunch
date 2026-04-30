@@ -40,7 +40,7 @@ Tests live next to `ReorderDropResolver`. Add coverage there before touching hov
 
 ## macOS
 
-**Gesture** — `DragGesture(minimumDistance: 4, coordinateSpace: .named(PageHoverCoordinateSpace.name))` attached as a `simultaneousGesture` on the gutter `DragHandle` only (not the row body — clicking the row body still enters edit mode). 4pt of movement is enough to distinguish a click from a drag.
+**Gesture** — `DragGesture(minimumDistance: 4, coordinateSpace: .named(PageHoverCoordinateSpace.name))` attached as a `simultaneousGesture` on both the gutter `DragHandle` and the row body. The 4pt threshold is what lets the row-body drag coexist with click-to-edit: a click without movement enters edit mode via `.onTapGesture`; movement past 4pt starts a drag instead. The gesture is gated off while `isEditing` is true so the editor's own selection drag isn't shadowed.
 
 The handle is normally only hit-testable while the row is hovered. **During an active drag the handle's hit-testing is forced on for the source row**, even though `hoveredBlockID` shifts to whichever row the cursor is currently over. Without this, SwiftUI silently cancels the in-flight gesture (no `.onEnded` fires) the moment `allowsHitTesting(false)` flips on the still-tracking view, leaving the lift stuck on screen with no recovery. See `isMacDraggingFromRow(_:)` in [PageView.swift](../Packages/UI/Sources/UI/PageView.swift).
 
@@ -77,6 +77,7 @@ Worth doing when next touching this code:
 
 - **Mouse-up safety net on macOS.** Add the `NSEvent.addLocalMonitorForEvents(.leftMouseUp)` fallback so a cancellation we haven't anticipated doesn't leave the lift stuck.
 - **Haptics on macOS where applicable** — feedback on lift begin and slot transitions, where the system supports it.
+- **Reconsider the row-body drag's interaction with text selection in non-editing rows** if SwiftUI ever introduces inline text selection on read-only `Text` views. Today there's nothing to conflict with, but the 4pt drag threshold is a soft contract.
 
 ## Don't
 

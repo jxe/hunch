@@ -327,6 +327,25 @@ public struct PageView: View {
                 },
                 initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
             )
+            // Whole-row reorder on macOS. Coexists with click-to-edit
+            // (.onTapGesture below) because of the 4pt minimumDistance: a
+            // click without movement enters edit mode; movement past 4pt
+            // starts a drag instead. isEditing gates the drag off so the
+            // editor's own selection gestures aren't shadowed.
+            .macRowReorder(
+                isEnabled: !isEditing,
+                block: block,
+                snapshot: snapshot,
+                onChanged: { value in
+                    tickReorderLift(
+                        blockID: block.id,
+                        at: value.location,
+                        anchorAt: value.startLocation,
+                        snapshot: snapshot
+                    )
+                },
+                onEnded: { value in endReorderLift(atY: value.location.y, snapshot: snapshot) }
+            )
             .iosBlockTouchActions(
                 payload: rowDragPayload,
                 isEnabled: !isEditing && !pinchGestureActive,
