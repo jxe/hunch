@@ -92,4 +92,41 @@ extension Document {
         }
         return included.sorted()
     }
+
+    @discardableResult
+    public mutating func moveSections(containing ids: some Sequence<BlockID>, by delta: Int) -> Bool {
+        guard delta == -1 || delta == 1 else { return false }
+
+        let indices = indicesIncludingSections(of: ids)
+        guard !indices.isEmpty, let first = indices.first, let last = indices.last else { return false }
+        guard indices.count == last - first + 1 else { return false }
+
+        let baseIndent = indices.map { blocks[$0].indent }.min() ?? blocks[first].indent
+        let movingCount = last - first + 1
+        let movingBlocks = Array(blocks[first...last])
+
+        if delta < 0 {
+            var previousStart = first - 1
+            while previousStart >= 0, blocks[previousStart].indent > baseIndent {
+                previousStart -= 1
+            }
+            guard previousStart >= 0, blocks[previousStart].indent == baseIndent else { return false }
+
+            blocks.removeSubrange(first...last)
+            blocks.insert(contentsOf: movingBlocks, at: previousStart)
+            return true
+        } else {
+            let nextStart = last + 1
+            guard nextStart < blocks.count, blocks[nextStart].indent == baseIndent else { return false }
+
+            var nextEnd = nextStart + 1
+            while nextEnd < blocks.count, blocks[nextEnd].indent > baseIndent {
+                nextEnd += 1
+            }
+
+            blocks.removeSubrange(first...last)
+            blocks.insert(contentsOf: movingBlocks, at: nextEnd - movingCount)
+            return true
+        }
+    }
 }

@@ -1,6 +1,11 @@
 import SwiftUI
 import Core
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 private struct PagePinchValue {
     var startLocation: CGPoint
@@ -238,10 +243,15 @@ public struct PageView: View {
                 .delete,
                 KeyEquivalent("\u{8}"),
                 KeyEquivalent("\u{7F}"),
+                KeyEquivalent("c"),
                 KeyEquivalent("k")
             ]) { press in
                 guard editingBlock == nil else { return .ignored }
                 let modifiers = press.modifiers
+
+                if press.key == KeyEquivalent("c"), modifiers.contains(.command) {
+                    return copySelectionToPasteboard() ? .handled : .ignored
+                }
 
                 if press.key == .delete || press.key == KeyEquivalent("\u{8}") || press.key == KeyEquivalent("\u{7F}") {
                     deleteSelection()
@@ -1088,22 +1098,17 @@ public struct PageView: View {
 
     // MARK: - Selection-wide operations
 
-    /// Move the contiguous selection up or down by `delta` rows. No-op if doing so would
-    /// push the head past 0 or the tail past the last index.
+    /// Move the contiguous selection up or down across outline siblings. Selected
+    /// parents carry their descendants, so top-level blocks hop over whole sections.
     private func moveSelectionInDocument(by delta: Int) {
-        let indices = effectiveSelectedIndices()
-        guard !indices.isEmpty, let first = indices.first, let last = indices.last else { return }
-        let target = first + delta
-        let lastTarget = last + delta
-        guard target >= 0, lastTarget < document.blocks.count else { return }
+        let ids = effectiveSelectedIDsInDocumentOrder()
+        guard !ids.isEmpty else { return }
+
+        var moved = document
+        guard moved.moveSections(containing: ids, by: delta) else { return }
 
         mutate("Move Block") {
-            // Pull the slice, splice back at the target index.
-            var blocks = document.blocks
-            let slice = Array(blocks[first...last])
-            blocks.removeSubrange(first...last)
-            blocks.insert(contentsOf: slice, at: target)
-            document.blocks = blocks
+            document.blocks = moved.blocks
         }
     }
 
@@ -1176,6 +1181,26 @@ public struct PageView: View {
             }
             document.blocks = blocks
         }
+    }
+
+    private func copySelectionToPasteboard() -> Bool {
+        let indices = effectiveSelectedIndices()
+        guard !indices.isEmpty else { return false }
+
+        let selectedBlocks = indices.map { document.blocks[$0] }
+        let minIndent = selectedBlocks.map(\.indent).min() ?? 0
+        let normalizedBlocks = selectedBlocks.map { block in
+            block.withIndent(block.indent - minIndent)
+        }
+        let markdown = BlockSerializer.serialize(normalizedBlocks)
+
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(markdown, forType: .string)
+        #else
+        UIPasteboard.general.string = markdown
+        #endif
+        return true
     }
 
     private func canChangeIndent(at indices: [Int], by delta: Int) -> Bool {
