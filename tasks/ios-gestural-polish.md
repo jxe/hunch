@@ -61,8 +61,3 @@ Prepare generators on touch-down to avoid first-fire latency.
 - `handlePinchCommit`
 - `pinchInsertIndex`
 - `Packages/UI/Sources/UI/Haptics.swift`
-
-## Out Of Scope
-
-macOS hover/drag polish. The felt-quality gap is currently iOS-specific.
-

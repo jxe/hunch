@@ -7,7 +7,6 @@
 - Dark mode.
 - Web clipping.
 - AI features.
-- Cross-block selection.
 - Find-and-replace.
 - PDF export.
 

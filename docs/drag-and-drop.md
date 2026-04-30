@@ -76,8 +76,6 @@ The shared methods are:
 Worth doing when next touching this code:
 
 - **Mouse-up safety net on macOS.** Add the `NSEvent.addLocalMonitorForEvents(.leftMouseUp)` fallback so a cancellation we haven't anticipated doesn't leave the lift stuck.
-- **Haptics on macOS where applicable** — feedback on lift begin and slot transitions, where the system supports it.
-- **Reconsider the row-body drag's interaction with text selection in non-editing rows** if SwiftUI ever introduces inline text selection on read-only `Text` views. Today there's nothing to conflict with, but the 4pt drag threshold is a soft contract.
 
 ## Don't
 
