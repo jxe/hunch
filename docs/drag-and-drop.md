@@ -54,22 +54,28 @@ The handle is normally only hit-testable while the row is hovered. **During an a
 
 If a cancellation path turns up that we haven't covered, the right escape hatch is an `NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp)` installed on lift-begin and torn down on lift-end — that fires regardless of whether SwiftUI's gesture is still tracking.
 
-## What lives in `PageView.swift` (today)
+## Unified state (PageView)
 
-- `iosReorderLift: IOSReorderLift?` / `macReorderLift: MacReorderLift?` — separate state, identical fields (`block`, `sourceFrame`, `sourceIndex`, `touchOffset`, `location`).
-- `iosReorderLiftView()` / `macReorderLiftView()` — separate overlays, identical body.
-- `updateIOSReorderLift(...)` / `updateMacReorderLift(...)` — separate update paths, identical "first call freezes, subsequent calls only update location" logic.
-- `reorderDriftGap(for:)` — shared, dispatches to `iosReorderLift?.sourceIndex` or `macReorderLift?.sourceIndex` via `#if`.
-- `reorderSourceOpacity(for:)` — shared, dispatches to `activeIOSReorderIDs` (a set, since iOS supports multi-block drag) or `macReorderLift?.block.id` (single).
+A single `reorderLift: ReorderLift?` carries the lift across both platforms. Its fields are platform-agnostic:
+
+- `block: Block` — the lead block, used for the lift overlay's content.
+- `ids: [BlockID]` — every block participating in the drag (one for a single-row drag; the whole selection for a multi-block drag).
+- `sourceFrame`, `sourceIndex`, `touchOffset`, `location` — geometry, frozen except for `location`.
+- `pendingAnchor: Bool` — true while the lift is mounted but `touchOffset` is a placeholder waiting for a real cursor location. Set on iOS at long-press completion (where `LongPressGesture.Value` carries no location), cleared on the first `.second` drag event.
+
+The shared methods are:
+
+- `preliftReorder(blockID:snapshot:)` — pre-mounts the lift centered on the source row with `pendingAnchor: true`. iOS-only entry point (called from `onReorderBegin`).
+- `tickReorderLift(blockID:at location:anchorAt anchor:snapshot:)` — per-event update. Creates the lift lazily if missing (macOS path), re-anchors `touchOffset` if pending, then sets `location` and recomputes `dropHoverIndex`. iOS passes `drag.location` for both `at` and `anchorAt`; macOS passes `value.location` for `at` and `value.startLocation` for `anchorAt` (the click point, before the 4pt minimum-distance kicked in).
+- `endReorderLift(atY:snapshot:)` / `cancelReorderLift()` — both wrap their state changes (and `moveBlocks` in the end case) in one `Transaction(animation: nil, disablesAnimations: true)`.
+
+`reorderDriftGap(for:)` and `reorderSourceOpacity(for:)` consult `reorderLift?.sourceIndex` and `reorderLift?.ids` directly — no `#if` fork. Multi-block drag dims all selected source rows on both platforms.
 
 ## Parity opportunities
 
 Worth doing when next touching this code:
 
-- **Unify the lift struct, state, view, and update function.** The fields and logic are identical; only the *trigger* differs (sequenced long-press vs. plain drag). A single `reorderLift: ReorderLift?` plus a single `reorderLiftView()` would remove three pairs of near-duplicates. The only platform fork is which gesture sets it.
-- **Multi-block drag on macOS.** iOS already drags the entire selection via `dragIDs(for:)` and `activeIOSReorderIDs`. macOS currently drags only the single block, dropping a multi-selection silently. Carrying `ids: [BlockID]` on `MacReorderLift` (and dimming all of them in `reorderSourceOpacity`) would close the gap.
 - **Mouse-up safety net on macOS.** Add the `NSEvent.addLocalMonitorForEvents(.leftMouseUp)` fallback so a cancellation we haven't anticipated doesn't leave the lift stuck.
-- **macOS row-body drag.** Currently only the gutter handle initiates a drag on macOS. The row body could too (with `minimumDistance: 4` it wouldn't conflict with click-to-edit), matching iOS where the whole row is the drag source.
 - **Haptics on macOS where applicable** — feedback on lift begin and slot transitions, where the system supports it.
 
 ## Don't

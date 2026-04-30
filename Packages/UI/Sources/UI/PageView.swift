@@ -62,12 +62,12 @@ public struct PageView: View {
     @State private var rowFrames: [BlockID: CGRect] = [:]
     @State private var actionToast: String?
     @State private var lastDropHapticIndex: Int?
-    @State private var activeIOSReorderIDs: [BlockID] = []
-    @State private var iosReorderLift: IOSReorderLift?
-    /// macOS reorder lift state. Mirrors `iosReorderLift` but fed by a plain
-    /// DragGesture instead of a sequenced long-press, since macOS drags begin
-    /// immediately on click+drag.
-    @State private var macReorderLift: MacReorderLift?
+    /// Unified reorder lift state. Set on iOS at long-press completion (with a
+    /// placeholder centered touchOffset, re-anchored on the first real drag
+    /// event) and on macOS on the first DragGesture event past the 4pt
+    /// threshold. The fields are platform-agnostic; only the gesture that
+    /// triggers it differs.
+    @State private var reorderLift: ReorderLift?
     /// Active pinch-open-to-insert preview state. Drives an inline gap that grows
     /// between two rows as the user spreads their fingers; nil when no pinch is
     /// in progress (or when the pinch's startLocation didn't pin to a row pair).
@@ -153,10 +153,7 @@ public struct PageView: View {
                 handleTapBelowRows(at: $0)
             }
             .overlay(alignment: .topLeading) {
-                iosReorderLiftView()
-            }
-            .overlay(alignment: .topLeading) {
-                macReorderLiftView()
+                reorderLiftView()
             }
             .overlay(alignment: .bottom) {
                 if let actionToast {
@@ -330,42 +327,24 @@ public struct PageView: View {
                 },
                 initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
             )
-            .macRowReorder(
-                isEnabled: !isEditing,
-                block: block,
-                snapshot: snapshot,
-                onChanged: { value in updateMacReorderLift(block: block, value: value, snapshot: snapshot) },
-                onEnded: { value in endMacReorder(value: value, snapshot: snapshot) }
-            )
             .iosBlockTouchActions(
                 payload: rowDragPayload,
                 isEnabled: !isEditing && !pinchGestureActive,
                 sourceFrame: rowFrames[block.id],
                 onReorderBegin: { payload in
-                    activeIOSReorderIDs = payload.ids
+                    if let id = payload.ids.first {
+                        preliftReorder(blockID: id, snapshot: snapshot)
+                    }
                     Haptics.light()
                 },
                 onReorderChanged: { drag in
-                    updateIOSReorderLift(payload: rowDragPayload, drag: drag, snapshot: snapshot)
-                    let pageY = drag.location.y
-                    dropHoverIndex = ReorderDropResolver.insertionIndex(
-                        forY: pageY,
-                        rowFrames: orderedDropFrames(snapshot: snapshot),
-                        previousIndex: dropHoverIndex
-                    )
+                    tickReorderLift(blockID: block.id, at: drag.location, anchorAt: drag.location, snapshot: snapshot)
                 },
-                onReorderEnd: { payload, pageY in
-                    let target = ReorderDropResolver.insertionIndex(
-                        forY: pageY,
-                        rowFrames: orderedDropFrames(snapshot: snapshot),
-                        previousIndex: dropHoverIndex
-                    )
-                    clearDropHoverWithoutAnimation()
-                    moveBlocks(ids: payload.ids, toIndexBefore: target)
-                    clearIOSReorderStateWithoutAnimation()
+                onReorderEnd: { _, pageY in
+                    endReorderLift(atY: pageY, snapshot: snapshot)
                 },
                 onReorderCancel: {
-                    clearIOSReorderStateWithoutAnimation()
+                    cancelReorderLift()
                 },
                 onDelete: {
                     deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
@@ -408,8 +387,15 @@ public struct PageView: View {
                         isEnabled: (showHandleOverlay(for: block.id) || isMacDraggingFromRow(block.id)) && !isEditing,
                         block: block,
                         snapshot: snapshot,
-                        onChanged: { value in updateMacReorderLift(block: block, value: value, snapshot: snapshot) },
-                        onEnded: { value in endMacReorder(value: value, snapshot: snapshot) }
+                        onChanged: { value in
+                            tickReorderLift(
+                                blockID: block.id,
+                                at: value.location,
+                                anchorAt: value.startLocation,
+                                snapshot: snapshot
+                            )
+                        },
+                        onEnded: { value in endReorderLift(atY: value.location.y, snapshot: snapshot) }
                     )
                     .allowsHitTesting(showHandleOverlay(for: block.id) || isMacDraggingFromRow(block.id))
             }
@@ -448,16 +434,9 @@ public struct PageView: View {
     private func reorderDriftGap(for index: Int) -> CGFloat {
         guard dropHoverIndex == index else { return 0 }
         // Dropping the source row at its own slot is a no-op — don't open a
-        // gap there. (On iOS this also avoids layout churn that would
-        // destabilise the lift.)
-        let sourceIndex: Int? = {
-            #if os(iOS)
-            return iosReorderLift?.sourceIndex
-            #else
-            return macReorderLift?.sourceIndex
-            #endif
-        }()
-        if let sourceIndex,
+        // gap there. (Also avoids layout churn that would destabilise the
+        // lift's frozen sourceFrame.)
+        if let sourceIndex = reorderLift?.sourceIndex,
            sourceIndex == index || sourceIndex == index - 1 {
             return 0
         }
@@ -465,25 +444,20 @@ public struct PageView: View {
     }
 
     private func reorderSourceOpacity(for id: BlockID) -> Double {
-        #if os(iOS)
-        return activeIOSReorderIDs.contains(id) ? 0.12 : 1
-        #else
-        return macReorderLift?.block.id == id ? 0.12 : 1
-        #endif
+        return reorderLift?.ids.contains(id) == true ? 0.12 : 1
     }
 
     private func isMacDraggingFromRow(_ id: BlockID) -> Bool {
         #if os(macOS)
-        return macReorderLift?.block.id == id
+        return reorderLift?.ids.contains(id) == true
         #else
         return false
         #endif
     }
 
     @ViewBuilder
-    private func iosReorderLiftView() -> some View {
-        #if os(iOS)
-        if let lift = iosReorderLift {
+    private func reorderLiftView() -> some View {
+        if let lift = reorderLift {
             BlockRow(
                 block: .constant(lift.block),
                 editorFocused: $editorFocused,
@@ -501,145 +475,108 @@ public struct PageView: View {
             .allowsHitTesting(false)
             .zIndex(100)
         }
-        #endif
     }
 
-    private func updateIOSReorderLift(payload: BlockDragPayload, drag: IOSReorderDrag, snapshot: [Block]) {
-        #if os(iOS)
-        // sourceFrame, sourceIndex, and touchOffset are frozen for the lift's
-        // lifetime: rowFrames[id] keeps shifting as drift gaps animate, and
-        // recomputing touchOffset against a moving frame causes the lift to
-        // drift away from the finger.
-        if var lift = iosReorderLift {
-            lift.location = drag.location
-            iosReorderLift = lift
-            return
-        }
-        guard let id = payload.ids.first,
-              let block = snapshot.first(where: { $0.id == id }),
-              let sourceFrame = rowFrames[id],
-              let sourceIndex = snapshot.firstIndex(where: { $0.id == id })
+    /// Pre-mounts the lift in a `pendingAnchor` state at the source row's
+    /// center. iOS calls this on long-press completion (where the gesture
+    /// value carries no cursor location) so the user gets immediate visual
+    /// feedback — source row dims and lift overlay appears — instead of
+    /// waiting for the first drag event. The next `tickReorderLift(at:)` call
+    /// re-anchors `touchOffset` to the actual cursor location.
+    private func preliftReorder(blockID: BlockID, snapshot: [Block]) {
+        guard let block = snapshot.first(where: { $0.id == blockID }),
+              let sourceFrame = rowFrames[blockID],
+              let sourceIndex = snapshot.firstIndex(where: { $0.id == blockID })
         else { return }
-        // Use drag.location, not drag.startLocation: the finger may have
-        // drifted up to the long-press maxDistance (36pt) during the hold,
-        // and we want the lift to lock to where the finger IS now.
-        iosReorderLift = IOSReorderLift(
+        reorderLift = ReorderLift(
             block: block,
+            ids: dragIDs(for: blockID),
             sourceFrame: sourceFrame,
             sourceIndex: sourceIndex,
-            touchOffset: CGSize(
-                width: drag.location.x - sourceFrame.minX,
-                height: drag.location.y - sourceFrame.minY
-            ),
-            location: drag.location
+            touchOffset: CGSize(width: sourceFrame.width / 2, height: sourceFrame.height / 2),
+            location: CGPoint(x: sourceFrame.midX, y: sourceFrame.midY),
+            pendingAnchor: true
         )
-        #else
-        _ = payload
-        _ = drag
-        _ = snapshot
-        #endif
     }
 
-    private func clearIOSReorderStateWithoutAnimation() {
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            dropHoverIndex = nil
-            activeIOSReorderIDs = []
-            iosReorderLift = nil
-        }
-    }
-
-    @ViewBuilder
-    private func macReorderLiftView() -> some View {
-        #if os(macOS)
-        if let lift = macReorderLift {
-            BlockRow(
-                block: .constant(lift.block),
-                editorFocused: $editorFocused,
-                isPageTitle: false,
-                numberingIndex: nil,
-                isSelected: false,
-                isEditing: false
-            )
-            .frame(width: lift.sourceFrame.width, height: lift.sourceFrame.height, alignment: .leading)
-            .scaleEffect(1.035)
-            .position(
-                x: lift.location.x - lift.touchOffset.width + (lift.sourceFrame.width / 2),
-                y: lift.location.y - lift.touchOffset.height + (lift.sourceFrame.height / 2)
-            )
-            .allowsHitTesting(false)
-            .zIndex(100)
-        }
-        #endif
-    }
-
-    /// Replaces SwiftUI's `.draggable`, which centers its preview on the
-    /// cursor with no anchor control. We render our own overlay positioned by
-    /// `touchOffset` so the grab point stays under the cursor.
-    private func updateMacReorderLift(block: Block, value: DragGesture.Value, snapshot: [Block]) {
-        #if os(macOS)
-        if var lift = macReorderLift {
-            lift.location = value.location
-            macReorderLift = lift
-        } else {
-            guard let sourceFrame = rowFrames[block.id],
-                  let sourceIndex = snapshot.firstIndex(where: { $0.id == block.id })
+    /// Per-event update: creates the lift if missing (macOS click-and-drag
+    /// path), re-anchors `touchOffset` if a previous `preliftReorder` left it
+    /// pending, then updates `location` and recomputes `dropHoverIndex`.
+    ///
+    /// `at location` is the current cursor position — drives lift placement
+    /// and drop-slot resolution. `anchorAt` is the point that should sit
+    /// under the cursor inside the lift; iOS passes the same value as
+    /// `location` (the finger may drift up to 36pt during long-press, and we
+    /// want the lift to lock to where the finger IS now), macOS passes
+    /// `value.startLocation` (the click point — typically in the gutter,
+    /// 4pt away from where the gesture-cleared `value.location` is).
+    ///
+    /// `sourceFrame`, `sourceIndex`, and `touchOffset` are frozen once the
+    /// lift exists with a real anchor — `rowFrames[id]` keeps shifting as the
+    /// drift gap animates open and recomputing against a moving frame would
+    /// drift the lift away from the cursor.
+    private func tickReorderLift(blockID: BlockID, at location: CGPoint, anchorAt anchor: CGPoint, snapshot: [Block]) {
+        if reorderLift == nil {
+            guard let block = snapshot.first(where: { $0.id == blockID }),
+                  let sourceFrame = rowFrames[blockID],
+                  let sourceIndex = snapshot.firstIndex(where: { $0.id == blockID })
             else { return }
-            // touchOffset uses startLocation here (and not just location) so
-            // the cursor stays anchored at the original grab point — including
-            // when that point is in the gutter (drag handle), in which case
-            // touchOffset.width is negative relative to sourceFrame.minX.
-            macReorderLift = MacReorderLift(
+            reorderLift = ReorderLift(
                 block: block,
+                ids: dragIDs(for: blockID),
                 sourceFrame: sourceFrame,
                 sourceIndex: sourceIndex,
                 touchOffset: CGSize(
-                    width: value.startLocation.x - sourceFrame.minX,
-                    height: value.startLocation.y - sourceFrame.minY
+                    width: anchor.x - sourceFrame.minX,
+                    height: anchor.y - sourceFrame.minY
                 ),
-                location: value.location
+                location: location,
+                pendingAnchor: false
             )
+        } else if var lift = reorderLift {
+            if lift.pendingAnchor {
+                lift.touchOffset = CGSize(
+                    width: anchor.x - lift.sourceFrame.minX,
+                    height: anchor.y - lift.sourceFrame.minY
+                )
+                lift.pendingAnchor = false
+            }
+            lift.location = location
+            reorderLift = lift
         }
         dropHoverIndex = ReorderDropResolver.insertionIndex(
-            forY: value.location.y,
+            forY: location.y,
             rowFrames: orderedDropFrames(snapshot: snapshot),
             previousIndex: dropHoverIndex
         )
-        #else
-        _ = block
-        _ = value
-        _ = snapshot
-        #endif
     }
 
-    private func endMacReorder(value: DragGesture.Value, snapshot: [Block]) {
-        #if os(macOS)
-        guard let lift = macReorderLift else { return }
+    /// Resolves the drop slot from `y`, then clears the lift and applies the
+    /// move inside one no-animation transaction so neither the gap close, the
+    /// lift unmount, nor the row reflow springs.
+    private func endReorderLift(atY y: CGFloat, snapshot: [Block]) {
+        guard let lift = reorderLift else { return }
         let target = ReorderDropResolver.insertionIndex(
-            forY: value.location.y,
+            forY: y,
             rowFrames: orderedDropFrames(snapshot: snapshot),
             previousIndex: dropHoverIndex
         )
-        let ids = dragIDs(for: lift.block.id)
+        let ids = lift.ids
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             dropHoverIndex = nil
-            macReorderLift = nil
+            reorderLift = nil
             moveBlocks(ids: ids, toIndexBefore: target)
         }
-        #else
-        _ = value
-        _ = snapshot
-        #endif
     }
 
-    private func clearDropHoverWithoutAnimation() {
+    private func cancelReorderLift() {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             dropHoverIndex = nil
+            reorderLift = nil
         }
     }
 
@@ -1542,20 +1479,22 @@ private struct IOSReorderDrag {
     var location: CGPoint
 }
 
-private struct IOSReorderLift {
+struct ReorderLift {
+    /// Lead block — this is what `reorderLiftView()` renders inside the lift.
     var block: Block
+    /// All blocks being reordered. Single-row drags carry one ID; drags
+    /// initiated from a multi-block selection carry the whole selection.
+    var ids: [BlockID]
     var sourceFrame: CGRect
     var sourceIndex: Int
     var touchOffset: CGSize
     var location: CGPoint
-}
-
-private struct MacReorderLift {
-    var block: Block
-    var sourceFrame: CGRect
-    var sourceIndex: Int
-    var touchOffset: CGSize
-    var location: CGPoint
+    /// True while the lift is mounted but `touchOffset` is a placeholder
+    /// (centered on the source row) waiting for a real cursor location to
+    /// re-anchor against. Only used on iOS — set at long-press completion
+    /// (where `LongPressGesture.Value` carries no location), cleared on the
+    /// first `.second` drag event.
+    var pendingAnchor: Bool
 }
 
 #if os(iOS)
