@@ -463,13 +463,7 @@ public struct PageView: View {
     }
 
     private func reorderSourceOpacity(for id: BlockID) -> Double {
-        // Skip the dim while pendingAnchor is true (iOS pre-movement window
-        // between long-press completion and the user actually starting to
-        // drag). Otherwise a held finger that hasn't moved would visibly
-        // dim its row, which reads as "the touch was claimed" — confusing
-        // when the user only intended to hold briefly.
-        guard let lift = reorderLift, !lift.pendingAnchor else { return 1 }
-        return lift.ids.contains(id) ? 0.12 : 1
+        return reorderLift?.ids.contains(id) == true ? 0.12 : 1
     }
 
     private func isMacDraggingFromRow(_ id: BlockID) -> Bool {
@@ -482,14 +476,7 @@ public struct PageView: View {
 
     @ViewBuilder
     private func reorderLiftView() -> some View {
-        // Skip the overlay while pendingAnchor is true (iOS, between long-press
-        // completion and the first drag event). The source row still dims via
-        // `reorderLift?.ids` and the drift gap still suppresses via
-        // `reorderLift?.sourceIndex` — but rendering the lift at the source
-        // row's center pre-movement would just stack a full-opacity copy on
-        // the dimmed original, looking like the row got "stuck lifted" before
-        // the finger has moved.
-        if let lift = reorderLift, !lift.pendingAnchor {
+        if let lift = reorderLift {
             BlockRow(
                 block: .constant(lift.block),
                 editorFocused: $editorFocused,
@@ -1542,13 +1529,8 @@ private struct IOSRowReorderActions: ViewModifier {
     @State private var latestPageY: CGFloat = 0
 
     func body(content: Content) -> some View {
-        // maximumDistance: 10 matches UIKit's standard allowableMovement.
-        // Larger values (we previously had 36) let slow scrolls stay within
-        // tolerance for the full 340ms hold, so the long-press fires, the
-        // source row dims, and the touch is claimed from the ScrollView —
-        // user perceives this as scroll being blocked.
         content.simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.34, maximumDistance: 10)
+            LongPressGesture(minimumDuration: 0.34, maximumDistance: 36)
                 .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(PageHoverCoordinateSpace.name)))
                 .onChanged(handleChange)
                 .onEnded(handleEnd)
@@ -1562,14 +1544,6 @@ private struct IOSRowReorderActions: ViewModifier {
             beginIfNeeded(at: CGPoint(x: sourceFrame.midX, y: sourceFrame.midY), emitChange: false)
         case .second(true, let drag?):
             beginIfNeeded(at: drag.location, emitChange: false)
-            // The inner DragGesture has minimumDistance: 0, so it delivers
-            // the first .second event the same frame the long-press completes
-            // — with translation ≈ 0. Don't propagate that as movement;
-            // wait for the user to actually drag past 4pt. Without this
-            // guard, the reorderLift's pendingAnchor flips off immediately
-            // and the dim/overlay appear at long-press completion instead of
-            // at first real motion.
-            if hypot(drag.translation.width, drag.translation.height) < 4 { return }
             latestPageY = drag.location.y
             onChanged(IOSReorderDrag(location: drag.location))
         default:
