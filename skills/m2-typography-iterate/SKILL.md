@@ -81,9 +81,10 @@ against a real Notion reference shot. Not for non-typography changes.
 
 ## What's verified vs. what's still uncertain
 
-See `ROADMAP.md` "M2" section. Confirmed-correct constants are listed with
-their measurement source. Quote, code, divider, toggle, and subpage spacing
-are not yet verified against any reference — flag if you're touching those.
+See `tasks/notion-typography.md`. Confirmed-correct constants are listed
+with their measurement source. Quote, code, divider, toggle, and subpage
+spacing are not yet verified against any reference — flag if you're
+touching those.
 
 ## Stop signal
 
