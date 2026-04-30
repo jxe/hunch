@@ -24,6 +24,7 @@ final class WorkspaceModel {
     private var accessedWorkspaceURL: URL?
     private var isDirty = false
     private var isSaving = false
+    private var documentCache: [URL: Document] = [:]
 
     func tryRestore() {
         if ProcessInfo.processInfo.arguments.contains("--console-ui-testing") {
@@ -66,6 +67,7 @@ final class WorkspaceModel {
         workspaceURL = nil
         entries = []
         openDocument = nil
+        documentCache = [:]
         path = []
     }
 
@@ -83,6 +85,7 @@ final class WorkspaceModel {
     func open(_ entry: WorkspaceEntry) {
         UserDefaults.standard.set(entry.relativePath, forKey: "console.lastOpenPage")
         if path == [entry.url] { return }
+        cacheOpenDocument()
         path = [entry.url]
     }
 
@@ -92,11 +95,13 @@ final class WorkspaceModel {
         let target = workspaceURL.appendingPathComponent(relativePath)
         UserDefaults.standard.set(relativePath, forKey: "console.lastOpenPage")
         if path.last == target { return }
+        cacheOpenDocument()
         path.append(target)
     }
 
     func goBack() {
         guard !path.isEmpty else { return }
+        cacheOpenDocument()
         path.removeLast()
     }
 
@@ -106,6 +111,7 @@ final class WorkspaceModel {
     func handlePathChange() {
         let topURL = path.last
         if openDocument?.url == topURL { return }
+        cacheOpenDocument()
         flushAndClose()
         guard let url = topURL else {
             openDocument = nil
@@ -113,8 +119,15 @@ final class WorkspaceModel {
             backstopTask = nil
             return
         }
+        if let cached = documentCache[url] {
+            openDocument = cached
+            installFilePresenter(for: url)
+            startBackstop()
+            return
+        }
         do {
             openDocument = try store.loadDocument(at: url)
+            cacheOpenDocument()
             isDirty = false
             installFilePresenter(for: url)
             startBackstop()
@@ -150,11 +163,27 @@ final class WorkspaceModel {
     }
 
     func closeDocument() {
+        cacheOpenDocument()
         path = []
+    }
+
+    func documentForPage(url: URL) -> Document? {
+        if openDocument?.url == url {
+            return openDocument
+        }
+        return documentCache[url]
+    }
+
+    func updateDocumentForPage(_ document: Document) {
+        documentCache[document.url] = document
+        if openDocument?.url == document.url {
+            openDocument = document
+        }
     }
 
     func markEdited() {
         isDirty = true
+        cacheOpenDocument()
         debounceTask?.cancel()
         debounceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(600))
@@ -173,6 +202,7 @@ final class WorkspaceModel {
             try await saver.save(doc)
             if openDocument?.url == doc.url {
                 openDocument?.modificationDate = modificationDate(for: doc.url)
+                cacheOpenDocument()
             }
             isDirty = false
             rescan()
@@ -224,10 +254,16 @@ final class WorkspaceModel {
 
         do {
             openDocument = try store.loadDocument(at: doc.url)
+            cacheOpenDocument()
             rescan()
         } catch {
             self.error = "Failed to reload external changes: \(error.localizedDescription)"
         }
+    }
+
+    private func cacheOpenDocument() {
+        guard let openDocument else { return }
+        documentCache[openDocument.url] = openDocument
     }
 
     private func modificationDate(for url: URL) -> Date? {
@@ -466,11 +502,11 @@ struct ContentView: View {
 
     @ViewBuilder
     private func pageDetail(for url: URL) -> some View {
-        if let openDoc = model.openDocument, openDoc.url == url {
+        if let document = model.documentForPage(url: url) {
             PageView(
                 document: Binding(
-                    get: { model.openDocument ?? Document(url: URL(fileURLWithPath: "/dev/null"), title: "", blocks: []) },
-                    set: { model.openDocument = $0 }
+                    get: { model.documentForPage(url: url) ?? document },
+                    set: { model.updateDocumentForPage($0) }
                 ),
                 onSubpageTap: { relativePath in
                     model.openSubpage(relativePath: relativePath)

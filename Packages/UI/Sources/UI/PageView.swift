@@ -359,6 +359,7 @@ public struct PageView: View {
             } message: {
                 Text(speechError ?? "")
             }
+            .iosEdgeGateNavigateBack()
         }
     }
 
@@ -2123,7 +2124,41 @@ private extension View {
         self
         #endif
     }
+
+    @ViewBuilder
+    func iosEdgeGateNavigateBack() -> some View {
+        #if os(iOS)
+        self.background(IOSNavigationBackGestureGate())
+        #else
+        self
+        #endif
+    }
 }
+
+#if os(iOS)
+private struct IOSNavigationBackGestureGate: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller {
+        Controller()
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.installWhenReady()
+    }
+
+    final class Controller: UIViewController {
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            installWhenReady()
+        }
+
+        func installWhenReady() {
+            guard let navigationController else { return }
+            navigationController.interactiveContentPopGestureRecognizer?.isEnabled = false
+            navigationController.interactivePopGestureRecognizer?.isEnabled = true
+        }
+    }
+}
+#endif
 
 private enum PageHoverCoordinateSpace {
     static let name = "PageView.hover"
