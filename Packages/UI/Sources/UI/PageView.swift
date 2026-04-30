@@ -270,7 +270,7 @@ public struct PageView: View {
                 consumePendingVoiceRecordingStart()
             }
             .onKeyPress(keys: [
-                .upArrow, .downArrow, .return, .escape, .tab,
+                .upArrow, .downArrow, .leftArrow, .rightArrow, .return, .escape, .tab,
                 KeyEquivalent("\u{19}"),  // NSBackTabCharacter — Shift+Tab on macOS
                 .delete,
                 KeyEquivalent("\u{8}"),
@@ -321,6 +321,10 @@ public struct PageView: View {
                         moveCursor(by: +1)
                     }
                     return .handled
+                case .rightArrow:
+                    return handleNavRightArrow() ? .handled : .ignored
+                case .leftArrow:
+                    return handleNavLeftArrow() ? .handled : .ignored
                 case .tab:
                     indentSelection(by: modifiers.contains(.shift) ? -1 : +1)
                     return .handled
@@ -1144,6 +1148,58 @@ public struct PageView: View {
         selection = [id]
     }
 
+    /// Nav-mode →: open the toggle under the cursor. Returns false (no-op) if the cursor
+    /// isn't on a single-selected toggle.
+    @discardableResult
+    private func handleNavRightArrow() -> Bool {
+        guard let id = cursor, selection.count == 1 else { return false }
+        guard let block = document.blocks.first(where: { $0.id == id }),
+              case .toggle = block else { return false }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            expandedToggles.insert(id)
+        }
+        return true
+    }
+
+    /// Nav-mode ←: close the toggle under the cursor if it's expanded; otherwise jump up
+    /// to the innermost enclosing toggle, close it, and move the selection there. Returns
+    /// false (no-op) when there's no toggle to act on.
+    @discardableResult
+    private func handleNavLeftArrow() -> Bool {
+        guard let id = cursor, selection.count == 1 else { return false }
+        guard let cursorIdx = document.blocks.firstIndex(where: { $0.id == id }) else { return false }
+
+        if case .toggle = document.blocks[cursorIdx], expandedToggles.contains(id) {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                expandedToggles.remove(id)
+            }
+            return true
+        }
+
+        guard let parentID = enclosingToggleID(at: cursorIdx) else { return false }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            expandedToggles.remove(parentID)
+        }
+        setCursor(parentID)
+        return true
+    }
+
+    /// Innermost ancestor toggle whose section contains `cursorIdx`. nil when the cursor
+    /// isn't inside any toggle's body.
+    private func enclosingToggleID(at cursorIdx: Int) -> BlockID? {
+        var best: (id: BlockID, indent: Int)?
+        for i in 0..<cursorIdx {
+            let b = document.blocks[i]
+            guard case .toggle = b else { continue }
+            if let range = document.sectionRange(of: b.id), range.contains(cursorIdx) {
+                if best == nil || b.indent > best!.indent {
+                    best = (b.id, b.indent)
+                }
+            }
+        }
+        return best?.id
+    }
+
     /// IDs of blocks that should be hidden from rendering and from arrow-nav because they
     /// live inside a collapsed toggle's section. The toggle row itself is always visible;
     /// only its body (subsequent blocks at greater indent) is hidden when collapsed.
@@ -1565,19 +1621,8 @@ public struct PageView: View {
     private func convertToHeading(blockID: BlockID, level: Int) -> KeyPress.Result {
         guard let i = document.index(of: blockID) else { return .ignored }
         let block = document.blocks[i]
-        let text: AttributedString
-        switch block {
-        case .paragraph(_, let t, _),
-             .heading(_, _, let t, _),
-             .bullet(_, let t, _),
-             .numbered(_, let t, _),
-             .quote(_, let t, _):
-            text = t
-        case .todo(_, let t, _, _):
-            text = t
-        default:
-            return .ignored
-        }
+        guard let text = textForBlockTypeChange(block) else { return .ignored }
+
         // Indent-descendants of the original block stay logically "under" the new
         // heading, but headings own their section by being headings, not by depth —
         // outdent the descendants by 1 so they sit at the heading's level (with
@@ -1594,6 +1639,41 @@ public struct PageView: View {
         return .handled
     }
 
+    @discardableResult
+    private func convertToToggle(blockID: BlockID) -> KeyPress.Result {
+        guard let i = document.index(of: blockID) else { return .ignored }
+        let block = document.blocks[i]
+        guard let text = textForBlockTypeChange(block) else { return .ignored }
+
+        // Toggles use indent-descendants for their body just like bullets/numbered/quote,
+        // so we don't shift the descendants — just swap the type. Auto-expand so the
+        // body stays visible right after the conversion.
+        mutate("Make Toggle") {
+            document.blocks[i] = .toggle(id: blockID, title: text, indent: block.indent)
+        }
+        expandedToggles.insert(blockID)
+        return .handled
+    }
+
+    /// Extracts the text/title from a block whose type can be swapped for another
+    /// text-bearing type without losing content. Returns nil for blocks that don't
+    /// carry user text (code/divider/subpage).
+    private func textForBlockTypeChange(_ block: Block) -> AttributedString? {
+        switch block {
+        case .paragraph(_, let t, _),
+             .heading(_, _, let t, _),
+             .bullet(_, let t, _),
+             .numbered(_, let t, _),
+             .quote(_, let t, _),
+             .toggle(_, let t, _):
+            return t
+        case .todo(_, let t, _, _):
+            return t
+        case .code, .divider, .subpage:
+            return nil
+        }
+    }
+
     @ViewBuilder
     fileprivate func blockActionMenuContent(for blockID: BlockID) -> some View {
         if let i = document.index(of: blockID) {
@@ -1607,6 +1687,11 @@ public struct PageView: View {
                 if case .subpage = block {
                     menuRow("Expand subpage", systemImage: "arrow.down.right.and.arrow.up.left") {
                         _ = expandSubpage(blockID: blockID)
+                    }
+                }
+                if canMakeToggle(block) {
+                    menuRow("Convert to toggle", systemImage: "chevron.right") {
+                        _ = convertToToggle(blockID: blockID)
                     }
                 }
                 if canMakeHeading(block) {
@@ -1675,6 +1760,15 @@ public struct PageView: View {
     }
 
     private func canMakeHeading(_ block: Block) -> Bool {
+        switch block {
+        case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle:
+            return true
+        case .code, .divider, .subpage:
+            return false
+        }
+    }
+
+    private func canMakeToggle(_ block: Block) -> Bool {
         switch block {
         case .paragraph, .bullet, .numbered, .todo, .quote, .heading:
             return true
@@ -1746,6 +1840,13 @@ public struct PageView: View {
         guard !replacements.isEmpty else { return }
         mutate("Format Block") {
             document.replace(blockID: blockID, with: replacements)
+        }
+        // `> ` on a row with indent-descendants converts it to a toggle whose body is those
+        // descendants — start expanded so they don't immediately vanish from the page.
+        if transform == .toggle {
+            for case .toggle(let id, _, _) in replacements {
+                expandedToggles.insert(id)
+            }
         }
         let focusTarget = replacements[transform.focusReplacementIndex]
         DispatchQueue.main.async {

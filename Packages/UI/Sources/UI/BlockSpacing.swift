@@ -38,8 +38,9 @@ public enum BlockSpacing {
     public static func intrinsicVerticalPadding(_ block: Block) -> CGFloat {
         switch block {
         // List items: ~5pt above/below per item — measured against notion_prompt_example.png,
-        // gives an item-to-item gap that's ~1.5× the within-paragraph line height.
-        case .bullet, .numbered, .todo, .subpage: return 5
+        // gives an item-to-item gap that's ~1.5× the within-paragraph line height. Toggles
+        // are list-item shaped (chevron + title, body as siblings), so they share this rule.
+        case .bullet, .numbered, .todo, .subpage, .toggle: return 5
         // .notion-code { padding: 1em }
         case .code: return 16
         // Default block padding — matches Notion's `.notion > * { padding: 3px 2px }`.
@@ -60,8 +61,7 @@ public enum BlockSpacing {
         case .quote: return 6
         case .code: return 8
         case .divider: return 12
-        case .toggle: return 2
-        case .subpage, .bullet, .numbered, .todo: return 0
+        case .subpage, .bullet, .numbered, .todo, .toggle: return 0
         }
     }
 
@@ -73,14 +73,13 @@ public enum BlockSpacing {
         case .quote: return 6
         case .code: return 8
         case .divider: return 12
-        case .toggle: return 2
-        case .subpage, .bullet, .numbered, .todo: return 0
+        case .subpage, .bullet, .numbered, .todo, .toggle: return 0
         }
     }
 
     private static func isListItem(_ block: Block) -> Bool {
         switch block {
-        case .bullet, .numbered, .todo, .subpage: return true
+        case .bullet, .numbered, .todo, .subpage, .toggle: return true
         default: return false
         }
     }
