@@ -25,6 +25,10 @@ final class WorkspaceModel {
             installUITestWorkspace()
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--console-ui-testing-tall-doc") {
+            installTallDocUITestWorkspace()
+            return
+        }
         if let url = WorkspaceBookmark.resolve() {
             accessedWorkspaceURL = url
             workspaceURL = url
@@ -235,6 +239,30 @@ final class WorkspaceModel {
             }
         } catch {
             self.error = "Failed to install UI test workspace: \(error.localizedDescription)"
+        }
+    }
+
+    private func installTallDocUITestWorkspace() {
+        do {
+            let root = FileManager.default
+                .temporaryDirectory
+                .appendingPathComponent("console-ui-tests", isDirectory: true)
+            try? FileManager.default.removeItem(at: root)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let documentURL = root.appendingPathComponent("everything.md")
+            var lines: [String] = ["# Tall Doc"]
+            for i in 1...30 {
+                lines.append("Row \(String(format: "%02d", i))")
+            }
+            let source = lines.joined(separator: "\n\n")
+            try source.write(to: documentURL, atomically: true, encoding: .utf8)
+            workspaceURL = root
+            entries = try store.scan(workspaceRoot: root)
+            if let entry = entries.first(where: { $0.relativePath == "everything.md" }) {
+                open(entry)
+            }
+        } catch {
+            self.error = "Failed to install tall-doc UI test workspace: \(error.localizedDescription)"
         }
     }
 }

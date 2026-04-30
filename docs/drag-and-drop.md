@@ -26,7 +26,19 @@ Tests live next to `ReorderDropResolver`. Add coverage there before touching hov
 
 ## iOS
 
-**Gesture** — `LongPressGesture(minimumDuration: 0.34, maximumDistance: 36)` sequenced before `DragGesture(minimumDistance: 0)`, attached as a `simultaneousGesture` to the row body via `IOSRowReorderActions`. The long-press is what distinguishes a reorder intent from a tap-to-edit; the drag-gesture half tracks the finger after the long-press completes.
+**Gesture** — `UILongPressGestureRecognizer` attached at the page level via `IOSPageReorderGestureBridge` (a `UIViewRepresentable` placed inside the `ScrollView`'s content). It walks up to the host `UIScrollView` at `didMoveToWindow`, adds its recognizer there, and calls `panGestureRecognizer.require(toFail: lp)`. Configuration: `minimumPressDuration = 0.5`, `allowableMovement = 8`, `cancelsTouchesInView = false`. UIKit-level coordination is what makes scroll work: a fast vertical drag exceeds `allowableMovement` before the timer fires → long-press fails → pan recognizer (which was waiting) wins → page scrolls. A deliberate hold within 8pt for 0.5s → long-press fires → pan never starts → reorder begins.
+
+Two SwiftUI gesture experiments were tried first and abandoned:
+1. `LongPressGesture(0.34, 36).sequenced(before: DragGesture(0))` — once `LongPressGesture` fires, SwiftUI's system gesture gate stalls subsequent events for ~1.9s and blocks `ScrollView` pan, stranding the row dimmed.
+2. `DragGesture(minimumDistance: 0)` with a manual press-duration timer — `DragGesture(0)` claims the touch at the SwiftUI layer and blocks the underlying `UIScrollView`'s pan even when our handler ignores the events. SwiftUI doesn't expose a way to release a claim mid-gesture.
+
+Only UIKit-level `require(toFail:)` lets pan and long-press coexist correctly.
+
+**Touch-to-row mapping** — the recognizer is attached to the scroll view, not per-row. On `.began`, the bridge resolves which row was touched by finding the `rowFrame` whose rect contains `recognizer.location(in: scrollView)`. From there `preliftReorder(blockID:)` and `tickReorderLift` proceed exactly as before. Per-row state isn't needed — the lift's `sourceFrame`/`sourceIndex`/`touchOffset` come from `rowFrames` and the `.began` location.
+
+**Cancellation** — `UILongPressGestureRecognizer.state == .cancelled` or `.failed` fires for system cancellation (touch leaves window, gesture interrupted) AND for "user moved before timer" — but in the latter case `.began` never fired, so we suppress `onCancel` unless we have an `activeBlockID`. SwiftUI tap-to-edit still works because `cancelsTouchesInView = false` lets touches continue flowing to per-row gestures.
+
+**Coexistence** — the bridge's `gestureRecognizerShouldRecognizeSimultaneouslyWith` returns `true`, so other recognizers (per-row swipe-actions, tap-to-edit) can recognize alongside our long-press.
 
 **Source frame freeze** — when the lift first materialises (first `.second` event from the sequence), `updateIOSReorderLift` captures `sourceFrame`, `sourceIndex`, and `touchOffset` once and re-uses them for the duration of the drag. Subsequent events update only `lift.location`. If we instead read `rowFrames[id]` on each event, the lift would drift downward as the 42pt drift gap animates open above the source — every recomputed `touchOffset.height = startLocation.y - sourceFrame.minY` would be smaller than the last.
 

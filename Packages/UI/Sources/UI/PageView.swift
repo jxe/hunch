@@ -132,6 +132,24 @@ public struct PageView: View {
                 .onPreferenceChange(RowFramePreferenceKey.self) { frames in
                     rowFrames = frames
                 }
+                .iosPageReorder(
+                    isEnabled: !pinchGestureActive,
+                    rowFrames: rowFrames,
+                    snapshot: snapshot
+                ) { blockID, location in
+                    preliftReorder(blockID: blockID, snapshot: snapshot)
+                    // Re-anchor immediately to the touch point so the lift sits under
+                    // the finger from frame one (no center-then-snap).
+                    tickReorderLift(blockID: blockID, at: location, anchorAt: location, snapshot: snapshot)
+                    Haptics.light()
+                } onChanged: { location in
+                    guard let id = reorderLift?.ids.first else { return }
+                    tickReorderLift(blockID: id, at: location, anchorAt: location, snapshot: snapshot)
+                } onEnded: { location in
+                    endReorderLift(atY: location.y, snapshot: snapshot)
+                } onCancelled: {
+                    cancelReorderLift()
+                }
             }
             .coordinateSpace(name: PageHoverCoordinateSpace.name)
             .iosPageBlockDropTarget(
@@ -292,7 +310,6 @@ public struct PageView: View {
         let isSelected = selection.contains(block.id)
         #endif
         let isEditing = editingBlock == block.id
-        let rowDragPayload = BlockDragPayload(ids: dragIDs(for: block.id))
 
         if case .subpage(_, _, let path) = block {
             Button {
@@ -347,24 +364,7 @@ public struct PageView: View {
                 onEnded: { value in endReorderLift(atY: value.location.y, snapshot: snapshot) }
             )
             .iosBlockTouchActions(
-                payload: rowDragPayload,
                 isEnabled: !isEditing && !pinchGestureActive,
-                sourceFrame: rowFrames[block.id],
-                onReorderBegin: { payload in
-                    if let id = payload.ids.first {
-                        preliftReorder(blockID: id, snapshot: snapshot)
-                    }
-                    Haptics.light()
-                },
-                onReorderChanged: { drag in
-                    tickReorderLift(blockID: block.id, at: drag.location, anchorAt: drag.location, snapshot: snapshot)
-                },
-                onReorderEnd: { _, pageY in
-                    endReorderLift(atY: pageY, snapshot: snapshot)
-                },
-                onReorderCancel: {
-                    cancelReorderLift()
-                },
                 onDelete: {
                     deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
                     showActionToast("Deleted")
@@ -378,6 +378,7 @@ public struct PageView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier(accessibilityIdentifier(for: block))
             .accessibilityLabel(accessibilityLabel(for: block))
+            .accessibilityValue(reorderLift?.ids.contains(block.id) == true ? "reorder-source" : "")
             .onTapGesture {
                 // Clicks outside the editable text region (markers, paddings) — no
                 // position info, cursor lands at end via the editor's default behavior.
@@ -1394,30 +1395,42 @@ private extension View {
 
     @ViewBuilder
     func iosBlockTouchActions(
-        payload: BlockDragPayload,
         isEnabled: Bool,
-        sourceFrame: CGRect?,
-        onReorderBegin: @escaping (BlockDragPayload) -> Void,
-        onReorderChanged: @escaping (IOSReorderDrag) -> Void,
-        onReorderEnd: @escaping (BlockDragPayload, CGFloat) -> Void,
-        onReorderCancel: @escaping () -> Void,
         onDelete: @escaping () -> Void,
         onCycleIndent: @escaping () -> Void
     ) -> some View {
         #if os(iOS)
         if isEnabled {
+            self.modifier(IOSRowSwipeActions(onDelete: onDelete, onIndent: onCycleIndent))
+        } else {
             self
-                .modifier(
-                    IOSRowReorderActions(
-                        payload: payload,
-                        sourceFrame: sourceFrame,
-                        onBegin: onReorderBegin,
-                        onChanged: onReorderChanged,
-                        onEnd: onReorderEnd,
-                        onCancel: onReorderCancel
-                    )
+        }
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func iosPageReorder(
+        isEnabled: Bool,
+        rowFrames: [BlockID: CGRect],
+        snapshot: [Block],
+        onBegin: @escaping (BlockID, CGPoint) -> Void,
+        onChanged: @escaping (CGPoint) -> Void,
+        onEnded: @escaping (CGPoint) -> Void,
+        onCancelled: @escaping () -> Void
+    ) -> some View {
+        #if os(iOS)
+        if isEnabled {
+            self.background(
+                IOSPageReorderGestureBridge(
+                    rowFrames: rowFrames,
+                    onBegin: onBegin,
+                    onChanged: onChanged,
+                    onEnded: onEnded,
+                    onCancelled: onCancelled
                 )
-                .modifier(IOSRowSwipeActions(onDelete: onDelete, onIndent: onCycleIndent))
+            )
         } else {
             self
         }
@@ -1494,10 +1507,6 @@ private func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> Bl
     }?.key
 }
 
-private struct IOSReorderDrag {
-    var location: CGPoint
-}
-
 struct ReorderLift {
     /// Lead block — this is what `reorderLiftView()` renders inside the lift.
     var block: Block
@@ -1517,59 +1526,138 @@ struct ReorderLift {
 }
 
 #if os(iOS)
-private struct IOSRowReorderActions: ViewModifier {
-    let payload: BlockDragPayload
-    let sourceFrame: CGRect?
-    let onBegin: (BlockDragPayload) -> Void
-    let onChanged: (IOSReorderDrag) -> Void
-    let onEnd: (BlockDragPayload, CGFloat) -> Void
-    let onCancel: () -> Void
+/// Page-level reorder gesture. Walks up to the enclosing `UIScrollView`,
+/// attaches a `UILongPressGestureRecognizer` to it, and tells the scroll
+/// view's pan recognizer to `require(toFail:)` it. UIKit-level coordination
+/// is what lets the page scroll on a fast vertical drag (motion exceeds
+/// `allowableMovement` before the timer fires → long-press fails → pan
+/// proceeds) while still entering reorder on a deliberate hold (timer
+/// fires within tolerance → long-press wins → pan never starts).
+///
+/// Prior SwiftUI implementation used `LongPressGesture.sequenced(before:
+/// DragGesture(0))` per row. That triggered SwiftUI's "system gesture gate"
+/// after `.first(true)` and stranded touches — no further events to either
+/// the row gesture or the scroll view, leaving rows dimmed and scroll
+/// blocked. Removing the SwiftUI long-press but keeping `DragGesture(0)`
+/// didn't help either: `DragGesture(minimumDistance: 0)` claims the touch
+/// at the SwiftUI layer and blocks the scroll view's pan even when our
+/// handler ignores the events.
+struct IOSPageReorderGestureBridge: UIViewRepresentable {
+    var rowFrames: [BlockID: CGRect]
+    var onBegin: (BlockID, CGPoint) -> Void
+    var onChanged: (CGPoint) -> Void
+    var onEnded: (CGPoint) -> Void
+    var onCancelled: () -> Void
 
-    @State private var isReordering = false
-    @State private var latestPageY: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        content.simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.34, maximumDistance: 36)
-                .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(PageHoverCoordinateSpace.name)))
-                .onChanged(handleChange)
-                .onEnded(handleEnd)
-        )
+    func makeUIView(context: Context) -> UIView {
+        let view = HostView()
+        view.coordinator = context.coordinator
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
     }
 
-    private func handleChange(_ value: SequenceGesture<LongPressGesture, DragGesture>.Value) {
-        guard let sourceFrame else { return }
-        switch value {
-        case .first(true):
-            beginIfNeeded(at: CGPoint(x: sourceFrame.midX, y: sourceFrame.midY), emitChange: false)
-        case .second(true, let drag?):
-            beginIfNeeded(at: drag.location, emitChange: false)
-            latestPageY = drag.location.y
-            onChanged(IOSReorderDrag(location: drag.location))
-        default:
-            break
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.parent = self
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    @MainActor
+    final class HostView: UIView {
+        weak var coordinator: Coordinator?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil {
+                coordinator?.attach(from: self)
+            } else {
+                coordinator?.detach()
+            }
         }
     }
 
-    private func handleEnd(_ value: SequenceGesture<LongPressGesture, DragGesture>.Value) {
-        guard isReordering else {
-            onCancel()
-            return
-        }
-        if case .second(true, let drag?) = value {
-            latestPageY = drag.location.y
-        }
-        onEnd(payload, latestPageY)
-        isReordering = false
-    }
+    @MainActor
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: IOSPageReorderGestureBridge
+        weak var recognizer: UILongPressGestureRecognizer?
+        weak var scrollView: UIScrollView?
+        private var activeBlockID: BlockID?
 
-    private func beginIfNeeded(at location: CGPoint?, emitChange: Bool) {
-        guard !isReordering, let location else { return }
-        latestPageY = location.y
-        isReordering = true
-        onBegin(payload)
-        if emitChange {
-            onChanged(IOSReorderDrag(location: location))
+        init(parent: IOSPageReorderGestureBridge) {
+            self.parent = parent
+        }
+
+        func attach(from view: UIView) {
+            guard recognizer == nil else { return }
+            var current: UIView? = view.superview
+            while let v = current {
+                if let scroll = v as? UIScrollView {
+                    let lp = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+                    lp.minimumPressDuration = 0.5
+                    lp.allowableMovement = 8
+                    lp.cancelsTouchesInView = false
+                    lp.delegate = self
+                    scroll.addGestureRecognizer(lp)
+                    scroll.panGestureRecognizer.require(toFail: lp)
+                    self.recognizer = lp
+                    self.scrollView = scroll
+                    return
+                }
+                current = v.superview
+            }
+        }
+
+        func detach() {
+            if let recognizer, let scrollView {
+                scrollView.removeGestureRecognizer(recognizer)
+            }
+            recognizer = nil
+            scrollView = nil
+            activeBlockID = nil
+        }
+
+        @objc func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+            guard let scrollView else { return }
+            let location = recognizer.location(in: scrollView)
+            switch recognizer.state {
+            case .began:
+                guard let blockID = nearestRowID(to: location, frames: parent.rowFrames) else {
+                    activeBlockID = nil
+                    return
+                }
+                activeBlockID = blockID
+                parent.onBegin(blockID, location)
+            case .changed:
+                guard activeBlockID != nil else { return }
+                parent.onChanged(location)
+            case .ended:
+                if activeBlockID != nil {
+                    parent.onEnded(location)
+                }
+                activeBlockID = nil
+            case .cancelled, .failed:
+                if activeBlockID != nil {
+                    parent.onCancelled()
+                }
+                activeBlockID = nil
+            default:
+                break
+            }
+        }
+
+        private func nearestRowID(to point: CGPoint, frames: [BlockID: CGRect]) -> BlockID? {
+            frames
+                .filter { $0.value.contains(point) }
+                .min(by: { abs($0.value.midY - point.y) < abs($1.value.midY - point.y) })?
+                .key
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
     }
 }

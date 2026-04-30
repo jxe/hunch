@@ -73,6 +73,10 @@ schemes:
     build:
       targets:
         Hunch: all
+        HunchUITests: [test]
+    test:
+      targets:
+        - HunchUITests
       # Drop a freshly-built copy at ~/Applications/Hunch.app after every macOS
       # build so a Dock entry there keeps working across rebuilds. Scheme
       # post-actions run *after* Xcode's full codesign, so we just copy — no
