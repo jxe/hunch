@@ -1021,7 +1021,8 @@ public struct PageView: View {
     }
 
     /// Extend the selection in the direction of `delta`. The anchor stays put; the cursor
-    /// moves; `selection` becomes every block between anchor and cursor inclusive.
+    /// moves by outline sections so extending over a parent consumes its descendants as
+    /// real selection, not only via the effective-selection expansion used by operations.
     private func extendSelection(by delta: Int) {
         let blocks = document.blocks
         guard !blocks.isEmpty else { return }
@@ -1034,15 +1035,59 @@ public struct PageView: View {
         }
 
         guard let anchorID = anchor, let cursorID = cursor,
+              let anchorIndex = blocks.firstIndex(where: { $0.id == anchorID }),
               let cursorIndex = blocks.firstIndex(where: { $0.id == cursorID }) else { return }
 
-        let nextIndex = max(0, min(blocks.count - 1, cursorIndex + delta))
+        let nextIndex = outlineSelectionStep(from: cursorIndex, anchoredAt: anchorIndex, by: delta)
         cursor = blocks[nextIndex].id
 
-        guard let anchorIndex = blocks.firstIndex(where: { $0.id == anchorID }) else { return }
         let lo = min(anchorIndex, nextIndex)
         let hi = max(anchorIndex, nextIndex)
         selection = Set(blocks[lo...hi].map { $0.id })
+    }
+
+    private func outlineSelectionStep(from cursorIndex: Int, anchoredAt anchorIndex: Int, by delta: Int) -> Int {
+        let blocks = document.blocks
+        guard !blocks.isEmpty else { return cursorIndex }
+
+        if delta > 0 {
+            if cursorIndex < anchorIndex {
+                if let range = document.sectionRange(of: blocks[cursorIndex].id),
+                   range.upperBound <= anchorIndex {
+                    return range.upperBound
+                }
+                return min(anchorIndex, cursorIndex + 1)
+            }
+
+            if let range = document.sectionRange(of: blocks[cursorIndex].id),
+               range.upperBound > cursorIndex + 1 {
+                guard range.upperBound < blocks.count else { return cursorIndex }
+                return range.upperBound
+            }
+            return min(blocks.count - 1, cursorIndex + 1)
+        }
+
+        if delta < 0 {
+            if cursorIndex > anchorIndex {
+                if let anchorRange = document.sectionRange(of: blocks[anchorIndex].id),
+                   anchorRange.contains(cursorIndex) {
+                    return anchorIndex
+                }
+                return max(anchorIndex, cursorIndex - 1)
+            }
+
+            let indent = blocks[cursorIndex].indent
+            var previousStart = cursorIndex - 1
+            while previousStart >= 0, blocks[previousStart].indent > indent {
+                previousStart -= 1
+            }
+            if previousStart >= 0, blocks[previousStart].indent == indent {
+                return previousStart
+            }
+            return max(0, cursorIndex - 1)
+        }
+
+        return cursorIndex
     }
 
     /// Indices of selected blocks in document order. Empty if no selection.
