@@ -463,7 +463,13 @@ public struct PageView: View {
     }
 
     private func reorderSourceOpacity(for id: BlockID) -> Double {
-        return reorderLift?.ids.contains(id) == true ? 0.12 : 1
+        // Skip the dim while pendingAnchor is true (iOS pre-movement window
+        // between long-press completion and the user actually starting to
+        // drag). Otherwise a held finger that hasn't moved would visibly
+        // dim its row, which reads as "the touch was claimed" — confusing
+        // when the user only intended to hold briefly.
+        guard let lift = reorderLift, !lift.pendingAnchor else { return 1 }
+        return lift.ids.contains(id) ? 0.12 : 1
     }
 
     private func isMacDraggingFromRow(_ id: BlockID) -> Bool {
@@ -1556,6 +1562,14 @@ private struct IOSRowReorderActions: ViewModifier {
             beginIfNeeded(at: CGPoint(x: sourceFrame.midX, y: sourceFrame.midY), emitChange: false)
         case .second(true, let drag?):
             beginIfNeeded(at: drag.location, emitChange: false)
+            // The inner DragGesture has minimumDistance: 0, so it delivers
+            // the first .second event the same frame the long-press completes
+            // — with translation ≈ 0. Don't propagate that as movement;
+            // wait for the user to actually drag past 4pt. Without this
+            // guard, the reorderLift's pendingAnchor flips off immediately
+            // and the dim/overlay appear at long-press completion instead of
+            // at first real motion.
+            if hypot(drag.translation.width, drag.translation.height) < 4 { return }
             latestPageY = drag.location.y
             onChanged(IOSReorderDrag(location: drag.location))
         default:
