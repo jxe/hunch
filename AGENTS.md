@@ -19,7 +19,8 @@ user-picked workspace folder.
 - `project.yml` — XcodeGen spec. **Don't hand-edit the `.xcodeproj`** —
   it's generated, gitignored, overwritten by `xcodegen generate`.
 - `References/typography/` — real Notion screenshots; see its README.
-- `skills/`, `tasks/` — per-project Codex skills and unordered upcoming task notes.
+- `skills/`, `tasks/`, `docs/` — per-project Codex skills, unordered
+  upcoming task notes, and accumulated working notes.
 
 ## Build & test
 

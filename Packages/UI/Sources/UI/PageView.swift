@@ -1,5 +1,6 @@
 import SwiftUI
 import Core
+import UniformTypeIdentifiers
 
 private struct PagePinchValue {
     var startLocation: CGPoint
@@ -60,6 +61,7 @@ public struct PageView: View {
     @State private var dropHoverIndex: Int?
     @State private var rowFrames: [BlockID: CGRect] = [:]
     @State private var actionToast: String?
+    @State private var lastDropHapticIndex: Int?
     /// Active pinch-open-to-insert preview state. Drives an inline gap that grows
     /// between two rows as the user spreads their fingers; nil when no pinch is
     /// in progress (or when the pinch's startLocation didn't pin to a row pair).
@@ -109,26 +111,8 @@ public struct PageView: View {
                             .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
                             .animation(.spring(response: 0.26, dampingFraction: 0.76), value: dropHoverIndex)
                             .background(rowFrameReporter(id: block.id))
-                            .overlay(alignment: .top) {
-                                if dropHoverIndex == i {
-                                    Rectangle()
-                                        .fill(Color.accentColor)
-                                        .frame(height: 2)
-                                        .offset(y: -gap / 2)
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                            .dropDestination(for: BlockDragPayload.self) { payloads, _ in
-                                guard let payload = payloads.first else { return false }
+                            .blockDropTarget(at: i, dropHoverIndex: $dropHoverIndex) { payload in
                                 moveBlocks(ids: payload.ids, toIndexBefore: i)
-                                dropHoverIndex = nil
-                                return true
-                            } isTargeted: { hovering in
-                                if hovering {
-                                    dropHoverIndex = i
-                                } else if dropHoverIndex == i {
-                                    dropHoverIndex = nil
-                                }
                             }
                     }
                     // Trailing slot for "insert at end" — claims the existing bottom 32pt
@@ -147,6 +131,13 @@ public struct PageView: View {
                 }
             }
             .coordinateSpace(name: PageHoverCoordinateSpace.name)
+            .iosPageBlockDropTarget(
+                rowFrames: orderedDropFrames(snapshot: snapshot),
+                dropHoverIndex: $dropHoverIndex,
+                onDrop: { payload, index in
+                    moveBlocks(ids: payload.ids, toIndexBefore: index)
+                }
+            )
             .iosScrollMetrics($scrollMetrics)
             .macNearestRowHover(rowFrames: rowFrames, hoveredBlockID: $hoveredBlockID)
             .background(NotionStyle.background)
@@ -213,6 +204,9 @@ public struct PageView: View {
                 pageFocused = true
                 // Captured undo entries reference the previous document's blocks — drop them.
                 undoController.reset()
+            }
+            .onChange(of: dropHoverIndex) { _, newValue in
+                handleDropHoverChange(newValue)
             }
             .onKeyPress(keys: [
                 .upArrow, .downArrow, .return, .escape, .tab,
@@ -342,6 +336,8 @@ public struct PageView: View {
                 }
             )
             .contentShape(Rectangle())
+            .accessibilityIdentifier("block-row-\(block.id.value.uuidString)")
+            .accessibilityLabel(accessibilityLabel(for: block))
             .onTapGesture {
                 // Clicks outside the editable text region (markers, paddings) — no
                 // position info, cursor lands at end via the editor's default behavior.
@@ -390,42 +386,47 @@ public struct PageView: View {
         }
     }
 
+    private func orderedDropFrames(snapshot: [Block]) -> [ReorderDropFrame] {
+        snapshot.compactMap { block in
+            rowFrames[block.id].map { ReorderDropFrame(id: block.id, frame: $0) }
+        }
+    }
+
     private func iosReorderDriftGap(for index: Int) -> CGFloat {
         #if os(iOS)
-        return dropHoverIndex == index ? 18 : 0
+        return dropHoverIndex == index ? 42 : 0
         #else
         return 0
+        #endif
+    }
+
+    private func handleDropHoverChange(_ index: Int?) {
+        #if os(iOS)
+        guard let index else {
+            lastDropHapticIndex = nil
+            return
+        }
+        guard lastDropHapticIndex != index else { return }
+        lastDropHapticIndex = index
+        Haptics.light()
+        #else
+        _ = index
         #endif
     }
 
     /// Drop target rendered inside a row's existing top-gap area (or the trailing
     /// page-bottom area). Adds no layout space — the hit area is provided by an
     /// in-flow `Color.clear` whose vertical extent exactly matches the existing gap.
-    /// A 2pt accent line shows while this slot is being targeted.
     @ViewBuilder
     private func gapDropTarget(at index: Int, height: CGFloat) -> some View {
         Color.clear
             .frame(maxWidth: .infinity)
             .frame(height: height)
             .contentShape(Rectangle())
-            .overlay(alignment: .center) {
-                if dropHoverIndex == index {
-                    Rectangle()
-                        .fill(Color.accentColor)
-                        .frame(height: 2)
-                }
-            }
-            .dropDestination(for: BlockDragPayload.self) { payloads, _ in
-                guard let payload = payloads.first else { return false }
+            .accessibilityIdentifier("block-drop-slot-\(index)")
+            .accessibilityLabel("Drop before block \(index + 1)")
+            .blockDropTarget(at: index, dropHoverIndex: $dropHoverIndex) { payload in
                 moveBlocks(ids: payload.ids, toIndexBefore: index)
-                dropHoverIndex = nil
-                return true
-            } isTargeted: { hovering in
-                if hovering {
-                    dropHoverIndex = index
-                } else if dropHoverIndex == index {
-                    dropHoverIndex = nil
-                }
             }
     }
 
@@ -437,6 +438,50 @@ public struct PageView: View {
             return document.blocks.compactMap { selection.contains($0.id) ? $0.id : nil }
         }
         return [blockID]
+    }
+
+    private func accessibilityLabel(for block: Block) -> String {
+        let text = accessibilityText(for: block)
+        let kind = blockKindLabel(for: block)
+        return text.isEmpty ? kind : "\(kind): \(text)"
+    }
+
+    private func accessibilityText(for block: Block) -> String {
+        switch block {
+        case .code(_, let source, _):
+            return source
+        case .divider:
+            return ""
+        case .subpage(_, let title, _):
+            return title
+        default:
+            return String(block.text.characters)
+        }
+    }
+
+    private func blockKindLabel(for block: Block) -> String {
+        switch block {
+        case .paragraph:
+            return "Paragraph"
+        case .heading(_, let level, _):
+            return "Heading \(level)"
+        case .bullet:
+            return "Bullet"
+        case .numbered:
+            return "Numbered item"
+        case .todo:
+            return "To-do"
+        case .quote:
+            return "Quote"
+        case .code:
+            return "Code block"
+        case .divider:
+            return "Divider"
+        case .toggle:
+            return "Toggle"
+        case .subpage:
+            return "Subpage"
+        }
     }
 
     /// Move the contiguous-or-not set of blocks identified by `ids` so they're
@@ -1082,6 +1127,50 @@ public struct PageView: View {
 
 private extension View {
     @ViewBuilder
+    func blockDropTarget(
+        at index: Int,
+        dropHoverIndex: Binding<Int?>,
+        onDrop: @escaping (BlockDragPayload) -> Void
+    ) -> some View {
+        #if os(macOS)
+        self.dropDestination(for: BlockDragPayload.self) { payloads, _ in
+            guard let payload = payloads.first else { return false }
+            onDrop(payload)
+            dropHoverIndex.wrappedValue = nil
+            return true
+        } isTargeted: { hovering in
+            if hovering {
+                dropHoverIndex.wrappedValue = index
+            } else if dropHoverIndex.wrappedValue == index {
+                dropHoverIndex.wrappedValue = nil
+            }
+        }
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func iosPageBlockDropTarget(
+        rowFrames: [ReorderDropFrame],
+        dropHoverIndex: Binding<Int?>,
+        onDrop: @escaping (BlockDragPayload, Int) -> Void
+    ) -> some View {
+        #if os(iOS)
+        self.onDrop(
+            of: [UTType.plainText],
+            delegate: PageBlockDropDelegate(
+                rowFrames: rowFrames,
+                dropHoverIndex: dropHoverIndex,
+                onDrop: onDrop
+            )
+        )
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
     func macNearestRowHover(rowFrames: [BlockID: CGRect], hoveredBlockID: Binding<BlockID?>) -> some View {
         #if os(macOS)
         self.onContinuousHover { phase in
@@ -1123,7 +1212,7 @@ private extension View {
         if isEnabled {
             self
                 .draggable(payload) {
-                    DragPreviewChip(count: payload.ids.count)
+                    self.scaleEffect(1.03)
                 }
                 .modifier(IOSRowSwipeActions(onDelete: onDelete, onIndent: onCycleIndent))
         } else {
@@ -1203,6 +1292,52 @@ private func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> Bl
 }
 
 #if os(iOS)
+private struct PageBlockDropDelegate: DropDelegate {
+    let rowFrames: [ReorderDropFrame]
+    @Binding var dropHoverIndex: Int?
+    let onDrop: (BlockDragPayload, Int) -> Void
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        dropHoverIndex = resolvedIndex(for: info.location.y)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        dropHoverIndex = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let target = resolvedIndex(for: info.location.y)
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            dropHoverIndex = nil
+        }
+
+        guard let provider = info.itemProviders(for: [UTType.plainText]).first else {
+            return false
+        }
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let string = object as? NSString,
+                  let payload = BlockDragPayload(jsonString: string as String) else {
+                return
+            }
+            Task { @MainActor in
+                onDrop(payload, target)
+            }
+        }
+        return true
+    }
+
+    private func resolvedIndex(for y: CGFloat) -> Int {
+        ReorderDropResolver.insertionIndex(
+            forY: y,
+            rowFrames: rowFrames,
+            previousIndex: dropHoverIndex
+        )
+    }
+}
+
 @MainActor
 private final class PageScrollController {
     static let shared = PageScrollController()

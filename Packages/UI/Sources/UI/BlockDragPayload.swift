@@ -19,6 +19,14 @@ public struct BlockDragPayload: Codable, Transferable, Sendable {
         self.ids = ids
     }
 
+    init?(jsonString: String) {
+        guard let data = jsonString.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(BlockDragPayload.self, from: data) else {
+            return nil
+        }
+        self = payload
+    }
+
     public static var transferRepresentation: some TransferRepresentation {
         ProxyRepresentation(exporting: { (payload: BlockDragPayload) -> String in
             let data = (try? JSONEncoder().encode(payload)) ?? Data()
