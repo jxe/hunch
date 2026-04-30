@@ -21,6 +21,10 @@ final class WorkspaceModel {
     private var isSaving = false
 
     func tryRestore() {
+        if ProcessInfo.processInfo.arguments.contains("--console-ui-testing") {
+            installUITestWorkspace()
+            return
+        }
         if let url = WorkspaceBookmark.resolve() {
             accessedWorkspaceURL = url
             workspaceURL = url
@@ -198,6 +202,40 @@ final class WorkspaceModel {
     private func releaseWorkspaceAccess() {
         accessedWorkspaceURL?.stopAccessingSecurityScopedResource()
         accessedWorkspaceURL = nil
+    }
+
+    private func installUITestWorkspace() {
+        do {
+            let root = FileManager.default
+                .temporaryDirectory
+                .appendingPathComponent("console-ui-tests", isDirectory: true)
+            try? FileManager.default.removeItem(at: root)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let documentURL = root.appendingPathComponent("everything.md")
+            let source = """
+            # Drag Test
+
+            Alpha
+
+            Bravo
+
+            Charlie
+
+            Delta
+
+            Echo
+
+            Foxtrot
+            """
+            try source.write(to: documentURL, atomically: true, encoding: .utf8)
+            workspaceURL = root
+            entries = try store.scan(workspaceRoot: root)
+            if let entry = entries.first(where: { $0.relativePath == "everything.md" }) {
+                open(entry)
+            }
+        } catch {
+            self.error = "Failed to install UI test workspace: \(error.localizedDescription)"
+        }
     }
 }
 

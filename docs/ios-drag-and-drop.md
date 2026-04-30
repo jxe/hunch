@@ -20,3 +20,16 @@ drop visuals can drift away from the actual insertion decision.
 The lifted row should read as the row itself, slightly enlarged, without a
 card treatment or shadow.
 
+## Custom Lift
+
+iOS reorder does not use SwiftUI `.draggable`. SwiftUI's standard drag
+preview controls its own scale, anchor, and lift/drop behavior, which made
+the row preview smaller and disconnected from the finger.
+
+The row uses a sequenced long-press/drag gesture. During the drag,
+`PageView` renders a separate `BlockRow` overlay for the lifted row, dims
+the source row, scales the overlay slightly, and positions it from the
+original touch offset so the same point remains under the finger.
+
+Keep the reorder gesture simultaneous with row swipe actions so short
+horizontal swipes can still win before the long press completes.

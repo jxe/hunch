@@ -54,3 +54,15 @@ targets:
         SUPPORTS_MACCATALYST: NO
         ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: NO
+  ConsoleUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: App/UITests
+    dependencies:
+      - target: Console
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joeedelman.console.uitests
+        TEST_TARGET_NAME: Console
+        GENERATE_INFOPLIST_FILE: YES

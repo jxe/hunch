@@ -62,6 +62,8 @@ public struct PageView: View {
     @State private var rowFrames: [BlockID: CGRect] = [:]
     @State private var actionToast: String?
     @State private var lastDropHapticIndex: Int?
+    @State private var activeIOSReorderIDs: [BlockID] = []
+    @State private var iosReorderLift: IOSReorderLift?
     /// Active pinch-open-to-insert preview state. Drives an inline gap that grows
     /// between two rows as the user spreads their fingers; nil when no pinch is
     /// in progress (or when the pinch's startLocation didn't pin to a row pair).
@@ -148,6 +150,9 @@ public struct PageView: View {
             )
             .iosTapBelowRows {
                 handleTapBelowRows(at: $0)
+            }
+            .overlay(alignment: .topLeading) {
+                iosReorderLiftView()
             }
             .overlay(alignment: .bottom) {
                 if let actionToast {
@@ -286,6 +291,7 @@ public struct PageView: View {
         let isSelected = selection.contains(block.id)
         #endif
         let isEditing = editingBlock == block.id
+        let rowDragPayload = BlockDragPayload(ids: dragIDs(for: block.id))
 
         if case .subpage(_, _, let path) = block {
             Button {
@@ -321,12 +327,39 @@ public struct PageView: View {
                 initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
             )
             .macBlockDragSource(
-                payload: BlockDragPayload(ids: dragIDs(for: block.id)),
+                payload: rowDragPayload,
                 isEnabled: !isEditing
             )
             .iosBlockTouchActions(
-                payload: BlockDragPayload(ids: dragIDs(for: block.id)),
+                payload: rowDragPayload,
                 isEnabled: !isEditing && !pinchGestureActive,
+                sourceFrame: rowFrames[block.id],
+                onReorderBegin: { payload in
+                    activeIOSReorderIDs = payload.ids
+                    Haptics.light()
+                },
+                onReorderChanged: { drag in
+                    updateIOSReorderLift(payload: rowDragPayload, drag: drag, snapshot: snapshot)
+                    let pageY = drag.location.y
+                    dropHoverIndex = ReorderDropResolver.insertionIndex(
+                        forY: pageY,
+                        rowFrames: orderedDropFrames(snapshot: snapshot),
+                        previousIndex: dropHoverIndex
+                    )
+                },
+                onReorderEnd: { payload, pageY in
+                    let target = ReorderDropResolver.insertionIndex(
+                        forY: pageY,
+                        rowFrames: orderedDropFrames(snapshot: snapshot),
+                        previousIndex: dropHoverIndex
+                    )
+                    clearDropHoverWithoutAnimation()
+                    moveBlocks(ids: payload.ids, toIndexBefore: target)
+                    clearIOSReorderStateWithoutAnimation()
+                },
+                onReorderCancel: {
+                    clearIOSReorderStateWithoutAnimation()
+                },
                 onDelete: {
                     deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
                     showActionToast("Deleted")
@@ -335,8 +368,10 @@ public struct PageView: View {
                     cycleIndent(blockID: block.id)
                 }
             )
+            .opacity(iosReorderOpacity(for: block.id))
             .contentShape(Rectangle())
-            .accessibilityIdentifier("block-row-\(block.id.value.uuidString)")
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier(accessibilityIdentifier(for: block))
             .accessibilityLabel(accessibilityLabel(for: block))
             .onTapGesture {
                 // Clicks outside the editable text region (markers, paddings) — no
@@ -400,6 +435,78 @@ public struct PageView: View {
         #endif
     }
 
+    private func iosReorderOpacity(for id: BlockID) -> Double {
+        #if os(iOS)
+        return activeIOSReorderIDs.contains(id) ? 0.12 : 1
+        #else
+        return 1
+        #endif
+    }
+
+    @ViewBuilder
+    private func iosReorderLiftView() -> some View {
+        #if os(iOS)
+        if let lift = iosReorderLift {
+            BlockRow(
+                block: .constant(lift.block),
+                editorFocused: $editorFocused,
+                isPageTitle: false,
+                numberingIndex: nil,
+                isSelected: false,
+                isEditing: false
+            )
+            .frame(width: lift.sourceFrame.width, height: lift.sourceFrame.height, alignment: .leading)
+            .scaleEffect(1.035)
+            .position(
+                x: lift.location.x - lift.touchOffset.width + (lift.sourceFrame.width / 2),
+                y: lift.location.y - lift.touchOffset.height + (lift.sourceFrame.height / 2)
+            )
+            .allowsHitTesting(false)
+            .zIndex(100)
+        }
+        #endif
+    }
+
+    private func updateIOSReorderLift(payload: BlockDragPayload, drag: IOSReorderDrag, snapshot: [Block]) {
+        #if os(iOS)
+        guard let id = payload.ids.first,
+              let block = snapshot.first(where: { $0.id == id }),
+              let sourceFrame = rowFrames[id]
+        else { return }
+        iosReorderLift = IOSReorderLift(
+            block: block,
+            sourceFrame: sourceFrame,
+            touchOffset: CGSize(
+                width: drag.startLocation.x - sourceFrame.minX,
+                height: drag.startLocation.y - sourceFrame.minY
+            ),
+            location: drag.location
+        )
+        #else
+        _ = payload
+        _ = drag
+        _ = snapshot
+        #endif
+    }
+
+    private func clearIOSReorderStateWithoutAnimation() {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            dropHoverIndex = nil
+            activeIOSReorderIDs = []
+            iosReorderLift = nil
+        }
+    }
+
+    private func clearDropHoverWithoutAnimation() {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            dropHoverIndex = nil
+        }
+    }
+
     private func handleDropHoverChange(_ index: Int?) {
         #if os(iOS)
         guard let index else {
@@ -444,6 +551,17 @@ public struct PageView: View {
         let text = accessibilityText(for: block)
         let kind = blockKindLabel(for: block)
         return text.isEmpty ? kind : "\(kind): \(text)"
+    }
+
+    private func accessibilityIdentifier(for block: Block) -> String {
+        let text = accessibilityText(for: block)
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .joined(separator: "-")
+        if text.isEmpty {
+            return "block-row-\(block.id.value.uuidString)"
+        }
+        return "block-row-\(text)"
     }
 
     private func accessibilityText(for block: Block) -> String {
@@ -1205,15 +1323,27 @@ private extension View {
     func iosBlockTouchActions(
         payload: BlockDragPayload,
         isEnabled: Bool,
+        sourceFrame: CGRect?,
+        onReorderBegin: @escaping (BlockDragPayload) -> Void,
+        onReorderChanged: @escaping (IOSReorderDrag) -> Void,
+        onReorderEnd: @escaping (BlockDragPayload, CGFloat) -> Void,
+        onReorderCancel: @escaping () -> Void,
         onDelete: @escaping () -> Void,
         onCycleIndent: @escaping () -> Void
     ) -> some View {
         #if os(iOS)
         if isEnabled {
             self
-                .draggable(payload) {
-                    self.scaleEffect(1.03)
-                }
+                .modifier(
+                    IOSRowReorderActions(
+                        payload: payload,
+                        sourceFrame: sourceFrame,
+                        onBegin: onReorderBegin,
+                        onChanged: onReorderChanged,
+                        onEnd: onReorderEnd,
+                        onCancel: onReorderCancel
+                    )
+                )
                 .modifier(IOSRowSwipeActions(onDelete: onDelete, onIndent: onCycleIndent))
         } else {
             self
@@ -1291,7 +1421,82 @@ private func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> Bl
     }?.key
 }
 
+private struct IOSReorderDrag {
+    var startLocation: CGPoint
+    var location: CGPoint
+}
+
+private struct IOSReorderLift {
+    var block: Block
+    var sourceFrame: CGRect
+    var touchOffset: CGSize
+    var location: CGPoint
+}
+
 #if os(iOS)
+private struct IOSRowReorderActions: ViewModifier {
+    let payload: BlockDragPayload
+    let sourceFrame: CGRect?
+    let onBegin: (BlockDragPayload) -> Void
+    let onChanged: (IOSReorderDrag) -> Void
+    let onEnd: (BlockDragPayload, CGFloat) -> Void
+    let onCancel: () -> Void
+
+    @State private var isReordering = false
+    @State private var latestPageY: CGFloat = 0
+    @State private var startLocation: CGPoint?
+
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.34, maximumDistance: 36)
+                .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(PageHoverCoordinateSpace.name)))
+                .onChanged(handleChange)
+                .onEnded(handleEnd)
+        )
+    }
+
+    private func handleChange(_ value: SequenceGesture<LongPressGesture, DragGesture>.Value) {
+        guard let sourceFrame else { return }
+        switch value {
+        case .first(true):
+            beginIfNeeded(at: CGPoint(x: sourceFrame.midX, y: sourceFrame.midY), emitChange: false)
+        case .second(true, let drag?):
+            if startLocation == nil {
+                startLocation = drag.startLocation
+            }
+            beginIfNeeded(at: drag.startLocation, emitChange: false)
+            latestPageY = drag.location.y
+            onChanged(IOSReorderDrag(startLocation: startLocation ?? drag.startLocation, location: drag.location))
+        default:
+            break
+        }
+    }
+
+    private func handleEnd(_ value: SequenceGesture<LongPressGesture, DragGesture>.Value) {
+        guard isReordering else {
+            onCancel()
+            return
+        }
+        if case .second(true, let drag?) = value {
+            latestPageY = drag.location.y
+        }
+        onEnd(payload, latestPageY)
+        isReordering = false
+        startLocation = nil
+    }
+
+    private func beginIfNeeded(at location: CGPoint?, emitChange: Bool) {
+        guard !isReordering, let location else { return }
+        latestPageY = location.y
+        isReordering = true
+        onBegin(payload)
+        if emitChange {
+            startLocation = location
+            onChanged(IOSReorderDrag(startLocation: location, location: location))
+        }
+    }
+}
+
 private struct PageBlockDropDelegate: DropDelegate {
     let rowFrames: [ReorderDropFrame]
     @Binding var dropHoverIndex: Int?
