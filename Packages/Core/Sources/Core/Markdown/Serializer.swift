@@ -3,10 +3,42 @@ import Foundation
 public enum BlockSerializer {
     public static func serialize(_ blocks: [Block]) -> String {
         var out = ""
-        for (i, block) in blocks.enumerated() {
-            let chunk = serialize(block)
+        var i = 0
+        while i < blocks.count {
+            let block = blocks[i]
+            let chunk: String
+            let consumed: Int
+            if case .toggle(_, let title, let indent) = block {
+                // A toggle "owns" the immediately following blocks at greater indent — those
+                // are its body. Wrap them in <details>/</details> on disk so the file shape
+                // is unchanged from before flat-toggles. cmark-gfm closes <details> at blank
+                // lines, but the parser's `assemble` pass stitches it back on read.
+                //
+                // Body blocks are normalised to indent 0 inside the envelope: a 4-space
+                // (i.e. indent ≥ 2) leading-whitespace line would otherwise be parsed back
+                // as a code block. The parser re-adds `toggle.indent + 1` when it descends.
+                var end = i + 1
+                while end < blocks.count, blocks[end].indent > indent {
+                    end += 1
+                }
+                let body = blocks[(i + 1)..<end].map { $0.withIndent($0.indent - (indent + 1)) }
+                var inner = serialize(body)
+                while inner.hasSuffix("\n\n") { inner.removeLast() }
+                if body.isEmpty {
+                    inner = ""
+                } else if !inner.hasSuffix("\n") {
+                    inner += "\n"
+                }
+                let raw = "<details><summary>" + inlineString(title) + "</summary>\n\n" + inner + "\n</details>\n\n"
+                chunk = indentLines(raw, indent: indent)
+                consumed = end - i
+            } else {
+                chunk = serialize(block)
+                consumed = 1
+            }
             out += chunk
-            if i != blocks.count - 1 {
+            let isLast = (i + consumed) >= blocks.count
+            if !isLast {
                 if !chunk.hasSuffix("\n\n") {
                     if chunk.hasSuffix("\n") {
                         out += "\n"
@@ -15,11 +47,15 @@ public enum BlockSerializer {
                     }
                 }
             }
+            i += consumed
         }
         if !out.hasSuffix("\n") { out += "\n" }
         return out
     }
 
+    /// Per-block serialization. `.toggle` is handled in the array form because its body
+    /// lives in subsequent sibling blocks (via `Document.sectionRange`), so a single-block
+    /// serialize emits only the title row's HTML envelope with an empty body.
     public static func serialize(_ block: Block) -> String {
         switch block {
         case .paragraph(_, let text, let indent):
@@ -48,12 +84,8 @@ public enum BlockSerializer {
         case .divider(_, let indent):
             return indentPrefix(indent) + "---\n\n"
 
-        case .toggle(_, let title, _, let children, let indent):
-            var inner = serialize(children)
-            // serialize() ensures a trailing newline; trim back to a single newline
-            while inner.hasSuffix("\n\n") { inner.removeLast() }
-            if !inner.hasSuffix("\n") { inner += "\n" }
-            let raw = "<details><summary>" + inlineString(title) + "</summary>\n\n" + inner + "\n</details>\n\n"
+        case .toggle(_, let title, let indent):
+            let raw = "<details><summary>" + inlineString(title) + "</summary>\n\n</details>\n\n"
             return indentLines(raw, indent: indent)
 
         case .subpage(_, let title, let path, let indent):

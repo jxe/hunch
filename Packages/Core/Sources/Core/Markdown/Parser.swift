@@ -9,9 +9,11 @@ public enum BlockParser {
     }
 
     /// Walks a sibling list of markup nodes, lifting `<details>...</details>` runs into
-    /// `.toggle` blocks. cmark-gfm closes an HTML block at a blank line, so a real-world
-    /// `<details>` toggle with markdown children parses as: HTMLBlock(`<details>...<summary>`),
-    /// then inner markdown nodes, then HTMLBlock(`</details>`). This pass stitches them back together.
+    /// a `.toggle` marker followed by the body blocks at `indent + 1`. cmark-gfm closes an
+    /// HTML block at a blank line, so a real-world `<details>` toggle with markdown children
+    /// parses as: HTMLBlock(`<details>...<summary>`), then inner markdown nodes, then
+    /// HTMLBlock(`</details>`). This pass pairs the open/close tags so the inner blocks land
+    /// as flat siblings whose section (via `Document.sectionRange`) is the toggle's body.
     private static func assemble(_ nodes: [any Markup], indent: Int) -> (blocks: [Block], consumed: Int) {
         var i = 0
         var out: [Block] = []
@@ -34,8 +36,9 @@ public enum BlockParser {
                     children.append(nodes[j])
                     j += 1
                 }
-                let inner = assemble(children, indent: indent).blocks
-                out.append(.toggle(title: title, expanded: true, children: inner, indent: indent))
+                let inner = assemble(children, indent: indent + 1).blocks
+                out.append(.toggle(title: title, indent: indent))
+                out.append(contentsOf: inner)
                 i = j + 1   // skip past closing </details>
                 continue
             }

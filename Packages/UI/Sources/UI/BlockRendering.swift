@@ -55,6 +55,9 @@ public struct BlockRow: View {
     public let numberingIndex: Int?
     public let isSelected: Bool
     public let isEditing: Bool
+    /// Toggle expansion is owned by the parent (PageView) so the body blocks render as
+    /// regular siblings in the page's block loop. Ignored for non-toggle blocks.
+    public let isExpanded: Bool
     @FocusState.Binding var editorFocused: BlockID?
     let onKey: (BlockKey) -> KeyPress.Result
     let onEdited: () -> Void
@@ -63,6 +66,8 @@ public struct BlockRow: View {
     /// in the editor area's local coordinate space (matches what `NSTextView`'s
     /// `characterIndexForInsertion(at:)` expects).
     let onClickAtPoint: (CGPoint) -> Void
+    /// Called when the toggle's chevron is tapped. No-op for non-toggle blocks.
+    let onToggleExpansion: () -> Void
     /// Click point captured at tap time, threaded into the BlockTextEditor on its first
     /// mount so the cursor lands where the user clicked rather than at end-of-text.
     let initialCursorPoint: CGPoint?
@@ -74,10 +79,12 @@ public struct BlockRow: View {
         numberingIndex: Int? = nil,
         isSelected: Bool = false,
         isEditing: Bool = false,
+        isExpanded: Bool = false,
         onKey: @escaping (BlockKey) -> KeyPress.Result = { _ in .ignored },
         onEdited: @escaping () -> Void = {},
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
         onClickAtPoint: @escaping (CGPoint) -> Void = { _ in },
+        onToggleExpansion: @escaping () -> Void = {},
         initialCursorPoint: CGPoint? = nil
     ) {
         self._block = block
@@ -85,11 +92,13 @@ public struct BlockRow: View {
         self.numberingIndex = numberingIndex
         self.isSelected = isSelected
         self.isEditing = isEditing
+        self.isExpanded = isExpanded
         self._editorFocused = editorFocused
         self.onKey = onKey
         self.onEdited = onEdited
         self.onAutotransform = onAutotransform
         self.onClickAtPoint = onClickAtPoint
+        self.onToggleExpansion = onToggleExpansion
         self.initialCursorPoint = initialCursorPoint
     }
 
@@ -141,9 +150,8 @@ public struct BlockRow: View {
         case .divider(_, let indent):
             dividerRow(indent: indent)
 
-        case .toggle(_, _, _, _, let indent):
-            toggleRow
-                .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+        case .toggle(_, _, let indent):
+            toggleRow(indent: indent)
 
         case .subpage(_, let title, _, let indent):
             subpageRow(title: title, indent: indent)
@@ -253,16 +261,28 @@ public struct BlockRow: View {
             .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
     }
 
-    private var toggleRow: some View {
-        ToggleRowView(
-            block: $block,
-            editorFocused: $editorFocused,
-            isSelected: isSelected,
-            isEditing: isEditing,
-            onKey: onKey,
-            onEdited: onEdited,
-            onAutotransform: onAutotransform
-        )
+    private func toggleRow(indent: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    onToggleExpansion()
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .foregroundStyle(NotionStyle.foreground)
+                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .alignmentGuide(.firstTextBaseline) { dimensions in
+                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+        }
+        .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
     }
 
     private func subpageRow(title: String, indent: Int) -> some View {
@@ -316,211 +336,6 @@ public struct BlockRow: View {
                 .gesture(SpatialTapGesture().onEnded { value in
                     onClickAtPoint(value.location)
                 })
-        }
-    }
-}
-
-// MARK: - Toggle (recursive)
-
-public struct ToggleRowView: View {
-    @Binding var block: Block
-    @FocusState.Binding var editorFocused: BlockID?
-    let isSelected: Bool
-    let isEditing: Bool
-    let onKey: (BlockKey) -> KeyPress.Result
-    let onEdited: () -> Void
-    let onAutotransform: (BlockTransform, AttributedString) -> Void
-
-    public init(
-        block: Binding<Block>,
-        editorFocused: FocusState<BlockID?>.Binding,
-        isSelected: Bool,
-        isEditing: Bool,
-        onKey: @escaping (BlockKey) -> KeyPress.Result,
-        onEdited: @escaping () -> Void,
-        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in }
-    ) {
-        self._block = block
-        self._editorFocused = editorFocused
-        self.isSelected = isSelected
-        self.isEditing = isEditing
-        self.onKey = onKey
-        self.onEdited = onEdited
-        self.onAutotransform = onAutotransform
-    }
-
-    public var body: some View {
-        let childNumbering = NumberingContext.compute(toggleChildren)
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Button {
-                    if case .toggle(let id, let title, let expanded, let children, let indent) = block {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            block = .toggle(id: id, title: title, expanded: !expanded, children: children, indent: indent)
-                        }
-                        onEdited()
-                    }
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: NotionStyle.chevronSize, weight: .medium))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .foregroundStyle(NotionStyle.foreground)
-                        .frame(width: 16, height: 16)
-                }
-                .buttonStyle(.plain)
-
-                titleEditableText
-            }
-
-            if isExpanded {
-                // Toggle children render as Text only — editing toggle children stays out of
-                // the M3 minimum until the page-level edit/select model is solid.
-                ForEach(toggleChildren, id: \.id) { child in
-                    BlockRowReadOnly(block: child, numberingIndex: childNumbering[child.id])
-                        .padding(.leading, NotionStyle.indentStep)
-                }
-            }
-        }
-    }
-
-    private var isExpanded: Bool {
-        if case .toggle(_, _, let expanded, _, _) = block { return expanded }
-        return false
-    }
-
-    private var toggleChildren: [Block] {
-        if case .toggle(_, _, _, let children, _) = block { return children }
-        return []
-    }
-
-    private var titleBinding: Binding<AttributedString> {
-        Binding(
-            get: {
-                if case .toggle(_, let title, _, _, _) = block { return title }
-                return AttributedString()
-            },
-            set: { newValue in
-                if case .toggle(let id, let title, let expanded, let children, let indent) = block {
-                    if String(newValue.characters) != String(title.characters) ||
-                       !attributedStringMarksEqual(newValue, title) {
-                        block = .toggle(id: id, title: newValue, expanded: expanded, children: children, indent: indent)
-                        onEdited()
-                    }
-                }
-            }
-        )
-    }
-
-    @ViewBuilder
-    private var titleEditableText: some View {
-        if isEditing {
-            BlockTextEditor(
-                text: titleBinding,
-                font: NotionStyle.body(),
-                fontSize: 16,
-                bold: false,
-                lineSpacing: NotionStyle.bodyLineSpacing,
-                focused: $editorFocused,
-                blockID: block.id,
-                onKey: onKey,
-                onAutotransform: onAutotransform
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            let title: AttributedString = {
-                if case .toggle(_, let t, _, _, _) = block { return t }
-                return AttributedString()
-            }()
-            Text(InlineRenderer.swiftUIAttributed(title))
-                .font(NotionStyle.body())
-                .foregroundStyle(NotionStyle.foreground)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
-/// A read-only render of a block — used inside expanded toggles where editing isn't wired up
-/// in the M3 minimum.
-struct BlockRowReadOnly: View {
-    let block: Block
-    let numberingIndex: Int?
-
-    init(block: Block, numberingIndex: Int? = nil) {
-        self.block = block
-        self.numberingIndex = numberingIndex
-    }
-
-    var body: some View {
-        switch block {
-        case .paragraph(_, let text, let indent), .quote(_, let text, let indent):
-            Text(InlineRenderer.swiftUIAttributed(text))
-                .font(NotionStyle.body())
-                .foregroundStyle(NotionStyle.foreground)
-                .lineSpacing(NotionStyle.bodyLineSpacing)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        case .heading(_, let level, let text, let indent):
-            let size: CGFloat = level == 1 ? NotionStyle.h1Size : level == 2 ? NotionStyle.h2Size : NotionStyle.h3Size
-            Text(InlineRenderer.swiftUIAttributed(text, baseFont: NotionStyle.body(size: size)))
-                .font(NotionStyle.body(size: size).weight(NotionStyle.headingWeight))
-                .foregroundStyle(NotionStyle.foreground)
-                .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        case .bullet(_, let text, let indent):
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-                Circle()
-                    .foregroundStyle(NotionStyle.foreground)
-                    .frame(width: NotionStyle.bulletMarkerDiameter, height: NotionStyle.bulletMarkerDiameter)
-                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
-                    .alignmentGuide(.firstTextBaseline) { dimensions in
-                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
-                    }
-                Text(InlineRenderer.swiftUIAttributed(text))
-            }
-            .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        case .numbered(_, let text, let indent):
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-                Text("\(numberingIndex ?? 1).")
-                    .font(NotionStyle.body())
-                    .foregroundStyle(NotionStyle.foreground)
-                    .frame(width: NotionStyle.numberedMarkerColumnWidth, alignment: .trailing)
-                Text(InlineRenderer.swiftUIAttributed(text))
-            }
-            .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        case .todo(_, let text, let done, let indent):
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-                Image(systemName: done ? "checkmark.square.fill" : "square")
-                    .font(.system(size: NotionStyle.todoCheckboxSize))
-                    .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                    .frame(width: NotionStyle.todoMarkerColumnWidth, alignment: .trailing)
-                Text(InlineRenderer.swiftUIAttributed(text))
-            }
-            .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        case .divider(_, let indent):
-            Rectangle().fill(NotionStyle.dividerColor).frame(height: 1)
-                .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        case .code(_, let source, _, let indent):
-            Text(source).font(NotionStyle.mono())
-                .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        case .subpage(_, let title, _, let indent):
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-                Image(systemName: "doc.text")
-                    .font(.system(size: NotionStyle.pageIconSize))
-                    .foregroundStyle(NotionStyle.mutedForeground)
-                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
-                    .alignmentGuide(.firstTextBaseline) { dimensions in
-                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
-                    }
-                Text(title)
-                    .font(NotionStyle.body().weight(.medium))
-                    .foregroundStyle(NotionStyle.foreground)
-                    .lineSpacing(NotionStyle.bodyLineSpacing)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
-        case .toggle(_, let title, _, _, let indent):
-            HStack { Image(systemName: "chevron.right"); Text(InlineRenderer.swiftUIAttributed(title)) }
-                .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
         }
     }
 }

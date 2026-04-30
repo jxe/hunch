@@ -193,12 +193,12 @@ struct BlockTransformApplyTests {
         }
     }
 
-    @Test func toggleCollapsedNoChildren() {
+    @Test func toggleProducesToggle() {
         let blocks = BlockTransform.toggle.apply(to: attr("Details"))
-        if case .toggle(_, let title, let expanded, let children, _) = blocks[0] {
+        #expect(blocks.count == 1)
+        if case .toggle(_, let title, let indent) = blocks[0] {
             #expect(String(title.characters) == "Details")
-            #expect(expanded == false)
-            #expect(children.isEmpty)
+            #expect(indent == 0)
         } else {
             Issue.record("expected toggle")
         }

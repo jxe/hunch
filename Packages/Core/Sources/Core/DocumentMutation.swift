@@ -3,8 +3,7 @@ import Foundation
 extension Block {
     /// Returns a copy of this block with its text replaced. No-op for blocks
     /// that don't carry an `AttributedString` body (code/divider/subpage).
-    /// Toggle returns a copy with the *title* replaced; toggle children are
-    /// unchanged.
+    /// Toggle returns a copy with the *title* replaced.
     public func withText(_ newText: AttributedString) -> Block {
         switch self {
         case .paragraph(let id, _, let indent):
@@ -19,8 +18,8 @@ extension Block {
             return .todo(id: id, text: newText, done: done, indent: indent)
         case .quote(let id, _, let indent):
             return .quote(id: id, text: newText, indent: indent)
-        case .toggle(let id, _, let expanded, let children, let indent):
-            return .toggle(id: id, title: newText, expanded: expanded, children: children, indent: indent)
+        case .toggle(let id, _, let indent):
+            return .toggle(id: id, title: newText, indent: indent)
         case .code, .divider, .subpage:
             return self
         }
@@ -45,8 +44,8 @@ extension Block {
             return .code(id: id, source: source, language: language, indent: clamped)
         case .divider(let id, _):
             return .divider(id: id, indent: clamped)
-        case .toggle(let id, let title, let expanded, let children, _):
-            return .toggle(id: id, title: title, expanded: expanded, children: children, indent: clamped)
+        case .toggle(let id, let title, _):
+            return .toggle(id: id, title: title, indent: clamped)
         case .subpage(let id, let title, let path, _):
             return .subpage(id: id, title: title, path: path, indent: clamped)
         }

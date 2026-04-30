@@ -9,7 +9,7 @@ public enum Block: Identifiable, Equatable, Sendable {
     case quote(id: BlockID = BlockID(), text: AttributedString, indent: Int = 0)
     case code(id: BlockID = BlockID(), source: String, language: String?, indent: Int = 0)
     case divider(id: BlockID = BlockID(), indent: Int = 0)
-    case toggle(id: BlockID = BlockID(), title: AttributedString, expanded: Bool, children: [Block], indent: Int = 0)
+    case toggle(id: BlockID = BlockID(), title: AttributedString, indent: Int = 0)
     case subpage(id: BlockID = BlockID(), title: String, path: String, indent: Int = 0)
 
     public var id: BlockID {
@@ -22,7 +22,7 @@ public enum Block: Identifiable, Equatable, Sendable {
              .quote(let id, _, _),
              .code(let id, _, _, _),
              .divider(let id, _),
-             .toggle(let id, _, _, _, _),
+             .toggle(let id, _, _),
              .subpage(let id, _, _, _):
             return id
         }
@@ -38,7 +38,7 @@ public enum Block: Identifiable, Equatable, Sendable {
              .quote(_, _, let i),
              .code(_, _, _, let i),
              .divider(_, let i),
-             .toggle(_, _, _, _, let i),
+             .toggle(_, _, let i),
              .subpage(_, _, _, let i):
             return i
         }
@@ -56,7 +56,7 @@ public enum Block: Identifiable, Equatable, Sendable {
              .todo(_, let text, _, _),
              .quote(_, let text, _):
             return text
-        case .toggle(_, let title, _, _, _):
+        case .toggle(_, let title, _):
             return title
         case .code, .divider, .subpage:
             return AttributedString()

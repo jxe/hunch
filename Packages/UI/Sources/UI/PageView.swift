@@ -102,6 +102,10 @@ public struct PageView: View {
         let id: BlockID
     }
     @State private var actionSheet: BlockActionSheet?
+    /// Toggle expansion is page-local view state — defaults to all closed every time the
+    /// page opens. Toggle expansion isn't persisted to markdown (matches the previous
+    /// behavior, where the model carried `expanded` but the serializer dropped it).
+    @State private var expandedToggles: Set<BlockID> = []
 
     public init(
         document: Binding<Document>,
@@ -125,15 +129,15 @@ public struct PageView: View {
         GeometryReader { geometry in
             let numbering = NumberingContext.compute(document.blocks)
             let snapshot = document.blocks
+            let hidden = hiddenBlockIDs(in: snapshot)
+            let visiblePairs = Array(snapshot.enumerated()).filter { !hidden.contains($0.element.id) }
             let horizontalPadding = NotionStyle.pageHorizontalPadding(for: geometry.size.width)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(snapshot.enumerated()), id: \.element.id) { (i, block) in
-                        let gap = BlockSpacing.gap(
-                            before: block,
-                            after: previousBlock(before: block.id, in: snapshot)
-                        )
+                    ForEach(visiblePairs, id: \.element.id) { (i, block) in
+                        let prev = previousVisibleBlock(before: block.id, in: snapshot, hidden: hidden)
+                        let gap = BlockSpacing.gap(before: block, after: prev)
                         let pinchExtraTopGap: CGFloat = (pinchPreview?.insertIndex == i) ? (pinchPreview?.gapHeight ?? 0) : 0
                         let reorderExtraTopGap = reorderDriftGap(for: i)
                         rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
@@ -250,6 +254,7 @@ public struct PageView: View {
                     cursor = nil
                 }
                 pageFocused = true
+                expandedToggles = []
                 // Captured undo entries reference the previous document's blocks — drop them.
                 undoController.reset()
             }
@@ -444,6 +449,7 @@ public struct PageView: View {
             numberingIndex: numberingIndex,
             isSelected: isSelected,
             isEditing: isEditing,
+            isExpanded: expandedToggles.contains(block.id),
             onKey: { key in handleEditorKey(key, blockID: block.id) },
             onEdited: onEdited,
             onAutotransform: { transform, remainingText in
@@ -452,6 +458,13 @@ public struct PageView: View {
             onClickAtPoint: { point in
                 pendingCursorPoint = (block.id, point)
                 enterEditMode(on: block.id)
+            },
+            onToggleExpansion: {
+                if expandedToggles.contains(block.id) {
+                    expandedToggles.remove(block.id)
+                } else {
+                    expandedToggles.insert(block.id)
+                }
             },
             initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
         )
@@ -1131,13 +1144,49 @@ public struct PageView: View {
         selection = [id]
     }
 
+    /// IDs of blocks that should be hidden from rendering and from arrow-nav because they
+    /// live inside a collapsed toggle's section. The toggle row itself is always visible;
+    /// only its body (subsequent blocks at greater indent) is hidden when collapsed.
+    private func hiddenBlockIDs(in blocks: [Block]) -> Set<BlockID> {
+        var hidden: Set<BlockID> = []
+        var i = 0
+        while i < blocks.count {
+            let block = blocks[i]
+            if case .toggle(let id, _, let indent) = block, !expandedToggles.contains(id) {
+                var end = i + 1
+                while end < blocks.count, blocks[end].indent > indent {
+                    hidden.insert(blocks[end].id)
+                    end += 1
+                }
+                i = end
+                continue
+            }
+            i += 1
+        }
+        return hidden
+    }
+
+    private func previousVisibleBlock(before id: BlockID, in blocks: [Block], hidden: Set<BlockID>) -> Block? {
+        guard let idx = blocks.firstIndex(where: { $0.id == id }) else { return nil }
+        var j = idx - 1
+        while j >= 0 {
+            if !hidden.contains(blocks[j].id) { return blocks[j] }
+            j -= 1
+        }
+        return nil
+    }
+
     /// Move the cursor by `delta` rows; collapse to a single-block selection at the new cursor.
+    /// Skips blocks hidden inside collapsed toggles.
     private func moveCursor(by delta: Int) {
         let blocks = document.blocks
         guard !blocks.isEmpty else { return }
-        let currentIndex = cursor.flatMap { id in blocks.firstIndex(where: { $0.id == id }) } ?? 0
-        let nextIndex = max(0, min(blocks.count - 1, currentIndex + delta))
-        setCursor(blocks[nextIndex].id)
+        let hidden = hiddenBlockIDs(in: blocks)
+        let visible = blocks.filter { !hidden.contains($0.id) }
+        guard !visible.isEmpty else { return }
+        let currentIndex = cursor.flatMap { id in visible.firstIndex(where: { $0.id == id }) } ?? 0
+        let nextIndex = max(0, min(visible.count - 1, currentIndex + delta))
+        setCursor(visible[nextIndex].id)
     }
 
     /// Extend the selection in the direction of `delta`. The anchor stays put; the cursor
@@ -1462,20 +1511,15 @@ public struct PageView: View {
             ?? "Untitled"
         let requestedPath = existingLink?.path
 
-        // Pull in indent-descendants (canonical via Document.sectionRange) and,
-        // for toggles, their out-of-band `.children`. When either is present, the
-        // new file gets a `# title` header plus the serialized descendants;
-        // otherwise we leave it nil so the app layer writes today's stub.
+        // The block's indent-descendants (canonical via Document.sectionRange) become the
+        // body of the new subpage. When present, the new file gets a `# title` header plus
+        // the serialized descendants; otherwise we leave it nil so the app layer writes
+        // today's stub.
         let range = document.sectionRange(of: blockID) ?? (i..<i+1)
         let baseIndent = block.indent
-        let indentDescendants = document.blocks[(i + 1)..<range.upperBound].map {
+        let descendants = document.blocks[(i + 1)..<range.upperBound].map {
             $0.withIndent($0.indent - (baseIndent + 1))
         }
-        var toggleChildren: [Block] = []
-        if case .toggle(_, _, _, let children, _) = block {
-            toggleChildren = children
-        }
-        let descendants = indentDescendants + toggleChildren
         let initialContent: String? = descendants.isEmpty
             ? nil
             : "# \(title)\n\n" + BlockSerializer.serialize(descendants)
@@ -1732,7 +1776,7 @@ public struct PageView: View {
             return .quote(text: attr, indent: indent)
         case .heading(_, _, _, let indent),
              .paragraph(_, _, let indent),
-             .toggle(_, _, _, _, let indent),
+             .toggle(_, _, let indent),
              .code(_, _, _, let indent),
              .divider(_, let indent),
              .subpage(_, _, _, let indent):

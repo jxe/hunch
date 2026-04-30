@@ -167,14 +167,20 @@ struct RoundTripTests {
         </details>
         """
         let blocks = BlockParser.parse(src)
-        #expect(blocks.count == 1)
-        guard case .toggle(_, let title, _, let children, _) = blocks[0] else {
+        // Body blocks are flat siblings at indent + 1, not nested in a children array.
+        #expect(blocks.count == 3)
+        guard case .toggle(_, let title, let toggleIndent) = blocks[0] else {
             Issue.record("not a toggle")
             return
         }
         #expect(String(title.characters) == "Title")
-        #expect(children.count == 2)
-        if case .bullet(_, _, _) = children[0] {} else { Issue.record("first child not bullet") }
+        #expect(toggleIndent == 0)
+        if case .bullet(_, _, let i) = blocks[1] {
+            #expect(i == 1)
+        } else { Issue.record("first body block not bullet") }
+        if case .bullet(_, _, let i) = blocks[2] {
+            #expect(i == 1)
+        } else { Issue.record("second body block not bullet") }
     }
 
     @Test func subpage() {
@@ -233,6 +239,40 @@ struct RoundTripTests {
         #expect(sawCode2)
     }
 
+    @Test func toggleBodyEditableAndRoundTrips() {
+        // The whole point of the flat-toggle change: a toggle's body lives as siblings at
+        // indent + 1, so it goes through the normal block-row path and edits naturally.
+        // Verify a paragraph in the body is at the right indent on parse, that it survives
+        // re-serialize, and that adding an indent + 1 sibling extends the toggle's section.
+        let src = """
+        <details><summary>Toggle</summary>
+
+        Body paragraph.
+
+        - bullet
+
+        </details>
+        """
+        var blocks = BlockParser.parse(src)
+        #expect(blocks.count == 3)
+        guard case .toggle(let toggleID, _, 0) = blocks[0] else { Issue.record("not a toggle"); return }
+        if case .paragraph(_, _, let i) = blocks[1] { #expect(i == 1) } else { Issue.record("body not paragraph") }
+        if case .bullet(_, _, let i) = blocks[2] { #expect(i == 1) } else { Issue.record("body not bullet") }
+
+        // Append a new sibling at indent 1 — section extends.
+        blocks.append(.paragraph(text: AttributedString("appended"), indent: 1))
+        let doc = Document(url: URL(fileURLWithPath: "/tmp/x.md"), title: "Toggle", blocks: blocks)
+        #expect(doc.sectionRange(of: toggleID) == 0..<4)
+
+        // Re-serialize / re-parse keeps the new sibling inside the toggle.
+        let reparsed = BlockParser.parse(BlockSerializer.serialize(blocks))
+        #expect(reparsed.count == 4)
+        if case .paragraph(_, let t, let i) = reparsed[3] {
+            #expect(String(t.characters) == "appended")
+            #expect(i == 1)
+        } else { Issue.record("appended not paragraph at indent 1") }
+    }
+
     @Test func toggleNestedRoundTrip() {
         let src = """
         <details><summary>Outer</summary>
@@ -249,13 +289,28 @@ struct RoundTripTests {
         </details>
         """
         let blocks = BlockParser.parse(src)
-        #expect(blocks.count == 1)
-        guard case .toggle(_, _, _, let outerChildren, _) = blocks[0] else {
+        // Outer toggle, two outer-body bullets at indent 1, inner toggle at indent 1, one
+        // inner-body bullet at indent 2.
+        guard case .toggle(_, let outerTitle, let outerIndent) = blocks[0] else {
             Issue.record("outer not toggle")
             return
         }
-        let innerToggle = outerChildren.first { if case .toggle = $0 { return true } else { return false } }
-        #expect(innerToggle != nil)
+        #expect(String(outerTitle.characters) == "Outer")
+        #expect(outerIndent == 0)
+        let innerIdx = blocks.firstIndex { if case .toggle = $0 { return $0.id != blocks[0].id } else { return false } }
+        guard let innerIdx, case .toggle(_, let innerTitle, let innerIndent) = blocks[innerIdx] else {
+            Issue.record("inner toggle not found")
+            return
+        }
+        #expect(String(innerTitle.characters) == "Inner")
+        #expect(innerIndent == 1)
+        // Re-serialize and re-parse: structure preserved.
+        let serialized = BlockSerializer.serialize(blocks)
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == blocks.count)
+        for (a, b) in zip(blocks, reparsed) {
+            #expect(blockKind(a) == blockKind(b))
+        }
     }
 
     // MARK: - helpers
@@ -282,7 +337,7 @@ struct RoundTripTests {
         case .quote(_, _, let i): return "quote-\(i)"
         case .code(_, _, let lang, let i): return "code-\(lang ?? "nil")-\(i)"
         case .divider(_, let i): return "divider-\(i)"
-        case .toggle(_, _, _, _, let i): return "toggle-\(i)"
+        case .toggle(_, _, let i): return "toggle-\(i)"
         case .subpage(_, _, _, let i): return "subpage-\(i)"
         }
     }
@@ -292,7 +347,7 @@ struct RoundTripTests {
         case .paragraph(_, let t, _), .heading(_, _, let t, _),
              .bullet(_, let t, _), .numbered(_, let t, _),
              .todo(_, let t, _, _), .quote(_, let t, _),
-             .toggle(_, let t, _, _, _):
+             .toggle(_, let t, _):
             return String(t.characters)
         case .code(_, let s, _, _): return s.trimmingCharacters(in: .whitespacesAndNewlines)
         case .divider: return ""

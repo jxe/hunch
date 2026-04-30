@@ -112,16 +112,11 @@ struct DocumentMutationTests {
     }
 
     @Test func withTextOnToggleReplacesTitle() {
-        let original = Block.toggle(
-            title: AttributedString("old title"),
-            expanded: true,
-            children: [.paragraph(text: AttributedString("kid"))]
-        )
+        let original = Block.toggle(title: AttributedString("old title"))
         let updated = original.withText(AttributedString("new title"))
-        if case .toggle(_, let title, let expanded, let children, _) = updated {
+        if case .toggle(let id, let title, _) = updated {
+            #expect(id == original.id)
             #expect(String(title.characters) == "new title")
-            #expect(expanded == true)
-            #expect(children.count == 1)
         } else {
             Issue.record("expected toggle")
         }
@@ -266,7 +261,7 @@ struct DocumentMutationTests {
                  .numbered(_, let text, _),
                  .todo(_, let text, _, _),
                  .quote(_, let text, _),
-                 .toggle(_, let text, _, _, _):
+                 .toggle(_, let text, _):
                 return String(text.characters)
             case .code(_, let source, _, _):
                 return source

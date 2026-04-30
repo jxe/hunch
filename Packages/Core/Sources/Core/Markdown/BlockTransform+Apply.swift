@@ -17,7 +17,7 @@ extension BlockTransform {
         case .quote:
             return [.quote(text: remainingText)]
         case .toggle:
-            return [.toggle(title: remainingText, expanded: false, children: [])]
+            return [.toggle(title: remainingText)]
         case .divider:
             return [.divider(), .paragraph(text: AttributedString())]
         case .codeFence:
