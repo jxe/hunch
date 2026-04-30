@@ -4,11 +4,16 @@ import Core
 public struct PageListView: View {
     public let entries: [WorkspaceEntry]
     @Binding public var selection: WorkspaceEntry.ID?
-    @State private var searchText = ""
+    @Binding public var searchText: String
 
-    public init(entries: [WorkspaceEntry], selection: Binding<WorkspaceEntry.ID?>) {
+    public init(
+        entries: [WorkspaceEntry],
+        selection: Binding<WorkspaceEntry.ID?>,
+        searchText: Binding<String>
+    ) {
         self.entries = entries
         self._selection = selection
+        self._searchText = searchText
     }
 
     public var body: some View {
@@ -27,7 +32,6 @@ public struct PageListView: View {
             }
         }
         .listStyle(.plain)
-        .searchable(text: $searchText, placement: .automatic, prompt: "Search pages")
     }
 
     private var filteredEntries: [WorkspaceEntry] {

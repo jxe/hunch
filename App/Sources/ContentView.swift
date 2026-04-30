@@ -142,6 +142,13 @@ final class WorkspaceModel {
         }
     }
 
+    func loadSubpage(relativePath: String) -> [Block]? {
+        guard let workspaceURL else { return nil }
+        let target = workspaceURL.appendingPathComponent(relativePath)
+        guard let doc = try? store.loadDocument(at: target) else { return nil }
+        return doc.blocks
+    }
+
     func closeDocument() {
         path = []
     }
@@ -354,6 +361,7 @@ struct ContentView: View {
     #if os(iOS)
     @State private var showingSwitchPicker = false
     #endif
+    @State private var pageSearchText = ""
 
     var body: some View {
         Group {
@@ -418,10 +426,16 @@ struct ContentView: View {
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-            PageListView(entries: model.entries, selection: pageSelection)
+            PageListView(
+                entries: model.entries,
+                selection: pageSelection,
+                searchText: $pageSearchText
+            )
         }
         .navigationTitle(model.workspaceURL?.lastPathComponent ?? "Workspace")
+        .searchable(text: $pageSearchText, placement: .automatic, prompt: "Search pages")
         #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -463,6 +477,9 @@ struct ContentView: View {
                 },
                 onCreateSubpage: { title, requestedPath, initialContent in
                     model.createSubpage(title: title, requestedPath: requestedPath, initialContent: initialContent)
+                },
+                onLoadSubpage: { relativePath in
+                    model.loadSubpage(relativePath: relativePath)
                 },
                 onNavigateBack: {
                     model.goBack()

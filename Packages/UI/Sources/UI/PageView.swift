@@ -25,6 +25,9 @@ public struct PageView: View {
     @Binding public var document: Document
     public let onSubpageTap: (String) -> Void
     public let onCreateSubpage: (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String?
+    /// Inverse of subpage creation: read the .md at the given relative path and return its blocks.
+    /// `nil` means the file couldn't be read or parsed; the popover action becomes a no-op.
+    public let onLoadSubpage: (_ relativePath: String) -> [Block]?
     public let onNavigateBack: () -> Void
     public let onEdited: () -> Void
     public let onBlur: () -> Void
@@ -104,6 +107,7 @@ public struct PageView: View {
         document: Binding<Document>,
         onSubpageTap: @escaping (String) -> Void = { _ in },
         onCreateSubpage: @escaping (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String? = { _, requestedPath, _ in requestedPath },
+        onLoadSubpage: @escaping (_ relativePath: String) -> [Block]? = { _ in nil },
         onNavigateBack: @escaping () -> Void = {},
         onEdited: @escaping () -> Void = {},
         onBlur: @escaping () -> Void = {}
@@ -111,6 +115,7 @@ public struct PageView: View {
         self._document = document
         self.onSubpageTap = onSubpageTap
         self.onCreateSubpage = onCreateSubpage
+        self.onLoadSubpage = onLoadSubpage
         self.onNavigateBack = onNavigateBack
         self.onEdited = onEdited
         self.onBlur = onBlur
@@ -250,9 +255,6 @@ public struct PageView: View {
             }
             .onChange(of: dropHoverIndex) { _, newValue in
                 handleDropHoverChange(newValue)
-            }
-            .iosBlockActionSheet($actionSheet) { id in
-                blockActionSheetContent(for: id)
             }
             .onChange(of: scenePhase) { _, newValue in
                 if newValue == .active {
@@ -482,6 +484,14 @@ public struct PageView: View {
                     actionSheet = BlockActionSheet(id: block.id)
                 }
             )
+            .iosBlockActionPopover(
+                isPresented: Binding(
+                    get: { actionSheet?.id == block.id },
+                    set: { if !$0 { actionSheet = nil } }
+                )
+            ) {
+                blockActionMenuContent(for: block.id)
+            }
             .opacity(reorderSourceOpacity(for: block.id))
             .contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
@@ -1487,61 +1497,146 @@ public struct PageView: View {
         return .handled
     }
 
+    @discardableResult
+    private func expandSubpage(blockID: BlockID) -> KeyPress.Result {
+        guard let i = document.index(of: blockID) else { return .ignored }
+        guard case .subpage(_, _, let path, let indent) = document.blocks[i] else { return .ignored }
+        guard let loaded = onLoadSubpage(path), !loaded.isEmpty else { return .ignored }
+
+        // Shift all loaded blocks by the subpage row's indent so the inlined
+        // content sits at the same depth as the link it's replacing.
+        let shifted = loaded.map { $0.withIndent($0.indent + indent) }
+        mutate("Expand Subpage") {
+            document.blocks.replaceSubrange(i..<(i + 1), with: shifted)
+        }
+        DispatchQueue.main.async {
+            if let first = shifted.first {
+                setCursor(first.id)
+            }
+        }
+        return .handled
+    }
+
+    @discardableResult
+    private func convertToHeading(blockID: BlockID, level: Int) -> KeyPress.Result {
+        guard let i = document.index(of: blockID) else { return .ignored }
+        let block = document.blocks[i]
+        let text: AttributedString
+        switch block {
+        case .paragraph(_, let t, _),
+             .heading(_, _, let t, _),
+             .bullet(_, let t, _),
+             .numbered(_, let t, _),
+             .quote(_, let t, _):
+            text = t
+        case .todo(_, let t, _, _):
+            text = t
+        default:
+            return .ignored
+        }
+        // Indent-descendants of the original block stay logically "under" the new
+        // heading, but headings own their section by being headings, not by depth —
+        // outdent the descendants by 1 so they sit at the heading's level (with
+        // relative depth among themselves preserved).
+        let range = document.sectionRange(of: blockID) ?? (i..<i+1)
+        mutate("Make Heading") {
+            var blocks = document.blocks
+            blocks[i] = .heading(id: blockID, level: level, text: text, indent: block.indent)
+            for j in (i + 1)..<range.upperBound {
+                blocks[j] = blocks[j].withIndent(blocks[j].indent - 1)
+            }
+            document.blocks = blocks
+        }
+        return .handled
+    }
+
     @ViewBuilder
-    fileprivate func blockActionSheetContent(for blockID: BlockID) -> some View {
-        #if os(iOS)
+    fileprivate func blockActionMenuContent(for blockID: BlockID) -> some View {
         if let i = document.index(of: blockID) {
             let block = document.blocks[i]
-            let canPromote = !isStructuralBlock(block)
-            let canIndent = canChangeIndent(at: [i], by: +1)
-            let canOutdent = canChangeIndent(at: [i], by: -1)
-            NavigationStack {
-                List {
-                    Button {
-                        actionSheet = nil
+            VStack(alignment: .leading, spacing: 0) {
+                if !isStructuralBlock(block) {
+                    menuRow("Promote to subpage", systemImage: "rectangle.stack.badge.plus") {
                         _ = convertBlockToSubpage(blockID: blockID, preferredTitle: nil)
-                    } label: {
-                        Label("Promote to subpage", systemImage: "rectangle.stack.badge.plus")
-                    }
-                    .disabled(!canPromote)
-
-                    Button {
-                        actionSheet = nil
-                        _ = changeIndent(blockID, by: +1)
-                    } label: {
-                        Label("Indent", systemImage: "increase.indent")
-                    }
-                    .disabled(!canIndent)
-
-                    Button {
-                        actionSheet = nil
-                        _ = changeIndent(blockID, by: -1)
-                    } label: {
-                        Label("Outdent", systemImage: "decrease.indent")
-                    }
-                    .disabled(!canOutdent)
-
-                    Button(role: .destructive) {
-                        actionSheet = nil
-                        deleteBlocks(ids: dragIDs(for: blockID), actionName: "Delete")
-                        showActionToast("Deleted")
-                    } label: {
-                        Label("Delete", systemImage: "trash")
                     }
                 }
-                .navigationTitle("Block actions")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Done") { actionSheet = nil }
+                if case .subpage = block {
+                    menuRow("Expand subpage", systemImage: "arrow.down.right.and.arrow.up.left") {
+                        _ = expandSubpage(blockID: blockID)
                     }
+                }
+                if canMakeHeading(block) {
+                    Text("Heading")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
+                        .padding(.bottom, 4)
+                    HStack(spacing: 8) {
+                        ForEach([1, 2, 3], id: \.self) { level in
+                            Button {
+                                actionSheet = nil
+                                convertToHeading(blockID: blockID, level: level)
+                            } label: {
+                                Text("H\(level)")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+                }
+                if canChangeIndent(at: [i], by: +1) {
+                    menuRow("Indent", systemImage: "increase.indent") {
+                        _ = changeIndent(blockID, by: +1)
+                    }
+                }
+                if canChangeIndent(at: [i], by: -1) {
+                    menuRow("Outdent", systemImage: "decrease.indent") {
+                        _ = changeIndent(blockID, by: -1)
+                    }
+                }
+                menuRow("Delete", systemImage: "trash", role: .destructive) {
+                    deleteBlocks(ids: dragIDs(for: blockID), actionName: "Delete")
+                    showActionToast("Deleted")
                 }
             }
-            .presentationDetents([.medium])
+            .padding(.vertical, 6)
+            .frame(minWidth: 220)
         }
-        #else
-        EmptyView()
-        #endif
+    }
+
+    @ViewBuilder
+    private func menuRow(
+        _ title: String,
+        systemImage: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role) {
+            actionSheet = nil
+            action()
+        } label: {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(role == .destructive ? Color.red : Color.primary)
+    }
+
+    private func canMakeHeading(_ block: Block) -> Bool {
+        switch block {
+        case .paragraph, .bullet, .numbered, .todo, .quote, .heading:
+            return true
+        case .toggle, .code, .divider, .subpage:
+            return false
+        }
     }
 
     private func isStructuralBlock(_ block: Block) -> Bool {
@@ -1776,13 +1871,14 @@ private extension View {
     }
 
     @ViewBuilder
-    func iosBlockActionSheet<Sheet: View>(
-        _ binding: Binding<PageView.BlockActionSheet?>,
-        @ViewBuilder content: @escaping (BlockID) -> Sheet
+    func iosBlockActionPopover<Content: View>(
+        isPresented: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         #if os(iOS)
-        self.sheet(item: binding) { target in
-            content(target.id)
+        self.popover(isPresented: isPresented) {
+            content()
+                .presentationCompactAdaptation(.popover)
         }
         #else
         self
