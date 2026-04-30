@@ -476,7 +476,14 @@ public struct PageView: View {
 
     @ViewBuilder
     private func reorderLiftView() -> some View {
-        if let lift = reorderLift {
+        // Skip the overlay while pendingAnchor is true (iOS, between long-press
+        // completion and the first drag event). The source row still dims via
+        // `reorderLift?.ids` and the drift gap still suppresses via
+        // `reorderLift?.sourceIndex` — but rendering the lift at the source
+        // row's center pre-movement would just stack a full-opacity copy on
+        // the dimmed original, looking like the row got "stuck lifted" before
+        // the finger has moved.
+        if let lift = reorderLift, !lift.pendingAnchor {
             BlockRow(
                 block: .constant(lift.block),
                 editorFocused: $editorFocused,
