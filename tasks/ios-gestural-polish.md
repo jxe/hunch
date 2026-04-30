@@ -37,15 +37,6 @@ Still missing:
 - Fallback to `CALayer` transforms on a snapshotted row tree if long
   documents choke on per-frame SwiftUI layout.
 
-## Pinch-Close To Page List
-
-Current state: `magnification < 0.82` calls `onPinchClose` and clears the
-open document.
-
-Desired behavior: page scales toward the page-list cell it came from,
-the page list peeks through underneath, release past threshold commits,
-and below-threshold release springs back to full size.
-
 ## Haptics Layer
 
 Add a thin `Haptics.swift` wrapper so call sites read cleanly:
