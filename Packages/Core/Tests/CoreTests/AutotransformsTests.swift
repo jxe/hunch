@@ -216,6 +216,22 @@ struct BlockTransformApplyTests {
         #expect(blocks[0].id != blocks[1].id)
     }
 
+    @Test func dividerReplacementPreservesSourceIndent() {
+        let blocks = BlockTransform.divider.apply(to: attr("")).map { $0.withIndent(2) }
+        #expect(blocks.count == 2)
+        if case .divider(_, let indent) = blocks[0] {
+            #expect(indent == 2)
+        } else {
+            Issue.record("expected divider at 0")
+        }
+        if case .paragraph(_, let text, let indent) = blocks[1] {
+            #expect(String(text.characters) == "")
+            #expect(indent == 2)
+        } else {
+            Issue.record("expected paragraph at 1")
+        }
+    }
+
     @Test func codeFenceProducesTwoBlocks() {
         let blocks = BlockTransform.codeFence.apply(to: attr(""))
         #expect(blocks.count == 2)

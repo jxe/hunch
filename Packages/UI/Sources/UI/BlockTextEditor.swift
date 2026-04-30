@@ -208,6 +208,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
         // `DocumentUndoController` (registered on first text change of each session).
         view.allowsUndo = false
         view.drawsBackground = false
+        view.isAutomaticDashSubstitutionEnabled = false
         view.textContainerInset = .zero
         view.textContainer?.lineFragmentPadding = 0
         view.isVerticallyResizable = true
@@ -250,9 +251,11 @@ struct MacBlockTextEditor: NSViewRepresentable {
     private func applyTypingAttributes(to view: NSTextView) {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
+        let font = InlineMarksKit.interFont(size: fontSize, bold: bold, italic: false)
         view.defaultParagraphStyle = style
+        view.font = font
         view.typingAttributes = [
-            .font: InlineMarksKit.interFont(size: fontSize, bold: bold, italic: false),
+            .font: font,
             .paragraphStyle: style,
             .foregroundColor: NSColor(NotionStyle.foreground)
         ]
@@ -575,6 +578,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         tv.isScrollEnabled = false
         tv.allowsEditingTextAttributes = true
         tv.adjustsFontForContentSizeCategory = false
+        tv.smartDashesType = .no
         loadAttributedString(into: tv)
         applyTypingAttributes(to: tv)
         tv.wantsFocus = isFocused
@@ -663,8 +667,10 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     private func applyTypingAttributes(to tv: ContainedTextViewIOS) {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
+        let font = Self.resolveUIFont(size: fontSize, bold: bold)
+        tv.font = font
         tv.typingAttributes = [
-            .font: Self.resolveUIFont(size: fontSize, bold: bold),
+            .font: font,
             .paragraphStyle: style,
             .foregroundColor: UIColor(NotionStyle.foreground)
         ]

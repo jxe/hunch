@@ -11,7 +11,7 @@ public enum NotionStyle {
 
     // MARK: Fonts
     public static func body(size: CGFloat = 16) -> Font {
-        Font.custom("Inter", size: size, relativeTo: .body)
+        Font.custom("Inter", fixedSize: size)
     }
 
     public static func mono(size: CGFloat = 14) -> Font {
