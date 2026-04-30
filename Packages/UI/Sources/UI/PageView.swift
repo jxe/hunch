@@ -1643,8 +1643,24 @@ public struct PageView: View {
     private func convertToToggle(blockID: BlockID) -> KeyPress.Result {
         guard let i = document.index(of: blockID) else { return .ignored }
         let block = document.blocks[i]
+        // Subpage → toggle is the inverse of promote-to-subpage: load the file,
+        // strip a leading `# title` heading if it duplicates the subpage's title,
+        // and splice the rest in as the new toggle's body (one indent deeper).
+        if case .subpage(_, let title, let path, let indent) = block {
+            guard var loaded = onLoadSubpage(path) else { return .ignored }
+            if case .heading(_, 1, let leadingText, _) = loaded.first,
+               String(leadingText.characters).trimmingCharacters(in: .whitespacesAndNewlines) == title {
+                loaded.removeFirst()
+            }
+            let body = loaded.map { $0.withIndent($0.indent + indent + 1) }
+            let toggle = Block.toggle(id: blockID, title: AttributedString(title), indent: indent)
+            mutate("Make Toggle") {
+                document.blocks.replaceSubrange(i..<(i + 1), with: [toggle] + body)
+            }
+            expandedToggles.insert(blockID)
+            return .handled
+        }
         guard let text = textForBlockTypeChange(block) else { return .ignored }
-
         // Toggles use indent-descendants for their body just like bullets/numbered/quote,
         // so we don't shift the descendants — just swap the type. Auto-expand so the
         // body stays visible right after the conversion.
@@ -1770,9 +1786,9 @@ public struct PageView: View {
 
     private func canMakeToggle(_ block: Block) -> Bool {
         switch block {
-        case .paragraph, .bullet, .numbered, .todo, .quote, .heading:
+        case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .subpage:
             return true
-        case .toggle, .code, .divider, .subpage:
+        case .toggle, .code, .divider:
             return false
         }
     }

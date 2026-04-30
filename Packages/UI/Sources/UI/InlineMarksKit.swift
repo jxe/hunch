@@ -84,13 +84,13 @@ enum InlineMarksKit {
 
             var attrs: [NSAttributedString.Key: Any] = [
                 .paragraphStyle: paragraphStyle,
-                .foregroundColor: PlatformColor(NotionStyle.foreground)
+                .foregroundColor: NotionStyle.platformForeground
             ]
 
             if code {
                 attrs[.font] = monoFont(size: NotionStyle.inlineCodeSize)
-                attrs[.foregroundColor] = PlatformColor(NotionStyle.codeForeground)
-                attrs[.backgroundColor] = PlatformColor(NotionStyle.codeBackground)
+                attrs[.foregroundColor] = NotionStyle.platformCodeForeground
+                attrs[.backgroundColor] = NotionStyle.platformCodeBackground
             } else {
                 attrs[.font] = interFont(size: baseFontSize, bold: bold, italic: italic)
             }
@@ -100,7 +100,7 @@ enum InlineMarksKit {
             if let link {
                 attrs[.link] = link
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
-                attrs[.foregroundColor] = PlatformColor.systemBlue
+                attrs[.foregroundColor] = NotionStyle.platformLinkForeground
             }
             result.append(NSAttributedString(string: plain, attributes: attrs))
         }
@@ -184,11 +184,11 @@ enum InlineMarksKit {
             case .code:
                 if setting {
                     newAttrs[.font] = monoFont(size: NotionStyle.inlineCodeSize)
-                    newAttrs[.foregroundColor] = PlatformColor(NotionStyle.codeForeground)
-                    newAttrs[.backgroundColor] = PlatformColor(NotionStyle.codeBackground)
+                    newAttrs[.foregroundColor] = NotionStyle.platformCodeForeground
+                    newAttrs[.backgroundColor] = NotionStyle.platformCodeBackground
                 } else {
                     newAttrs[.font] = interFont(size: baseFontSize, bold: baseBold, italic: false)
-                    newAttrs[.foregroundColor] = PlatformColor(NotionStyle.foreground)
+                    newAttrs[.foregroundColor] = NotionStyle.platformForeground
                     newAttrs.removeValue(forKey: .backgroundColor)
                 }
             case .strikethrough:

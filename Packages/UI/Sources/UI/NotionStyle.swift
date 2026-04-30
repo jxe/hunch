@@ -1,13 +1,82 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif os(iOS)
+import UIKit
+#endif
 
 public enum NotionStyle {
+    private struct RGBA {
+        let red: CGFloat
+        let green: CGFloat
+        let blue: CGFloat
+        let alpha: CGFloat
+    }
+
+    private static func rgb(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> RGBA {
+        rgba(red, green, blue, 1)
+    }
+
+    private static func rgba(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ alpha: CGFloat) -> RGBA {
+        RGBA(red: red / 255, green: green / 255, blue: blue / 255, alpha: alpha)
+    }
+
+    #if os(macOS)
+    private static func adaptivePlatformColor(light: RGBA, dark: RGBA) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let match = appearance.bestMatch(from: [.darkAqua, .aqua])
+            return platformColor(match == .darkAqua ? dark : light)
+        } ?? platformColor(light)
+    }
+
+    private static func adaptiveColor(light: RGBA, dark: RGBA) -> Color {
+        Color(nsColor: adaptivePlatformColor(light: light, dark: dark))
+    }
+
+    private static func platformColor(_ rgba: RGBA) -> NSColor {
+        NSColor(red: rgba.red, green: rgba.green, blue: rgba.blue, alpha: rgba.alpha)
+    }
+    #elseif os(iOS)
+    private static func adaptivePlatformColor(light: RGBA, dark: RGBA) -> UIColor {
+        UIColor { traits in
+            platformColor(traits.userInterfaceStyle == .dark ? dark : light)
+        }
+    }
+
+    private static func adaptiveColor(light: RGBA, dark: RGBA) -> Color {
+        Color(uiColor: adaptivePlatformColor(light: light, dark: dark))
+    }
+
+    private static func platformColor(_ rgba: RGBA) -> UIColor {
+        UIColor(red: rgba.red, green: rgba.green, blue: rgba.blue, alpha: rgba.alpha)
+    }
+    #else
+    private static func adaptiveColor(light: RGBA, dark: RGBA) -> Color {
+        Color(red: light.red, green: light.green, blue: light.blue, opacity: light.alpha)
+    }
+    #endif
+
     // MARK: Colors
-    public static let foreground = Color(red: 55/255, green: 53/255, blue: 47/255)        // #37352F
-    public static let mutedForeground = Color(red: 55/255, green: 53/255, blue: 47/255).opacity(0.5)
-    public static let background = Color.white
-    public static let codeForeground = Color(red: 235/255, green: 87/255, blue: 87/255)    // #EB5757
-    public static let codeBackground = Color(red: 135/255, green: 131/255, blue: 120/255).opacity(0.15)
-    public static let dividerColor = Color(red: 233/255, green: 233/255, blue: 231/255)
+    public static let foreground = adaptiveColor(light: rgb(55, 53, 47), dark: rgb(218, 216, 211))        // #37352F / #DAD8D3
+    public static let mutedForeground = adaptiveColor(light: rgba(55, 53, 47, 0.5), dark: rgba(255, 255, 255, 0.46))
+    public static let background = adaptiveColor(light: rgb(255, 255, 255), dark: rgb(25, 25, 25))
+    public static let codeForeground = adaptiveColor(light: rgb(235, 87, 87), dark: rgb(255, 115, 105))    // #EB5757 / #FF7369
+    public static let codeBackground = adaptiveColor(light: rgba(135, 131, 120, 0.15), dark: rgba(255, 255, 255, 0.08))
+    public static let dividerColor = adaptiveColor(light: rgb(233, 233, 231), dark: rgba(255, 255, 255, 0.13))
+    public static let linkForeground = adaptiveColor(light: rgb(35, 131, 226), dark: rgb(82, 156, 255))
+    public static let selectionBackground = adaptiveColor(light: rgba(35, 131, 226, 0.12), dark: rgba(82, 156, 255, 0.22))
+
+    #if os(macOS)
+    public static let platformForeground = adaptivePlatformColor(light: rgb(55, 53, 47), dark: rgb(218, 216, 211))
+    public static let platformCodeForeground = adaptivePlatformColor(light: rgb(235, 87, 87), dark: rgb(255, 115, 105))
+    public static let platformCodeBackground = adaptivePlatformColor(light: rgba(135, 131, 120, 0.15), dark: rgba(255, 255, 255, 0.08))
+    public static let platformLinkForeground = adaptivePlatformColor(light: rgb(35, 131, 226), dark: rgb(82, 156, 255))
+    #elseif os(iOS)
+    public static let platformForeground = adaptivePlatformColor(light: rgb(55, 53, 47), dark: rgb(218, 216, 211))
+    public static let platformCodeForeground = adaptivePlatformColor(light: rgb(235, 87, 87), dark: rgb(255, 115, 105))
+    public static let platformCodeBackground = adaptivePlatformColor(light: rgba(135, 131, 120, 0.15), dark: rgba(255, 255, 255, 0.08))
+    public static let platformLinkForeground = adaptivePlatformColor(light: rgb(35, 131, 226), dark: rgb(82, 156, 255))
+    #endif
 
     // MARK: Fonts
     public static func body(size: CGFloat = 16) -> Font {

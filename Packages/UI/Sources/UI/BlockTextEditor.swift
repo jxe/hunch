@@ -257,7 +257,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
         view.typingAttributes = [
             .font: font,
             .paragraphStyle: style,
-            .foregroundColor: NSColor(NotionStyle.foreground)
+            .foregroundColor: NotionStyle.platformForeground
         ]
     }
 
@@ -682,7 +682,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         tv.typingAttributes = [
             .font: font,
             .paragraphStyle: style,
-            .foregroundColor: UIColor(NotionStyle.foreground)
+            .foregroundColor: NotionStyle.platformForeground
         ]
     }
 

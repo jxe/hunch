@@ -38,7 +38,7 @@ public enum InlineRenderer {
             if let link {
                 attributed.link = link
                 attributed.underlineStyle = .single
-                attributed.foregroundColor = .blue
+                attributed.foregroundColor = NotionStyle.linkForeground
             }
 
             result.append(attributed)
@@ -105,7 +105,7 @@ public struct BlockRow: View {
     public var body: some View {
         content
             .padding(.vertical, BlockSpacing.intrinsicVerticalPadding(block))
-            .background(isSelected && !isEditing ? Color.accentColor.opacity(0.12) : Color.clear)
+            .background(isSelected && !isEditing ? NotionStyle.selectionBackground : Color.clear)
     }
 
     /// AttributedString projection of the block's text for editing. Marks (bold/italic/
