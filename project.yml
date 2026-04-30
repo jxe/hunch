@@ -39,7 +39,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: Console
+        CFBundleDisplayName: Hunch
+        CFBundleName: Hunch
         CFBundleShortVersionString: "0.1"
         CFBundleVersion: "1"
         UILaunchScreen: {}
@@ -66,3 +67,24 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.joeedelman.console.uitests
         TEST_TARGET_NAME: Console
         GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Console:
+    build:
+      targets:
+        Console: all
+      # Drop a freshly-built copy at ~/Applications/Hunch.app after every macOS
+      # build so a Dock entry there keeps working across rebuilds. Scheme
+      # post-actions run *after* Xcode's full codesign, so we just copy — no
+      # re-signing needed.
+      postActions:
+        - name: Install to ~/Applications (macOS only)
+          settingsTarget: Console
+          script: |
+            if [ "$PLATFORM_NAME" != "macosx" ]; then
+                exit 0
+            fi
+            DEST="$HOME/Applications/Hunch.app"
+            mkdir -p "$HOME/Applications"
+            rm -rf "$DEST"
+            cp -R "$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app" "$DEST"
