@@ -4,11 +4,12 @@ import UI
 struct StartVoiceRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Voice Recording"
     static let description = IntentDescription("Open Hunch and start recording audio for the current page.")
-    static let supportedModes: IntentModes = .foreground(.dynamic)
+    static let supportedModes: IntentModes = .foreground(.immediate)
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
+    static let openAppWhenRun = true
 
     func perform() async throws -> some IntentResult {
-        VoiceRecordingLaunchRequest.requestStart()
+        await VoiceRecordingLaunchRequest.requestStart()
         return .result()
     }
 }

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		05EDCEDBEF4C024F981312E2 /* InterVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C60B591D585995CB7097A0DC /* InterVariable.ttf */; };
+		08925AC1A04AD08FF0C8383B /* VoiceRecordingIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 944CFC55C63C67A7EC1BBC58 /* VoiceRecordingIntents.swift */; };
 		23117D5233A97DD99B42A62E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F152EE3E8A4F7205FF247D87 /* Assets.xcassets */; };
 		262D29CF7CAA3118EBB12F92 /* HunchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDE9175735C2BEE33F669B6 /* HunchApp.swift */; };
 		3EEA45994B20513A94C2EF04 /* FontRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F377A4E9DAA12643BB2666D /* FontRegistration.swift */; };
@@ -34,6 +35,7 @@
 		585432613FC8E2481EE964A5 /* UI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = UI; path = Packages/UI; sourceTree = SOURCE_ROOT; };
 		5F377A4E9DAA12643BB2666D /* FontRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FontRegistration.swift; sourceTree = "<group>"; };
 		9221CD2529F8914B14AA5D9E /* HunchDragAndDropUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HunchDragAndDropUITests.swift; sourceTree = "<group>"; };
+		944CFC55C63C67A7EC1BBC58 /* VoiceRecordingIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecordingIntents.swift; sourceTree = "<group>"; };
 		C60B591D585995CB7097A0DC /* InterVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = InterVariable.ttf; sourceTree = "<group>"; };
 		CAD5ADE397DACEA1B4A26BE8 /* Hunch.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Hunch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D954BA2A1FAF2CB0B575371F /* HunchUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HunchUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -121,6 +123,7 @@
 				1D68ED38B354E02D3C714C9F /* ContentView.swift */,
 				5F377A4E9DAA12643BB2666D /* FontRegistration.swift */,
 				4EDE9175735C2BEE33F669B6 /* HunchApp.swift */,
+				944CFC55C63C67A7EC1BBC58 /* VoiceRecordingIntents.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -231,6 +234,7 @@
 				96052357A5A3DF167EBAEFE7 /* ContentView.swift in Sources */,
 				3EEA45994B20513A94C2EF04 /* FontRegistration.swift in Sources */,
 				262D29CF7CAA3118EBB12F92 /* HunchApp.swift in Sources */,
+				08925AC1A04AD08FF0C8383B /* VoiceRecordingIntents.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
