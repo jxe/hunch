@@ -1536,8 +1536,13 @@ private struct IOSRowReorderActions: ViewModifier {
     @State private var latestPageY: CGFloat = 0
 
     func body(content: Content) -> some View {
+        // maximumDistance: 10 matches UIKit's standard allowableMovement.
+        // Larger values (we previously had 36) let slow scrolls stay within
+        // tolerance for the full 340ms hold, so the long-press fires, the
+        // source row dims, and the touch is claimed from the ScrollView —
+        // user perceives this as scroll being blocked.
         content.simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.34, maximumDistance: 36)
+            LongPressGesture(minimumDuration: 0.34, maximumDistance: 10)
                 .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(PageHoverCoordinateSpace.name)))
                 .onChanged(handleChange)
                 .onEnded(handleEnd)
