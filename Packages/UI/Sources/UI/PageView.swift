@@ -64,6 +64,10 @@ public struct PageView: View {
     @State private var lastDropHapticIndex: Int?
     @State private var activeIOSReorderIDs: [BlockID] = []
     @State private var iosReorderLift: IOSReorderLift?
+    /// macOS reorder lift state. Mirrors `iosReorderLift` but fed by a plain
+    /// DragGesture instead of a sequenced long-press, since macOS drags begin
+    /// immediately on click+drag.
+    @State private var macReorderLift: MacReorderLift?
     /// Active pinch-open-to-insert preview state. Drives an inline gap that grows
     /// between two rows as the user spreads their fingers; nil when no pinch is
     /// in progress (or when the pinch's startLocation didn't pin to a row pair).
@@ -108,20 +112,17 @@ public struct PageView: View {
                             after: previousBlock(before: block.id, in: snapshot)
                         )
                         let pinchExtraTopGap: CGFloat = (pinchPreview?.insertIndex == i) ? (pinchPreview?.gapHeight ?? 0) : 0
-                        let reorderExtraTopGap = iosReorderDriftGap(for: i)
+                        let reorderExtraTopGap = reorderDriftGap(for: i)
                         rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
                             .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
                             .animation(.spring(response: 0.26, dampingFraction: 0.76), value: dropHoverIndex)
                             .background(rowFrameReporter(id: block.id))
-                            .blockDropTarget(at: i, dropHoverIndex: $dropHoverIndex) { payload in
-                                moveBlocks(ids: payload.ids, toIndexBefore: i)
-                            }
                     }
                     // Trailing slot for "insert at end" — claims the existing bottom 32pt
                     // page padding. Total visual spacing unchanged: the outer
                     // `.padding(.vertical, 32)` becomes `.padding(.top, 32)` only.
                     let trailingPinchGap: CGFloat = (pinchPreview?.insertIndex == snapshot.count) ? (pinchPreview?.gapHeight ?? 0) : 0
-                    gapDropTarget(at: snapshot.count, height: 32 + trailingPinchGap + iosReorderDriftGap(for: snapshot.count))
+                    gapDropTarget(at: snapshot.count, height: 32 + trailingPinchGap + reorderDriftGap(for: snapshot.count))
                         .animation(.spring(response: 0.26, dampingFraction: 0.76), value: dropHoverIndex)
                 }
                 .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
@@ -153,6 +154,9 @@ public struct PageView: View {
             }
             .overlay(alignment: .topLeading) {
                 iosReorderLiftView()
+            }
+            .overlay(alignment: .topLeading) {
+                macReorderLiftView()
             }
             .overlay(alignment: .bottom) {
                 if let actionToast {
@@ -326,9 +330,12 @@ public struct PageView: View {
                 },
                 initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
             )
-            .macBlockDragSource(
-                payload: rowDragPayload,
-                isEnabled: !isEditing
+            .macRowReorder(
+                isEnabled: !isEditing,
+                block: block,
+                snapshot: snapshot,
+                onChanged: { value in updateMacReorderLift(block: block, value: value, snapshot: snapshot) },
+                onEnded: { value in endMacReorder(value: value, snapshot: snapshot) }
             )
             .iosBlockTouchActions(
                 payload: rowDragPayload,
@@ -368,7 +375,7 @@ public struct PageView: View {
                     cycleIndent(blockID: block.id)
                 }
             )
-            .opacity(iosReorderOpacity(for: block.id))
+            .opacity(reorderSourceOpacity(for: block.id))
             .contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier(accessibilityIdentifier(for: block))
@@ -390,10 +397,21 @@ public struct PageView: View {
                             hoveredHandleBlockID = nil
                         }
                     }
-                    .draggable(BlockDragPayload(ids: dragIDs(for: block.id))) {
-                        DragPreviewChip(count: dragIDs(for: block.id).count)
-                    }
-                    .allowsHitTesting(showHandleOverlay(for: block.id))
+                    // Keep the handle hit-testable AND the gesture mounted for
+                    // the duration of an in-flight drag. As the cursor leaves
+                    // the source row, hoveredBlockID shifts to a different row
+                    // and showHandleOverlay(source) flips false; without this
+                    // override, allowsHitTesting(false) gets applied to the
+                    // still-tracking view and SwiftUI cancels the gesture
+                    // silently — no .onEnded fires, lift gets stuck.
+                    .macRowReorder(
+                        isEnabled: (showHandleOverlay(for: block.id) || isMacDraggingFromRow(block.id)) && !isEditing,
+                        block: block,
+                        snapshot: snapshot,
+                        onChanged: { value in updateMacReorderLift(block: block, value: value, snapshot: snapshot) },
+                        onEnded: { value in endMacReorder(value: value, snapshot: snapshot) }
+                    )
+                    .allowsHitTesting(showHandleOverlay(for: block.id) || isMacDraggingFromRow(block.id))
             }
         }
     }
@@ -427,26 +445,38 @@ public struct PageView: View {
         }
     }
 
-    private func iosReorderDriftGap(for index: Int) -> CGFloat {
-        #if os(iOS)
+    private func reorderDriftGap(for index: Int) -> CGFloat {
         guard dropHoverIndex == index else { return 0 }
         // Dropping the source row at its own slot is a no-op — don't open a
-        // gap there. Also avoids the layout churn that destabilises the lift.
-        if let sourceIndex = iosReorderLift?.sourceIndex,
+        // gap there. (On iOS this also avoids layout churn that would
+        // destabilise the lift.)
+        let sourceIndex: Int? = {
+            #if os(iOS)
+            return iosReorderLift?.sourceIndex
+            #else
+            return macReorderLift?.sourceIndex
+            #endif
+        }()
+        if let sourceIndex,
            sourceIndex == index || sourceIndex == index - 1 {
             return 0
         }
         return 42
-        #else
-        return 0
-        #endif
     }
 
-    private func iosReorderOpacity(for id: BlockID) -> Double {
+    private func reorderSourceOpacity(for id: BlockID) -> Double {
         #if os(iOS)
         return activeIOSReorderIDs.contains(id) ? 0.12 : 1
         #else
-        return 1
+        return macReorderLift?.block.id == id ? 0.12 : 1
+        #endif
+    }
+
+    private func isMacDraggingFromRow(_ id: BlockID) -> Bool {
+        #if os(macOS)
+        return macReorderLift?.block.id == id
+        #else
+        return false
         #endif
     }
 
@@ -520,6 +550,91 @@ public struct PageView: View {
         }
     }
 
+    @ViewBuilder
+    private func macReorderLiftView() -> some View {
+        #if os(macOS)
+        if let lift = macReorderLift {
+            BlockRow(
+                block: .constant(lift.block),
+                editorFocused: $editorFocused,
+                isPageTitle: false,
+                numberingIndex: nil,
+                isSelected: false,
+                isEditing: false
+            )
+            .frame(width: lift.sourceFrame.width, height: lift.sourceFrame.height, alignment: .leading)
+            .scaleEffect(1.035)
+            .position(
+                x: lift.location.x - lift.touchOffset.width + (lift.sourceFrame.width / 2),
+                y: lift.location.y - lift.touchOffset.height + (lift.sourceFrame.height / 2)
+            )
+            .allowsHitTesting(false)
+            .zIndex(100)
+        }
+        #endif
+    }
+
+    /// Replaces SwiftUI's `.draggable`, which centers its preview on the
+    /// cursor with no anchor control. We render our own overlay positioned by
+    /// `touchOffset` so the grab point stays under the cursor.
+    private func updateMacReorderLift(block: Block, value: DragGesture.Value, snapshot: [Block]) {
+        #if os(macOS)
+        if var lift = macReorderLift {
+            lift.location = value.location
+            macReorderLift = lift
+        } else {
+            guard let sourceFrame = rowFrames[block.id],
+                  let sourceIndex = snapshot.firstIndex(where: { $0.id == block.id })
+            else { return }
+            // touchOffset uses startLocation here (and not just location) so
+            // the cursor stays anchored at the original grab point — including
+            // when that point is in the gutter (drag handle), in which case
+            // touchOffset.width is negative relative to sourceFrame.minX.
+            macReorderLift = MacReorderLift(
+                block: block,
+                sourceFrame: sourceFrame,
+                sourceIndex: sourceIndex,
+                touchOffset: CGSize(
+                    width: value.startLocation.x - sourceFrame.minX,
+                    height: value.startLocation.y - sourceFrame.minY
+                ),
+                location: value.location
+            )
+        }
+        dropHoverIndex = ReorderDropResolver.insertionIndex(
+            forY: value.location.y,
+            rowFrames: orderedDropFrames(snapshot: snapshot),
+            previousIndex: dropHoverIndex
+        )
+        #else
+        _ = block
+        _ = value
+        _ = snapshot
+        #endif
+    }
+
+    private func endMacReorder(value: DragGesture.Value, snapshot: [Block]) {
+        #if os(macOS)
+        guard let lift = macReorderLift else { return }
+        let target = ReorderDropResolver.insertionIndex(
+            forY: value.location.y,
+            rowFrames: orderedDropFrames(snapshot: snapshot),
+            previousIndex: dropHoverIndex
+        )
+        let ids = dragIDs(for: lift.block.id)
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            dropHoverIndex = nil
+            macReorderLift = nil
+            moveBlocks(ids: ids, toIndexBefore: target)
+        }
+        #else
+        _ = value
+        _ = snapshot
+        #endif
+    }
+
     private func clearDropHoverWithoutAnimation() {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -553,9 +668,6 @@ public struct PageView: View {
             .contentShape(Rectangle())
             .accessibilityIdentifier("block-drop-slot-\(index)")
             .accessibilityLabel("Drop before block \(index + 1)")
-            .blockDropTarget(at: index, dropHoverIndex: $dropHoverIndex) { payload in
-                moveBlocks(ids: payload.ids, toIndexBefore: index)
-            }
     }
 
     /// Compute the BlockIDs to include in a drag started from `blockID`. If the row
@@ -1266,30 +1378,6 @@ public struct PageView: View {
 
 private extension View {
     @ViewBuilder
-    func blockDropTarget(
-        at index: Int,
-        dropHoverIndex: Binding<Int?>,
-        onDrop: @escaping (BlockDragPayload) -> Void
-    ) -> some View {
-        #if os(macOS)
-        self.dropDestination(for: BlockDragPayload.self) { payloads, _ in
-            guard let payload = payloads.first else { return false }
-            onDrop(payload)
-            dropHoverIndex.wrappedValue = nil
-            return true
-        } isTargeted: { hovering in
-            if hovering {
-                dropHoverIndex.wrappedValue = index
-            } else if dropHoverIndex.wrappedValue == index {
-                dropHoverIndex.wrappedValue = nil
-            }
-        }
-        #else
-        self
-        #endif
-    }
-
-    @ViewBuilder
     func iosPageBlockDropTarget(
         rowFrames: [ReorderDropFrame],
         dropHoverIndex: Binding<Int?>,
@@ -1326,12 +1414,20 @@ private extension View {
     }
 
     @ViewBuilder
-    func macBlockDragSource(payload: BlockDragPayload, isEnabled: Bool) -> some View {
+    func macRowReorder(
+        isEnabled: Bool,
+        block: Block,
+        snapshot: [Block],
+        onChanged: @escaping (DragGesture.Value) -> Void,
+        onEnded: @escaping (DragGesture.Value) -> Void
+    ) -> some View {
         #if os(macOS)
         if isEnabled {
-            self.draggable(payload) {
-                DragPreviewChip(count: payload.ids.count)
-            }
+            self.simultaneousGesture(
+                DragGesture(minimumDistance: 4, coordinateSpace: .named(PageHoverCoordinateSpace.name))
+                    .onChanged(onChanged)
+                    .onEnded(onEnded)
+            )
         } else {
             self
         }
@@ -1447,6 +1543,14 @@ private struct IOSReorderDrag {
 }
 
 private struct IOSReorderLift {
+    var block: Block
+    var sourceFrame: CGRect
+    var sourceIndex: Int
+    var touchOffset: CGSize
+    var location: CGPoint
+}
+
+private struct MacReorderLift {
     var block: Block
     var sourceFrame: CGRect
     var sourceIndex: Int

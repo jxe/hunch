@@ -2,7 +2,7 @@
 # scripts/use-fixture.sh <fixture-name>
 #
 # Copies References/typography/fixtures/<name>.md → /tmp/console-fixture/everything.md
-# and relaunches Console. The app's auto-open-last-page brings up the new content
+# and relaunches Hunch. The app's auto-open-last-page brings up the new content
 # without any clicks.
 #
 # Usage: ./scripts/use-fixture.sh rfc_prompt
@@ -31,12 +31,13 @@ mkdir -p /tmp/console-fixture
 cp "$src" /tmp/console-fixture/everything.md
 echo "fixture: $1"
 
-# Relaunch the most recently built Console.app so the new fixture loads.
-pkill -9 -f "Console.app/Contents/MacOS/Console" 2>/dev/null || true
+# Relaunch the most recently built Hunch.app so the new fixture loads.
+pkill -f "com.joeedelman.console" 2>/dev/null || true
+pkill -x Hunch 2>/dev/null || true
 sleep 1
-app="$(ls -td ~/Library/Developer/Xcode/DerivedData/Console-*/Build/Products/Debug/Console.app 2>/dev/null | head -1)"
+app="$(ls -td ~/Library/Developer/Xcode/DerivedData/Hunch-*/Build/Products/Debug/Hunch.app 2>/dev/null | head -1)"
 if [[ -z "$app" ]]; then
-  echo "no built Console.app found — run xcodebuild first"
+  echo "no built Hunch.app found — run xcodebuild first"
   exit 1
 fi
 open "$app"

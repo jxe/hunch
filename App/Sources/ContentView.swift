@@ -397,7 +397,7 @@ private struct WorkspacePickerView: View {
             Text("Choose a workspace folder")
                 .font(NotionStyle.body(size: 18).weight(.semibold))
                 .foregroundStyle(NotionStyle.foreground)
-            Text("Pick a folder of .md files. Console will use it as the source of truth.")
+            Text("Pick a folder of .md files. Hunch will use it as the source of truth.")
                 .font(NotionStyle.body(size: 14))
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .multilineTextAlignment(.center)

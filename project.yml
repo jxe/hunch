@@ -1,4 +1,4 @@
-name: Console
+name: Hunch
 options:
   bundleIdPrefix: com.joeedelman
   deploymentTarget:
@@ -27,7 +27,7 @@ packages:
     path: Packages/UI
 
 targets:
-  Console:
+  Hunch:
     type: application
     supportedDestinations: [iOS, macOS]
     sources:
@@ -55,35 +55,44 @@ targets:
         SUPPORTS_MACCATALYST: NO
         ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: NO
-  ConsoleUITests:
+  HunchUITests:
     type: bundle.ui-testing
     platform: iOS
     sources:
       - path: App/UITests
     dependencies:
-      - target: Console
+      - target: Hunch
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.joeedelman.console.uitests
-        TEST_TARGET_NAME: Console
+        TEST_TARGET_NAME: Hunch
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:
-  Console:
+  Hunch:
     build:
       targets:
-        Console: all
+        Hunch: all
       # Drop a freshly-built copy at ~/Applications/Hunch.app after every macOS
       # build so a Dock entry there keeps working across rebuilds. Scheme
       # post-actions run *after* Xcode's full codesign, so we just copy — no
       # re-signing needed.
       postActions:
         - name: Install to ~/Applications (macOS only)
-          settingsTarget: Console
+          settingsTarget: Hunch
           script: |
             if [ "$PLATFORM_NAME" != "macosx" ]; then
                 exit 0
             fi
+            # Kill any running copies (DerivedData OR ~/Applications) before
+            # overwriting. Both copies share bundle ID com.joeedelman.console,
+            # and macOS will happily run both simultaneously if they live at
+            # different paths — leading to "two versions running" confusion.
+            # Match by bundle id so we kill regardless of which path launched it.
+            pkill -f "com.joeedelman.console" 2>/dev/null || true
+            # Legacy executable name from the pre-rename builds.
+            pkill -x Console 2>/dev/null || true
+            pkill -x Hunch 2>/dev/null || true
             DEST="$HOME/Applications/Hunch.app"
             mkdir -p "$HOME/Applications"
             rm -rf "$DEST"

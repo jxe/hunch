@@ -1,7 +1,7 @@
 import XCTest
 
 @MainActor
-final class ConsoleDragAndDropUITests: XCTestCase {
+final class HunchDragAndDropUITests: XCTestCase {
     private var app: XCUIApplication!
 
     func testLongPressReordersRows() {

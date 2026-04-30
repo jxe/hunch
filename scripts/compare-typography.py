@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Visual side-by-side comparison: render a Console screenshot next to a Notion
+Visual side-by-side comparison: render a Hunch screenshot next to a Notion
 reference at matching body-line-height, with horizontal guidelines drawn
 across both at every detected text band. The output is a single PNG that
 makes it obvious when a heading→paragraph or paragraph→paragraph gap
@@ -133,7 +133,7 @@ REFERENCE_BODY_LH_PX = {
     "notion_ai_for_docs.webp":            30,
 }
 
-# Console renders body at 16pt with `bodyLineSpacing = 5`, so SwiftUI emits
+# Hunch renders body at 16pt with `bodyLineSpacing = 5`, so SwiftUI emits
 # baseline-to-baseline of (16pt natural-leading ≈ 19pt) + 5pt = 24pt. At 2x
 # retina that's 48px. Matches the screenshots we capture via screencapture -l.
 SCREENSHOT_BODY_LH_PX = 48

@@ -3,9 +3,9 @@
 #
 # iOS Simulator counterpart of use-fixture.sh.
 #
-# Copies References/typography/fixtures/<name>.md → the Console app sandbox
+# Copies References/typography/fixtures/<name>.md → the Hunch app sandbox
 # at Documents/console-fixture/everything.md on the booted sim, then
-# terminates and relaunches Console. The app's auto-open-last-page brings up
+# terminates and relaunches Hunch. The app's auto-open-last-page brings up
 # the new content with no clicks (after a one-time workspace pick).
 #
 # One-time bootstrap (do this once per simulator):
@@ -44,7 +44,7 @@ fi
 # Resolve the booted simulator's app data container.
 container="$(xcrun simctl get_app_container booted "$bundle_id" data 2>/dev/null || true)"
 if [[ -z "$container" ]]; then
-  echo "Console isn't installed on a booted simulator. Run scripts/run-ios.sh first." >&2
+  echo "Hunch isn't installed on a booted simulator. Run scripts/run-ios.sh first." >&2
   exit 1
 fi
 

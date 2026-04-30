@@ -1,7 +1,7 @@
 #!/bin/zsh
 # scripts/snap-diff.sh <fixture-name>
 #
-# Captures the Console window via screencapture (needs Screen Recording
+# Captures the Hunch window via screencapture (needs Screen Recording
 # permission for whichever process invoked us — usually the terminal),
 # maps <fixture-name> to its reference image, and runs the typography
 # diff tool. Prints the diff PNG path so you can `open` it in Preview.
@@ -44,7 +44,7 @@ import CoreGraphics
 let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
 let info = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] ?? []
 for w in info {
-    if let owner = w["kCGWindowOwnerName"] as? String, owner == "Console",
+    if let owner = w["kCGWindowOwnerName"] as? String, owner == "Hunch",
        let num = w["kCGWindowNumber"] as? Int {
         print(num)
         exit(0)
@@ -63,7 +63,7 @@ for _ in {1..20}; do
 done
 
 if [[ -z "$window_id" ]]; then
-  echo "Console isn't running. launch with ./scripts/use-fixture.sh $name first." >&2
+  echo "Hunch isn't running. launch with ./scripts/use-fixture.sh $name first." >&2
   exit 1
 fi
 

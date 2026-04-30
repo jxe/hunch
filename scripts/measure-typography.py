@@ -28,7 +28,7 @@ Output is a YAML-ish report:
       heading_to_body_lh: ...
       ...
 
-Run after each tuning pass on both your Console screenshot AND the
+Run after each tuning pass on both your Hunch screenshot AND the
 matching reference; compare the band-gap ratios. If your screenshot's
 heading→body ratio is 1.4× and the reference is 1.8×, you need to
 increase that gap.

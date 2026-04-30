@@ -6,7 +6,7 @@ import AppKit
 #endif
 
 @main
-struct ConsoleApp: App {
+struct HunchApp: App {
     @State private var model = WorkspaceModel()
 
     init() {
@@ -79,7 +79,7 @@ struct ConsoleApp: App {
             }
             CommandGroup(after: .toolbar) {
                 Button("Toggle Sidebar") {
-                    ConsoleApp.toggleSidebarInKeyWindow()
+                    HunchApp.toggleSidebarInKeyWindow()
                 }
                 .keyboardShortcut("\\", modifiers: .command)
             }

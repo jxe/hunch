@@ -1,11 +1,11 @@
 #!/bin/zsh
 # scripts/run-ios.sh
 #
-# Reinstall and launch the most recently built Console.app on a booted iOS
+# Reinstall and launch the most recently built Hunch.app on a booted iOS
 # Simulator. Mirrors run.sh (macOS): assumes you've already built — typically
 # via Xcode (Cmd-B) or:
 #
-#   xcodebuild -project Console.xcodeproj -scheme Console \
+#   xcodebuild -project Hunch.xcodeproj -scheme Hunch \
 #     -destination 'generic/platform=iOS Simulator' -configuration Debug build
 #
 # If no simulator is booted, boots the first available iPhone and brings the
@@ -17,9 +17,9 @@ bundle_id="com.joeedelman.console"
 
 # Pick the newest built simulator .app — same trick as run.sh: timestamp the
 # binary, not the .app directory (the directory mtime lags its contents).
-binary="$(ls -t ~/Library/Developer/Xcode/DerivedData/Console-*/Build/Products/Debug-iphonesimulator/Console.app/Console 2>/dev/null | head -1)"
+binary="$(ls -t ~/Library/Developer/Xcode/DerivedData/Hunch-*/Build/Products/Debug-iphonesimulator/Hunch.app/Hunch 2>/dev/null | head -1)"
 if [[ -z "$binary" ]]; then
-  echo "no built Console.app for iphonesimulator found — build for an iOS Simulator destination first" >&2
+  echo "no built Hunch.app for iphonesimulator found — build for an iOS Simulator destination first" >&2
   exit 1
 fi
 app="$(dirname "$binary")"

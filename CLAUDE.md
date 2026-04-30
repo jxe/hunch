@@ -1,4 +1,6 @@
-# Console — Claude working notes
+# Hunch — Claude working notes
+
+(Repo dir is `console`, target/scheme/binary are `Hunch`. The product display name is Hunch; the bundle id `com.joeedelman.console` predates the rename and stays for user-data continuity.)
 
 A native iOS 26 + macOS 26 markdown editor. Each block is its own row in a
 SwiftUI VStack — sidesteps the hardest problems of Notion-style editors
@@ -14,7 +16,7 @@ user-picked workspace folder.
 - `Packages/UI/` — SwiftUI SPM. `BlockTextEditor` (NSTextView wrapper on
   macOS, plain TextEditor on iOS), `PageView`, `BlockRow`. Typography in
   `NotionStyle.swift` + `BlockSpacing.swift`. Depends on Core.
-- `App/` — single multiplatform Xcode target. `ConsoleApp`/`ContentView` +
+- `App/` — single multiplatform Xcode target. `HunchApp`/`ContentView` +
   Inter font registration.
 - `project.yml` — XcodeGen spec. **Don't hand-edit the `.xcodeproj`** —
   it's generated, gitignored, overwritten by `xcodegen generate`.
@@ -27,9 +29,9 @@ user-picked workspace folder.
 ```sh
 swift test --package-path Packages/Core
 xcodegen generate --spec project.yml --project .
-xcodebuild -project Console.xcodeproj -scheme Console -destination 'platform=macOS' -configuration Debug build
-xcodebuild -project Console.xcodeproj -scheme Console -destination 'generic/platform=iOS Simulator' -configuration Debug build
-./scripts/run.sh   # macOS — kills any running Console.app, launches the newest build
+xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -configuration Debug build
+xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform=iOS Simulator' -configuration Debug build
+./scripts/run.sh   # macOS — kills any running Hunch.app, launches the newest build
 ```
 
 ## Architecture you need to know to make changes
@@ -135,8 +137,8 @@ gaps). Don't sprinkle magic numbers into `BlockRendering.swift`.
 ## Debugging UI runtime issues
 
 ```sh
-pkill -f Console.app
-/Users/joe/Library/Developer/Xcode/DerivedData/Console-*/Build/Products/Debug/Console.app/Contents/MacOS/Console > /tmp/console.log 2>&1 &
+pkill -f Hunch.app
+/Users/joe/Library/Developer/Xcode/DerivedData/Hunch-*/Build/Products/Debug/Hunch.app/Contents/MacOS/Hunch > /tmp/console.log 2>&1 &
 tail -f /tmp/console.log
 ```
 
@@ -144,7 +146,7 @@ Sprinkle `print("[CLI] ...")` at suspect transitions (state setters,
 focus changes, key handlers, lifecycle hooks). Strip them before
 committing: `grep -rn '\[CLI\]' Packages/UI App`. `print()` may buffer
 when stdout isn't a tty — use `NSLog` (visible via `log show --predicate
-'process == "Console"' --last 2m`) for real-time.
+'process == "Hunch"' --last 2m`) for real-time.
 
 Xcode tools that earn their keep:
 - **Accessibility Inspector** — what's hit-testable at a point; useful
