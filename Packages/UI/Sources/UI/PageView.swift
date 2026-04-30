@@ -429,7 +429,14 @@ public struct PageView: View {
 
     private func iosReorderDriftGap(for index: Int) -> CGFloat {
         #if os(iOS)
-        return dropHoverIndex == index ? 42 : 0
+        guard dropHoverIndex == index else { return 0 }
+        // Dropping the source row at its own slot is a no-op — don't open a
+        // gap there. Also avoids the layout churn that destabilises the lift.
+        if let sourceIndex = iosReorderLift?.sourceIndex,
+           sourceIndex == index || sourceIndex == index - 1 {
+            return 0
+        }
+        return 42
         #else
         return 0
         #endif
@@ -469,16 +476,30 @@ public struct PageView: View {
 
     private func updateIOSReorderLift(payload: BlockDragPayload, drag: IOSReorderDrag, snapshot: [Block]) {
         #if os(iOS)
+        // sourceFrame, sourceIndex, and touchOffset are frozen for the lift's
+        // lifetime: rowFrames[id] keeps shifting as drift gaps animate, and
+        // recomputing touchOffset against a moving frame causes the lift to
+        // drift away from the finger.
+        if var lift = iosReorderLift {
+            lift.location = drag.location
+            iosReorderLift = lift
+            return
+        }
         guard let id = payload.ids.first,
               let block = snapshot.first(where: { $0.id == id }),
-              let sourceFrame = rowFrames[id]
+              let sourceFrame = rowFrames[id],
+              let sourceIndex = snapshot.firstIndex(where: { $0.id == id })
         else { return }
+        // Use drag.location, not drag.startLocation: the finger may have
+        // drifted up to the long-press maxDistance (36pt) during the hold,
+        // and we want the lift to lock to where the finger IS now.
         iosReorderLift = IOSReorderLift(
             block: block,
             sourceFrame: sourceFrame,
+            sourceIndex: sourceIndex,
             touchOffset: CGSize(
-                width: drag.startLocation.x - sourceFrame.minX,
-                height: drag.startLocation.y - sourceFrame.minY
+                width: drag.location.x - sourceFrame.minX,
+                height: drag.location.y - sourceFrame.minY
             ),
             location: drag.location
         )
@@ -1422,13 +1443,13 @@ private func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> Bl
 }
 
 private struct IOSReorderDrag {
-    var startLocation: CGPoint
     var location: CGPoint
 }
 
 private struct IOSReorderLift {
     var block: Block
     var sourceFrame: CGRect
+    var sourceIndex: Int
     var touchOffset: CGSize
     var location: CGPoint
 }
@@ -1444,7 +1465,6 @@ private struct IOSRowReorderActions: ViewModifier {
 
     @State private var isReordering = false
     @State private var latestPageY: CGFloat = 0
-    @State private var startLocation: CGPoint?
 
     func body(content: Content) -> some View {
         content.simultaneousGesture(
@@ -1461,12 +1481,9 @@ private struct IOSRowReorderActions: ViewModifier {
         case .first(true):
             beginIfNeeded(at: CGPoint(x: sourceFrame.midX, y: sourceFrame.midY), emitChange: false)
         case .second(true, let drag?):
-            if startLocation == nil {
-                startLocation = drag.startLocation
-            }
-            beginIfNeeded(at: drag.startLocation, emitChange: false)
+            beginIfNeeded(at: drag.location, emitChange: false)
             latestPageY = drag.location.y
-            onChanged(IOSReorderDrag(startLocation: startLocation ?? drag.startLocation, location: drag.location))
+            onChanged(IOSReorderDrag(location: drag.location))
         default:
             break
         }
@@ -1482,7 +1499,6 @@ private struct IOSRowReorderActions: ViewModifier {
         }
         onEnd(payload, latestPageY)
         isReordering = false
-        startLocation = nil
     }
 
     private func beginIfNeeded(at location: CGPoint?, emitChange: Bool) {
@@ -1491,8 +1507,7 @@ private struct IOSRowReorderActions: ViewModifier {
         isReordering = true
         onBegin(payload)
         if emitChange {
-            startLocation = location
-            onChanged(IOSReorderDrag(startLocation: location, location: location))
+            onChanged(IOSReorderDrag(location: location))
         }
     }
 }
