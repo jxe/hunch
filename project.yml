@@ -47,6 +47,8 @@ targets:
         LSSupportsOpeningDocumentsInPlace: YES
         UIFileSharingEnabled: YES
         NSHumanReadableCopyright: "© 2026 Joe Edelman"
+        NSMicrophoneUsageDescription: Hunch records audio so it can append a transcript to the current page.
+        NSSpeechRecognitionUsageDescription: Hunch transcribes recorded audio so it can append the text to the current page.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.joeedelman.console
@@ -54,6 +56,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: App/Hunch.entitlements
         GENERATE_INFOPLIST_FILE: NO
   HunchUITests:
     type: bundle.ui-testing

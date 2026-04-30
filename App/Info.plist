@@ -24,6 +24,10 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Joe Edelman</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Hunch records audio so it can append a transcript to the current page.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Hunch transcribes recorded audio so it can append the text to the current page.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UILaunchScreen</key>

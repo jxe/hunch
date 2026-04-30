@@ -84,6 +84,8 @@ public struct PageView: View {
     @State private var scrollMetrics = PageScrollMetrics()
     @State private var pinchAutoScrollTask: Task<Void, Never>?
     @State private var pinchAutoScrollVelocity: CGFloat = 0
+    @State private var speechRecorder = PageSpeechRecorder()
+    @State private var speechError: String?
 
     struct PinchPreviewState: Equatable {
         var insertIndex: Int
@@ -316,6 +318,79 @@ public struct PageView: View {
                     return .ignored
                 }
             }
+            .toolbar {
+                ToolbarItem(placement: speechToolbarPlacement) {
+                    speechRecordButton
+                }
+            }
+            .alert("Recording", isPresented: speechErrorBinding) {
+                Button("OK") { speechError = nil }
+            } message: {
+                Text(speechError ?? "")
+            }
+        }
+    }
+
+    private var speechErrorBinding: Binding<Bool> {
+        Binding(
+            get: { speechError != nil },
+            set: { newValue in if !newValue { speechError = nil } }
+        )
+    }
+
+    private var speechToolbarPlacement: ToolbarItemPlacement {
+        #if os(iOS)
+        .topBarTrailing
+        #else
+        .primaryAction
+        #endif
+    }
+
+    private var speechRecordButton: some View {
+        Button {
+            Task { await handleSpeechRecordButton() }
+        } label: {
+            switch speechRecorder.state {
+            case .idle:
+                Image(systemName: "mic")
+            case .recording:
+                Image(systemName: "stop.circle.fill")
+                    .foregroundStyle(.red)
+            case .transcribing:
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .disabled(speechRecorder.state == .transcribing)
+        .help(speechRecordButtonHelp)
+        .accessibilityLabel(speechRecordButtonHelp)
+    }
+
+    private var speechRecordButtonHelp: String {
+        switch speechRecorder.state {
+        case .idle:
+            return "Record Audio"
+        case .recording:
+            return "Stop Recording"
+        case .transcribing:
+            return "Transcribing"
+        }
+    }
+
+    private func handleSpeechRecordButton() async {
+        do {
+            switch speechRecorder.state {
+            case .idle:
+                try await speechRecorder.start()
+            case .recording:
+                let transcript = try await speechRecorder.stopAndTranscribe()
+                appendTranscript(transcript)
+            case .transcribing:
+                break
+            }
+        } catch {
+            speechRecorder.cancel()
+            speechError = error.localizedDescription
         }
     }
 
@@ -759,6 +834,20 @@ public struct PageView: View {
         setCursor(newBlock.id)
         editingBlock = newBlock.id
         editorFocused = newBlock.id
+    }
+
+    private func appendTranscript(_ transcript: String) {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let newBlock = Block.paragraph(text: AttributedString(trimmed))
+        mutate("Insert Transcript") {
+            document.blocks.append(newBlock)
+        }
+        setCursor(newBlock.id)
+        editingBlock = nil
+        editorFocused = nil
+        pageFocused = true
     }
 
     // MARK: - Pinch-open-to-insert (iOS)
