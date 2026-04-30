@@ -86,6 +86,7 @@ public struct PageView: View {
     @State private var pinchAutoScrollVelocity: CGFloat = 0
     @State private var speechRecorder = PageSpeechRecorder()
     @State private var speechError: String?
+    @Environment(\.scenePhase) private var scenePhase
 
     struct PinchPreviewState: Equatable {
         var insertIndex: Int
@@ -219,6 +220,7 @@ public struct PageView: View {
                 }
                 pageFocused = true
                 installUndoApply()
+                consumePendingVoiceRecordingStart()
             }
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
@@ -241,6 +243,14 @@ public struct PageView: View {
             }
             .onChange(of: dropHoverIndex) { _, newValue in
                 handleDropHoverChange(newValue)
+            }
+            .onChange(of: scenePhase) { _, newValue in
+                if newValue == .active {
+                    consumePendingVoiceRecordingStart()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: VoiceRecordingLaunchRequest.notificationName)) { _ in
+                consumePendingVoiceRecordingStart()
             }
             .onKeyPress(keys: [
                 .upArrow, .downArrow, .return, .escape, .tab,
@@ -329,6 +339,12 @@ public struct PageView: View {
                 Text(speechError ?? "")
             }
         }
+    }
+
+    private func consumePendingVoiceRecordingStart() {
+        guard speechRecorder.state == .idle else { return }
+        guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
+        Task { await handleSpeechRecordButton() }
     }
 
     private var speechErrorBinding: Binding<Bool> {

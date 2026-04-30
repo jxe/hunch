@@ -77,13 +77,17 @@ final class PageSpeechRecorder {
             throw PageSpeechRecorderError.microphonePermissionDenied
         }
 
-        let speechStatus = await withCheckedContinuation { continuation in
+        let speechStatus = await Self.requestSpeechAuthorization()
+        guard speechStatus == .authorized else {
+            throw PageSpeechRecorderError.speechPermissionDenied
+        }
+    }
+
+    nonisolated private static func requestSpeechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
+        await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { status in
                 continuation.resume(returning: status)
             }
-        }
-        guard speechStatus == .authorized else {
-            throw PageSpeechRecorderError.speechPermissionDenied
         }
     }
 
