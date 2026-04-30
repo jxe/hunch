@@ -507,7 +507,7 @@ struct KeyboardAccessoryBar: View {
                     Button { onToggleMark(.code) } label: { Image(systemName: "chevron.left.forwardslash.chevron.right") }
                     Button { onToggleMark(.strikethrough) } label: { Image(systemName: "strikethrough") }
                     Divider().frame(height: 20)
-                    Button(action: onCmdK) { Image(systemName: "link") }
+                    Button(action: onCmdK) { Image(systemName: "rectangle.stack.badge.plus") }
                 }
                 .padding(.horizontal, 12)
             }
@@ -651,7 +651,17 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             onShiftTab: { _ = onKey(.shiftTab) },
             onTab: { _ = onKey(.tab) },
             onToggleMark: { mark in bridge.toggleMark(mark) },
-            onCmdK: { _ = onKey(.cmdK(selectedText: nil)) },
+            onCmdK: {
+                let range = tv.selectedRange
+                let selected: String? = {
+                    guard range.length > 0 else { return nil }
+                    let ns = tv.textStorage.string as NSString
+                    guard range.location >= 0,
+                          range.location + range.length <= ns.length else { return nil }
+                    return ns.substring(with: range)
+                }()
+                _ = onKey(.cmdK(selectedText: selected))
+            },
             onDismiss: {
                 tv.resignFirstResponder()
                 _ = onKey(.escape)

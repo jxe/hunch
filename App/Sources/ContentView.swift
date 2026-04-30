@@ -123,7 +123,7 @@ final class WorkspaceModel {
         }
     }
 
-    func createSubpage(title: String, requestedPath: String?) -> String? {
+    func createSubpage(title: String, requestedPath: String?, initialContent: String?) -> String? {
         guard let workspaceURL else { return requestedPath }
         let path = requestedPath ?? availableSubpagePath(for: title)
         let target = workspaceURL.appendingPathComponent(path)
@@ -131,7 +131,8 @@ final class WorkspaceModel {
             let parent = target.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
             if !FileManager.default.fileExists(atPath: target.path) {
-                try "# \(title)\n".write(to: target, atomically: true, encoding: .utf8)
+                let body = initialContent ?? "# \(title)\n"
+                try body.write(to: target, atomically: true, encoding: .utf8)
             }
             rescan()
             return path
@@ -460,8 +461,8 @@ struct ContentView: View {
                 onSubpageTap: { relativePath in
                     model.openSubpage(relativePath: relativePath)
                 },
-                onCreateSubpage: { title, requestedPath in
-                    model.createSubpage(title: title, requestedPath: requestedPath)
+                onCreateSubpage: { title, requestedPath, initialContent in
+                    model.createSubpage(title: title, requestedPath: requestedPath, initialContent: initialContent)
                 },
                 onNavigateBack: {
                     model.goBack()

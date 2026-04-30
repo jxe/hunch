@@ -24,7 +24,7 @@ private struct PageScrollMetrics: Equatable {
 public struct PageView: View {
     @Binding public var document: Document
     public let onSubpageTap: (String) -> Void
-    public let onCreateSubpage: (_ title: String, _ requestedPath: String?) -> String?
+    public let onCreateSubpage: (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String?
     public let onNavigateBack: () -> Void
     public let onEdited: () -> Void
     public let onBlur: () -> Void
@@ -93,10 +93,17 @@ public struct PageView: View {
         var gapHeight: CGFloat
     }
 
+    /// iOS-only — drives the leading-swipe action sheet via `.sheet(item:)`.
+    /// Wraps `BlockID` because the latter is Hashable but not Identifiable.
+    fileprivate struct BlockActionSheet: Identifiable {
+        let id: BlockID
+    }
+    @State private var actionSheet: BlockActionSheet?
+
     public init(
         document: Binding<Document>,
         onSubpageTap: @escaping (String) -> Void = { _ in },
-        onCreateSubpage: @escaping (_ title: String, _ requestedPath: String?) -> String? = { _, requestedPath in requestedPath },
+        onCreateSubpage: @escaping (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String? = { _, requestedPath, _ in requestedPath },
         onNavigateBack: @escaping () -> Void = {},
         onEdited: @escaping () -> Void = {},
         onBlur: @escaping () -> Void = {}
@@ -243,6 +250,9 @@ public struct PageView: View {
             }
             .onChange(of: dropHoverIndex) { _, newValue in
                 handleDropHoverChange(newValue)
+            }
+            .iosBlockActionSheet($actionSheet) { id in
+                blockActionSheetContent(for: id)
             }
             .onChange(of: scenePhase) { _, newValue in
                 if newValue == .active {
@@ -468,8 +478,8 @@ public struct PageView: View {
                     deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
                     showActionToast("Deleted")
                 },
-                onCycleIndent: {
-                    indentByOne(blockID: block.id)
+                onShowMenu: {
+                    actionSheet = BlockActionSheet(id: block.id)
                 }
             )
             .opacity(reorderSourceOpacity(for: block.id))
@@ -1441,12 +1451,33 @@ public struct PageView: View {
             ?? cleanedTitle(String(block.text.characters))
             ?? "Untitled"
         let requestedPath = existingLink?.path
-        let path = onCreateSubpage(title, requestedPath)
+
+        // Pull in indent-descendants (canonical via Document.sectionRange) and,
+        // for toggles, their out-of-band `.children`. When either is present, the
+        // new file gets a `# title` header plus the serialized descendants;
+        // otherwise we leave it nil so the app layer writes today's stub.
+        let range = document.sectionRange(of: blockID) ?? (i..<i+1)
+        let baseIndent = block.indent
+        let indentDescendants = document.blocks[(i + 1)..<range.upperBound].map {
+            $0.withIndent($0.indent - (baseIndent + 1))
+        }
+        var toggleChildren: [Block] = []
+        if case .toggle(_, _, _, let children, _) = block {
+            toggleChildren = children
+        }
+        let descendants = indentDescendants + toggleChildren
+        let initialContent: String? = descendants.isEmpty
+            ? nil
+            : "# \(title)\n\n" + BlockSerializer.serialize(descendants)
+
+        let path = onCreateSubpage(title, requestedPath, initialContent)
             ?? requestedPath
             ?? defaultSubpagePath(for: title)
 
         mutate("Create Subpage") {
-            document.blocks[i] = .subpage(id: blockID, title: title, path: path, indent: block.indent)
+            document.blocks.replaceSubrange(range, with: [
+                .subpage(id: blockID, title: title, path: path, indent: baseIndent)
+            ])
         }
         DispatchQueue.main.async {
             editingBlock = nil
@@ -1454,6 +1485,63 @@ public struct PageView: View {
             setCursor(blockID)
         }
         return .handled
+    }
+
+    @ViewBuilder
+    fileprivate func blockActionSheetContent(for blockID: BlockID) -> some View {
+        #if os(iOS)
+        if let i = document.index(of: blockID) {
+            let block = document.blocks[i]
+            let canPromote = !isStructuralBlock(block)
+            let canIndent = canChangeIndent(at: [i], by: +1)
+            let canOutdent = canChangeIndent(at: [i], by: -1)
+            NavigationStack {
+                List {
+                    Button {
+                        actionSheet = nil
+                        _ = convertBlockToSubpage(blockID: blockID, preferredTitle: nil)
+                    } label: {
+                        Label("Promote to subpage", systemImage: "rectangle.stack.badge.plus")
+                    }
+                    .disabled(!canPromote)
+
+                    Button {
+                        actionSheet = nil
+                        _ = changeIndent(blockID, by: +1)
+                    } label: {
+                        Label("Indent", systemImage: "increase.indent")
+                    }
+                    .disabled(!canIndent)
+
+                    Button {
+                        actionSheet = nil
+                        _ = changeIndent(blockID, by: -1)
+                    } label: {
+                        Label("Outdent", systemImage: "decrease.indent")
+                    }
+                    .disabled(!canOutdent)
+
+                    Button(role: .destructive) {
+                        actionSheet = nil
+                        deleteBlocks(ids: dragIDs(for: blockID), actionName: "Delete")
+                        showActionToast("Deleted")
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                .navigationTitle("Block actions")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { actionSheet = nil }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+        }
+        #else
+        EmptyView()
+        #endif
     }
 
     private func isStructuralBlock(_ block: Block) -> Bool {
@@ -1674,13 +1762,27 @@ private extension View {
     func iosBlockTouchActions(
         isEnabled: Bool,
         onDelete: @escaping () -> Void,
-        onCycleIndent: @escaping () -> Void
+        onShowMenu: @escaping () -> Void
     ) -> some View {
         #if os(iOS)
         if isEnabled {
-            self.modifier(IOSRowSwipeActions(onDelete: onDelete, onIndent: onCycleIndent))
+            self.modifier(IOSRowSwipeActions(onDelete: onDelete, onShowMenu: onShowMenu))
         } else {
             self
+        }
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func iosBlockActionSheet<Sheet: View>(
+        _ binding: Binding<PageView.BlockActionSheet?>,
+        @ViewBuilder content: @escaping (BlockID) -> Sheet
+    ) -> some View {
+        #if os(iOS)
+        self.sheet(item: binding) { target in
+            content(target.id)
         }
         #else
         self
@@ -2145,14 +2247,15 @@ private struct IOSScrollMetricsReader: UIViewRepresentable {
     }
 }
 
-/// Horizontal-swipe actions on a row: leading swipe (right) cycles indent,
-/// trailing swipe (left) deletes. SwiftUI's `.swipeActions` only fires inside
-/// a `List`, but the page is built on a `VStack` to keep typography control,
-/// so this is a manual `DragGesture` that tracks the row offset, reveals
-/// per-edge action labels, and commits past a threshold.
+/// Horizontal-swipe actions on a row: leading swipe (right) reveals an
+/// `ellipsis.circle.fill` glyph and, past the trigger, opens the row's
+/// action sheet. Trailing swipe (left) deletes. SwiftUI's `.swipeActions`
+/// only fires inside a `List`, but the page is built on a `VStack` to keep
+/// typography control, so this is a manual `DragGesture` that tracks the
+/// row offset, reveals per-edge action labels, and commits past a threshold.
 private struct IOSRowSwipeActions: ViewModifier {
     let onDelete: () -> Void
-    let onIndent: () -> Void
+    let onShowMenu: () -> Void
 
     @GestureState private var drag: CGFloat = 0
 
@@ -2173,7 +2276,7 @@ private struct IOSRowSwipeActions: ViewModifier {
             }
             .background(alignment: .leading) {
                 if total > 0 {
-                    actionLabel(systemName: "increase.indent", tint: .blue, leading: true)
+                    actionLabel(systemName: "ellipsis.circle.fill", tint: .blue, leading: true)
                         .frame(width: max(0, clamped))
                 }
             }
@@ -2194,7 +2297,7 @@ private struct IOSRowSwipeActions: ViewModifier {
                         if h <= -trigger {
                             onDelete()
                         } else if h >= trigger {
-                            onIndent()
+                            onShowMenu()
                         }
                     }
             )
