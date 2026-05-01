@@ -159,6 +159,7 @@ public struct PageView: View {
     /// the parent's last child (with indent shifted to parent.indent + 1). Mutually
     /// exclusive with `dropHoverIndex`.
     @State private var dropOntoBlockID: BlockID?
+    @State private var currentDropTarget: DropTarget?
     @State private var rowFrames: [BlockID: CGRect] = [:]
     @State private var actionToast: String?
     @State private var lastDropHapticIndex: Int?
@@ -297,13 +298,16 @@ public struct PageView: View {
             }
             .coordinateSpace(name: PageHoverCoordinateSpace.name)
             .iosPageBlockDropTarget(
-                rowFrames: orderedDropFrames(snapshot: snapshot),
-                dropHoverIndex: $dropHoverIndex,
-                mapVisibleCount: { count in
-                    snapshotIndex(forVisibleCount: count, snapshot: snapshot, hidden: hidden)
+                onUpdate: { y in
+                    applyDropTarget(at: y, snapshot: snapshot)
                 },
-                onDrop: { payload, index in
-                    moveBlocks(ids: payload.ids, toIndexBefore: index)
+                onDrop: { payload, y in
+                    performPayloadDrop(payload, atY: y, snapshot: snapshot)
+                },
+                onCancel: {
+                    dropHoverIndex = nil
+                    dropOntoBlockID = nil
+                    currentDropTarget = nil
                 }
             )
             .iosScrollMetrics($scrollMetrics)
@@ -903,13 +907,14 @@ public struct PageView: View {
         guard let lift = reorderLift else { return }
         SoundFX.play(.drop)
         let hidden = hiddenBlockIDs(in: snapshot)
-        let target = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        let target = currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
         let ids = lift.ids
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             dropHoverIndex = nil
             dropOntoBlockID = nil
+            currentDropTarget = nil
             reorderLift = nil
             switch target {
             case .insertBefore(let index):
@@ -928,6 +933,7 @@ public struct PageView: View {
         withTransaction(transaction) {
             dropHoverIndex = nil
             dropOntoBlockID = nil
+            currentDropTarget = nil
             reorderLift = nil
         }
     }
@@ -945,7 +951,9 @@ public struct PageView: View {
     /// you can't drop onto your own collapsed parent.
     private func applyDropTarget(at y: CGFloat, snapshot: [Block]) {
         let hidden = hiddenBlockIDs(in: snapshot)
-        switch resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden) {
+        let target = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        currentDropTarget = target
+        switch target {
         case .insertBefore(let index):
             dropOntoBlockID = nil
             dropHoverIndex = index
@@ -965,12 +973,13 @@ public struct PageView: View {
         let edgeBand: CGFloat = 6
         for block in snapshot where !hidden.contains(block.id) && !liftIDs.contains(block.id) {
             guard let frame = rowFrames[block.id] else { continue }
+            if case .subpage(_, _, let path, _) = block,
+               y >= frame.minY && y <= frame.maxY {
+                return .intoSubpage(block.id, path)
+            }
             guard y > frame.minY + edgeBand && y < frame.maxY - edgeBand else { continue }
             if isCollapsedSection(block) {
                 return .asLastChildOf(block.id)
-            }
-            if case .subpage(_, _, let path, _) = block {
-                return .intoSubpage(block.id, path)
             }
         }
         let visibleCount = ReorderDropResolver.insertionIndex(
@@ -979,6 +988,19 @@ public struct PageView: View {
             previousIndex: dropHoverIndex
         )
         return .insertBefore(snapshotIndex(forVisibleCount: visibleCount, snapshot: snapshot, hidden: hidden))
+    }
+
+    private func performPayloadDrop(_ payload: BlockDragPayload, atY y: CGFloat, snapshot: [Block]) {
+        let hidden = hiddenBlockIDs(in: snapshot)
+        let target = currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        switch target {
+        case .insertBefore(let index):
+            moveBlocks(ids: payload.ids, toIndexBefore: index)
+        case .asLastChildOf(let parentID):
+            moveBlocks(ids: payload.ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
+        case .intoSubpage(_, let path):
+            moveBlocks(ids: payload.ids, intoSubpagePath: path)
+        }
     }
 
     /// Convert "kth visible row above the drop" into a snapshot index that lies
@@ -2866,19 +2888,17 @@ public struct PageView: View {
 private extension View {
     @ViewBuilder
     func iosPageBlockDropTarget(
-        rowFrames: [ReorderDropFrame],
-        dropHoverIndex: Binding<Int?>,
-        mapVisibleCount: @escaping (Int) -> Int,
-        onDrop: @escaping (BlockDragPayload, Int) -> Void
+        onUpdate: @escaping (CGFloat) -> Void,
+        onDrop: @escaping (BlockDragPayload, CGFloat) -> Void,
+        onCancel: @escaping () -> Void
     ) -> some View {
         #if os(iOS)
         self.onDrop(
             of: [UTType.plainText],
             delegate: PageBlockDropDelegate(
-                rowFrames: rowFrames,
-                dropHoverIndex: dropHoverIndex,
-                mapVisibleCount: mapVisibleCount,
-                onDrop: onDrop
+                onUpdate: onUpdate,
+                onDrop: onDrop,
+                onCancel: onCancel
             )
         )
         #else
@@ -3433,57 +3453,43 @@ private struct IOSPagePinchGestureBridge: UIViewRepresentable {
 }
 
 private struct PageBlockDropDelegate: DropDelegate {
-    let rowFrames: [ReorderDropFrame]
-    @Binding var dropHoverIndex: Int?
-    let mapVisibleCount: (Int) -> Int
-    let onDrop: (BlockDragPayload, Int) -> Void
+    let onUpdate: (CGFloat) -> Void
+    let onDrop: (BlockDragPayload, CGFloat) -> Void
+    let onCancel: () -> Void
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        dropHoverIndex = resolvedIndex(for: info.location.y)
+        onUpdate(info.location.y)
         return DropProposal(operation: .move)
     }
 
     func dropExited(info: DropInfo) {
-        dropHoverIndex = nil
+        onCancel()
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        let target = resolvedIndex(for: info.location.y)
+        let y = info.location.y
         let dropSpring = Animation.spring(response: 0.26, dampingFraction: 0.76)
 
         guard let provider = info.itemProviders(for: [UTType.plainText]).first else {
-            // Nothing to drop — close the gap with the same spring used to open it.
-            withAnimation(dropSpring) { dropHoverIndex = nil }
+            withAnimation(dropSpring) { onCancel() }
             return false
         }
         provider.loadObject(ofClass: NSString.self) { object, _ in
             guard let string = object as? NSString,
                   let payload = BlockDragPayload(jsonString: string as String) else {
                 Task { @MainActor in
-                    withAnimation(dropSpring) { dropHoverIndex = nil }
+                    withAnimation(dropSpring) { onCancel() }
                 }
                 return
             }
-            // Bundle the structural move and the gap collapse into one spring so
-            // the dropped block lands inside the open gap and the surrounding
-            // rows close in around it (mirrors the pinch-insert pattern).
             Task { @MainActor in
                 withAnimation(dropSpring) {
-                    onDrop(payload, target)
-                    dropHoverIndex = nil
+                    onDrop(payload, y)
+                    onCancel()
                 }
             }
         }
         return true
-    }
-
-    private func resolvedIndex(for y: CGFloat) -> Int {
-        let visibleCount = ReorderDropResolver.insertionIndex(
-            forY: y,
-            rowFrames: rowFrames,
-            previousIndex: dropHoverIndex
-        )
-        return mapVisibleCount(visibleCount)
     }
 }
 

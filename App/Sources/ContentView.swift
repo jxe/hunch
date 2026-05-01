@@ -241,20 +241,20 @@ final class WorkspaceModel {
 
     @discardableResult
     func appendToSubpage(relativePath: String, blocks: [Block]) -> Bool {
-        guard let workspaceURL, !blocks.isEmpty else { return false }
-        let target = workspaceURL.appendingPathComponent(relativePath)
+        guard !blocks.isEmpty, let target = urlForRelativePath(relativePath) else { return false }
         do {
             var doc = try store.loadDocument(at: target)
             doc.blocks.append(contentsOf: blocks)
             doc.title = Document.deriveTitle(from: doc.blocks, fallback: target.deletingPathExtension().lastPathComponent)
             try store.save(doc, resolvingSubpageTitle: saveTitleResolver())
             doc.modificationDate = modificationDate(for: target)
-            refreshTitleCache(from: doc)
-            if documentCache[target] != nil {
-                documentCache[target] = doc
-            }
+            documentCache[target] = doc
+            let titleChanged = refreshTitleCache(from: doc)
             if openDocument?.url == target {
                 openDocument = doc
+            }
+            if titleChanged {
+                refreshEntriesFromTitleCache()
             }
             return true
         } catch {
