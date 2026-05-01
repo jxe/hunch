@@ -59,12 +59,31 @@ private enum BlockTurnInto: CaseIterable {
         case .page: return "doc"
         }
     }
+
+    var keyboardShortcut: KeyEquivalent {
+        switch self {
+        case .paragraph: return "p"
+        case .bullet: return "b"
+        case .numbered: return "n"
+        case .todo: return "d"
+        case .toggle: return "t"
+        case .heading1: return "1"
+        case .heading2: return "2"
+        case .heading3: return "3"
+        case .page: return "g"
+        }
+    }
 }
 
 private struct BlockIndentAction: Hashable {
     let delta: Int
     let title: String
     let systemImage: String
+    let keyboardShortcut: KeyEquivalent
+}
+
+public extension Notification.Name {
+    static let hunchEscapeKeyDown = Notification.Name("hunch.escapeKeyDown")
 }
 
 public struct PageView: View {
@@ -296,6 +315,7 @@ public struct PageView: View {
             .onChange(of: document.id) { _, _ in
                 editingBlock = nil
                 editorFocused = nil
+                actionSheet = nil
                 if let first = document.blocks.first {
                     setCursor(first.id)
                 } else {
@@ -311,10 +331,22 @@ public struct PageView: View {
             .onChange(of: dropHoverIndex) { _, newValue in
                 handleDropHoverChange(newValue)
             }
+            .onChange(of: selection) { _, _ in
+                actionSheet = nil
+            }
+            .onChange(of: cursor) { _, _ in
+                actionSheet = nil
+            }
+            .onChange(of: anchor) { _, _ in
+                actionSheet = nil
+            }
             .onChange(of: scenePhase) { _, newValue in
                 if newValue == .active {
                     consumePendingVoiceRecordingStart()
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .hunchEscapeKeyDown)) { _ in
+                handleEscapeKey()
             }
             .onReceive(NotificationCenter.default.publisher(for: VoiceRecordingLaunchRequest.notificationName)) { _ in
                 consumePendingVoiceRecordingStart()
@@ -394,9 +426,7 @@ public struct PageView: View {
                     }
                     return .handled
                 case .escape:
-                    selection = []
-                    anchor = nil
-                    cursor = nil
+                    handleEscapeKey()
                     return .handled
                 default:
                     if press.key == KeyEquivalent("k"), modifiers.contains(.command) {
@@ -418,6 +448,20 @@ public struct PageView: View {
             }
             .iosEdgeGateNavigateBack()
         }
+    }
+
+    private func handleEscapeKey() {
+        if actionSheet != nil {
+            actionSheet = nil
+            return
+        }
+        if editingBlock != nil {
+            exitEditMode()
+            return
+        }
+        selection = []
+        anchor = nil
+        cursor = nil
     }
 
     private func consumePendingVoiceRecordingStart() {
@@ -595,7 +639,6 @@ public struct PageView: View {
                         }
                     }
                     .onTapGesture {
-                        setCursor(block.id)
                         actionSheet = BlockActionSheet(id: block.id)
                     }
                     // Keep the handle hit-testable AND the gesture mounted for
@@ -1803,6 +1846,13 @@ public struct PageView: View {
         let targetBlocks = targetIndices.map { document.blocks[$0] }
         if !targetBlocks.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
+                Button("Close") {
+                    actionSheet = nil
+                }
+                .keyboardShortcut(.escape, modifiers: [])
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
                 Text("Turn Into")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1813,7 +1863,11 @@ public struct PageView: View {
                     spacing: 8
                 ) {
                     ForEach(turnIntoTargets(for: targetBlocks), id: \.self) { target in
-                        compactMenuButton(title: target.title, systemImage: target.systemImage) {
+                        compactMenuButton(
+                            title: target.title,
+                            systemImage: target.systemImage,
+                            keyboardShortcut: target.keyboardShortcut
+                        ) {
                             _ = convert(blockIDs: targetIDs, to: target)
                         }
                     }
@@ -1823,7 +1877,11 @@ public struct PageView: View {
                     Divider()
                     HStack(spacing: 8) {
                         ForEach(indentTargets, id: \.self) { action in
-                            compactMenuButton(title: action.title, systemImage: action.systemImage) {
+                            compactMenuButton(
+                                title: action.title,
+                                systemImage: action.systemImage,
+                                keyboardShortcut: action.keyboardShortcut
+                            ) {
                                 indentMenuTargets(targetIDs, by: action.delta)
                             }
                         }
@@ -1839,6 +1897,7 @@ public struct PageView: View {
     private func compactMenuButton(
         title: String,
         systemImage: String,
+        keyboardShortcut: KeyEquivalent,
         action: @escaping () -> Void
     ) -> some View {
         Button {
@@ -1858,6 +1917,7 @@ public struct PageView: View {
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.bordered)
+        .keyboardShortcut(keyboardShortcut, modifiers: [])
     }
 
     private func menuTargetIDs(anchorID: BlockID) -> [BlockID] {
@@ -1907,10 +1967,10 @@ public struct PageView: View {
     private func indentActions(for indices: [Int]) -> [BlockIndentAction] {
         var actions: [BlockIndentAction] = []
         if canChangeIndent(at: indices, by: -1) {
-            actions.append(BlockIndentAction(delta: -1, title: "Outdent", systemImage: "decrease.indent"))
+            actions.append(BlockIndentAction(delta: -1, title: "Outdent", systemImage: "decrease.indent", keyboardShortcut: "["))
         }
         if canChangeIndent(at: indices, by: +1) {
-            actions.append(BlockIndentAction(delta: +1, title: "Indent", systemImage: "increase.indent"))
+            actions.append(BlockIndentAction(delta: +1, title: "Indent", systemImage: "increase.indent", keyboardShortcut: "]"))
         }
         return actions
     }

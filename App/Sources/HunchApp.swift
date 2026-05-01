@@ -1,6 +1,9 @@
 import SwiftUI
 import Core
 import UI
+#if os(macOS)
+import AppKit
+#endif
 
 @main
 struct HunchApp: App {
@@ -8,6 +11,9 @@ struct HunchApp: App {
 
     init() {
         FontRegistration.registerInter()
+        #if os(macOS)
+        EscapeKeyMonitor.install()
+        #endif
     }
 
     var body: some Scene {
@@ -49,6 +55,24 @@ struct HunchApp: App {
 }
 
 #if os(macOS)
+@MainActor
+private enum EscapeKeyMonitor {
+    private static var monitor: Any?
+
+    static func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                  event.keyCode == 53,
+                  NSApp.keyWindow?.styleMask.contains(.fullScreen) == true else {
+                return event
+            }
+            NotificationCenter.default.post(name: .hunchEscapeKeyDown, object: nil)
+            return nil
+        }
+    }
+}
+
 private struct UndoRedoMenuItems: View {
     @FocusedValue(\.documentUndoController) private var undoController
 
