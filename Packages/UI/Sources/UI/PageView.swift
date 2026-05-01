@@ -142,6 +142,11 @@ public struct PageView: View {
     /// Insertion index between rows where a drop is currently being targeted. Drives
     /// the visual drop indicator. nil when no drop is in progress.
     @State private var dropHoverIndex: Int?
+    /// When the drop pointer is squarely on a closed toggle/templateButton row's body,
+    /// this records that block's id and the drop will append the dragged content as
+    /// the parent's last child (with indent shifted to parent.indent + 1). Mutually
+    /// exclusive with `dropHoverIndex`.
+    @State private var dropOntoBlockID: BlockID?
     @State private var rowFrames: [BlockID: CGRect] = [:]
     @State private var actionToast: String?
     @State private var lastDropHapticIndex: Int?
@@ -256,11 +261,19 @@ public struct PageView: View {
                 } onCancelled: {
                     cancelReorderLift()
                 }
+                .iosPagePinch(
+                    isEnabled: editingBlock == nil,
+                    onUpdate: { value in handlePinchUpdate(value) },
+                    onCommit: { value in handlePinchCommit(value) }
+                )
             }
             .coordinateSpace(name: PageHoverCoordinateSpace.name)
             .iosPageBlockDropTarget(
                 rowFrames: orderedDropFrames(snapshot: snapshot),
                 dropHoverIndex: $dropHoverIndex,
+                mapVisibleCount: { count in
+                    snapshotIndex(forVisibleCount: count, snapshot: snapshot, hidden: hidden)
+                },
                 onDrop: { payload, index in
                     moveBlocks(ids: payload.ids, toIndexBefore: index)
                 }
@@ -268,11 +281,6 @@ public struct PageView: View {
             .iosScrollMetrics($scrollMetrics)
             .macNearestRowHover(rowFrames: rowFrames, hoveredBlockID: $hoveredBlockID)
             .background(NotionStyle.background)
-            .iosPagePinch(
-                isEnabled: editingBlock == nil,
-                onUpdate: { value in handlePinchUpdate(value) },
-                onCommit: { value in handlePinchCommit(value) }
-            )
             .iosTapBelowRows {
                 handleTapBelowRows(at: $0)
             }
@@ -571,6 +579,7 @@ public struct PageView: View {
             isSelected: isSelected,
             isEditing: isEditing,
             isExpanded: expandedToggles.contains(block.id) || expandedTemplateButtons.contains(block.id),
+            isDropTarget: dropOntoBlockID == block.id,
             onKey: { key in handleEditorKey(key, blockID: block.id) },
             onEdited: onEdited,
             onAutotransform: { transform, remainingText in
@@ -842,11 +851,7 @@ public struct PageView: View {
             lift.location = location
             reorderLift = lift
         }
-        dropHoverIndex = ReorderDropResolver.insertionIndex(
-            forY: location.y,
-            rowFrames: orderedDropFrames(snapshot: snapshot),
-            previousIndex: dropHoverIndex
-        )
+        applyDropTarget(at: location.y, snapshot: snapshot)
     }
 
     /// Resolves the drop slot from `y`, then clears the lift and applies the
@@ -854,18 +859,21 @@ public struct PageView: View {
     /// lift unmount, nor the row reflow springs.
     private func endReorderLift(atY y: CGFloat, snapshot: [Block]) {
         guard let lift = reorderLift else { return }
-        let target = ReorderDropResolver.insertionIndex(
-            forY: y,
-            rowFrames: orderedDropFrames(snapshot: snapshot),
-            previousIndex: dropHoverIndex
-        )
+        let hidden = hiddenBlockIDs(in: snapshot)
+        let target = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
         let ids = lift.ids
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             dropHoverIndex = nil
+            dropOntoBlockID = nil
             reorderLift = nil
-            moveBlocks(ids: ids, toIndexBefore: target)
+            switch target {
+            case .insertBefore(let index):
+                moveBlocks(ids: ids, toIndexBefore: index)
+            case .asLastChildOf(let parentID):
+                moveBlocks(ids: ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
+            }
         }
     }
 
@@ -874,8 +882,67 @@ public struct PageView: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             dropHoverIndex = nil
+            dropOntoBlockID = nil
             reorderLift = nil
         }
+    }
+
+    /// Resolved drop target: either a between-rows insertion (snapshot index in
+    /// `document.blocks`) or an "append as child" of a closed parent.
+    private enum DropTarget {
+        case insertBefore(Int)
+        case asLastChildOf(BlockID)
+    }
+
+    /// Update `dropHoverIndex` / `dropOntoBlockID` based on the live drop point.
+    /// Source rows (the lift itself) are excluded from the drop-on hit-test so
+    /// you can't drop onto your own collapsed parent.
+    private func applyDropTarget(at y: CGFloat, snapshot: [Block]) {
+        let hidden = hiddenBlockIDs(in: snapshot)
+        switch resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden) {
+        case .insertBefore(let index):
+            dropOntoBlockID = nil
+            dropHoverIndex = index
+        case .asLastChildOf(let id):
+            dropHoverIndex = nil
+            dropOntoBlockID = id
+        }
+    }
+
+    private func resolveDropTarget(atY y: CGFloat, snapshot: [Block], hidden: Set<BlockID>) -> DropTarget {
+        let liftIDs = reorderLift?.ids ?? []
+        // Hit-test for "drop on closed parent". Use a small edge band so the
+        // gap above/below the row still feels reachable.
+        let edgeBand: CGFloat = 6
+        for block in snapshot where !hidden.contains(block.id) && !liftIDs.contains(block.id) {
+            guard isCollapsedSection(block), let frame = rowFrames[block.id] else { continue }
+            if y > frame.minY + edgeBand && y < frame.maxY - edgeBand {
+                return .asLastChildOf(block.id)
+            }
+        }
+        let visibleCount = ReorderDropResolver.insertionIndex(
+            forY: y,
+            rowFrames: orderedDropFrames(snapshot: snapshot),
+            previousIndex: dropHoverIndex
+        )
+        return .insertBefore(snapshotIndex(forVisibleCount: visibleCount, snapshot: snapshot, hidden: hidden))
+    }
+
+    /// Convert "kth visible row above the drop" into a snapshot index that lies
+    /// outside any collapsed subtree. Without this, dropping in the gap below a
+    /// closed toggle/templateButton lands as a hidden child.
+    private func snapshotIndex(forVisibleCount k: Int, snapshot: [Block], hidden: Set<BlockID>) -> Int {
+        if k <= 0 { return 0 }
+        var seen = 0
+        for i in snapshot.indices where !hidden.contains(snapshot[i].id) {
+            seen += 1
+            if seen == k {
+                var j = i + 1
+                while j < snapshot.count && hidden.contains(snapshot[j].id) { j += 1 }
+                return j
+            }
+        }
+        return snapshot.count
     }
 
     private func handleDropHoverChange(_ index: Int?) {
@@ -1001,6 +1068,60 @@ public struct PageView: View {
             }
             blocks.insert(contentsOf: movingBlocks, at: adjustedTarget)
             document.blocks = blocks
+        }
+    }
+
+    /// Drop-on-parent: append `ids` after the parent's hidden subtree (snapshot
+    /// position = parent index + 1 + count of contiguous hidden blocks following)
+    /// AND shift each dragged block's indent so the topmost dragged block lands
+    /// at `parent.indent + 1`. Internal nesting within the dragged range is
+    /// preserved by applying the same indent delta to every dragged block.
+    private func moveBlocks(ids: [BlockID], asChildrenOf parentID: BlockID, snapshot: [Block], hidden: Set<BlockID>) {
+        guard let parentIndex = snapshot.firstIndex(where: { $0.id == parentID }),
+              !ids.contains(parentID)
+        else { return }
+
+        let parent = snapshot[parentIndex]
+        var insertAt = parentIndex + 1
+        while insertAt < snapshot.count && hidden.contains(snapshot[insertAt].id) {
+            insertAt += 1
+        }
+
+        let idSet = Set(ids)
+        let sourceIndices = document.blocks.enumerated()
+            .compactMap { (i, block) in idSet.contains(block.id) ? i : nil }
+        guard !sourceIndices.isEmpty else { return }
+
+        // The drag-source must not include the parent (already guarded), and the
+        // insertion point must not be inside the dragged range.
+        if let first = sourceIndices.first, let last = sourceIndices.last,
+           insertAt >= first && insertAt <= last + 1 {
+            return
+        }
+
+        let movingBlocks = sourceIndices.map { document.blocks[$0] }
+        let oldRootIndent = movingBlocks.map(\.indent).min() ?? 0
+        let newRootIndent = parent.indent + 1
+        let indentDelta = newRootIndent - oldRootIndent
+
+        let removalsBeforeTarget = sourceIndices.filter { $0 < insertAt }.count
+        let adjustedTarget = insertAt - removalsBeforeTarget
+
+        mutate("Move Block") {
+            var blocks = document.blocks
+            for i in sourceIndices.reversed() {
+                blocks.remove(at: i)
+            }
+            let shifted = movingBlocks.map { $0.withIndent(max(0, $0.indent + indentDelta)) }
+            blocks.insert(contentsOf: shifted, at: adjustedTarget)
+            document.blocks = blocks
+        }
+
+        // Auto-expand the parent so the user can see the result.
+        switch parent {
+        case .toggle(let id, _, _): expandedToggles.insert(id)
+        case .templateButton(let id, _, _): expandedTemplateButtons.insert(id)
+        default: break
         }
     }
 
@@ -2408,6 +2529,7 @@ private extension View {
     func iosPageBlockDropTarget(
         rowFrames: [ReorderDropFrame],
         dropHoverIndex: Binding<Int?>,
+        mapVisibleCount: @escaping (Int) -> Int,
         onDrop: @escaping (BlockDragPayload, Int) -> Void
     ) -> some View {
         #if os(iOS)
@@ -2416,6 +2538,7 @@ private extension View {
             delegate: PageBlockDropDelegate(
                 rowFrames: rowFrames,
                 dropHoverIndex: dropHoverIndex,
+                mapVisibleCount: mapVisibleCount,
                 onDrop: onDrop
             )
         )
@@ -2973,6 +3096,7 @@ private struct IOSPagePinchGestureBridge: UIViewRepresentable {
 private struct PageBlockDropDelegate: DropDelegate {
     let rowFrames: [ReorderDropFrame]
     @Binding var dropHoverIndex: Int?
+    let mapVisibleCount: (Int) -> Int
     let onDrop: (BlockDragPayload, Int) -> Void
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
@@ -3015,11 +3139,12 @@ private struct PageBlockDropDelegate: DropDelegate {
     }
 
     private func resolvedIndex(for y: CGFloat) -> Int {
-        ReorderDropResolver.insertionIndex(
+        let visibleCount = ReorderDropResolver.insertionIndex(
             forY: y,
             rowFrames: rowFrames,
             previousIndex: dropHoverIndex
         )
+        return mapVisibleCount(visibleCount)
     }
 }
 
@@ -3211,15 +3336,33 @@ private struct IOSRowSwipeActions: ViewModifier {
 
     @ViewBuilder
     private func actionLabel(systemName: String, tint: Color, leading: Bool, progress: CGFloat) -> some View {
+        // Recessed well: flat darker fill + thin inset shadows at top and bottom
+        // edges so the strip reads as a slot the row was pressed into.
+        let edgeShadowHeight: CGFloat = 6
         ZStack(alignment: leading ? .leading : .trailing) {
-            tint.opacity(0.10 + 0.10 * progress)
+            Color.black.opacity(0.06)
             Image(systemName: systemName)
                 .foregroundStyle(tint)
                 .font(.system(size: 18, weight: .semibold))
+                .opacity(progress)
                 .padding(.horizontal, 22)
         }
-        .clipShape(.rect(cornerRadius: 10))
-        .padding(.vertical, 4)
+        .overlay(alignment: .top) {
+            LinearGradient(
+                colors: [Color.black.opacity(0.18), Color.black.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: edgeShadowHeight)
+        }
+        .overlay(alignment: .bottom) {
+            LinearGradient(
+                colors: [Color.black.opacity(0), Color.black.opacity(0.18)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: edgeShadowHeight)
+        }
     }
 }
 #endif

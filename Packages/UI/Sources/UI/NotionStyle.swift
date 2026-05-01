@@ -127,12 +127,25 @@ public enum NotionStyle {
     // MARK: List indentation
     public static let indentStep: CGFloat = 24
     public static let listMarkerGap: CGFloat = 10
+    /// Width of the marker column for every list-style row (bullet/numbered/
+    /// todo/toggle/templateButton/subpage). Unified across kinds so list-text
+    /// columns line up regardless of marker shape, and so an indented paragraph
+    /// at depth N+1 aligns exactly with list text at depth N. Marker glyphs are
+    /// right-aligned within the column.
+    public static let listMarkerColumnWidth: CGFloat = 24
+
+    /// Leading inset for marker-less rows (paragraph, heading, quote, code, divider).
+    /// At indent N>0, aligns with where a list item at indent N-1 puts its TEXT — so
+    /// `indent` reads consistently across block kinds.
+    public static func nonListLeading(indent: Int) -> CGFloat {
+        indent <= 0 ? 0 : CGFloat(indent - 1) * indentStep + listMarkerColumnWidth + listMarkerGap
+    }
     public static let listMarkerFrameHeight: CGFloat = 16
     public static let bulletMarkerDiameter: CGFloat = 6
-    public static let bulletMarkerColumnWidth: CGFloat = 18
+    public static let bulletMarkerColumnWidth: CGFloat = listMarkerColumnWidth
     public static let bulletMarkerBaselineOffset: CGFloat = 5
-    public static let numberedMarkerColumnWidth: CGFloat = 24
-    public static let todoMarkerColumnWidth: CGFloat = 20
+    public static let numberedMarkerColumnWidth: CGFloat = listMarkerColumnWidth
+    public static let todoMarkerColumnWidth: CGFloat = listMarkerColumnWidth
     public static let todoCheckboxSize: CGFloat = 16
 
     // MARK: Toggle / subpage

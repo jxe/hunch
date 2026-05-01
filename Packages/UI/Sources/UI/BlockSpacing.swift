@@ -22,10 +22,16 @@ public enum BlockSpacing {
         let prevBottom = bottomMargin(prev)
         var currTop = topMargin(current)
 
-        // The implicit `<ul>` / `<ol>` container in Notion has 0.6em (~9.6pt) top/bottom margin.
-        // We render a flat list (no container), so simulate that by adding the container's margin
-        // whenever we cross the list↔non-list boundary.
-        if isListItem(prev) != isListItem(current) {
+        // Nested-child relationship: current sits one or more indent levels deeper than prev.
+        // Treat as a child stacked under its parent — no boundary bump, no extra top margin —
+        // so the spacing matches sibling-to-sibling list spacing.
+        let isNestedChild = current.indent > prev.indent
+        if isNestedChild {
+            currTop = 0
+        } else if isListItem(prev) != isListItem(current) {
+            // The implicit `<ul>` / `<ol>` container in Notion has 0.6em (~9.6pt) top/bottom margin.
+            // We render a flat list (no container), so simulate that by adding the container's margin
+            // whenever we cross the list↔non-list boundary.
             currTop = max(currTop, 9.6)
         }
 

@@ -58,6 +58,9 @@ public struct BlockRow: View {
     /// Toggle expansion is owned by the parent (PageView) so the body blocks render as
     /// regular siblings in the page's block loop. Ignored for non-toggle blocks.
     public let isExpanded: Bool
+    /// Drag-and-drop hovering this row as the "drop on parent" target — paints a
+    /// child-slot preview indicating the dragged content will be appended inside.
+    public let isDropTarget: Bool
     @FocusState.Binding var editorFocused: BlockID?
     let onKey: (BlockKey) -> KeyPress.Result
     let onEdited: () -> Void
@@ -81,6 +84,7 @@ public struct BlockRow: View {
         isSelected: Bool = false,
         isEditing: Bool = false,
         isExpanded: Bool = false,
+        isDropTarget: Bool = false,
         onKey: @escaping (BlockKey) -> KeyPress.Result = { _ in .ignored },
         onEdited: @escaping () -> Void = {},
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
@@ -95,6 +99,7 @@ public struct BlockRow: View {
         self.isSelected = isSelected
         self.isEditing = isEditing
         self.isExpanded = isExpanded
+        self.isDropTarget = isDropTarget
         self._editorFocused = editorFocused
         self.onKey = onKey
         self.onEdited = onEdited
@@ -108,7 +113,21 @@ public struct BlockRow: View {
     public var body: some View {
         content
             .padding(.vertical, BlockSpacing.intrinsicVerticalPadding(block))
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(isSelected && !isEditing ? NotionStyle.selectionBackground : Color.clear)
+            .overlay(alignment: .leading) {
+                if isDropTarget {
+                    let leadingInset = CGFloat(block.indent + 1) * NotionStyle.indentStep
+                        + NotionStyle.bulletMarkerColumnWidth
+                        + NotionStyle.listMarkerGap
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(NotionStyle.linkForeground.opacity(0.28))
+                        .padding(.leading, leadingInset)
+                        .padding(.trailing, 4)
+                        .padding(.vertical, 2)
+                        .allowsHitTesting(false)
+                }
+            }
     }
 
     /// AttributedString projection of the block's text for editing. Marks (bold/italic/
@@ -166,7 +185,7 @@ public struct BlockRow: View {
 
     private func paragraphRow(indent: Int) -> some View {
         editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
-            .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+            .padding(.leading, NotionStyle.nonListLeading(indent: indent))
     }
 
     private func headingRow(level: Int, indent: Int) -> some View {
@@ -176,7 +195,7 @@ public struct BlockRow: View {
                                        : NotionStyle.h3Size
         let font = NotionStyle.body(size: size).weight(NotionStyle.headingWeight)
         return editableText(font: font, fontSize: size, bold: true, lineSpacing: NotionStyle.headingLineSpacing)
-            .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+            .padding(.leading, NotionStyle.nonListLeading(indent: indent))
     }
 
     private func bulletRow(indent: Int) -> some View {
@@ -238,7 +257,7 @@ public struct BlockRow: View {
                 .frame(width: 3)
             editableText(font: NotionStyle.body(size: quoteFontSize), fontSize: quoteFontSize, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
         }
-        .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+        .padding(.leading, NotionStyle.nonListLeading(indent: indent))
     }
 
     private func codeRow(source: String, language: String?, indent: Int) -> some View {
@@ -257,14 +276,14 @@ public struct BlockRow: View {
         .padding(.horizontal, 16)
         .background(NotionStyle.codeBackground.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+        .padding(.leading, NotionStyle.nonListLeading(indent: indent))
     }
 
     private func dividerRow(indent: Int) -> some View {
         Rectangle()
             .fill(NotionStyle.dividerColor)
             .frame(height: 1)
-            .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+            .padding(.leading, NotionStyle.nonListLeading(indent: indent))
     }
 
     private func toggleRow(indent: Int) -> some View {
