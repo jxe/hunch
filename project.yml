@@ -21,10 +21,11 @@ settings:
     CODE_SIGNING_ALLOWED: YES
 
 packages:
-  Core:
-    path: Packages/Core
-  UI:
-    path: Packages/UI
+  Editor:
+    path: Packages/Editor
+  swift-markdown:
+    url: https://github.com/swiftlang/swift-markdown.git
+    branch: main
 
 targets:
   Hunch:
@@ -34,8 +35,9 @@ targets:
       - path: App/Sources
       - path: App/Resources
     dependencies:
-      - package: Core
-      - package: UI
+      - package: Editor
+      - package: swift-markdown
+        product: Markdown
     info:
       path: App/Info.plist
       properties:
@@ -99,6 +101,20 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.joeedelman.console.uitests
         TEST_TARGET_NAME: Hunch
         GENERATE_INFOPLIST_FILE: YES
+  HunchUnitTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: App/Tests/HunchUnitTests
+    dependencies:
+      - target: Hunch
+      - package: Editor
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joeedelman.console.unittests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Hunch.app/Contents/MacOS/Hunch
+        BUNDLE_LOADER: $(TEST_HOST)
 
 schemes:
   Hunch:
@@ -106,6 +122,8 @@ schemes:
       targets:
         Hunch: all
         HunchUITests: [test]
+        HunchUnitTests: [test]
     test:
       targets:
+        - HunchUnitTests
         - HunchUITests

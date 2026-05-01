@@ -1,6 +1,5 @@
 import SwiftUI
-import Core
-import UI
+import Editor
 #if os(macOS)
 import AppKit
 #endif

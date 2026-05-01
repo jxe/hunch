@@ -1,5 +1,5 @@
 import AppIntents
-import UI
+import Editor
 
 struct StartVoiceRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Voice Recording"

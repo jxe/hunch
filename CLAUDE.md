@@ -10,14 +10,32 @@ user-picked workspace folder.
 
 ## Repo shape
 
-- `Packages/Core/` — pure-Swift SPM. Model, swift-markdown parser/serializer,
-  `NSFileCoordinator` storage, `DocumentSaveCoordinator` actor (per-URL
-  serial, snapshot-coalescing). No SwiftUI imports. Tests live here.
-- `Packages/UI/` — SwiftUI SPM. `BlockTextEditor` (NSTextView wrapper on
-  macOS, plain TextEditor on iOS), `PageView`, `BlockRow`. Typography in
-  `NotionStyle.swift` + `BlockSpacing.swift`. Depends on Core.
-- `App/` — single multiplatform Xcode target. `HunchApp`/`ContentView` +
-  Inter font registration.
+- `Packages/Editor/` — single SwiftUI SPM package. The single-page editor:
+  `Block` model, `PageView`, `BlockTextEditor` (NSTextView wrapper on macOS,
+  plain TextEditor on iOS), block rendering, autotransforms (`# `, `- `,
+  `> `, ` ``` `, `---`, `[]/[ ]`, `1. `, `" `), @-mention detection,
+  inline-mark `AttributedStringKey`s. **No swift-markdown dep.** Operates
+  on the in-memory `Document` only — the host is responsible for
+  serialization, persistence, navigation, and multi-page operations. SPM
+  tests live here. See `Packages/Editor/README.md` for the embedding
+  contract.
+- `App/Sources/` — Hunch.app target. `HunchApp`/`ContentView` (with
+  `WorkspaceModel` bridging the editor's id-based callbacks to filesystem
+  paths), Inter font registration, plus:
+  - `App/Sources/Markdown/` — `BlockParser` and `BlockSerializer`
+    (swift-markdown lives here, not in the Editor).
+  - `App/Sources/Storage/` — `FileStore`, `DocumentSaveCoordinator`
+    (per-URL serial, snapshot-coalescing actor), `HistoryStore`,
+    `TrashStore`, `WorkspaceBookmark`.
+  - `App/Sources/Shell/` — `PageListView` (sidebar), `VersionHistoryView`,
+    `RecentlyDeletedView`.
+  - `App/Sources/Workspace.swift` — `WorkspaceEntry` (filesystem-flavoured
+    page reference, host-side only — translated into `MentionItem` at the
+    editor boundary).
+- `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
+  storage + parser/serializer (formerly SPM tests under `CoreTests/`).
+  Compiles fine; `xcodebuild test` may need extra signing config to load
+  the Editor framework into the test process.
 - `project.yml` — XcodeGen spec. **Don't hand-edit the `.xcodeproj`** —
   it's generated, gitignored, overwritten by `xcodegen generate`.
 - `References/typography/` — real Notion screenshots; see its README.
@@ -27,7 +45,7 @@ user-picked workspace folder.
 ## Build & test
 
 ```sh
-swift test --package-path Packages/Core
+swift test --package-path Packages/Editor
 xcodegen generate --spec project.yml --project .
 xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -configuration Debug build
 xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform=iOS Simulator' -configuration Debug build

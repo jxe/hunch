@@ -1,6 +1,5 @@
 import SwiftUI
-import Core
-import UI
+import Editor
 import UniformTypeIdentifiers
 
 private let markdownFileType = UTType(filenameExtension: "md") ?? .plainText
@@ -224,7 +223,7 @@ final class WorkspaceModel {
         }
     }
 
-    func createSubpage(title: String, requestedPath: String?, initialContent: String?) -> String? {
+    func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
         guard let workspaceURL else { return requestedPath }
         let path = requestedPath ?? availableSubpagePath(for: title)
         let target = workspaceURL.appendingPathComponent(path)
@@ -232,7 +231,12 @@ final class WorkspaceModel {
             let parent = target.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
             if !FileManager.default.fileExists(atPath: target.path) {
-                let body = initialContent ?? "# \(title)\n"
+                let body: String
+                if let initialContent {
+                    body = "# \(title)\n\n" + BlockSerializer.serialize(initialContent)
+                } else {
+                    body = "# \(title)\n"
+                }
                 try body.write(to: target, atomically: true, encoding: .utf8)
             }
             titleCache[target] = CachedTitle(title: title, modificationDate: modificationDate(for: target))
@@ -447,6 +451,31 @@ final class WorkspaceModel {
             return cached.title
         }
         return nil
+    }
+
+    /// Translate a query into the editor's `MentionItem` list. Title-prefix beats
+    /// title-substring beats path-substring; recent files win ties. Capped at 8 to
+    /// match the popover's render budget.
+    func mentionItems(matching query: String) -> [MentionItem] {
+        let q = query.lowercased()
+        let pool = entries.sorted { $0.modificationDate > $1.modificationDate }
+        let chosen: [WorkspaceEntry]
+        if q.isEmpty {
+            chosen = Array(pool.prefix(8))
+        } else {
+            let ranked = pool.compactMap { entry -> (WorkspaceEntry, Int)? in
+                let title = entry.title.lowercased()
+                if title.hasPrefix(q) { return (entry, 0) }
+                if title.contains(q) { return (entry, 1) }
+                if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
+                return nil
+            }
+            chosen = ranked.sorted { $0.1 < $1.1 }.map(\.0).prefix(8).map { $0 }
+        }
+        return chosen.map { entry in
+            let subtitle = entry.relativePath != entry.title + ".md" ? entry.relativePath : nil
+            return MentionItem(id: entry.relativePath, title: entry.title, subtitle: subtitle)
+        }
     }
 
     private func cachedTitle(for entry: WorkspaceEntry, fallback: String) -> String {
@@ -972,24 +1001,26 @@ struct ContentView: View {
                     get: { model.documentForPage(url: url) ?? document },
                     set: { model.updateDocumentForPage($0) }
                 ),
-                entries: model.entries,
-                onSubpageTap: { relativePath in
-                    model.openSubpage(relativePath: relativePath)
+                suggestPages: { query in
+                    model.mentionItems(matching: query)
                 },
-                pageTitle: { relativePath in
-                    model.pageTitle(for: relativePath)
+                onSubpageTap: { pageID in
+                    model.openSubpage(relativePath: pageID)
                 },
-                onCreateSubpage: { title, requestedPath, initialContent in
-                    model.createSubpage(title: title, requestedPath: requestedPath, initialContent: initialContent)
+                pageTitle: { pageID in
+                    model.pageTitle(for: pageID)
                 },
-                onLoadSubpage: { relativePath in
-                    model.loadSubpage(relativePath: relativePath)
+                onCreateSubpage: { title, requestedID, initialContent in
+                    model.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
                 },
-                onMoveSubpageToTrash: { relativePath in
-                    model.moveSubpageToTrash(relativePath: relativePath)
+                onLoadSubpage: { pageID in
+                    model.loadSubpage(relativePath: pageID)
                 },
-                onAppendToSubpage: { relativePath, blocks in
-                    model.appendToSubpage(relativePath: relativePath, blocks: blocks)
+                onAbsorbSubpage: { pageID in
+                    model.moveSubpageToTrash(relativePath: pageID)
+                },
+                onAppendToSubpage: { pageID, blocks in
+                    model.appendToSubpage(relativePath: pageID, blocks: blocks)
                 },
                 onNavigateBack: {
                     model.goBack()
@@ -1002,6 +1033,13 @@ struct ContentView: View {
                 },
                 onRecordBlockDeletion: { indices, blocks, actionName in
                     model.recordBlockDeletion(indices: indices, blocks: blocks, actionName: actionName)
+                },
+                serializeBlocksForPasteboard: { blocks in
+                    BlockSerializer.serialize(blocks)
+                },
+                parseBlocksFromPasteboard: { string in
+                    let blocks = BlockParser.parse(string)
+                    return blocks.isEmpty ? nil : blocks
                 }
             )
             .toolbar {
