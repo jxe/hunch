@@ -242,6 +242,9 @@ struct MacBlockTextEditor: NSViewRepresentable {
         view.autoresizingMask = [.width]
         loadAttributedString(into: view)
         applyTypingAttributes(to: view)
+        context.coordinator.lastFontSize = fontSize
+        context.coordinator.lastBold = bold
+        context.coordinator.lastLineSpacing = lineSpacing
         view.wantsFocus = isFocused
         view.pendingInitialCursorPoint = initialCursorPoint
         return view
@@ -249,13 +252,21 @@ struct MacBlockTextEditor: NSViewRepresentable {
 
     func updateNSView(_ view: ContainedTextView, context: Context) {
         context.coordinator.parent = self
-        // Only re-sync textStorage from the binding when its plain content has drifted
-        // out of sync — attribute changes that originated inside this editor were already
-        // pushed back via textDidChange, so re-loading would clobber the cursor.
+        // Only re-sync textStorage from the binding when plain text drifted, or when the
+        // base font props changed (e.g. paragraph → heading). Attribute changes that
+        // originated inside this editor were already pushed back via textDidChange, so a
+        // gratuitous reload here would clobber the cursor *and* wipe per-range bold/italic
+        // (since toggleMark stores those as font symbolic traits).
         let storedPlain = view.textStorage?.string ?? ""
         let bindingPlain = String(text.characters)
-        if storedPlain != bindingPlain {
+        let baseFontDrift = context.coordinator.lastFontSize != fontSize
+            || context.coordinator.lastBold != bold
+            || context.coordinator.lastLineSpacing != lineSpacing
+        if storedPlain != bindingPlain || baseFontDrift {
             loadAttributedString(into: view)
+            context.coordinator.lastFontSize = fontSize
+            context.coordinator.lastBold = bold
+            context.coordinator.lastLineSpacing = lineSpacing
         }
         applyTypingAttributes(to: view)
         view.wantsFocus = isFocused
@@ -275,11 +286,14 @@ struct MacBlockTextEditor: NSViewRepresentable {
     }
 
     private func applyTypingAttributes(to view: NSTextView) {
+        // NB: don't write `view.font =` here. NSTextView's font setter applies across the
+        // entire text storage, which would stomp the per-range bold/italic font traits
+        // that `InlineMarksKit.toggleMark` writes. The base font is already applied per-
+        // range by `loadAttributedString` (via toNS).
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
         let font = InlineMarksKit.interFont(size: fontSize, bold: bold, italic: false)
         view.defaultParagraphStyle = style
-        view.font = font
         view.typingAttributes = [
             .font: font,
             .paragraphStyle: style,
@@ -293,6 +307,9 @@ struct MacBlockTextEditor: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MacBlockTextEditor
+        var lastFontSize: CGFloat?
+        var lastBold: Bool?
+        var lastLineSpacing: CGFloat?
         init(_ parent: MacBlockTextEditor) { self.parent = parent }
 
         func textDidChange(_ notification: Notification) {
@@ -587,6 +604,7 @@ struct KeyboardAccessoryBar: View {
                 Image(systemName: "keyboard.chevron.compact.down")
             }
             .padding(.horizontal, 12)
+            .accessibilityIdentifier("keyboard-dismiss")
         }
         .frame(height: 44)
         .frame(maxWidth: .infinity)

@@ -182,13 +182,7 @@ public struct PageView: View {
     @State private var pinchAutoScrollVelocity: CGFloat = 0
     @State private var speechRecorder = PageSpeechRecorder()
     @State private var speechError: String?
-    @State private var interactionMode: PageInteractionMode = .nav(focused: nil)
     @Environment(\.scenePhase) private var scenePhase
-
-    private enum PageInteractionMode: Equatable {
-        case nav(focused: BlockID?)
-        case editing(BlockID)
-    }
 
     struct PinchPreviewState: Equatable {
         var insertIndex: Int
@@ -356,15 +350,10 @@ public struct PageView: View {
             .focusable()
             .focused($pageFocused)
             .onAppear {
-                if cursor == nil, case .nav(nil) = interactionMode {
-                    interactionMode = .nav(focused: document.blocks.first?.id)
+                if cursor == nil, let first = document.blocks.first {
+                    setCursor(first.id)
                 }
-                switch interactionMode {
-                case .nav:
-                    applyInteractionMode(.nav(focused: cursor ?? document.blocks.first?.id))
-                case .editing:
-                    applyInteractionMode(interactionMode)
-                }
+                requestPageNavigationFocus()
                 installUndoApply()
                 consumePendingVoiceRecordingStart()
             }
@@ -374,12 +363,15 @@ public struct PageView: View {
                 }
             }
             .onChange(of: document.id) { _, _ in
+                editingBlock = nil
+                editorFocused = nil
                 actionSheet = nil
                 if let first = document.blocks.first {
-                    setInteractionMode(.nav(focused: first.id))
+                    setCursor(first.id)
                 } else {
-                    setInteractionMode(.nav(focused: nil))
+                    clearCursor()
                 }
+                requestPageNavigationFocus()
                 expandedToggles = []
                 expandedTemplateButtons = []
                 // Captured undo entries reference the previous document's blocks — drop them.
@@ -415,6 +407,8 @@ public struct PageView: View {
                 KeyEquivalent("\u{8}"),
                 KeyEquivalent("\u{7F}"),
                 KeyEquivalent("c"),
+                KeyEquivalent("v"),
+                KeyEquivalent("x"),
                 KeyEquivalent("k"),
                 KeyEquivalent("s"),
                 KeyEquivalent("/"),
@@ -430,6 +424,14 @@ public struct PageView: View {
 
                 if press.key == KeyEquivalent("c"), modifiers.contains(.command) {
                     return copySelectionToPasteboard() ? .handled : .ignored
+                }
+
+                if press.key == KeyEquivalent("v"), modifiers.contains(.command) {
+                    return pasteFromPasteboard() ? .handled : .ignored
+                }
+
+                if press.key == KeyEquivalent("x"), modifiers.contains(.command) {
+                    return cutSelectionToPasteboard() ? .handled : .ignored
                 }
 
                 if press.key == KeyEquivalent("s"), modifiers.contains([.command, .shift]) {
@@ -701,7 +703,7 @@ public struct PageView: View {
             .accessibilityValue(reorderLift?.ids.contains(block.id) == true ? "reorder-source" : "")
             .onTapGesture {
                 if case .subpage(_, _, let path, _) = block {
-                    setInteractionMode(.nav(focused: block.id))
+                    focusPageNavigation(on: block.id)
                     onSubpageTap(path)
                     return
                 }
@@ -1239,7 +1241,7 @@ public struct PageView: View {
             document.blocks.insert(newBlock, at: insertionIndex)
         }
         if focus {
-            setInteractionMode(.editing(newBlock.id))
+            enterEditMode(on: newBlock.id)
         }
     }
 
@@ -1251,7 +1253,7 @@ public struct PageView: View {
         mutate("Insert Transcript") {
             document.blocks.append(newBlock)
         }
-        setInteractionMode(.nav(focused: newBlock.id))
+        focusPageNavigation(on: newBlock.id)
     }
 
     private func instantiateTemplateButton(blockID: BlockID) {
@@ -1270,7 +1272,7 @@ public struct PageView: View {
             document.blocks.insert(contentsOf: copies, at: range.upperBound)
         }
         if let first = copies.first {
-            setInteractionMode(.nav(focused: first.id))
+            focusPageNavigation(on: first.id)
         }
     }
 
@@ -1480,7 +1482,7 @@ public struct PageView: View {
             if let c = cursor, !validIDs.contains(c) { cursor = newBlocks.first?.id }
             if let a = anchor, !validIDs.contains(a) { anchor = cursor }
             if let e = editingBlock, !validIDs.contains(e) {
-                setInteractionMode(.nav(focused: cursor))
+                focusPageNavigation(on: cursor)
             }
             if selection.isEmpty, let c = cursor { selection = [c] }
 
@@ -1505,56 +1507,29 @@ public struct PageView: View {
         cursor = id
         anchor = id
         selection = [id]
-        if case .nav = interactionMode {
-            interactionMode = .nav(focused: id)
-        }
     }
 
     private func clearCursor() {
         selection = []
         anchor = nil
         cursor = nil
-        if case .nav = interactionMode {
-            interactionMode = .nav(focused: nil)
-        }
     }
 
-    private func setInteractionMode(_ mode: PageInteractionMode) {
-        interactionMode = mode
-        applyInteractionMode(mode)
-    }
-
-    private func applyInteractionMode(_ mode: PageInteractionMode) {
-        switch mode {
-        case .nav(let focused):
-            editingBlock = nil
-            editorFocused = nil
-            if let focused, document.blocks.contains(where: { $0.id == focused }) {
-                setCursor(focused)
-            } else if let cursor, document.blocks.contains(where: { $0.id == cursor }) {
-                setCursor(cursor)
-            } else if let first = document.blocks.first {
-                setCursor(first.id)
-            } else {
-                clearCursor()
-            }
-            requestPageNavigationFocus()
-        case .editing(let id):
-            guard document.blocks.contains(where: { $0.id == id }) else {
-                setInteractionMode(.nav(focused: document.blocks.first?.id))
-                return
-            }
+    private func focusPageNavigation(on id: BlockID? = nil) {
+        editingBlock = nil
+        editorFocused = nil
+        if let id, document.blocks.contains(where: { $0.id == id }) {
             setCursor(id)
-            editingBlock = id
-            editorFocused = id
-            pageFocused = false
         }
+        requestPageNavigationFocus()
     }
 
     private func requestPageNavigationFocus() {
-        pageFocused = false
         DispatchQueue.main.async {
-            pageFocused = true
+            pageFocused = false
+            DispatchQueue.main.async {
+                pageFocused = true
+            }
         }
     }
 
@@ -1890,12 +1865,14 @@ public struct PageView: View {
         guard let block = document.blocks.first(where: { $0.id == id }) else { return }
         switch block {
         case .code, .divider, .subpage:
-            setInteractionMode(.nav(focused: id))
+            focusPageNavigation(on: id)
             return
         default:
             break
         }
-        setInteractionMode(.editing(id))
+        setCursor(id)
+        editingBlock = id
+        editorFocused = id
     }
 
     private func exitEditMode() {
@@ -1904,7 +1881,7 @@ public struct PageView: View {
         // editing row, and a stale mentionMenu after exit would attach to a
         // read-only Text that can no longer drive the input.
         mentionMenu = nil
-        setInteractionMode(.nav(focused: was))
+        focusPageNavigation(on: was)
         onBlur()
     }
 
@@ -1997,6 +1974,61 @@ public struct PageView: View {
 
     private func copySelectionToPasteboard() -> Bool {
         copyBlocksToPasteboard(ids: selection)
+    }
+
+    /// Cut: copy the selection to the pasteboard, then delete it as a single undo entry.
+    /// Mirrors the `deleteSelection` guard against deleting every block in the document.
+    private func cutSelectionToPasteboard() -> Bool {
+        let indices = effectiveSelectedIndices()
+        guard !indices.isEmpty else { return false }
+        guard indices.count < document.blocks.count else { return false }
+        guard copyBlocksToPasteboard(ids: selection) else { return false }
+
+        let firstIndex = indices.first!
+        mutate("Cut") {
+            var blocks = document.blocks
+            for i in indices.reversed() { blocks.remove(at: i) }
+            document.blocks = blocks
+        }
+
+        let nextIndex = max(0, min(firstIndex - 1, document.blocks.count - 1))
+        if !document.blocks.isEmpty {
+            setCursor(document.blocks[nextIndex].id)
+        } else {
+            clearCursor()
+        }
+        return true
+    }
+
+    /// Paste: read markdown from the pasteboard, parse it into blocks, and splice them into
+    /// the document. Replace semantics on a non-empty selection (matches the "this becomes
+    /// that" mental model of nav-mode); insert at the end when nothing is selected.
+    private func pasteFromPasteboard() -> Bool {
+        let markdown: String
+        #if os(macOS)
+        guard let str = NSPasteboard.general.string(forType: .string) else { return false }
+        markdown = str
+        #else
+        guard let str = UIPasteboard.general.string else { return false }
+        markdown = str
+        #endif
+        let parsed = BlockParser.parse(markdown)
+        guard !parsed.isEmpty else { return false }
+
+        let indices = effectiveSelectedIndices()
+        let insertIndex = indices.first ?? document.blocks.count
+        mutate("Paste") {
+            var blocks = document.blocks
+            for i in indices.reversed() { blocks.remove(at: i) }
+            blocks.insert(contentsOf: parsed, at: insertIndex)
+            document.blocks = blocks
+        }
+
+        let pastedIDs = parsed.map(\.id)
+        if let last = pastedIDs.last {
+            setCursor(last)
+        }
+        return true
     }
 
     private func copyBlocksToPasteboard(ids: some Sequence<BlockID>) -> Bool {
@@ -2186,7 +2218,7 @@ public struct PageView: View {
         }
 
         DispatchQueue.main.async {
-            setInteractionMode(.nav(focused: subpageID))
+            focusPageNavigation(on: subpageID)
         }
     }
 
@@ -2299,7 +2331,7 @@ public struct PageView: View {
                     document.blocks.insert(newBlock, at: endOfSection)
                 }
                 DispatchQueue.main.async {
-                    setInteractionMode(.editing(newBlock.id))
+                    enterEditMode(on: newBlock.id)
                 }
                 return .handled
             } else {
@@ -2309,7 +2341,7 @@ public struct PageView: View {
                     document.blocks.insert(newBlock, at: firstChildIdx)
                 }
                 DispatchQueue.main.async {
-                    setInteractionMode(.editing(newBlock.id))
+                    enterEditMode(on: newBlock.id)
                 }
                 return .handled
             }
@@ -2325,7 +2357,7 @@ public struct PageView: View {
             document.blocks = blocks
         }
         DispatchQueue.main.async {
-            setInteractionMode(.editing(newBlock.id))
+            enterEditMode(on: newBlock.id)
         }
         return .handled
     }
@@ -2335,7 +2367,7 @@ public struct PageView: View {
               case .subpage(_, _, let path, _) = block else {
             return false
         }
-        setInteractionMode(.nav(focused: blockID))
+        focusPageNavigation(on: blockID)
         onSubpageTap(path)
         return true
     }
@@ -2375,7 +2407,7 @@ public struct PageView: View {
             ])
         }
         DispatchQueue.main.async {
-            setInteractionMode(.nav(focused: blockID))
+            focusPageNavigation(on: blockID)
         }
         return .handled
     }
@@ -2862,9 +2894,9 @@ public struct PageView: View {
             // those transforms the focus target is the empty paragraph, which is editable.
             switch focusTarget {
             case .code, .divider, .subpage:
-                setInteractionMode(.nav(focused: focusTarget.id))
+                focusPageNavigation(on: focusTarget.id)
             default:
-                setInteractionMode(.editing(focusTarget.id))
+                enterEditMode(on: focusTarget.id)
             }
         }
     }
@@ -2923,7 +2955,7 @@ public struct PageView: View {
             document.blocks.remove(at: i)
         }
         if let previous {
-            setInteractionMode(.editing(previous))
+            enterEditMode(on: previous)
         }
         return .handled
     }
