@@ -72,13 +72,13 @@ private enum BlockTurnInto: CaseIterable {
         case .paragraph: return "p"
         case .bullet: return "b"
         case .numbered: return "n"
-        case .todo: return "d"
-        case .toggle: return "t"
+        case .todo: return "t"
+        case .toggle: return ">"
         case .template: return "m"
         case .heading1: return "1"
         case .heading2: return "2"
         case .heading3: return "3"
-        case .page: return "g"
+        case .page: return "s"
         }
     }
 }
@@ -370,6 +370,7 @@ public struct PageView: View {
                 KeyEquivalent("\u{7F}"),
                 KeyEquivalent("c"),
                 KeyEquivalent("k"),
+                KeyEquivalent("s"),
                 KeyEquivalent("/"),
                 KeyEquivalent("[")
             ]) { press in
@@ -383,6 +384,10 @@ public struct PageView: View {
 
                 if press.key == KeyEquivalent("c"), modifiers.contains(.command) {
                     return copySelectionToPasteboard() ? .handled : .ignored
+                }
+
+                if press.key == KeyEquivalent("s"), modifiers.contains([.command, .shift]) {
+                    return toggleStrikethroughOnSelection() ? .handled : .ignored
                 }
 
                 if press.key == KeyEquivalent("/"), modifiers.contains(.command) {
@@ -476,7 +481,6 @@ public struct PageView: View {
     }
 
     private func consumePendingVoiceRecordingStart() {
-        guard speechRecorder.state == .idle else { return }
         guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
         Task { await handleSpeechRecordButton() }
     }
@@ -1288,9 +1292,11 @@ public struct PageView: View {
         selection = [id]
     }
 
-    /// Nav-mode →: open the collapsible section under the cursor.
+    /// Nav-mode →: check todos in the selection, otherwise open the collapsible section
+    /// under the cursor.
     @discardableResult
     private func handleNavRightArrow() -> Bool {
+        if setTodoDoneOnSelection(true) { return true }
         guard let id = cursor, selection.count == 1 else { return false }
         guard let block = document.blocks.first(where: { $0.id == id }),
               isCollapsibleSection(block) else { return false }
@@ -1300,10 +1306,12 @@ public struct PageView: View {
         return true
     }
 
-    /// Nav-mode ←: close the current section if expanded, otherwise close the innermost
-    /// enclosing collapsible section and move the selection there.
+    /// Nav-mode ←: uncheck todos in the selection, otherwise close the current section if
+    /// expanded, otherwise close the innermost enclosing collapsible section and move the
+    /// selection there.
     @discardableResult
     private func handleNavLeftArrow() -> Bool {
+        if setTodoDoneOnSelection(false) { return true }
         guard let id = cursor, selection.count == 1 else { return false }
         guard let cursorIdx = document.blocks.firstIndex(where: { $0.id == id }) else { return false }
 
@@ -1320,6 +1328,84 @@ public struct PageView: View {
             collapseSection(parent)
         }
         setCursor(parentID)
+        return true
+    }
+
+    /// Toggle strikethrough across every text-bearing block in the current selection.
+    /// If all of them are already fully struck, remove strikethrough; otherwise add it
+    /// uniformly. Skips blocks without an `AttributedString` body (code/divider/subpage)
+    /// and template buttons (whose `withText` flattens formatting). Returns `true` if it
+    /// acted.
+    private func toggleStrikethroughOnSelection() -> Bool {
+        let indices = effectiveSelectedIndices()
+        let targets = indices.filter { i in
+            switch document.blocks[i] {
+            case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
+                return true
+            case .templateButton, .code, .divider, .subpage:
+                return false
+            }
+        }
+        guard !targets.isEmpty else { return false }
+
+        var sawAnyText = false
+        var allStruck = true
+        for i in targets {
+            let text = document.blocks[i].text
+            if text.runs.isEmpty { continue }
+            sawAnyText = true
+            for run in text.runs {
+                if run[InlineAttributes.StrikethroughAttribute.self] != true {
+                    allStruck = false
+                    break
+                }
+            }
+            if !allStruck { break }
+        }
+        guard sawAnyText else { return false }
+        let newValue = !allStruck
+
+        mutate(newValue ? "Strikethrough" : "Remove Strikethrough") {
+            var blocks = document.blocks
+            for i in targets {
+                var text = blocks[i].text
+                let range = text.startIndex..<text.endIndex
+                if range.lowerBound < range.upperBound {
+                    text[range][InlineAttributes.StrikethroughAttribute.self] = newValue
+                    blocks[i] = blocks[i].withText(text)
+                }
+            }
+            document.blocks = blocks
+        }
+        return true
+    }
+
+    /// If every block in the current selection is a `.todo`, set their `done` state to
+    /// `done` (skipping any that already match). Returns `true` if it acted.
+    private func setTodoDoneOnSelection(_ done: Bool) -> Bool {
+        let indices = selectedIndices()
+        guard !indices.isEmpty else { return false }
+        let targets: [(Int, BlockID, AttributedString, Int)] = indices.compactMap { i in
+            if case let .todo(id, text, _, indent) = document.blocks[i] {
+                return (i, id, text, indent)
+            }
+            return nil
+        }
+        guard targets.count == indices.count else { return false }
+        let needsChange = targets.contains { i, _, _, _ in
+            if case let .todo(_, _, currentDone, _) = document.blocks[i] {
+                return currentDone != done
+            }
+            return false
+        }
+        guard needsChange else { return true }
+        mutate(done ? "Check" : "Uncheck") {
+            var blocks = document.blocks
+            for (i, id, text, indent) in targets {
+                blocks[i] = .todo(id: id, text: text, done: done, indent: indent)
+            }
+            document.blocks = blocks
+        }
         return true
     }
 
