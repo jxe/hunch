@@ -48,9 +48,9 @@ go back to that.
 **Nav mode is multi-select.** `PageView` holds `selection: Set<BlockID>`,
 `cursor` (moving end), `anchor` (fixed end). ↑/↓ collapses to a single
 block, Shift+↑/↓ extends, Return enters edit mode (only when
-`selection.count == 1`), Esc exits, Delete removes the selection,
-Option+↑/↓ slides, Tab/Shift-Tab indent/outdent list items in the
-selection.
+`selection.count == 1`) or opens a selected subpage, → also opens a
+selected subpage, Esc exits, Delete removes the selection, Option+↑/↓
+slides, Tab/Shift-Tab indent/outdent list items in the selection.
 
 **Editor binding is `Binding<AttributedString>`** so inline marks
 (bold/italic/code/strike/link) round-trip through edits.

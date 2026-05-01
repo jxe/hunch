@@ -1558,12 +1558,13 @@ public struct PageView: View {
         }
     }
 
-    /// Nav-mode →: check todos in the selection, otherwise open the collapsible section
-    /// under the cursor.
+    /// Nav-mode →: check todos in the selection, otherwise enter a selected subpage
+    /// or open the collapsible section under the cursor.
     @discardableResult
     private func handleNavRightArrow() -> Bool {
         if setTodoDoneOnSelection(true) { return true }
         guard let id = cursor, selection.count == 1 else { return false }
+        if navigateIntoSubpage(id) { return true }
         guard let block = document.blocks.first(where: { $0.id == id }),
               isCollapsibleSection(block) else { return false }
         withAnimation(.easeInOut(duration: 0.15)) {
