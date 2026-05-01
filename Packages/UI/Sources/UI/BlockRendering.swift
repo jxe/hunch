@@ -288,6 +288,7 @@ public struct BlockRow: View {
 
             editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
     }
 
@@ -322,25 +323,25 @@ public struct BlockRow: View {
                 .background(NotionStyle.selectionBackground.opacity(0.75))
                 .clipShape(RoundedRectangle(cornerRadius: 5))
             } else {
-                Button {
-                    onTemplateButtonPress()
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body()))
-                            .font(NotionStyle.body())
-                            .lineSpacing(NotionStyle.bodyLineSpacing)
-                    }
-                    .foregroundStyle(NotionStyle.foreground)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(NotionStyle.selectionBackground.opacity(0.75))
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                HStack(spacing: 7) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body()))
+                        .font(NotionStyle.body())
+                        .lineSpacing(NotionStyle.bodyLineSpacing)
                 }
-                .buttonStyle(.plain)
+                .foregroundStyle(NotionStyle.foreground)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(NotionStyle.selectionBackground.opacity(0.75))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .contentShape(RoundedRectangle(cornerRadius: 5))
+                .onTapGesture {
+                    onTemplateButtonPress()
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
     }
 

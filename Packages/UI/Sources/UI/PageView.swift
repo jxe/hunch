@@ -22,16 +22,20 @@ private struct PageScrollMetrics: Equatable {
 }
 
 private enum BlockTurnInto: CaseIterable {
-    case paragraph
-    case bullet
-    case numbered
-    case todo
-    case toggle
-    case template
+    // Declaration order drives the on-screen order in the 3-col Turn Into grid.
+    // Grouped so each row reads as a category: headings, list types,
+    // everything else (Template alone trails because most blocks can't become
+    // one and `turnIntoTargets` filters it out for multi-selection).
     case heading1
     case heading2
     case heading3
+    case bullet
+    case numbered
+    case todo
+    case paragraph
+    case toggle
     case page
+    case template
 
     var title: String {
         switch self {
@@ -154,6 +158,7 @@ public struct PageView: View {
     @State private var pinchPreview: PinchPreviewState?
     @State private var pinchGestureActive = false
     @State private var pinchCrossedInsertThreshold = false
+    @State private var pinchCrossedFocusThreshold = false
     @State private var scrollMetrics = PageScrollMetrics()
     @State private var pinchAutoScrollTask: Task<Void, Never>?
     @State private var pinchAutoScrollVelocity: CGFloat = 0
@@ -608,16 +613,6 @@ public struct PageView: View {
                 },
                 onEnded: { value in endReorderLift(atY: value.location.y, snapshot: snapshot) }
             )
-            .iosBlockTouchActions(
-                isEnabled: !isEditing && !pinchGestureActive,
-                onDelete: {
-                    deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
-                    showActionToast("Deleted")
-                },
-                onShowMenu: {
-                    actionSheet = BlockActionSheet(id: block.id)
-                }
-            )
             .blockActionPopover(
                 isPresented: Binding(
                     get: { actionSheet?.id == block.id },
@@ -628,6 +623,16 @@ public struct PageView: View {
             }
             .opacity(reorderSourceOpacity(for: block.id))
             .contentShape(Rectangle())
+            .iosBlockTouchActions(
+                isEnabled: !isEditing && !pinchGestureActive,
+                onDelete: {
+                    deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
+                    showActionToast("Deleted")
+                },
+                onShowMenu: {
+                    actionSheet = BlockActionSheet(id: block.id)
+                }
+            )
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier(accessibilityIdentifier(for: block))
             .accessibilityLabel(accessibilityLabel(for: block))
@@ -984,31 +989,28 @@ public struct PageView: View {
         let removalsBeforeTarget = sourceIndices.filter { $0 < target }.count
         let adjustedTarget = target - removalsBeforeTarget
 
-        // Suppress SwiftUI's default ForEach move-animation. Without this, the row
-        // crawls to its new position over the default animation duration after the
-        // drop completes, which feels sluggish for a discrete reorder.
-        withAnimation(nil) {
-            mutate("Move Block") {
-                let movingBlocks = sourceIndices.map { document.blocks[$0] }
-                var blocks = document.blocks
-                for i in sourceIndices.reversed() {
-                    blocks.remove(at: i)
-                }
-                blocks.insert(contentsOf: movingBlocks, at: adjustedTarget)
-                document.blocks = blocks
+        mutate("Move Block") {
+            let movingBlocks = sourceIndices.map { document.blocks[$0] }
+            var blocks = document.blocks
+            for i in sourceIndices.reversed() {
+                blocks.remove(at: i)
             }
+            blocks.insert(contentsOf: movingBlocks, at: adjustedTarget)
+            document.blocks = blocks
         }
     }
 
-    private func insertParagraph(at index: Int) {
+    private func insertParagraph(at index: Int, focus: Bool = true) {
         let newBlock = Block.paragraph(text: AttributedString())
         let insertionIndex = max(0, min(index, document.blocks.count))
         mutate("Insert Block") {
             document.blocks.insert(newBlock, at: insertionIndex)
         }
-        setCursor(newBlock.id)
-        editingBlock = newBlock.id
-        editorFocused = newBlock.id
+        if focus {
+            setCursor(newBlock.id)
+            editingBlock = newBlock.id
+            editorFocused = newBlock.id
+        }
     }
 
     private func appendTranscript(_ transcript: String) {
@@ -1049,17 +1051,15 @@ public struct PageView: View {
     // MARK: - Pinch-open-to-insert (iOS)
 
     private let pinchInsertCommitGap: CGFloat = 40
+    private let pinchInsertFocusGap: CGFloat = 110
 
-    private func handlePinchUpdate(_ value: MagnifyGesture.Value) {
-        handlePinchUpdate(
-            PagePinchValue(
-                startLocation: value.startLocation,
-                location: value.startLocation,
-                magnification: value.magnification,
-                spread: value.magnification,
-                spreadDelta: (value.magnification - 1) * 220
-            )
-        )
+    /// Soft asymptote past `soft` — gap continues to track fingers but tightens
+    /// toward `max`. Replaces a hard clamp, which feels dead at the limit.
+    private func pinchRubberBand(_ x: CGFloat, soft: CGFloat = 140, max: CGFloat = 240) -> CGFloat {
+        guard x > soft else { return x }
+        let over = x - soft
+        let range = max - soft
+        return soft + range * (1 - 1 / (1 + over / range))
     }
 
     /// Track the live finger spread: above the starting distance, open an inline
@@ -1074,8 +1074,7 @@ public struct PageView: View {
         }
         updatePinchAutoScroll(for: value.location)
         if value.spreadDelta > 0 {
-            let raw = value.spreadDelta * 0.9
-            let gapHeight = min(180, max(0, raw))
+            let gapHeight = pinchRubberBand(value.spreadDelta)
             let insertIndex = pinchInsertIndex(for: value.startLocation)
             pinchPreview = PinchPreviewState(insertIndex: insertIndex, gapHeight: gapHeight)
             if gapHeight >= pinchInsertCommitGap, !pinchCrossedInsertThreshold {
@@ -1084,29 +1083,26 @@ public struct PageView: View {
             } else if gapHeight < pinchInsertCommitGap {
                 pinchCrossedInsertThreshold = false
             }
+            if gapHeight >= pinchInsertFocusGap, !pinchCrossedFocusThreshold {
+                pinchCrossedFocusThreshold = true
+                Haptics.medium()
+            } else if gapHeight < pinchInsertFocusGap {
+                pinchCrossedFocusThreshold = false
+            }
         } else if pinchPreview != nil {
             pinchPreview = nil
             pinchCrossedInsertThreshold = false
+            pinchCrossedFocusThreshold = false
         }
-    }
-
-    private func handlePinchCommit(_ value: MagnifyGesture.Value) {
-        handlePinchCommit(
-            PagePinchValue(
-                startLocation: value.startLocation,
-                location: value.startLocation,
-                magnification: value.magnification,
-                spread: value.magnification,
-                spreadDelta: (value.magnification - 1) * 220
-            )
-        )
     }
 
     private func handlePinchCommit(_ value: PagePinchValue) {
         let preview = pinchPreview
+        let gap = preview?.gapHeight ?? pinchRubberBand(max(0, value.spreadDelta))
 
-        if value.spreadDelta * 0.9 >= pinchInsertCommitGap, editingBlock == nil {
+        if gap >= pinchInsertCommitGap, editingBlock == nil {
             let insertIndex = preview?.insertIndex ?? pinchInsertIndex(for: value.startLocation)
+            let shouldFocus = gap >= pinchInsertFocusGap
             // Bundle the structural insert and the gap collapse into the same
             // spring transaction so the new row appears inside the opened gap
             // and the surrounding rows close in around it. Without the shared
@@ -1114,7 +1110,7 @@ public struct PageView: View {
             // pops in afterwards — visually disjoint.
             Haptics.heavy()
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                insertParagraph(at: insertIndex)
+                insertParagraph(at: insertIndex, focus: shouldFocus)
                 pinchPreview = nil
             }
         } else {
@@ -1123,6 +1119,7 @@ public struct PageView: View {
             }
         }
         pinchCrossedInsertThreshold = false
+        pinchCrossedFocusThreshold = false
         pinchGestureActive = false
         stopPinchAutoScroll()
     }
@@ -1722,6 +1719,44 @@ public struct PageView: View {
            let result = detectEnterAutotransform(text: AttributedString(head)) {
             applyAutotransform(result.transform, remainingText: result.remainingText, blockID: blockID)
             return .handled
+        }
+
+        // Enter at end of a block that has indent-children: the natural intent is
+        // to add a child, not a sibling that would slot between the parent and
+        // its first child. Two flavors:
+        //   * Closed toggle/template — the children are hidden, so a "child" would
+        //     vanish; insert a sibling AFTER the whole collapsed section instead.
+        //   * Anything else with children — insert a new FIRST child of the same
+        //     type as the existing first child.
+        if tail.isEmpty,
+           i + 1 < document.blocks.count,
+           document.blocks[i + 1].indent > block.indent {
+            let firstChildIdx = i + 1
+            if isCollapsedSection(block) {
+                let endOfSection = document.sectionRange(of: blockID)?.upperBound ?? firstChildIdx
+                let newBlock = followUpBlock(after: block, withText: "")
+                mutate("Split Block") {
+                    document.blocks.insert(newBlock, at: endOfSection)
+                }
+                DispatchQueue.main.async {
+                    setCursor(newBlock.id)
+                    editingBlock = newBlock.id
+                    editorFocused = newBlock.id
+                }
+                return .handled
+            } else {
+                let firstChild = document.blocks[firstChildIdx]
+                let newBlock = followUpBlock(after: firstChild, withText: "")
+                mutate("Split Block") {
+                    document.blocks.insert(newBlock, at: firstChildIdx)
+                }
+                DispatchQueue.main.async {
+                    setCursor(newBlock.id)
+                    editingBlock = newBlock.id
+                    editorFocused = newBlock.id
+                }
+                return .handled
+            }
         }
 
         let updatedCurrent = block.withText(AttributedString(head))
@@ -2409,19 +2444,17 @@ private extension View {
     @ViewBuilder
     func iosPagePinch(
         isEnabled: Bool,
-        onUpdate: @escaping (MagnifyGesture.Value) -> Void,
-        onCommit: @escaping (MagnifyGesture.Value) -> Void
+        onUpdate: @escaping (PagePinchValue) -> Void,
+        onCommit: @escaping (PagePinchValue) -> Void
     ) -> some View {
         #if os(iOS)
-        if isEnabled {
-            self.simultaneousGesture(
-                MagnifyGesture(minimumScaleDelta: 0.01)
-                    .onChanged { value in onUpdate(value) }
-                    .onEnded { value in onCommit(value) }
+        self.background(
+            IOSPagePinchGestureBridge(
+                isEnabled: isEnabled,
+                onUpdate: onUpdate,
+                onCommit: onCommit
             )
-        } else {
-            self
-        }
+        )
         #else
         self
         #endif
@@ -2698,6 +2731,159 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
     }
 }
 
+/// Page-level pinch gesture. Walks up to the enclosing `UIScrollView`, attaches
+/// a `UIPinchGestureRecognizer` and reads the live finger positions via
+/// `location(ofTouch:in:)` so we can emit the *actual* pixel distance the
+/// fingers have spread. SwiftUI's `MagnifyGesture` only exposes a magnification
+/// ratio, which forces a magic-number assumption about start finger distance —
+/// pinch felt amplified at narrow grips and undersized at wide grips.
+private struct IOSPagePinchGestureBridge: UIViewRepresentable {
+    var isEnabled: Bool
+    var onUpdate: (PagePinchValue) -> Void
+    var onCommit: (PagePinchValue) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = HostView()
+        view.coordinator = context.coordinator
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.recognizer?.isEnabled = isEnabled
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    @MainActor
+    final class HostView: UIView {
+        weak var coordinator: Coordinator?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil {
+                coordinator?.attach(from: self)
+            } else {
+                coordinator?.detach()
+            }
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: IOSPagePinchGestureBridge
+        weak var recognizer: UIPinchGestureRecognizer?
+        weak var scrollView: UIScrollView?
+        private var startDistance: CGFloat = 0
+        private var startMidpoint: CGPoint = .zero
+
+        init(parent: IOSPagePinchGestureBridge) {
+            self.parent = parent
+        }
+
+        func attach(from view: UIView) {
+            guard recognizer == nil else { return }
+            var current: UIView? = view.superview
+            while let v = current {
+                if let scroll = v as? UIScrollView {
+                    let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+                    pinch.cancelsTouchesInView = false
+                    pinch.delegate = self
+                    pinch.isEnabled = parent.isEnabled
+                    scroll.addGestureRecognizer(pinch)
+                    self.recognizer = pinch
+                    self.scrollView = scroll
+                    return
+                }
+                current = v.superview
+            }
+        }
+
+        func detach() {
+            if let recognizer, let scrollView {
+                scrollView.removeGestureRecognizer(recognizer)
+            }
+            recognizer = nil
+            scrollView = nil
+        }
+
+        @objc func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+            guard let scrollView else { return }
+            switch recognizer.state {
+            case .began:
+                guard recognizer.numberOfTouches >= 2 else { return }
+                let p0 = recognizer.location(ofTouch: 0, in: scrollView)
+                let p1 = recognizer.location(ofTouch: 1, in: scrollView)
+                startDistance = hypot(p0.x - p1.x, p0.y - p1.y)
+                let midScroll = CGPoint(x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2)
+                startMidpoint = pageCoordinateLocation(for: midScroll, scrollView: scrollView)
+                parent.onUpdate(makeValue(recognizer: recognizer, scrollView: scrollView, currentDistance: startDistance))
+            case .changed:
+                let distance = currentDistance(recognizer: recognizer, scrollView: scrollView)
+                parent.onUpdate(makeValue(recognizer: recognizer, scrollView: scrollView, currentDistance: distance))
+            case .ended, .cancelled, .failed:
+                let distance = currentDistance(recognizer: recognizer, scrollView: scrollView)
+                parent.onCommit(makeValue(recognizer: recognizer, scrollView: scrollView, currentDistance: distance))
+            default:
+                break
+            }
+        }
+
+        private func currentDistance(recognizer: UIPinchGestureRecognizer, scrollView: UIScrollView) -> CGFloat {
+            guard recognizer.numberOfTouches >= 2 else {
+                // One finger lifted before .ended — fall back to scale × startDistance.
+                return startDistance * recognizer.scale
+            }
+            let p0 = recognizer.location(ofTouch: 0, in: scrollView)
+            let p1 = recognizer.location(ofTouch: 1, in: scrollView)
+            return hypot(p0.x - p1.x, p0.y - p1.y)
+        }
+
+        private func makeValue(
+            recognizer: UIPinchGestureRecognizer,
+            scrollView: UIScrollView,
+            currentDistance: CGFloat
+        ) -> PagePinchValue {
+            let midScroll: CGPoint
+            if recognizer.numberOfTouches >= 2 {
+                let p0 = recognizer.location(ofTouch: 0, in: scrollView)
+                let p1 = recognizer.location(ofTouch: 1, in: scrollView)
+                midScroll = CGPoint(x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2)
+            } else {
+                midScroll = recognizer.location(in: scrollView)
+            }
+            let midPage = pageCoordinateLocation(for: midScroll, scrollView: scrollView)
+            return PagePinchValue(
+                startLocation: startMidpoint,
+                location: midPage,
+                magnification: recognizer.scale,
+                spread: currentDistance,
+                spreadDelta: currentDistance - startDistance
+            )
+        }
+
+        private func pageCoordinateLocation(
+            for scrollLocation: CGPoint,
+            scrollView: UIScrollView
+        ) -> CGPoint {
+            IOSPageReorderGeometry.pageLocation(
+                forScrollViewLocation: scrollLocation,
+                contentOffset: scrollView.contentOffset,
+                adjustedTopInset: scrollView.adjustedContentInset.top
+            )
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+    }
+}
+
 private struct PageBlockDropDelegate: DropDelegate {
     let rowFrames: [ReorderDropFrame]
     @Binding var dropHoverIndex: Int?
@@ -2714,22 +2900,29 @@ private struct PageBlockDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         let target = resolvedIndex(for: info.location.y)
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            dropHoverIndex = nil
-        }
+        let dropSpring = Animation.spring(response: 0.26, dampingFraction: 0.76)
 
         guard let provider = info.itemProviders(for: [UTType.plainText]).first else {
+            // Nothing to drop — close the gap with the same spring used to open it.
+            withAnimation(dropSpring) { dropHoverIndex = nil }
             return false
         }
         provider.loadObject(ofClass: NSString.self) { object, _ in
             guard let string = object as? NSString,
                   let payload = BlockDragPayload(jsonString: string as String) else {
+                Task { @MainActor in
+                    withAnimation(dropSpring) { dropHoverIndex = nil }
+                }
                 return
             }
+            // Bundle the structural move and the gap collapse into one spring so
+            // the dropped block lands inside the open gap and the surrounding
+            // rows close in around it (mirrors the pinch-insert pattern).
             Task { @MainActor in
-                onDrop(payload, target)
+                withAnimation(dropSpring) {
+                    onDrop(payload, target)
+                    dropHoverIndex = nil
+                }
             }
         }
         return true
@@ -2891,22 +3084,23 @@ private struct IOSRowSwipeActions: ViewModifier {
     func body(content: Content) -> some View {
         let total = drag
         let clamped = max(-revealCap, min(revealCap, total))
+        let progress = min(1, abs(clamped) / trigger)
 
         content
             .offset(x: clamped)
             .background(alignment: .trailing) {
                 if total < 0 {
-                    actionLabel(systemName: "trash", tint: .red, leading: false)
+                    actionLabel(systemName: "trash", tint: .red, leading: false, progress: progress)
                         .frame(width: max(0, -clamped))
                 }
             }
             .background(alignment: .leading) {
                 if total > 0 {
-                    actionLabel(systemName: "ellipsis.circle.fill", tint: .blue, leading: true)
+                    actionLabel(systemName: "ellipsis.circle.fill", tint: .blue, leading: true, progress: progress)
                         .frame(width: max(0, clamped))
                 }
             }
-            .simultaneousGesture(
+            .highPriorityGesture(
                 DragGesture(minimumDistance: 18, coordinateSpace: .local)
                     .updating($drag) { value, state, _ in
                         let h = value.translation.width
@@ -2930,14 +3124,16 @@ private struct IOSRowSwipeActions: ViewModifier {
     }
 
     @ViewBuilder
-    private func actionLabel(systemName: String, tint: Color, leading: Bool) -> some View {
+    private func actionLabel(systemName: String, tint: Color, leading: Bool, progress: CGFloat) -> some View {
         ZStack(alignment: leading ? .leading : .trailing) {
-            tint
+            tint.opacity(0.10 + 0.10 * progress)
             Image(systemName: systemName)
-                .foregroundStyle(.white)
+                .foregroundStyle(tint)
                 .font(.system(size: 18, weight: .semibold))
                 .padding(.horizontal, 22)
         }
+        .clipShape(.rect(cornerRadius: 10))
+        .padding(.vertical, 4)
     }
 }
 #endif

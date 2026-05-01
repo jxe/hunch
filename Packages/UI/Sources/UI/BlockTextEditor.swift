@@ -808,6 +808,12 @@ final class ContainedTextViewIOS: UITextView {
     func applyPendingCursorPositionOrSeekToEnd() {
         if let point = pendingInitialCursorPoint {
             pendingInitialCursorPoint = nil
+            // Force layout: at didMoveToWindow / first updateUIView UITextView's
+            // text container hasn't necessarily run layout, and `closestPosition`
+            // returns the doc-end position when the layout is empty. Without this
+            // the caret silently snaps to end on every tap-to-edit.
+            layoutIfNeeded()
+            layoutManager.ensureLayout(for: textContainer)
             if let position = closestPosition(to: point) {
                 let offset = self.offset(from: beginningOfDocument, to: position)
                 selectedRange = NSRange(location: offset, length: 0)

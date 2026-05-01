@@ -214,6 +214,33 @@ final class HunchDragAndDropUITests: XCTestCase {
         assertRowOrder(["Alpha", "Charlie", "Delta", "Echo", "Foxtrot"])
     }
 
+    func testConvertedTemplateRowStillSupportsMobileActions() {
+        launchApp()
+
+        let bravo = row(containing: "Bravo")
+        XCTAssertTrue(bravo.waitForExistence(timeout: 3))
+        openRowActionMenu(bravo)
+        tapMenuButton("Template")
+        XCTAssertTrue(row(containing: "Bravo").waitForExistence(timeout: 3))
+
+        openRowActionMenu(row(containing: "Bravo"))
+        tapMenuButton("Text")
+        XCTAssertEqual(row(containing: "Bravo").label, "Paragraph: Bravo")
+
+        let charlie = row(containing: "Charlie")
+        XCTAssertTrue(charlie.waitForExistence(timeout: 3))
+        openRowActionMenu(charlie)
+        tapMenuButton("Template")
+        XCTAssertTrue(row(containing: "Charlie").waitForExistence(timeout: 3))
+
+        let convertedCharlie = row(containing: "Charlie")
+        let start = convertedCharlie.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5))
+        let end = convertedCharlie.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end)
+
+        assertRowOrder(["Alpha", "Bravo", "Delta", "Echo", "Foxtrot"])
+    }
+
     private func launchApp() {
         continueAfterFailure = false
         app = XCUIApplication()
@@ -230,6 +257,16 @@ final class HunchDragAndDropUITests: XCTestCase {
 
     private func row(containing text: String) -> XCUIElement {
         app.descendants(matching: .any)["block-row-\(slug(text))"]
+    }
+
+    private func openRowActionMenu(_ row: XCUIElement) {
+        row.swipeRight()
+    }
+
+    private func tapMenuButton(_ title: String) {
+        let button = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", title)).firstMatch
+        XCTAssertTrue(button.waitForExistence(timeout: 2), "Expected menu button \(title)")
+        button.tap()
     }
 
     private func scrollUntilHittable(_ element: XCUIElement, attempts: Int = 8) -> Bool {

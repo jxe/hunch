@@ -24,6 +24,19 @@ final class PageSpeechRecorder {
         guard state == .idle else { return }
         try await requestPermissions()
 
+        // iOS requires explicit audio session setup; without this `record()` returns
+        // false intermittently when another process holds the session.
+        #if os(iOS)
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers, .defaultToSpeaker])
+            try session.setActive(true, options: [])
+        } catch {
+            NSLog("[PageSpeechRecorder] audio session activation failed: %@", String(describing: error))
+            throw PageSpeechRecorderError.recordingFailed(underlying: (error as NSError).localizedDescription)
+        }
+        #endif
+
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("hunch-dictation-\(UUID().uuidString)")
             .appendingPathExtension("caf")
@@ -36,10 +49,20 @@ final class PageSpeechRecorder {
             AVLinearPCMIsBigEndianKey: false
         ]
 
-        let recorder = try AVAudioRecorder(url: url, settings: settings)
-        recorder.prepareToRecord()
+        let recorder: AVAudioRecorder
+        do {
+            recorder = try AVAudioRecorder(url: url, settings: settings)
+        } catch {
+            NSLog("[PageSpeechRecorder] AVAudioRecorder init failed: %@", String(describing: error))
+            throw PageSpeechRecorderError.recordingFailed(underlying: (error as NSError).localizedDescription)
+        }
+        guard recorder.prepareToRecord() else {
+            NSLog("[PageSpeechRecorder] prepareToRecord returned false for %@", url.path)
+            throw PageSpeechRecorderError.recordingFailed(underlying: "prepareToRecord failed")
+        }
         guard recorder.record() else {
-            throw PageSpeechRecorderError.recordingFailed
+            NSLog("[PageSpeechRecorder] record() returned false; session category=%@", currentSessionCategoryDescription())
+            throw PageSpeechRecorderError.recordingFailed(underlying: "record() returned false")
         }
 
         self.recorder = recorder
@@ -51,6 +74,7 @@ final class PageSpeechRecorder {
         guard state == .recording, let url = recordingURL else { return "" }
         recorder?.stop()
         recorder = nil
+        deactivateAudioSession()
         state = .transcribing
         defer {
             try? FileManager.default.removeItem(at: url)
@@ -64,11 +88,30 @@ final class PageSpeechRecorder {
     func cancel() {
         recorder?.stop()
         recorder = nil
+        deactivateAudioSession()
         if let recordingURL {
             try? FileManager.default.removeItem(at: recordingURL)
         }
         recordingURL = nil
         state = .idle
+    }
+
+    private func deactivateAudioSession() {
+        #if os(iOS)
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            NSLog("[PageSpeechRecorder] audio session deactivation failed: %@", String(describing: error))
+        }
+        #endif
+    }
+
+    private func currentSessionCategoryDescription() -> String {
+        #if os(iOS)
+        return AVAudioSession.sharedInstance().category.rawValue
+        #else
+        return "n/a"
+        #endif
     }
 
     private func requestPermissions() async throws {
@@ -147,7 +190,7 @@ final class PageSpeechRecorder {
 enum PageSpeechRecorderError: LocalizedError {
     case microphonePermissionDenied
     case speechPermissionDenied
-    case recordingFailed
+    case recordingFailed(underlying: String?)
     case transcriptionUnavailable
     case unsupportedLocale
 
@@ -157,8 +200,12 @@ enum PageSpeechRecorderError: LocalizedError {
             "Microphone access is required to record audio."
         case .speechPermissionDenied:
             "Speech recognition permission is required to transcribe audio."
-        case .recordingFailed:
-            "Recording could not be started."
+        case .recordingFailed(let underlying):
+            if let underlying, !underlying.isEmpty {
+                "Recording could not be started: \(underlying)"
+            } else {
+                "Recording could not be started."
+            }
         case .transcriptionUnavailable:
             "Speech transcription is not available on this device."
         case .unsupportedLocale:
