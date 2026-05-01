@@ -65,6 +65,12 @@ public struct BlockRow: View {
     let onKey: (BlockKey) -> KeyPress.Result
     let onEdited: () -> Void
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    /// Forwarded to the editor — fires whenever the cursor sits after an in-progress
+    /// `@query` (or transitions out of one). PageView holds the popover state.
+    let onMentionTriggerChange: (MentionTrigger?) -> Void
+    /// Forwarded to the editor — when true, ↑/↓/Return/Esc are diverted to menu-nav
+    /// events instead of intra-block / exit-edit.
+    let mentionActive: Bool
     /// Called when the user clicks the editable text area while not editing — point is
     /// in the editor area's local coordinate space (matches what `NSTextView`'s
     /// `characterIndexForInsertion(at:)` expects).
@@ -88,6 +94,8 @@ public struct BlockRow: View {
         onKey: @escaping (BlockKey) -> KeyPress.Result = { _ in .ignored },
         onEdited: @escaping () -> Void = {},
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
+        onMentionTriggerChange: @escaping (MentionTrigger?) -> Void = { _ in },
+        mentionActive: Bool = false,
         onClickAtPoint: @escaping (CGPoint) -> Void = { _ in },
         onToggleExpansion: @escaping () -> Void = {},
         onTemplateButtonPress: @escaping () -> Void = {},
@@ -104,6 +112,8 @@ public struct BlockRow: View {
         self.onKey = onKey
         self.onEdited = onEdited
         self.onAutotransform = onAutotransform
+        self.onMentionTriggerChange = onMentionTriggerChange
+        self.mentionActive = mentionActive
         self.onClickAtPoint = onClickAtPoint
         self.onToggleExpansion = onToggleExpansion
         self.onTemplateButtonPress = onTemplateButtonPress
@@ -404,6 +414,8 @@ public struct BlockRow: View {
                 blockID: block.id,
                 onKey: onKey,
                 onAutotransform: onAutotransform,
+                onMentionTriggerChange: onMentionTriggerChange,
+                mentionActive: mentionActive,
                 initialCursorPoint: initialCursorPoint
             )
             .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)

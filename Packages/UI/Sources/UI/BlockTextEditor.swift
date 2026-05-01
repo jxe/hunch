@@ -21,7 +21,15 @@ public enum BlockKey: Sendable, Equatable {
     case exitEditUp
     /// Down arrow pressed while the cursor is on the editor's last line.
     case exitEditDown
+    // The mention popover (@-menu) is open over the active editor; the editor
+    // forwards these unconditionally so PageView can drive menu navigation
+    // without taking focus away from the text.
+    case mentionUp
+    case mentionDown
+    case mentionCommit
+    case mentionDismiss
 }
+
 
 /// A single-block text editor.
 ///
@@ -52,6 +60,14 @@ public struct BlockTextEditor: View {
     let blockID: BlockID
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    /// Fires whenever the cursor sits after an in-progress `@query` (or transitions out
+    /// of one — `nil` then). PageView holds the popover state and decides whether to
+    /// show / dismiss the menu based on this stream.
+    let onMentionTriggerChange: (MentionTrigger?) -> Void
+    /// When true, the editor unconditionally forwards ↑/↓/Return/Esc to `onKey` as
+    /// `mentionUp/Down/Commit/Dismiss` so PageView can drive the popover. When false,
+    /// arrow keys behave normally (intra-block nav or exit-edit on boundary).
+    let mentionActive: Bool
     /// Optional point (in the editor's local coordinate space) where the cursor should
     /// land on initial focus. When the user clicks on a read-only block, the click
     /// location is propagated here so the cursor lands where they clicked rather than at
@@ -74,6 +90,8 @@ public struct BlockTextEditor: View {
         blockID: BlockID,
         onKey: @escaping (BlockKey) -> KeyPress.Result,
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
+        onMentionTriggerChange: @escaping (MentionTrigger?) -> Void = { _ in },
+        mentionActive: Bool = false,
         initialCursorPoint: CGPoint? = nil
     ) {
         self._text = text
@@ -85,6 +103,8 @@ public struct BlockTextEditor: View {
         self.blockID = blockID
         self.onKey = onKey
         self.onAutotransform = onAutotransform
+        self.onMentionTriggerChange = onMentionTriggerChange
+        self.mentionActive = mentionActive
         self.initialCursorPoint = initialCursorPoint
     }
 
@@ -110,6 +130,8 @@ public struct BlockTextEditor: View {
             },
             onKey: onKey,
             onAutotransform: onAutotransform,
+            onMentionTriggerChange: onMentionTriggerChange,
+            mentionActive: mentionActive,
             initialCursorPoint: initialCursorPoint,
             blockID: blockID,
             documentUndoController: documentUndoController
@@ -147,6 +169,8 @@ public struct BlockTextEditor: View {
             bridge: iosBridge,
             onKey: onKey,
             onAutotransform: onAutotransform,
+            onMentionTriggerChange: onMentionTriggerChange,
+            mentionActive: mentionActive,
             initialCursorPoint: initialCursorPoint,
             documentUndoController: documentUndoController
         )
@@ -187,6 +211,8 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let onFocusChange: (Bool) -> Void
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    let onMentionTriggerChange: (MentionTrigger?) -> Void
+    let mentionActive: Bool
     let initialCursorPoint: CGPoint?
     let blockID: BlockID
     let documentUndoController: DocumentUndoController?
@@ -292,6 +318,27 @@ struct MacBlockTextEditor: NSViewRepresentable {
             // chunk autosave debounces on no-op keystrokes.
             let nsAttr = tv.textStorage ?? NSTextStorage()
             parent.text = InlineMarksKit.toModel(nsAttr)
+            reportMentionTrigger(in: tv, composing: isComposing)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            // Cursor moved without a text change — re-evaluate the mention trigger so
+            // arrow-keying out of the @-region dismisses the popover.
+            MainActor.assumeIsolated {
+                reportMentionTrigger(in: tv, composing: tv.hasMarkedText())
+            }
+        }
+
+        @MainActor
+        private func reportMentionTrigger(in tv: NSTextView, composing: Bool) {
+            if composing {
+                parent.onMentionTriggerChange(nil)
+                return
+            }
+            let cursor = tv.selectedRange().location
+            let trigger = detectMentionTrigger(plain: tv.string, cursor: cursor)
+            parent.onMentionTriggerChange(trigger)
         }
 
         func textDidBeginEditing(_ notification: Notification) {
@@ -347,6 +394,24 @@ final class ContainedTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         if let onKey = coordinator?.parent.onKey {
+            // While the mention popover is open, intercept menu-nav keys before the
+            // editor's normal handling so PageView can drive selection / commit.
+            if coordinator?.parent.mentionActive == true {
+                switch event.keyCode {
+                case 126: // Up
+                    if onKey(.mentionUp) == .handled { return }
+                case 125: // Down
+                    if onKey(.mentionDown) == .handled { return }
+                case 36, 76: // Return / numpad Enter
+                    if onKey(.mentionCommit) == .handled { return }
+                case 53: // Escape
+                    if onKey(.mentionDismiss) == .handled { return }
+                case 48: // Tab — accept the highlighted entry, mirroring Notion.
+                    if onKey(.mentionCommit) == .handled { return }
+                default:
+                    break
+                }
+            }
             switch event.keyCode {
             case 36, 76: // Return, numpad Enter
                 let cursor = (selectedRange().location)
@@ -471,6 +536,13 @@ final class ContainedTextView: NSTextView {
     /// can't successfully set the page container as the new first responder, leaving
     /// arrow-key nav unbound.
     override func cancelOperation(_ sender: Any?) {
+        if coordinator?.parent.mentionActive == true,
+           let onKey = coordinator?.parent.onKey,
+           onKey(.mentionDismiss) == .handled {
+            // Esc while the mention popover is open dismisses the menu but leaves the
+            // editor focused — don't resign first responder.
+            return
+        }
         window?.makeFirstResponder(nil)
         if let onKey = coordinator?.parent.onKey, onKey(.escape) == .handled {
             return
@@ -561,6 +633,8 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     let bridge: IOSEditorBridge
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    let onMentionTriggerChange: (MentionTrigger?) -> Void
+    let mentionActive: Bool
     let initialCursorPoint: CGPoint?
     let documentUndoController: DocumentUndoController?
 
@@ -721,6 +795,21 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
                 .registerTextChange(blockID: parent.blockID, oldText: parent.text)
             let model = InlineMarksKit.toModel(textView.textStorage)
             parent.text = model
+            reportMentionTrigger(in: textView, composing: composing)
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            reportMentionTrigger(in: textView, composing: textView.markedTextRange != nil)
+        }
+
+        private func reportMentionTrigger(in textView: UITextView, composing: Bool) {
+            if composing {
+                parent.onMentionTriggerChange(nil)
+                return
+            }
+            let cursor = textView.selectedRange.location
+            let trigger = detectMentionTrigger(plain: textView.text ?? "", cursor: cursor)
+            parent.onMentionTriggerChange(trigger)
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
@@ -794,6 +883,12 @@ final class ContainedTextViewIOS: UITextView {
     override func insertText(_ text: String) {
         if text == "\n",
            let coordinator {
+            // While the mention popover is open, soft- or hardware-keyboard return
+            // commits the highlighted entry instead of splitting the block.
+            if coordinator.parent.mentionActive,
+               coordinator.parent.onKey(.mentionCommit) == .handled {
+                return
+            }
             // Soft-keyboard return: split the block at the current cursor.
             let cursor = selectedRange.location
             if coordinator.parent.onKey(.enter(cursorOffset: cursor)) == .handled {

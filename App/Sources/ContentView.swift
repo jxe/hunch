@@ -612,6 +612,7 @@ struct ContentView: View {
                     get: { model.documentForPage(url: url) ?? document },
                     set: { model.updateDocumentForPage($0) }
                 ),
+                entries: model.entries,
                 onSubpageTap: { relativePath in
                     model.openSubpage(relativePath: relativePath)
                 },

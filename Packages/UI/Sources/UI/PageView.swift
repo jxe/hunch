@@ -96,6 +96,10 @@ public extension Notification.Name {
 
 public struct PageView: View {
     @Binding public var document: Document
+    /// All `.md` files in the workspace — drives the `@`-mention popover's filterable
+    /// list. Empty by default so callers that don't pass it (tests, previews) just see
+    /// no results in the popover.
+    public let entries: [WorkspaceEntry]
     public let onSubpageTap: (String) -> Void
     public let onCreateSubpage: (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String?
     /// Inverse of subpage creation: read the .md at the given relative path and return its blocks.
@@ -192,8 +196,19 @@ public struct PageView: View {
     @State private var expandedToggles: Set<BlockID> = []
     @State private var expandedTemplateButtons: Set<BlockID> = []
 
+    /// Active mention menu state. When non-nil, the editor diverts ↑/↓/Return/Esc to
+    /// menu navigation instead of the usual edit-mode handling.
+    @State private var mentionMenu: MentionMenuState?
+
+    fileprivate struct MentionMenuState: Equatable {
+        let blockID: BlockID
+        var trigger: MentionTrigger
+        var selectedIndex: Int
+    }
+
     public init(
         document: Binding<Document>,
+        entries: [WorkspaceEntry] = [],
         onSubpageTap: @escaping (String) -> Void = { _ in },
         onCreateSubpage: @escaping (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String? = { _, requestedPath, _ in requestedPath },
         onLoadSubpage: @escaping (_ relativePath: String) -> [Block]? = { _ in nil },
@@ -204,6 +219,7 @@ public struct PageView: View {
         onBlur: @escaping () -> Void = {}
     ) {
         self._document = document
+        self.entries = entries
         self.onSubpageTap = onSubpageTap
         self.onCreateSubpage = onCreateSubpage
         self.onLoadSubpage = onLoadSubpage
@@ -590,6 +606,10 @@ public struct PageView: View {
             onAutotransform: { transform, remainingText in
                 applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
             },
+            onMentionTriggerChange: { trigger in
+                handleMentionTriggerChange(trigger, blockID: block.id)
+            },
+            mentionActive: mentionMenu?.blockID == block.id,
             onClickAtPoint: { point in
                 pendingCursorPoint = (block.id, point)
                 enterEditMode(on: block.id)
@@ -638,6 +658,14 @@ public struct PageView: View {
                 )
             ) {
                 blockActionMenuContent(for: block.id)
+            }
+            .blockActionPopover(
+                isPresented: Binding(
+                    get: { mentionMenu?.blockID == block.id },
+                    set: { if !$0 { mentionMenu = nil } }
+                )
+            ) {
+                mentionMenuContent()
             }
             .opacity(reorderSourceOpacity(for: block.id))
             .contentShape(Rectangle())
@@ -1780,6 +1808,12 @@ public struct PageView: View {
     // MARK: - Edit-mode transitions
 
     private func enterEditMode(on id: BlockID) {
+        // Switching active editor — drop any stale mention popover that may have been
+        // left attached to a different row.
+        if mentionMenu?.blockID != id {
+            mentionMenu = nil
+        }
+
         guard let block = document.blocks.first(where: { $0.id == id }) else { return }
         switch block {
         case .code, .divider, .subpage:
@@ -1797,6 +1831,10 @@ public struct PageView: View {
         let was = editingBlock
         editingBlock = nil
         editorFocused = nil
+        // Drop the @-menu state with the editor — the popover is anchored to the
+        // editing row, and a stale mentionMenu after exit would attach to a
+        // read-only Text that can no longer drive the input.
+        mentionMenu = nil
         if let was {
             setCursor(was)
         }
@@ -1953,7 +1991,222 @@ public struct PageView: View {
             exitEditMode()
             DispatchQueue.main.async { moveCursor(by: +1) }
             return .handled
+        case .mentionUp:
+            return moveMentionSelection(by: -1)
+        case .mentionDown:
+            return moveMentionSelection(by: +1)
+        case .mentionCommit:
+            return commitMentionSelection()
+        case .mentionDismiss:
+            mentionMenu = nil
+            return .handled
         }
+    }
+
+    // MARK: - Mention popover
+
+    /// `entries` filtered + ranked against the active query. Page titles are matched
+    /// case-insensitively as substrings; an empty query lists everything (recent first).
+    fileprivate var mentionMatches: [WorkspaceEntry] {
+        guard let menu = mentionMenu else { return [] }
+        let q = menu.trigger.query.lowercased()
+        let pool = entries.sorted { $0.modificationDate > $1.modificationDate }
+        if q.isEmpty {
+            return Array(pool.prefix(8))
+        }
+        let ranked = pool.compactMap { entry -> (WorkspaceEntry, Int)? in
+            let title = entry.title.lowercased()
+            if title.hasPrefix(q) { return (entry, 0) }
+            if title.contains(q) { return (entry, 1) }
+            // Allow matching against the relative path too — useful for nested pages
+            // whose titles collide.
+            if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
+            return nil
+        }
+        return ranked.sorted { $0.1 < $1.1 }.map(\.0).prefix(8).map { $0 }
+    }
+
+    private func handleMentionTriggerChange(_ trigger: MentionTrigger?, blockID: BlockID) {
+        guard let trigger else {
+            // The editor lost the @-region (cursor moved past whitespace, range cleared,
+            // etc.). Drop the menu — even if its blockID still matches, we shouldn't
+            // hold stale state.
+            if mentionMenu?.blockID == blockID {
+                mentionMenu = nil
+            }
+            return
+        }
+        if var existing = mentionMenu, existing.blockID == blockID {
+            // Query / range changed — keep the menu open, refresh state. Reset the
+            // selection if the new filter would put it out of bounds.
+            existing.trigger = trigger
+            mentionMenu = existing
+            let count = mentionMatches.count
+            if count == 0 {
+                existing.selectedIndex = 0
+            } else if existing.selectedIndex >= count {
+                existing.selectedIndex = count - 1
+            }
+            mentionMenu = existing
+        } else {
+            mentionMenu = MentionMenuState(blockID: blockID, trigger: trigger, selectedIndex: 0)
+        }
+    }
+
+    private func moveMentionSelection(by delta: Int) -> KeyPress.Result {
+        guard var menu = mentionMenu else { return .ignored }
+        let matches = mentionMatches
+        guard !matches.isEmpty else { return .handled }
+        let count = matches.count
+        // Wrap around — feels right for a short list and makes ↑ on the first row a
+        // shortcut to the last entry.
+        menu.selectedIndex = ((menu.selectedIndex + delta) % count + count) % count
+        mentionMenu = menu
+        return .handled
+    }
+
+    private func commitMentionSelection() -> KeyPress.Result {
+        guard let menu = mentionMenu else { return .ignored }
+        let matches = mentionMatches
+        guard !matches.isEmpty else {
+            // No matches — Return on an empty filter just dismisses the menu without
+            // splitting the block.
+            mentionMenu = nil
+            return .handled
+        }
+        let safeIndex = max(0, min(menu.selectedIndex, matches.count - 1))
+        commitMention(matches[safeIndex], state: menu)
+        return .handled
+    }
+
+    /// Replace the active block with a `.subpage` row pointing at `entry`, then drop
+    /// out of edit mode. The user typed `@` to *make a page link*, not to insert
+    /// `[title]` mid-sentence — so we mirror Cmd-K's `convertBlockToSubpage` shape
+    /// (whole block becomes the link). Any text before/after the `@query` span is
+    /// preserved as adjacent paragraphs.
+    private func commitMention(_ entry: WorkspaceEntry, state: MentionMenuState) {
+        defer { mentionMenu = nil }
+        guard let blockIndex = document.index(of: state.blockID) else { return }
+        let block = document.blocks[blockIndex]
+        let plain = String(block.text.characters) as NSString
+
+        let triggerStart = state.trigger.nsRange.location
+        let triggerEnd = triggerStart + state.trigger.nsRange.length
+        guard triggerEnd <= plain.length else { return }
+        let beforeText = plain.substring(with: NSRange(location: 0, length: triggerStart))
+        let afterText = plain.substring(with: NSRange(location: triggerEnd, length: plain.length - triggerEnd))
+
+        // Reuse the original block's id when the @ consumed the whole row — keeps any
+        // upstream references (selection, hover, undo) targeted at the same block.
+        // When there's surrounding text, the leading paragraph keeps the id and the
+        // subpage row gets a fresh one.
+        let beforeIsEmpty = beforeText.isEmpty
+        let subpageID = beforeIsEmpty ? block.id : BlockID()
+
+        var replacements: [Block] = []
+        if !beforeIsEmpty {
+            replacements.append(block.withText(AttributedString(beforeText)))
+        }
+        replacements.append(.subpage(
+            id: subpageID,
+            title: entry.title,
+            path: entry.relativePath,
+            indent: block.indent
+        ))
+        if !afterText.isEmpty {
+            replacements.append(.paragraph(text: AttributedString(afterText), indent: block.indent))
+        }
+
+        mutate("Insert Page Link") {
+            document.blocks.replaceSubrange(blockIndex..<blockIndex + 1, with: replacements)
+        }
+
+        // Drop out of edit mode and seat the page container as first responder so
+        // ↑/↓ work immediately on the new subpage row. Mirrors `exitEditMode`'s
+        // pageFocused toggle: a same-value @FocusState assignment is a no-op, and
+        // without that flush SwiftUI doesn't re-install the page-level handler after
+        // the editor's NSTextView unmounts.
+        editingBlock = nil
+        editorFocused = nil
+        pageFocused = false
+        DispatchQueue.main.async {
+            setCursor(subpageID)
+            pageFocused = true
+        }
+    }
+
+    @ViewBuilder
+    private func mentionMenuContent() -> some View {
+        let matches = mentionMatches
+        VStack(alignment: .leading, spacing: 0) {
+            // Hidden hotkey buttons — make the menu's keyboard shortcuts work even if
+            // the popover happens to take focus; the editor's keyDown intercept is the
+            // primary path, but this provides a fallback when the popover content is
+            // first responder (iOS / certain macOS edge cases).
+            Group {
+                Button("") { _ = commitMentionSelection() }
+                    .keyboardShortcut(.return, modifiers: [])
+                Button("") { mentionMenu = nil }
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
+
+            if matches.isEmpty {
+                Text("No matching pages")
+                    .font(NotionStyle.body(size: 12))
+                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+            } else {
+                ForEach(Array(matches.enumerated()), id: \.element.id) { index, entry in
+                    mentionRow(entry: entry, isSelected: mentionMenu?.selectedIndex == index)
+                        .onTapGesture {
+                            guard let menu = mentionMenu else { return }
+                            commitMention(entry, state: menu)
+                        }
+                        .onHover { hovering in
+                            #if os(macOS)
+                            if hovering, var menu = mentionMenu {
+                                menu.selectedIndex = index
+                                mentionMenu = menu
+                            }
+                            #endif
+                        }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(width: 240, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func mentionRow(entry: WorkspaceEntry, isSelected: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc")
+                .font(.system(size: 13))
+                .foregroundStyle(NotionStyle.mutedForeground)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.title)
+                    .font(NotionStyle.body(size: 13))
+                    .foregroundStyle(NotionStyle.foreground)
+                    .lineLimit(1)
+                if entry.relativePath != entry.title + ".md" {
+                    Text(entry.relativePath)
+                        .font(NotionStyle.body(size: 10))
+                        .foregroundStyle(NotionStyle.mutedForeground)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? NotionStyle.linkForeground.opacity(0.18) : Color.clear)
+        .contentShape(Rectangle())
     }
 
     private func splitBlock(_ blockID: BlockID, at cursorOffset: Int) -> KeyPress.Result {
