@@ -2398,6 +2398,15 @@ public struct PageView: View {
         }
         guard let i = document.index(of: blockID) else { return .ignored }
         let block = document.blocks[i]
+        if target == .divider {
+            guard canReplaceEmptyBlockWithDivider(block) else { return .ignored }
+            mutate("Turn Into") {
+                document.blocks[i] = .divider(id: blockID, indent: block.indent)
+            }
+            expandedToggles.remove(blockID)
+            expandedTemplateButtons.remove(blockID)
+            return .handled
+        }
         if case .subpage = block {
             return convertSubpage(blockID: blockID, to: target)
         }
@@ -2484,6 +2493,8 @@ public struct PageView: View {
             return .heading(id: id, level: 2, text: text, indent: indent)
         case .heading3:
             return .heading(id: id, level: 3, text: text, indent: indent)
+        case .divider:
+            return .divider(id: id, indent: indent)
         case .page:
             preconditionFailure("Page conversion creates a subpage file before replacing the block")
         }
@@ -2507,6 +2518,25 @@ public struct PageView: View {
             return t
         case .code, .divider, .subpage:
             return nil
+        }
+    }
+
+    private func canReplaceEmptyBlockWithDivider(_ block: Block) -> Bool {
+        switch block {
+        case .paragraph(_, let text, _),
+             .heading(_, _, let text, _),
+             .bullet(_, let text, _),
+             .numbered(_, let text, _),
+             .todo(_, let text, _, _),
+             .quote(_, let text, _),
+             .toggle(_, let text, _):
+            return String(text.characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .templateButton(_, let label, _):
+            return label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .code(_, let source, _, _):
+            return source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .divider, .subpage:
+            return false
         }
     }
 
@@ -2644,6 +2674,8 @@ public struct PageView: View {
             return !isStructuralBlock(block)
         case .template:
             return textForBlockTypeChange(block) != nil
+        case .divider:
+            return canReplaceEmptyBlockWithDivider(block)
         default:
             switch block {
             case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle, .templateButton, .subpage:
