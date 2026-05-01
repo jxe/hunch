@@ -58,6 +58,27 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: App/Hunch.entitlements
         GENERATE_INFOPLIST_FILE: NO
+        # Build phase below writes to ~/Applications, which is outside the
+        # build sandbox. Disable script sandboxing for this target so the
+        # install copy can run.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      # Drop a freshly-built copy at ~/Applications/Hunch.app after every macOS
+      # build so a Dock entry / Spotlight launch / `open ~/Applications/Hunch.app`
+      # keeps tracking the latest build. Lives as a build phase (not a scheme
+      # postAction) so plain `xcodebuild build` from CLI also installs — scheme
+      # postActions only fire on Xcode's Run action. Runs *after* code signing,
+      # so the copy preserves whatever signature Xcode just stamped on it.
+      - name: Install to ~/Applications (macOS only)
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$PLATFORM_NAME" != "macosx" ]; then
+              exit 0
+          fi
+          DEST="$HOME/Applications/Hunch.app"
+          mkdir -p "$HOME/Applications"
+          rm -rf "$DEST"
+          cp -R "$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app" "$DEST"
   HunchUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -77,30 +98,6 @@ schemes:
       targets:
         Hunch: all
         HunchUITests: [test]
-      # Drop a freshly-built copy at ~/Applications/Hunch.app after every macOS
-      # build so a Dock entry there keeps working across rebuilds. Scheme
-      # post-actions run *after* Xcode's full codesign, so we just copy — no
-      # re-signing needed.
-      postActions:
-        - name: Install to ~/Applications (macOS only)
-          settingsTarget: Hunch
-          script: |
-            if [ "$PLATFORM_NAME" != "macosx" ]; then
-                exit 0
-            fi
-            # Kill any running copies (DerivedData OR ~/Applications) before
-            # overwriting. Both copies share bundle ID com.joeedelman.console,
-            # and macOS will happily run both simultaneously if they live at
-            # different paths — leading to "two versions running" confusion.
-            # Match by bundle id so we kill regardless of which path launched it.
-            pkill -f "com.joeedelman.console" 2>/dev/null || true
-            # Legacy executable name from the pre-rename builds.
-            pkill -x Console 2>/dev/null || true
-            pkill -x Hunch 2>/dev/null || true
-            DEST="$HOME/Applications/Hunch.app"
-            mkdir -p "$HOME/Applications"
-            rm -rf "$DEST"
-            cp -R "$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app" "$DEST"
     test:
       targets:
         - HunchUITests

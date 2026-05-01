@@ -156,6 +156,7 @@
 				16D06E0363CF8C7A41B239BC /* Sources */,
 				E1C28282EEFE992C2DF070AB /* Resources */,
 				530D1846BE0D38DCE03C5871 /* Frameworks */,
+				FDC2C39F8C58DADC5BDE2C1C /* Install to ~/Applications (macOS only) */,
 			);
 			buildRules = (
 			);
@@ -225,6 +226,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		FDC2C39F8C58DADC5BDE2C1C /* Install to ~/Applications (macOS only) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Install to ~/Applications (macOS only)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"$PLATFORM_NAME\" != \"macosx\" ]; then\n    exit 0\nfi\nDEST=\"$HOME/Applications/Hunch.app\"\nmkdir -p \"$HOME/Applications\"\nrm -rf \"$DEST\"\ncp -R \"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app\" \"$DEST\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		16D06E0363CF8C7A41B239BC /* Sources */ = {
@@ -431,6 +454,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = App/Hunch.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -454,6 +478,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = App/Hunch.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
