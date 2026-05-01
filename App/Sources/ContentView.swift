@@ -220,6 +220,27 @@ final class WorkspaceModel {
     }
 
     @discardableResult
+    func appendToSubpage(relativePath: String, blocks: [Block]) -> Bool {
+        guard let workspaceURL, !blocks.isEmpty else { return false }
+        let target = workspaceURL.appendingPathComponent(relativePath)
+        do {
+            var doc = try store.loadDocument(at: target)
+            doc.blocks.append(contentsOf: blocks)
+            try store.save(doc)
+            if documentCache[target] != nil {
+                documentCache[target] = doc
+            }
+            if openDocument?.url == target {
+                openDocument = doc
+            }
+            return true
+        } catch {
+            self.error = "Failed to move blocks into \(relativePath): \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
     func moveSubpageToTrash(relativePath: String) -> Bool {
         guard let workspaceURL else { return false }
         let target = workspaceURL.appendingPathComponent(relativePath)
@@ -602,6 +623,9 @@ struct ContentView: View {
                 },
                 onMoveSubpageToTrash: { relativePath in
                     model.moveSubpageToTrash(relativePath: relativePath)
+                },
+                onAppendToSubpage: { relativePath, blocks in
+                    model.appendToSubpage(relativePath: relativePath, blocks: blocks)
                 },
                 onNavigateBack: {
                     model.goBack()

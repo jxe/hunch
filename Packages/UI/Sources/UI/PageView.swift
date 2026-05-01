@@ -102,6 +102,9 @@ public struct PageView: View {
     /// `nil` means the file couldn't be read or parsed; the popover action becomes a no-op.
     public let onLoadSubpage: (_ relativePath: String) -> [Block]?
     public let onMoveSubpageToTrash: (_ relativePath: String) -> Bool
+    /// Append blocks to the end of the subpage at `relativePath`. Returns `true`
+    /// on success. Used by drop-on-subpage to move dragged blocks into a child page.
+    public let onAppendToSubpage: (_ relativePath: String, _ blocks: [Block]) -> Bool
     public let onNavigateBack: () -> Void
     public let onEdited: () -> Void
     public let onBlur: () -> Void
@@ -195,6 +198,7 @@ public struct PageView: View {
         onCreateSubpage: @escaping (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String? = { _, requestedPath, _ in requestedPath },
         onLoadSubpage: @escaping (_ relativePath: String) -> [Block]? = { _ in nil },
         onMoveSubpageToTrash: @escaping (_ relativePath: String) -> Bool = { _ in true },
+        onAppendToSubpage: @escaping (_ relativePath: String, _ blocks: [Block]) -> Bool = { _, _ in false },
         onNavigateBack: @escaping () -> Void = {},
         onEdited: @escaping () -> Void = {},
         onBlur: @escaping () -> Void = {}
@@ -204,6 +208,7 @@ public struct PageView: View {
         self.onCreateSubpage = onCreateSubpage
         self.onLoadSubpage = onLoadSubpage
         self.onMoveSubpageToTrash = onMoveSubpageToTrash
+        self.onAppendToSubpage = onAppendToSubpage
         self.onNavigateBack = onNavigateBack
         self.onEdited = onEdited
         self.onBlur = onBlur
@@ -873,6 +878,8 @@ public struct PageView: View {
                 moveBlocks(ids: ids, toIndexBefore: index)
             case .asLastChildOf(let parentID):
                 moveBlocks(ids: ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
+            case .intoSubpage(_, let path):
+                moveBlocks(ids: ids, intoSubpagePath: path)
             }
         }
     }
@@ -892,6 +899,7 @@ public struct PageView: View {
     private enum DropTarget {
         case insertBefore(Int)
         case asLastChildOf(BlockID)
+        case intoSubpage(BlockID, String)
     }
 
     /// Update `dropHoverIndex` / `dropOntoBlockID` based on the live drop point.
@@ -906,6 +914,9 @@ public struct PageView: View {
         case .asLastChildOf(let id):
             dropHoverIndex = nil
             dropOntoBlockID = id
+        case .intoSubpage(let id, _):
+            dropHoverIndex = nil
+            dropOntoBlockID = id
         }
     }
 
@@ -915,9 +926,13 @@ public struct PageView: View {
         // gap above/below the row still feels reachable.
         let edgeBand: CGFloat = 6
         for block in snapshot where !hidden.contains(block.id) && !liftIDs.contains(block.id) {
-            guard isCollapsedSection(block), let frame = rowFrames[block.id] else { continue }
-            if y > frame.minY + edgeBand && y < frame.maxY - edgeBand {
+            guard let frame = rowFrames[block.id] else { continue }
+            guard y > frame.minY + edgeBand && y < frame.maxY - edgeBand else { continue }
+            if isCollapsedSection(block) {
                 return .asLastChildOf(block.id)
+            }
+            if case .subpage(_, _, let path, _) = block {
+                return .intoSubpage(block.id, path)
             }
         }
         let visibleCount = ReorderDropResolver.insertionIndex(
@@ -1122,6 +1137,33 @@ public struct PageView: View {
         case .toggle(let id, _, _): expandedToggles.insert(id)
         case .templateButton(let id, _, _): expandedTemplateButtons.insert(id)
         default: break
+        }
+    }
+
+    /// Drop-on-subpage: append `ids` to the end of the child page's `.md` file
+    /// (cross-document write via `onAppendToSubpage`) and remove them from this
+    /// document. Indents are normalized so the topmost dragged block lands at 0
+    /// in the destination; relative nesting within the dragged set is preserved.
+    /// If the destination write fails, the source document is left untouched.
+    private func moveBlocks(ids: [BlockID], intoSubpagePath path: String) {
+        let idSet = Set(ids)
+        let sourceIndices = document.blocks.enumerated()
+            .compactMap { (i, block) in idSet.contains(block.id) ? i : nil }
+        guard !sourceIndices.isEmpty else { return }
+
+        let movingBlocks = sourceIndices.map { document.blocks[$0] }
+        let oldRootIndent = movingBlocks.map(\.indent).min() ?? 0
+        let indentDelta = -oldRootIndent
+        let shifted = movingBlocks.map { $0.withIndent(max(0, $0.indent + indentDelta)) }
+
+        guard onAppendToSubpage(path, shifted) else { return }
+
+        mutate("Move to Subpage") {
+            var blocks = document.blocks
+            for i in sourceIndices.reversed() {
+                blocks.remove(at: i)
+            }
+            document.blocks = blocks
         }
     }
 
