@@ -3732,8 +3732,17 @@ private struct IOSScrollMetricsReader: UIViewRepresentable {
 /// `ellipsis.circle.fill` glyph and, past the trigger, opens the row's
 /// action sheet. Trailing swipe (left) deletes. SwiftUI's `.swipeActions`
 /// only fires inside a `List`, but the page is built on a `VStack` to keep
-/// typography control, so this is a manual `DragGesture` that tracks the
+/// typography control, so this is a manual horizontal pan that tracks the
 /// row offset, reveals per-edge action labels, and commits past a threshold.
+///
+/// The pan is a UIKit bridge rather than a SwiftUI `DragGesture` because
+/// SwiftUI drag gestures claim the touch at the SwiftUI layer once their
+/// minimum distance is crossed in *any* direction; the page's UIScrollView
+/// pan can then never start, killing scrolls that began on a row. Same
+/// failure mode the page-reorder bridge documents above. The bridge here
+/// installs a `UIPanGestureRecognizer` on the enclosing scroll view and
+/// fails it at `gestureRecognizerShouldBegin` time when initial motion is
+/// vertical-dominant — releasing the touch back to the scroll view's pan.
 private struct IOSRowSwipeActions: ViewModifier {
     let onDelete: () -> Void
     let onShowMenu: () -> Void
@@ -3783,15 +3792,10 @@ private struct IOSRowSwipeActions: ViewModifier {
             }
             .allowsHitTesting(false)
         }
-        .highPriorityGesture(
-            DragGesture(minimumDistance: 18, coordinateSpace: .local)
-                .onChanged { value in
+        .background {
+            IOSRowSwipeGestureBridge(
+                onChanged: { h in
                     guard !triggered else { return }
-                    let h = value.translation.width
-                    let v = value.translation.height
-                    // Commit horizontal motion only when the drag is clearly
-                    // sideways — keeps vertical scroll free.
-                    guard abs(h) > abs(v) * 1.4 else { return }
                     dragOffset = h
                     // The menu opens on threshold-crossed mid-gesture so the
                     // user can swipe-and-hold to peek the menu. Delete is
@@ -3808,9 +3812,8 @@ private struct IOSRowSwipeActions: ViewModifier {
                     } else {
                         crossedDeleteThreshold = false
                     }
-                }
-                .onEnded { value in
-                    let h = value.translation.width
+                },
+                onEnded: { h in
                     if !triggered, h <= -trigger {
                         onDelete()
                         SoundFX.play(.delete)
@@ -3820,8 +3823,16 @@ private struct IOSRowSwipeActions: ViewModifier {
                     }
                     triggered = false
                     crossedDeleteThreshold = false
+                },
+                onCancelled: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                        dragOffset = 0
+                    }
+                    triggered = false
+                    crossedDeleteThreshold = false
                 }
-        )
+            )
+        }
     }
 
     private func fire(_ action: () -> Void) {
@@ -3895,6 +3906,122 @@ private struct SeededLCG {
     mutating func next01() -> Double {
         state = state &* 1_664_525 &+ 1_013_904_223
         return Double(state) / Double(UInt32.max)
+    }
+}
+
+/// UIKit-bridged horizontal pan, scoped to one row, used by `IOSRowSwipeActions`.
+/// Walks up to the enclosing `UIScrollView` and installs a
+/// `UIPanGestureRecognizer` on it; gates recognition at begin time on
+/// (a) initial touch landing within this row's host view and (b) translation
+/// being horizontal-dominant. A vertical-dominant touch fails the recognizer,
+/// releasing the touch to the scroll view's pan so the page can scroll.
+private struct IOSRowSwipeGestureBridge: UIViewRepresentable {
+    var onChanged: (CGFloat) -> Void
+    var onEnded: (CGFloat) -> Void
+    var onCancelled: () -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = HostView()
+        view.coordinator = context.coordinator
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.parent = self
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    @MainActor
+    final class HostView: UIView {
+        weak var coordinator: Coordinator?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil {
+                coordinator?.attach(from: self)
+            } else {
+                coordinator?.detach()
+            }
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: IOSRowSwipeGestureBridge
+        weak var recognizer: UIPanGestureRecognizer?
+        weak var scrollView: UIScrollView?
+        weak var hostView: UIView?
+
+        init(parent: IOSRowSwipeGestureBridge) {
+            self.parent = parent
+        }
+
+        func attach(from view: UIView) {
+            guard recognizer == nil else { return }
+            self.hostView = view
+            var current: UIView? = view.superview
+            while let v = current {
+                if let scroll = v as? UIScrollView {
+                    let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+                    pan.cancelsTouchesInView = false
+                    pan.maximumNumberOfTouches = 1
+                    pan.delegate = self
+                    scroll.addGestureRecognizer(pan)
+                    self.recognizer = pan
+                    self.scrollView = scroll
+                    return
+                }
+                current = v.superview
+            }
+        }
+
+        func detach() {
+            if let recognizer, let scrollView {
+                scrollView.removeGestureRecognizer(recognizer)
+            }
+            recognizer = nil
+            scrollView = nil
+            hostView = nil
+        }
+
+        @objc func handlePan(_ rec: UIPanGestureRecognizer) {
+            let t = rec.translation(in: rec.view)
+            switch rec.state {
+            case .changed:
+                parent.onChanged(t.x)
+            case .ended:
+                parent.onEnded(t.x)
+            case .cancelled, .failed:
+                parent.onCancelled()
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === recognizer,
+                  let pan = gestureRecognizer as? UIPanGestureRecognizer,
+                  let host = hostView else {
+                return true
+            }
+            // Initial touch must be on this row.
+            let p = pan.location(in: host)
+            guard host.bounds.contains(p) else { return false }
+            // Initial motion must be horizontal-dominant — otherwise fail and
+            // let the scroll view's pan take the touch.
+            let t = pan.translation(in: host)
+            return abs(t.x) > abs(t.y) * 1.4
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
     }
 }
 #endif
