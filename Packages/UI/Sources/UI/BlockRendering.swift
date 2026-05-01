@@ -143,6 +143,15 @@ public struct BlockRow: View {
                         .allowsHitTesting(false)
                 }
             }
+            .background(rowRestingBackground)
+    }
+
+    private var rowRestingBackground: Color {
+        #if os(iOS)
+        NotionStyle.background
+        #else
+        Color.clear
+        #endif
     }
 
     /// AttributedString projection of the block's text for editing. Marks (bold/italic/
@@ -422,16 +431,29 @@ public struct BlockRow: View {
             .strikethrough(strikethrough)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: font))
-                .font(font)
-                .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                .lineSpacing(lineSpacing)
-                .strikethrough(strikethrough)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .gesture(SpatialTapGesture().onEnded { value in
-                    onClickAtPoint(value.location)
-                })
+            if String(block.text.characters).isEmpty {
+                Text(" ")
+                    .font(font)
+                    .lineSpacing(lineSpacing)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .gesture(SpatialTapGesture().onEnded { value in
+                        onClickAtPoint(value.location)
+                    })
+            } else {
+                Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: font))
+                    .font(font)
+                    .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                    .lineSpacing(lineSpacing)
+                    .strikethrough(strikethrough)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .gesture(SpatialTapGesture().onEnded { value in
+                        onClickAtPoint(value.location)
+                    })
+            }
         }
     }
 }

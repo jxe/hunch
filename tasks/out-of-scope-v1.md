@@ -4,9 +4,7 @@
 - Images beyond parse and placeholder render.
 - Real-time collaboration.
 - In-content workspace search.
-- Dark mode.
 - Web clipping.
 - AI features.
 - Find-and-replace.
 - PDF export.
-

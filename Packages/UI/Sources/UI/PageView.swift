@@ -3594,6 +3594,7 @@ private struct IOSRowSwipeActions: ViewModifier {
 
     func body(content: Content) -> some View {
         let rightOffset = min(revealCap, max(0, dragOffset))
+        let revealProgress = min(1, rightOffset / trigger)
         let deleteProgress = min(1, max(0, -dragOffset) / trigger)
 
         ZStack {
@@ -3609,6 +3610,7 @@ private struct IOSRowSwipeActions: ViewModifier {
                     Spacer(minLength: 0)
                 }
             }
+            .opacity(revealProgress)
             .allowsHitTesting(false)
 
             content
