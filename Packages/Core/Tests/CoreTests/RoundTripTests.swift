@@ -194,6 +194,18 @@ struct RoundTripTests {
         }
     }
 
+    @Test func subpageSerializationCanResolveCurrentTitle() {
+        let blocks: [Block] = [
+            .subpage(title: "Old Link Text", path: "folder/page.md")
+        ]
+
+        let serialized = BlockSerializer.serialize(blocks) { path in
+            path == "folder/page.md" ? "Current Page Title" : nil
+        }
+
+        #expect(serialized == "[Current Page Title](folder/page.md)\n\n")
+    }
+
     @Test func nonSubpageLink() {
         // External (non-.md) link should remain a paragraph
         let blocks = BlockParser.parse("[Apple](https://apple.com)\n")

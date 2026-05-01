@@ -35,6 +35,7 @@ private enum BlockTurnInto: CaseIterable {
     case paragraph
     case toggle
     case page
+    case divider
     case template
 
     var title: String {
@@ -49,6 +50,7 @@ private enum BlockTurnInto: CaseIterable {
         case .heading2: return "H2"
         case .heading3: return "H3"
         case .page: return "Page"
+        case .divider: return "Divider"
         }
     }
 
@@ -64,6 +66,7 @@ private enum BlockTurnInto: CaseIterable {
         case .heading2: return "h.square"
         case .heading3: return "h.square"
         case .page: return "doc"
+        case .divider: return "minus"
         }
     }
 
@@ -79,6 +82,7 @@ private enum BlockTurnInto: CaseIterable {
         case .heading2: return "2"
         case .heading3: return "3"
         case .page: return "s"
+        case .divider: return "-"
         }
     }
 }
@@ -101,6 +105,7 @@ public struct PageView: View {
     /// no results in the popover.
     public let entries: [WorkspaceEntry]
     public let onSubpageTap: (String) -> Void
+    public let pageTitle: (_ relativePath: String) -> String?
     public let onCreateSubpage: (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String?
     /// Inverse of subpage creation: read the .md at the given relative path and return its blocks.
     /// `nil` means the file couldn't be read or parsed; the popover action becomes a no-op.
@@ -210,6 +215,7 @@ public struct PageView: View {
         document: Binding<Document>,
         entries: [WorkspaceEntry] = [],
         onSubpageTap: @escaping (String) -> Void = { _ in },
+        pageTitle: @escaping (_ relativePath: String) -> String? = { _ in nil },
         onCreateSubpage: @escaping (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String? = { _, requestedPath, _ in requestedPath },
         onLoadSubpage: @escaping (_ relativePath: String) -> [Block]? = { _ in nil },
         onMoveSubpageToTrash: @escaping (_ relativePath: String) -> Bool = { _ in true },
@@ -221,6 +227,7 @@ public struct PageView: View {
         self._document = document
         self.entries = entries
         self.onSubpageTap = onSubpageTap
+        self.pageTitle = pageTitle
         self.onCreateSubpage = onCreateSubpage
         self.onLoadSubpage = onLoadSubpage
         self.onMoveSubpageToTrash = onMoveSubpageToTrash
@@ -630,6 +637,7 @@ public struct PageView: View {
             onTemplateButtonPress: {
                 instantiateTemplateButton(blockID: block.id)
             },
+            pageTitle: pageTitle,
             initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
         )
             // Whole-row reorder on macOS. Coexists with click-to-edit
@@ -794,7 +802,8 @@ public struct PageView: View {
                 isPageTitle: false,
                 numberingIndex: nil,
                 isSelected: false,
-                isEditing: false
+                isEditing: false,
+                pageTitle: pageTitle
             )
             .frame(width: lift.sourceFrame.width, height: lift.sourceFrame.height, alignment: .leading)
             .scaleEffect(1.035)

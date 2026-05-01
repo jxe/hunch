@@ -28,6 +28,12 @@ final class WorkspaceModel {
     private var isDirty = false
     private var isSaving = false
     private var documentCache: [URL: Document] = [:]
+    private var titleCache: [URL: CachedTitle] = [:]
+
+    private struct CachedTitle {
+        var title: String
+        var modificationDate: Date?
+    }
 
     func tryRestore() {
         if ProcessInfo.processInfo.arguments.contains("--console-ui-testing") {
@@ -90,13 +96,22 @@ final class WorkspaceModel {
         entries = []
         openDocument = nil
         documentCache = [:]
+        titleCache = [:]
         path = []
     }
 
     func rescan() {
         guard let workspaceURL else { return }
         do {
-            entries = try store.scan(workspaceRoot: workspaceURL)
+            let scanned = try store.scan(workspaceRoot: workspaceURL)
+            entries = scanned.map { entry in
+                WorkspaceEntry(
+                    url: entry.url,
+                    relativePath: entry.relativePath,
+                    title: currentTitle(for: entry.url, fallback: entry.title),
+                    modificationDate: entry.modificationDate
+                )
+            }
         } catch {
             self.error = "Failed to scan workspace: \(error.localizedDescription)"
         }
@@ -112,8 +127,7 @@ final class WorkspaceModel {
 
     /// Subpage / inline link: push deeper.
     func openSubpage(relativePath: String) {
-        guard let workspaceURL else { return }
-        let target = workspaceURL.appendingPathComponent(relativePath)
+        guard let target = urlForRelativePath(relativePath) else { return }
         if path.last == target { return }
         cacheOpenDocument()
         path.append(target)
@@ -130,7 +144,7 @@ final class WorkspaceModel {
         if openDocument?.url == entry.url {
             if isDirty, let openDocument {
                 do {
-                    try store.save(openDocument)
+                    try store.save(openDocument, resolvingSubpageTitle: saveTitleResolver())
                     isDirty = false
                 } catch {
                     self.error = "Save failed: \(error.localizedDescription)"
@@ -141,6 +155,7 @@ final class WorkspaceModel {
             openDocument = nil
         }
         documentCache.removeValue(forKey: entry.url)
+        titleCache.removeValue(forKey: entry.url)
         path.removeAll { $0 == entry.url }
         do {
             _ = try store.moveToTrash(relativePath: entry.relativePath, workspaceRoot: workspaceURL)
@@ -204,6 +219,7 @@ final class WorkspaceModel {
                 let body = initialContent ?? "# \(title)\n"
                 try body.write(to: target, atomically: true, encoding: .utf8)
             }
+            titleCache[target] = CachedTitle(title: currentTitle(for: target, fallback: title), modificationDate: modificationDate(for: target))
             rescan()
             return path
         } catch {
@@ -226,7 +242,10 @@ final class WorkspaceModel {
         do {
             var doc = try store.loadDocument(at: target)
             doc.blocks.append(contentsOf: blocks)
-            try store.save(doc)
+            doc.title = Document.deriveTitle(from: doc.blocks, fallback: target.deletingPathExtension().lastPathComponent)
+            try store.save(doc, resolvingSubpageTitle: saveTitleResolver())
+            doc.modificationDate = modificationDate(for: target)
+            refreshTitleCache(from: doc)
             if documentCache[target] != nil {
                 documentCache[target] = doc
             }
@@ -245,6 +264,7 @@ final class WorkspaceModel {
         guard let workspaceURL else { return false }
         let target = workspaceURL.appendingPathComponent(relativePath)
         documentCache.removeValue(forKey: target)
+        titleCache.removeValue(forKey: target)
         do {
             _ = try store.moveToTrash(relativePath: relativePath, workspaceRoot: workspaceURL)
             if homeRelativePath == relativePath {
@@ -272,10 +292,13 @@ final class WorkspaceModel {
     }
 
     func updateDocumentForPage(_ document: Document) {
-        documentCache[document.url] = document
-        if openDocument?.url == document.url {
-            openDocument = document
+        let updated = documentWithCurrentTitle(document)
+        documentCache[updated.url] = updated
+        refreshTitleCache(from: updated)
+        if openDocument?.url == updated.url {
+            openDocument = updated
         }
+        refreshEntriesFromTitleCache()
     }
 
     func markEdited() {
@@ -296,10 +319,14 @@ final class WorkspaceModel {
         do {
             isSaving = true
             defer { isSaving = false }
-            try await saver.save(doc)
+            let resolver = saveTitleResolver()
+            try await saver.save(doc, resolvingSubpageTitle: resolver)
             if openDocument?.url == doc.url {
                 openDocument?.modificationDate = modificationDate(for: doc.url)
                 cacheOpenDocument()
+                if let openDocument {
+                    refreshTitleCache(from: openDocument)
+                }
             }
             isDirty = false
             rescan()
@@ -352,6 +379,9 @@ final class WorkspaceModel {
         do {
             openDocument = try store.loadDocument(at: doc.url)
             cacheOpenDocument()
+            if let openDocument {
+                refreshTitleCache(from: openDocument)
+            }
             rescan()
         } catch {
             self.error = "Failed to reload external changes: \(error.localizedDescription)"
@@ -361,10 +391,74 @@ final class WorkspaceModel {
     private func cacheOpenDocument() {
         guard let openDocument else { return }
         documentCache[openDocument.url] = openDocument
+        refreshTitleCache(from: openDocument)
     }
 
     private func modificationDate(for url: URL) -> Date? {
         try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    func pageTitle(for relativePath: String) -> String? {
+        guard relativePath.hasSuffix(".md") else { return nil }
+        guard let url = urlForRelativePath(relativePath) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let fallback = url.deletingPathExtension().lastPathComponent
+        return currentTitle(for: url, fallback: fallback)
+    }
+
+    private func currentTitle(for url: URL, fallback: String) -> String {
+        if let openDocument, openDocument.url == url {
+            refreshTitleCache(from: openDocument)
+            return openDocument.title
+        }
+
+        let mtime = modificationDate(for: url)
+        if let cached = titleCache[url], cached.modificationDate == mtime {
+            return cached.title
+        }
+
+        do {
+            let title = try store.loadDocumentTitle(at: url)
+            titleCache[url] = CachedTitle(title: title, modificationDate: mtime)
+            return title
+        } catch {
+            return fallback
+        }
+    }
+
+    private func documentWithCurrentTitle(_ document: Document) -> Document {
+        var updated = document
+        let fallback = document.url.deletingPathExtension().lastPathComponent
+        updated.title = Document.deriveTitle(from: document.blocks, fallback: fallback)
+        return updated
+    }
+
+    private func refreshTitleCache(from document: Document) {
+        let updated = documentWithCurrentTitle(document)
+        titleCache[updated.url] = CachedTitle(title: updated.title, modificationDate: updated.modificationDate)
+    }
+
+    private func refreshEntriesFromTitleCache() {
+        entries = entries.map { entry in
+            WorkspaceEntry(
+                url: entry.url,
+                relativePath: entry.relativePath,
+                title: titleCache[entry.url]?.title ?? entry.title,
+                modificationDate: entry.modificationDate
+            )
+        }
+    }
+
+    private func saveTitleResolver() -> @Sendable (String) -> String? {
+        let titlesByPath = Dictionary(uniqueKeysWithValues: entries.map { ($0.relativePath, $0.title) })
+        return { relativePath in
+            titlesByPath[relativePath]
+        }
+    }
+
+    private func urlForRelativePath(_ relativePath: String) -> URL? {
+        guard let workspaceURL else { return nil }
+        return workspaceURL.appendingPathComponent(relativePath).standardizedFileURL
     }
 
     private func availableSubpagePath(for title: String) -> String {
@@ -615,6 +709,9 @@ struct ContentView: View {
                 entries: model.entries,
                 onSubpageTap: { relativePath in
                     model.openSubpage(relativePath: relativePath)
+                },
+                pageTitle: { relativePath in
+                    model.pageTitle(for: relativePath)
                 },
                 onCreateSubpage: { title, requestedPath, initialContent in
                     model.createSubpage(title: title, requestedPath: requestedPath, initialContent: initialContent)

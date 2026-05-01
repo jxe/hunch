@@ -85,8 +85,15 @@ public struct FileStore: Sendable {
         return Document(url: url, title: title, blocks: blocks, modificationDate: mtime)
     }
 
-    public func save(_ document: Document) throws {
-        try write(BlockSerializer.serialize(document.blocks), to: document.url)
+    public func loadDocumentTitle(at url: URL) throws -> String {
+        let source = try read(url)
+        let blocks = BlockParser.parse(source)
+        let fallbackTitle = url.deletingPathExtension().lastPathComponent
+        return Document.deriveTitle(from: blocks, fallback: fallbackTitle)
+    }
+
+    public func save(_ document: Document, resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }) throws {
+        try write(BlockSerializer.serialize(document.blocks, resolvingSubpageTitle: titleForPath), to: document.url)
     }
 
     @discardableResult

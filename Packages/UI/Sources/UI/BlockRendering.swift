@@ -4,18 +4,26 @@ import Core
 /// Translates a `Core.AttributedString` (with our custom inline marks) into a SwiftUI-renderable
 /// `AttributedString` that uses Foundation/SwiftUI attributes (font weight, italic, link, etc.).
 public enum InlineRenderer {
-    public static func swiftUIAttributed(_ source: AttributedString, baseFont: Font = NotionStyle.body()) -> AttributedString {
+    public static func swiftUIAttributed(
+        _ source: AttributedString,
+        baseFont: Font = NotionStyle.body(),
+        resolvingPageTitle pageTitle: (String) -> String? = { _ in nil }
+    ) -> AttributedString {
         var result = AttributedString()
         for run in source.runs {
             let segment = source[run.range]
-            var attributed = AttributedString(String(segment.characters))
+            let link = run.link
+            let display = link.flatMap { url -> String? in
+                let destination = url.absoluteString
+                guard destination.hasSuffix(".md") else { return nil }
+                return pageTitle(destination)
+            } ?? String(segment.characters)
+            var attributed = AttributedString(display)
 
             let bold = run[InlineAttributes.BoldAttribute.self] == true
             let italic = run[InlineAttributes.ItalicAttribute.self] == true
             let code = run[InlineAttributes.CodeAttribute.self] == true
             let strike = run[InlineAttributes.StrikethroughAttribute.self] == true
-            let link = run.link
-
             if code {
                 attributed.font = NotionStyle.mono(size: NotionStyle.inlineCodeSize)
                 attributed.foregroundColor = NotionStyle.codeForeground
@@ -78,6 +86,7 @@ public struct BlockRow: View {
     /// Called when the toggle's chevron is tapped. No-op for non-toggle blocks.
     let onToggleExpansion: () -> Void
     let onTemplateButtonPress: () -> Void
+    let pageTitle: (String) -> String?
     /// Click point captured at tap time, threaded into the BlockTextEditor on its first
     /// mount so the cursor lands where the user clicked rather than at end-of-text.
     let initialCursorPoint: CGPoint?
@@ -99,6 +108,7 @@ public struct BlockRow: View {
         onClickAtPoint: @escaping (CGPoint) -> Void = { _ in },
         onToggleExpansion: @escaping () -> Void = {},
         onTemplateButtonPress: @escaping () -> Void = {},
+        pageTitle: @escaping (String) -> String? = { _ in nil },
         initialCursorPoint: CGPoint? = nil
     ) {
         self._block = block
@@ -117,6 +127,7 @@ public struct BlockRow: View {
         self.onClickAtPoint = onClickAtPoint
         self.onToggleExpansion = onToggleExpansion
         self.onTemplateButtonPress = onTemplateButtonPress
+        self.pageTitle = pageTitle
         self.initialCursorPoint = initialCursorPoint
     }
 
@@ -202,8 +213,8 @@ public struct BlockRow: View {
         case .templateButton(_, _, let indent):
             templateButtonRow(indent: indent)
 
-        case .subpage(_, let title, _, let indent):
-            subpageRow(title: title, indent: indent)
+        case .subpage(_, let title, let path, let indent):
+            subpageRow(title: pageTitle(path) ?? title, indent: indent)
         }
     }
 
@@ -369,7 +380,7 @@ public struct BlockRow: View {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body()))
+                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: pageTitle))
                         .font(NotionStyle.body())
                         .lineSpacing(NotionStyle.bodyLineSpacing)
                 }
@@ -443,7 +454,7 @@ public struct BlockRow: View {
                         onClickAtPoint(value.location)
                     })
             } else {
-                Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: font))
+                Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: font, resolvingPageTitle: pageTitle))
                     .font(font)
                     .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
                     .lineSpacing(lineSpacing)

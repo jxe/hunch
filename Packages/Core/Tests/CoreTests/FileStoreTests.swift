@@ -18,6 +18,21 @@ struct FileStoreTests {
         #expect(doc.blocks.count == 4)  // heading, paragraph, bullet, bullet
     }
 
+    @Test func loadDocumentTitleUsesFirstH1WithFilenameFallback() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("console-title-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let titled = dir.appendingPathComponent("alpha.md")
+        try "Intro\n\n# Project Alpha\n".write(to: titled, atomically: true, encoding: .utf8)
+        #expect(try FileStore().loadDocumentTitle(at: titled) == "Project Alpha")
+
+        let untitled = dir.appendingPathComponent("beta.md")
+        try "Just text\n".write(to: untitled, atomically: true, encoding: .utf8)
+        #expect(try FileStore().loadDocumentTitle(at: untitled) == "beta")
+    }
+
     @Test func scanFindsMarkdownFiles() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("console-scan-\(UUID().uuidString)", isDirectory: true)

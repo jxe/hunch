@@ -9,9 +9,14 @@ import Foundation
 public actor DocumentSaveCoordinator {
     private let store: FileStore
 
+    private struct SaveRequest: Sendable {
+        var document: Document
+        var titleForPath: @Sendable (String) -> String?
+    }
+
     private struct State {
         var inFlight: Task<Void, Error>?
-        var pending: Document?
+        var pending: SaveRequest?
     }
 
     private var states: [URL: State] = [:]
@@ -20,13 +25,17 @@ public actor DocumentSaveCoordinator {
         self.store = store
     }
 
-    public func save(_ document: Document) async throws {
-        let url = document.url
+    public func save(
+        _ document: Document,
+        resolvingSubpageTitle titleForPath: @Sendable @escaping (String) -> String? = { _ in nil }
+    ) async throws {
+        let request = SaveRequest(document: document, titleForPath: titleForPath)
+        let url = request.document.url
         if states[url]?.inFlight != nil {
-            states[url]?.pending = document
+            states[url]?.pending = request
             return
         }
-        try await runWriteLoop(initial: document)
+        try await runWriteLoop(initial: request)
     }
 
     /// Awaits any in-flight + pending write for the URL. Useful in tests and
@@ -37,14 +46,14 @@ public actor DocumentSaveCoordinator {
         }
     }
 
-    private func runWriteLoop(initial: Document) async throws {
-        let url = initial.url
+    private func runWriteLoop(initial: SaveRequest) async throws {
+        let url = initial.document.url
         var current = initial
         let store = self.store
         while true {
             let snapshot = current
             let task = Task<Void, Error> { @Sendable [store] in
-                try store.save(snapshot)
+                try store.save(snapshot.document, resolvingSubpageTitle: snapshot.titleForPath)
             }
             states[url] = State(inFlight: task, pending: nil)
             try await task.value

@@ -1,7 +1,7 @@
 import Foundation
 
 public enum BlockSerializer {
-    public static func serialize(_ blocks: [Block]) -> String {
+    public static func serialize(_ blocks: [Block], resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }) -> String {
         var out = ""
         var i = 0
         while i < blocks.count {
@@ -22,7 +22,7 @@ public enum BlockSerializer {
                     end += 1
                 }
                 let body = blocks[(i + 1)..<end].map { $0.withIndent($0.indent - (indent + 1)) }
-                var inner = serialize(body)
+                var inner = serialize(body, resolvingSubpageTitle: titleForPath)
                 while inner.hasSuffix("\n\n") { inner.removeLast() }
                 if body.isEmpty {
                     inner = ""
@@ -38,7 +38,7 @@ public enum BlockSerializer {
                     end += 1
                 }
                 let body = blocks[(i + 1)..<end].map { $0.withIndent($0.indent - (indent + 1)) }
-                var inner = serialize(body)
+                var inner = serialize(body, resolvingSubpageTitle: titleForPath)
                 while inner.hasSuffix("\n\n") { inner.removeLast() }
                 if body.isEmpty {
                     inner = ""
@@ -50,7 +50,7 @@ public enum BlockSerializer {
                 chunk = indentLines(raw, indent: indent)
                 consumed = end - i
             } else {
-                chunk = serialize(block)
+                chunk = serialize(block, resolvingSubpageTitle: titleForPath)
                 consumed = 1
             }
             out += chunk
@@ -73,7 +73,7 @@ public enum BlockSerializer {
     /// Per-block serialization. `.toggle` is handled in the array form because its body
     /// lives in subsequent sibling blocks (via `Document.sectionRange`), so a single-block
     /// serialize emits only the title row's HTML envelope with an empty body.
-    public static func serialize(_ block: Block) -> String {
+    public static func serialize(_ block: Block, resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }) -> String {
         switch block {
         case .paragraph(_, let text, let indent):
             return indentPrefix(indent) + inlineString(text) + "\n\n"
@@ -110,7 +110,8 @@ public enum BlockSerializer {
             return indentLines(raw, indent: indent)
 
         case .subpage(_, let title, let path, let indent):
-            return indentPrefix(indent) + "[" + title + "](" + path + ")\n\n"
+            let displayTitle = titleForPath(path) ?? title
+            return indentPrefix(indent) + "[" + displayTitle + "](" + path + ")\n\n"
         }
     }
 
