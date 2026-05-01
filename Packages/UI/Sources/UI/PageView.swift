@@ -1681,6 +1681,33 @@ public struct PageView: View {
 
     @discardableResult
     private func convert(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
+        convert(blockIDs: menuTargetIDs(anchorID: blockID), to: target)
+    }
+
+    @discardableResult
+    private func convert(blockIDs: [BlockID], to target: BlockTurnInto) -> KeyPress.Result {
+        let ids = blockIDs.filter { document.index(of: $0) != nil }
+        guard !ids.isEmpty else { return .ignored }
+        if ids.count == 1, let id = ids.first {
+            return convertSingle(blockID: id, to: target)
+        }
+
+        var handled = false
+        for id in ids.reversed() {
+            if convertSingle(blockID: id, to: target) == .handled {
+                handled = true
+            }
+        }
+        if let first = ids.first {
+            DispatchQueue.main.async {
+                setCursor(first)
+            }
+        }
+        return handled ? .handled : .ignored
+    }
+
+    @discardableResult
+    private func convertSingle(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
         if target == .page {
             return convertBlockToSubpage(blockID: blockID, preferredTitle: nil)
         }
@@ -1771,8 +1798,10 @@ public struct PageView: View {
 
     @ViewBuilder
     fileprivate func blockActionMenuContent(for blockID: BlockID) -> some View {
-        if let i = document.index(of: blockID) {
-            let block = document.blocks[i]
+        let targetIDs = menuTargetIDs(anchorID: blockID)
+        let targetIndices = targetIDs.compactMap { document.index(of: $0) }
+        let targetBlocks = targetIndices.map { document.blocks[$0] }
+        if !targetBlocks.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Turn Into")
                     .font(.caption)
@@ -1783,19 +1812,19 @@ public struct PageView: View {
                     alignment: .leading,
                     spacing: 8
                 ) {
-                    ForEach(turnIntoTargets(for: block), id: \.self) { target in
+                    ForEach(turnIntoTargets(for: targetBlocks), id: \.self) { target in
                         compactMenuButton(title: target.title, systemImage: target.systemImage) {
-                            _ = convert(blockID: blockID, to: target)
+                            _ = convert(blockIDs: targetIDs, to: target)
                         }
                     }
                 }
-                let indentTargets = indentActions(for: i)
+                let indentTargets = indentActions(for: targetIndices)
                 if !indentTargets.isEmpty {
                     Divider()
                     HStack(spacing: 8) {
                         ForEach(indentTargets, id: \.self) { action in
                             compactMenuButton(title: action.title, systemImage: action.systemImage) {
-                                _ = changeIndent(blockID, by: action.delta)
+                                indentMenuTargets(targetIDs, by: action.delta)
                             }
                         }
                     }
@@ -1831,23 +1860,56 @@ public struct PageView: View {
         .buttonStyle(.bordered)
     }
 
-    private func turnIntoTargets(for block: Block) -> [BlockTurnInto] {
-        switch block {
-        case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle:
-            return BlockTurnInto.allCases
-        case .subpage:
-            return BlockTurnInto.allCases.filter { $0 != .page }
-        case .code, .divider:
-            return []
+    private func menuTargetIDs(anchorID: BlockID) -> [BlockID] {
+        #if os(macOS)
+        if selection.contains(anchorID), selection.count > 1 {
+            let selectedBlocks = document.blocks.filter { selection.contains($0.id) }
+            guard let baseIndent = selectedBlocks.map(\.indent).min() else { return [anchorID] }
+            let baseIDs = selectedBlocks
+                .filter { $0.indent == baseIndent }
+                .map(\.id)
+            return baseIDs.isEmpty ? [anchorID] : baseIDs
+        }
+        #endif
+        return [anchorID]
+    }
+
+    private func indentMenuTargets(_ ids: [BlockID], by delta: Int) {
+        for id in ids {
+            _ = changeIndent(id, by: delta)
         }
     }
 
-    private func indentActions(for index: Int) -> [BlockIndentAction] {
+    private func turnIntoTargets(for blocks: [Block]) -> [BlockTurnInto] {
+        BlockTurnInto.allCases.filter { target in
+            blocks.allSatisfy { canTurn($0, into: target) }
+        }
+    }
+
+    private func canTurn(_ block: Block, into target: BlockTurnInto) -> Bool {
+        switch target {
+        case .page:
+            return !isStructuralBlock(block)
+        default:
+            switch block {
+            case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle, .subpage:
+                return true
+            case .code, .divider:
+                return false
+            }
+        }
+    }
+
+    private func turnIntoTargets(for block: Block) -> [BlockTurnInto] {
+        turnIntoTargets(for: [block])
+    }
+
+    private func indentActions(for indices: [Int]) -> [BlockIndentAction] {
         var actions: [BlockIndentAction] = []
-        if canChangeIndent(at: [index], by: -1) {
+        if canChangeIndent(at: indices, by: -1) {
             actions.append(BlockIndentAction(delta: -1, title: "Outdent", systemImage: "decrease.indent"))
         }
-        if canChangeIndent(at: [index], by: +1) {
+        if canChangeIndent(at: indices, by: +1) {
             actions.append(BlockIndentAction(delta: +1, title: "Indent", systemImage: "increase.indent"))
         }
         return actions
@@ -2417,6 +2479,15 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
         ) -> Bool {
             true
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === recognizer,
+                  let scrollView else {
+                return true
+            }
+            let location = pageCoordinateLocation(for: gestureRecognizer, scrollView: scrollView)
+            return nearestRowID(to: location, frames: parent.rowFrames) != nil
         }
     }
 }
