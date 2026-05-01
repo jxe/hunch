@@ -67,8 +67,15 @@ targets:
       # build so a Dock entry / Spotlight launch / `open ~/Applications/Hunch.app`
       # keeps tracking the latest build. Lives as a build phase (not a scheme
       # postAction) so plain `xcodebuild build` from CLI also installs — scheme
-      # postActions only fire on Xcode's Run action. Runs *after* code signing,
-      # so the copy preserves whatever signature Xcode just stamped on it.
+      # postActions only fire on Xcode's Run action.
+      #
+      # Build phases run *before* Xcode's implicit final codesign step, so the
+      # bundle in BUILT_PRODUCTS_DIR may not be signed yet when we copy. We
+      # re-sign the destination ad-hoc ourselves: AppleSystemPolicy on macOS
+      # 14+ blocks Apple Development-signed apps launched outside an Xcode
+      # debug session (POSIX 163 spawn failure), but accepts ad-hoc signatures
+      # for local builds. This makes `open ~/Applications/Hunch.app` work
+      # without needing scripts/run.sh to re-sign at launch time.
       - name: Install to ~/Applications (macOS only)
         basedOnDependencyAnalysis: false
         script: |
@@ -79,6 +86,7 @@ targets:
           mkdir -p "$HOME/Applications"
           rm -rf "$DEST"
           cp -R "$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app" "$DEST"
+          codesign --force --sign - --deep "$DEST" >/dev/null 2>&1 || true
   HunchUITests:
     type: bundle.ui-testing
     platform: iOS

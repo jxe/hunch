@@ -245,7 +245,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"$PLATFORM_NAME\" != \"macosx\" ]; then\n    exit 0\nfi\nDEST=\"$HOME/Applications/Hunch.app\"\nmkdir -p \"$HOME/Applications\"\nrm -rf \"$DEST\"\ncp -R \"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app\" \"$DEST\"\n";
+			shellScript = "if [ \"$PLATFORM_NAME\" != \"macosx\" ]; then\n    exit 0\nfi\nDEST=\"$HOME/Applications/Hunch.app\"\nmkdir -p \"$HOME/Applications\"\nrm -rf \"$DEST\"\ncp -R \"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app\" \"$DEST\"\ncodesign --force --sign - --deep \"$DEST\" >/dev/null 2>&1 || true\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

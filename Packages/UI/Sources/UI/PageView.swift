@@ -2969,8 +2969,25 @@ private struct BlockMenuTileStyle: ButtonStyle {
 
 private struct BlockMenuShortcutChip: View {
     let key: KeyEquivalent
+    #if os(iOS)
+    // On iOS the chip only makes sense when a hardware keyboard is around to
+    // hit the shortcut. HardwareKeyboardObserver flips when GameController's
+    // GCKeyboard reports connect/disconnect; @ObservedObject re-evaluates body
+    // on change so the chip appears/disappears live.
+    @ObservedObject private var keyboard = HardwareKeyboardObserver.shared
+    #endif
 
     var body: some View {
+        #if os(iOS)
+        if keyboard.isConnected {
+            chip
+        }
+        #else
+        chip
+        #endif
+    }
+
+    private var chip: some View {
         Text(String(key.character))
             .font(NotionStyle.mono(size: 9))
             .foregroundStyle(NotionStyle.mutedForeground)
@@ -2982,3 +2999,27 @@ private struct BlockMenuShortcutChip: View {
             )
     }
 }
+
+#if os(iOS)
+import GameController
+
+@MainActor
+private final class HardwareKeyboardObserver: ObservableObject {
+    static let shared = HardwareKeyboardObserver()
+
+    @Published private(set) var isConnected: Bool = GCKeyboard.coalesced != nil
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: .GCKeyboardDidConnect, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.isConnected = true }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .GCKeyboardDidDisconnect, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.isConnected = GCKeyboard.coalesced != nil }
+        }
+    }
+}
+#endif
