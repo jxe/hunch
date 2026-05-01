@@ -115,16 +115,21 @@ public struct BlockRow: View {
             .padding(.vertical, BlockSpacing.intrinsicVerticalPadding(block))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isSelected && !isEditing ? NotionStyle.selectionBackground : Color.clear)
-            .overlay(alignment: .leading) {
+            .background(alignment: .leading) {
+                // Toggle / templateButton / subpage are the only blocks that
+                // become drop targets — for those we want a "drop on folder"
+                // affordance: tint + ring around the parent row itself, no
+                // child-slot preview.
                 if isDropTarget {
-                    let leadingInset = CGFloat(block.indent + 1) * NotionStyle.indentStep
-                        + NotionStyle.bulletMarkerColumnWidth
-                        + NotionStyle.listMarkerGap
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(NotionStyle.linkForeground.opacity(0.28))
+                    let leadingInset = CGFloat(block.indent) * NotionStyle.indentStep
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(NotionStyle.linkForeground.opacity(0.12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(NotionStyle.linkForeground.opacity(0.55), lineWidth: 1.5)
+                        )
                         .padding(.leading, leadingInset)
                         .padding(.trailing, 4)
-                        .padding(.vertical, 2)
                         .allowsHitTesting(false)
                 }
             }
