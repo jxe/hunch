@@ -1845,7 +1845,7 @@ public struct PageView: View {
         let targetIndices = targetIDs.compactMap { document.index(of: $0) }
         let targetBlocks = targetIndices.map { document.blocks[$0] }
         if !targetBlocks.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
                 Button("Close") {
                     actionSheet = nil
                 }
@@ -1853,44 +1853,56 @@ public struct PageView: View {
                 .frame(width: 0, height: 0)
                 .opacity(0)
                 .accessibilityHidden(true)
-                Text("Turn Into")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 2)
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.fixed(68), spacing: 8), count: 3),
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    ForEach(turnIntoTargets(for: targetBlocks), id: \.self) { target in
-                        compactMenuButton(
-                            title: target.title,
-                            systemImage: target.systemImage,
-                            keyboardShortcut: target.keyboardShortcut
-                        ) {
-                            _ = convert(blockIDs: targetIDs, to: target)
+                VStack(alignment: .leading, spacing: 8) {
+                    blockMenuSectionHeader("Turn Into")
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.fixed(68), spacing: 8), count: 3),
+                        alignment: .leading,
+                        spacing: 8
+                    ) {
+                        ForEach(turnIntoTargets(for: targetBlocks), id: \.self) { target in
+                            compactMenuButton(
+                                title: target.title,
+                                systemImage: target.systemImage,
+                                keyboardShortcut: target.keyboardShortcut
+                            ) {
+                                _ = convert(blockIDs: targetIDs, to: target)
+                            }
                         }
                     }
                 }
                 let indentTargets = indentActions(for: targetIndices)
                 if !indentTargets.isEmpty {
-                    Divider()
-                    HStack(spacing: 8) {
-                        ForEach(indentTargets, id: \.self) { action in
-                            compactMenuButton(
-                                title: action.title,
-                                systemImage: action.systemImage,
-                                keyboardShortcut: action.keyboardShortcut
-                            ) {
-                                indentMenuTargets(targetIDs, by: action.delta)
+                    VStack(alignment: .leading, spacing: 8) {
+                        blockMenuSectionHeader("Move")
+                        HStack(spacing: 8) {
+                            ForEach(indentTargets, id: \.self) { action in
+                                compactMenuButton(
+                                    title: action.title,
+                                    systemImage: action.systemImage,
+                                    keyboardShortcut: action.keyboardShortcut
+                                ) {
+                                    indentMenuTargets(targetIDs, by: action.delta)
+                                }
+                                .frame(maxWidth: .infinity)
                             }
                         }
                     }
                 }
             }
             .padding(12)
-            .frame(width: 244, alignment: .leading)
+            .frame(width: 248, alignment: .leading)
         }
+    }
+
+    @ViewBuilder
+    private func blockMenuSectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .tracking(0.6)
+            .textCase(.uppercase)
+            .foregroundStyle(NotionStyle.mutedForeground)
+            .padding(.horizontal, 2)
     }
 
     @ViewBuilder
@@ -1904,19 +1916,25 @@ public struct PageView: View {
             actionSheet = nil
             action()
         } label: {
-            VStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(height: 20)
-                Text(title)
-                    .font(NotionStyle.body(size: 11).weight(.medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+            ZStack(alignment: .topTrailing) {
+                VStack(spacing: 6) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(height: 20)
+                    Text(title)
+                        .font(NotionStyle.body(size: 11).weight(.medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                BlockMenuShortcutChip(key: keyboardShortcut)
+                    .padding(.top, 4)
+                    .padding(.trailing, 5)
             }
-            .frame(width: 68, height: 54)
-            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .frame(height: 60)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(BlockMenuTileStyle())
         .keyboardShortcut(keyboardShortcut, modifiers: [])
     }
 
@@ -2795,3 +2813,44 @@ private struct IOSRowSwipeActions: ViewModifier {
     }
 }
 #endif
+
+private struct BlockMenuTileStyle: ButtonStyle {
+    @State private var isHovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(NotionStyle.foreground)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(fillColor(isPressed: configuration.isPressed))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.08), value: isHovering)
+            #if os(macOS)
+            .onHover { isHovering = $0 }
+            #endif
+    }
+
+    private func fillColor(isPressed: Bool) -> Color {
+        if isPressed { return NotionStyle.dividerColor }
+        if isHovering { return NotionStyle.dividerColor.opacity(0.5) }
+        return .clear
+    }
+}
+
+private struct BlockMenuShortcutChip: View {
+    let key: KeyEquivalent
+
+    var body: some View {
+        Text(String(key.character))
+            .font(NotionStyle.mono(size: 9))
+            .foregroundStyle(NotionStyle.mutedForeground)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(NotionStyle.codeBackground)
+            )
+    }
+}
