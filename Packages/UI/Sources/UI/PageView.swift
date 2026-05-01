@@ -182,7 +182,13 @@ public struct PageView: View {
     @State private var pinchAutoScrollVelocity: CGFloat = 0
     @State private var speechRecorder = PageSpeechRecorder()
     @State private var speechError: String?
+    @State private var interactionMode: PageInteractionMode = .nav(focused: nil)
     @Environment(\.scenePhase) private var scenePhase
+
+    private enum PageInteractionMode: Equatable {
+        case nav(focused: BlockID?)
+        case editing(BlockID)
+    }
 
     struct PinchPreviewState: Equatable {
         var insertIndex: Int
@@ -350,10 +356,15 @@ public struct PageView: View {
             .focusable()
             .focused($pageFocused)
             .onAppear {
-                if cursor == nil, let first = document.blocks.first {
-                    setCursor(first.id)
+                if cursor == nil, case .nav(nil) = interactionMode {
+                    interactionMode = .nav(focused: document.blocks.first?.id)
                 }
-                pageFocused = true
+                switch interactionMode {
+                case .nav:
+                    applyInteractionMode(.nav(focused: cursor ?? document.blocks.first?.id))
+                case .editing:
+                    applyInteractionMode(interactionMode)
+                }
                 installUndoApply()
                 consumePendingVoiceRecordingStart()
             }
@@ -363,17 +374,12 @@ public struct PageView: View {
                 }
             }
             .onChange(of: document.id) { _, _ in
-                editingBlock = nil
-                editorFocused = nil
                 actionSheet = nil
                 if let first = document.blocks.first {
-                    setCursor(first.id)
+                    setInteractionMode(.nav(focused: first.id))
                 } else {
-                    selection = []
-                    anchor = nil
-                    cursor = nil
+                    setInteractionMode(.nav(focused: nil))
                 }
-                pageFocused = true
                 expandedToggles = []
                 expandedTemplateButtons = []
                 // Captured undo entries reference the previous document's blocks — drop them.
@@ -515,9 +521,7 @@ public struct PageView: View {
             exitEditMode()
             return
         }
-        selection = []
-        anchor = nil
-        cursor = nil
+        clearCursor()
     }
 
     private func consumePendingVoiceRecordingStart() {
@@ -697,6 +701,7 @@ public struct PageView: View {
             .accessibilityValue(reorderLift?.ids.contains(block.id) == true ? "reorder-source" : "")
             .onTapGesture {
                 if case .subpage(_, _, let path, _) = block {
+                    setInteractionMode(.nav(focused: block.id))
                     onSubpageTap(path)
                     return
                 }
@@ -1234,9 +1239,7 @@ public struct PageView: View {
             document.blocks.insert(newBlock, at: insertionIndex)
         }
         if focus {
-            setCursor(newBlock.id)
-            editingBlock = newBlock.id
-            editorFocused = newBlock.id
+            setInteractionMode(.editing(newBlock.id))
         }
     }
 
@@ -1248,10 +1251,7 @@ public struct PageView: View {
         mutate("Insert Transcript") {
             document.blocks.append(newBlock)
         }
-        setCursor(newBlock.id)
-        editingBlock = nil
-        editorFocused = nil
-        pageFocused = true
+        setInteractionMode(.nav(focused: newBlock.id))
     }
 
     private func instantiateTemplateButton(blockID: BlockID) {
@@ -1270,9 +1270,8 @@ public struct PageView: View {
             document.blocks.insert(contentsOf: copies, at: range.upperBound)
         }
         if let first = copies.first {
-            setCursor(first.id)
+            setInteractionMode(.nav(focused: first.id))
         }
-        pageFocused = true
     }
 
     // MARK: - Pinch-open-to-insert (iOS)
@@ -1481,16 +1480,7 @@ public struct PageView: View {
             if let c = cursor, !validIDs.contains(c) { cursor = newBlocks.first?.id }
             if let a = anchor, !validIDs.contains(a) { anchor = cursor }
             if let e = editingBlock, !validIDs.contains(e) {
-                // The block under edit is gone. Exit edit mode and bounce focus through
-                // false→true so SwiftUI re-binds the page as first responder — same dance
-                // exitEditMode uses, for the same reason (NSTextView's responder slot
-                // doesn't release otherwise).
-                editingBlock = nil
-                editorFocused = nil
-                pageFocused = false
-                DispatchQueue.main.async {
-                    pageFocused = true
-                }
+                setInteractionMode(.nav(focused: cursor))
             }
             if selection.isEmpty, let c = cursor { selection = [c] }
 
@@ -1515,6 +1505,57 @@ public struct PageView: View {
         cursor = id
         anchor = id
         selection = [id]
+        if case .nav = interactionMode {
+            interactionMode = .nav(focused: id)
+        }
+    }
+
+    private func clearCursor() {
+        selection = []
+        anchor = nil
+        cursor = nil
+        if case .nav = interactionMode {
+            interactionMode = .nav(focused: nil)
+        }
+    }
+
+    private func setInteractionMode(_ mode: PageInteractionMode) {
+        interactionMode = mode
+        applyInteractionMode(mode)
+    }
+
+    private func applyInteractionMode(_ mode: PageInteractionMode) {
+        switch mode {
+        case .nav(let focused):
+            editingBlock = nil
+            editorFocused = nil
+            if let focused, document.blocks.contains(where: { $0.id == focused }) {
+                setCursor(focused)
+            } else if let cursor, document.blocks.contains(where: { $0.id == cursor }) {
+                setCursor(cursor)
+            } else if let first = document.blocks.first {
+                setCursor(first.id)
+            } else {
+                clearCursor()
+            }
+            requestPageNavigationFocus()
+        case .editing(let id):
+            guard document.blocks.contains(where: { $0.id == id }) else {
+                setInteractionMode(.nav(focused: document.blocks.first?.id))
+                return
+            }
+            setCursor(id)
+            editingBlock = id
+            editorFocused = id
+            pageFocused = false
+        }
+    }
+
+    private func requestPageNavigationFocus() {
+        pageFocused = false
+        DispatchQueue.main.async {
+            pageFocused = true
+        }
     }
 
     /// Nav-mode →: check todos in the selection, otherwise open the collapsible section
@@ -1848,34 +1889,21 @@ public struct PageView: View {
         guard let block = document.blocks.first(where: { $0.id == id }) else { return }
         switch block {
         case .code, .divider, .subpage:
-            setCursor(id)
+            setInteractionMode(.nav(focused: id))
             return
         default:
             break
         }
-        setCursor(id)
-        editingBlock = id
-        editorFocused = id
+        setInteractionMode(.editing(id))
     }
 
     private func exitEditMode() {
         let was = editingBlock
-        editingBlock = nil
-        editorFocused = nil
         // Drop the @-menu state with the editor — the popover is anchored to the
         // editing row, and a stale mentionMenu after exit would attach to a
         // read-only Text that can no longer drive the input.
         mentionMenu = nil
-        if let was {
-            setCursor(was)
-        }
-        // Force-rebind: if pageFocused was already nominally true, the setter is a no-op
-        // and SwiftUI won't re-install the page as first responder after the editor's
-        // NSTextView is gone.
-        pageFocused = false
-        DispatchQueue.main.async {
-            pageFocused = true
-        }
+        setInteractionMode(.nav(focused: was))
         onBlur()
     }
 
@@ -2152,17 +2180,8 @@ public struct PageView: View {
             document.blocks.replaceSubrange(blockIndex..<blockIndex + 1, with: replacements)
         }
 
-        // Drop out of edit mode and seat the page container as first responder so
-        // ↑/↓ work immediately on the new subpage row. Mirrors `exitEditMode`'s
-        // pageFocused toggle: a same-value @FocusState assignment is a no-op, and
-        // without that flush SwiftUI doesn't re-install the page-level handler after
-        // the editor's NSTextView unmounts.
-        editingBlock = nil
-        editorFocused = nil
-        pageFocused = false
         DispatchQueue.main.async {
-            setCursor(subpageID)
-            pageFocused = true
+            setInteractionMode(.nav(focused: subpageID))
         }
     }
 
@@ -2275,9 +2294,7 @@ public struct PageView: View {
                     document.blocks.insert(newBlock, at: endOfSection)
                 }
                 DispatchQueue.main.async {
-                    setCursor(newBlock.id)
-                    editingBlock = newBlock.id
-                    editorFocused = newBlock.id
+                    setInteractionMode(.editing(newBlock.id))
                 }
                 return .handled
             } else {
@@ -2287,9 +2304,7 @@ public struct PageView: View {
                     document.blocks.insert(newBlock, at: firstChildIdx)
                 }
                 DispatchQueue.main.async {
-                    setCursor(newBlock.id)
-                    editingBlock = newBlock.id
-                    editorFocused = newBlock.id
+                    setInteractionMode(.editing(newBlock.id))
                 }
                 return .handled
             }
@@ -2305,9 +2320,7 @@ public struct PageView: View {
             document.blocks = blocks
         }
         DispatchQueue.main.async {
-            setCursor(newBlock.id)
-            editingBlock = newBlock.id
-            editorFocused = newBlock.id
+            setInteractionMode(.editing(newBlock.id))
         }
         return .handled
     }
@@ -2317,6 +2330,7 @@ public struct PageView: View {
               case .subpage(_, _, let path, _) = block else {
             return false
         }
+        setInteractionMode(.nav(focused: blockID))
         onSubpageTap(path)
         return true
     }
@@ -2356,9 +2370,7 @@ public struct PageView: View {
             ])
         }
         DispatchQueue.main.async {
-            editingBlock = nil
-            editorFocused = nil
-            setCursor(blockID)
+            setInteractionMode(.nav(focused: blockID))
         }
         return .handled
     }
@@ -2796,16 +2808,13 @@ public struct PageView: View {
         }
         let focusTarget = replacements[transform.focusReplacementIndex]
         DispatchQueue.main.async {
-            setCursor(focusTarget.id)
             // Code/divider rows aren't editable in M3 (`enterEditMode` skips them); for
             // those transforms the focus target is the empty paragraph, which is editable.
             switch focusTarget {
             case .code, .divider, .subpage:
-                editingBlock = nil
-                editorFocused = nil
+                setInteractionMode(.nav(focused: focusTarget.id))
             default:
-                editingBlock = focusTarget.id
-                editorFocused = focusTarget.id
+                setInteractionMode(.editing(focusTarget.id))
             }
         }
     }
@@ -2864,9 +2873,7 @@ public struct PageView: View {
             document.blocks.remove(at: i)
         }
         if let previous {
-            setCursor(previous)
-            editingBlock = previous
-            editorFocused = previous
+            setInteractionMode(.editing(previous))
         }
         return .handled
     }
