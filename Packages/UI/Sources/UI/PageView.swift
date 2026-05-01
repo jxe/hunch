@@ -1996,7 +1996,11 @@ public struct PageView: View {
     }
 
     private func copySelectionToPasteboard() -> Bool {
-        let indices = effectiveSelectedIndices()
+        copyBlocksToPasteboard(ids: selection)
+    }
+
+    private func copyBlocksToPasteboard(ids: some Sequence<BlockID>) -> Bool {
+        let indices = document.indicesIncludingSections(of: ids)
         guard !indices.isEmpty else { return false }
 
         let selectedBlocks = indices.map { document.blocks[$0] }
@@ -2608,20 +2612,28 @@ public struct PageView: View {
                     }
                 }
                 let indentTargets = indentActions(for: targetIndices)
-                if !indentTargets.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        blockMenuSectionHeader("Move")
-                        HStack(spacing: 8) {
-                            ForEach(indentTargets, id: \.self) { action in
-                                compactMenuButton(
-                                    title: action.title,
-                                    systemImage: action.systemImage,
-                                    keyboardShortcut: action.keyboardShortcut
-                                ) {
-                                    indentMenuTargets(targetIDs, by: action.delta)
-                                }
-                                .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: 8) {
+                    blockMenuSectionHeader("Actions")
+                    HStack(spacing: 8) {
+                        compactMenuButton(
+                            title: "Copy",
+                            systemImage: "doc.on.doc",
+                            keyboardShortcut: "c",
+                            keyboardShortcutModifiers: .command,
+                            keyboardShortcutLabel: "⌘C"
+                        ) {
+                            _ = copyBlocksToPasteboard(ids: targetIDs)
+                        }
+                        .frame(maxWidth: .infinity)
+                        ForEach(indentTargets, id: \.self) { action in
+                            compactMenuButton(
+                                title: action.title,
+                                systemImage: action.systemImage,
+                                keyboardShortcut: action.keyboardShortcut
+                            ) {
+                                indentMenuTargets(targetIDs, by: action.delta)
                             }
+                            .frame(maxWidth: .infinity)
                         }
                     }
                 }
@@ -2646,6 +2658,8 @@ public struct PageView: View {
         title: String,
         systemImage: String,
         keyboardShortcut: KeyEquivalent,
+        keyboardShortcutModifiers: EventModifiers = [],
+        keyboardShortcutLabel: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button {
@@ -2664,14 +2678,14 @@ public struct PageView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                BlockMenuShortcutChip(key: keyboardShortcut)
+                BlockMenuShortcutChip(label: keyboardShortcutLabel ?? String(keyboardShortcut.character))
                     .padding(.top, 4)
                     .padding(.trailing, 5)
             }
             .frame(height: 60)
         }
         .buttonStyle(BlockMenuTileStyle())
-        .keyboardShortcut(keyboardShortcut, modifiers: [])
+        .keyboardShortcut(keyboardShortcut, modifiers: keyboardShortcutModifiers)
     }
 
     private func menuTargetIDs(anchorID: BlockID) -> [BlockID] {
@@ -2699,7 +2713,42 @@ public struct PageView: View {
             if target == .template, blocks.count > 1 {
                 return false
             }
+            if blocks.allSatisfy({ currentTurnIntoTarget(for: $0) == target }) {
+                return false
+            }
             return blocks.allSatisfy { canTurn($0, into: target) }
+        }
+    }
+
+    private func currentTurnIntoTarget(for block: Block) -> BlockTurnInto? {
+        switch block {
+        case .paragraph:
+            return .paragraph
+        case .heading(_, let level, _, _):
+            switch level {
+            case 1:
+                return .heading1
+            case 2:
+                return .heading2
+            case 3:
+                return .heading3
+            default:
+                return nil
+            }
+        case .bullet:
+            return .bullet
+        case .numbered:
+            return .numbered
+        case .todo:
+            return .todo
+        case .toggle:
+            return .toggle
+        case .templateButton:
+            return .template
+        case .subpage:
+            return .page
+        case .quote, .code, .divider:
+            return nil
         }
     }
 
@@ -3827,7 +3876,7 @@ private struct BlockMenuTileStyle: ButtonStyle {
 }
 
 private struct BlockMenuShortcutChip: View {
-    let key: KeyEquivalent
+    let label: String
     #if os(iOS)
     // On iOS the chip only makes sense when a hardware keyboard is around to
     // hit the shortcut. HardwareKeyboardObserver flips when GameController's
@@ -3847,7 +3896,7 @@ private struct BlockMenuShortcutChip: View {
     }
 
     private var chip: some View {
-        Text(String(key.character))
+        Text(label)
             .font(NotionStyle.mono(size: 9))
             .foregroundStyle(NotionStyle.mutedForeground)
             .padding(.horizontal, 4)
