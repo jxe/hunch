@@ -117,6 +117,10 @@ public struct PageView: View {
     public let onNavigateBack: () -> Void
     public let onEdited: () -> Void
     public let onBlur: () -> Void
+    /// Capture a block-level deletion before mutation so it can be restored from the
+    /// recently-deleted view. The host model knows the document's relative path —
+    /// PageView just supplies the indices, blocks, and a friendly action name.
+    public let onRecordBlockDeletion: (_ indices: [Int], _ blocks: [Block], _ actionName: String) -> Void
 
     /// Set of currently-selected blocks in nav mode. Always contiguous in document order
     /// (we only build it via cursor/anchor extension). Empty in edit mode.
@@ -223,7 +227,8 @@ public struct PageView: View {
         onAppendToSubpage: @escaping (_ relativePath: String, _ blocks: [Block]) -> Bool = { _, _ in false },
         onNavigateBack: @escaping () -> Void = {},
         onEdited: @escaping () -> Void = {},
-        onBlur: @escaping () -> Void = {}
+        onBlur: @escaping () -> Void = {},
+        onRecordBlockDeletion: @escaping (_ indices: [Int], _ blocks: [Block], _ actionName: String) -> Void = { _, _, _ in }
     ) {
         self._document = document
         self.entries = entries
@@ -236,6 +241,7 @@ public struct PageView: View {
         self.onNavigateBack = onNavigateBack
         self.onEdited = onEdited
         self.onBlur = onBlur
+        self.onRecordBlockDeletion = onRecordBlockDeletion
     }
 
     public var body: some View {
@@ -1909,6 +1915,9 @@ public struct PageView: View {
         guard !indices.isEmpty else { return }
         guard indices.count < document.blocks.count else { return }
 
+        let removed = indices.map { document.blocks[$0] }
+        onRecordBlockDeletion(indices, removed, "Delete")
+
         let firstIndex = indices.first!
         mutate("Delete") {
             // Snapshot, mutate locally, write once. Removing through the @Binding
@@ -1930,6 +1939,9 @@ public struct PageView: View {
     private func deleteBlocks(ids: [BlockID], actionName: String) {
         let indices = document.indicesIncludingSections(of: ids)
         guard !indices.isEmpty, indices.count < document.blocks.count else { return }
+
+        let removed = indices.map { document.blocks[$0] }
+        onRecordBlockDeletion(indices, removed, actionName)
 
         let firstIndex = indices.first!
         mutate(actionName) {
