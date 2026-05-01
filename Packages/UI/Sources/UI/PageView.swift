@@ -3329,82 +3329,126 @@ private struct IOSRowSwipeActions: ViewModifier {
     let onDelete: () -> Void
     let onShowMenu: () -> Void
 
-    @GestureState private var drag: CGFloat = 0
+    @State private var dragOffset: CGFloat = 0
+    @State private var triggered: Bool = false
+    @State private var crossedDeleteThreshold: Bool = false
 
     private let trigger: CGFloat = 96
     private let revealCap: CGFloat = 140
 
     func body(content: Content) -> some View {
-        let total = drag
-        let clamped = max(-revealCap, min(revealCap, total))
-        let progress = min(1, abs(clamped) / trigger)
+        let rightOffset = min(revealCap, max(0, dragOffset))
+        let deleteProgress = min(1, max(0, -dragOffset) / trigger)
 
-        content
-            .offset(x: clamped)
-            .background(alignment: .trailing) {
-                if total < 0 {
-                    actionLabel(systemName: "trash", tint: .red, leading: false, progress: progress)
-                        .frame(width: max(0, -clamped))
+        ZStack {
+            // Right-swipe only: recessed well + ellipsis icon. Hidden behind
+            // the row at rest; uncovered as the row slides right.
+            ZStack {
+                Color.black.opacity(0.06)
+                HStack(spacing: 0) {
+                    Image(systemName: "ellipsis.circle.fill")
+                        .foregroundStyle(.blue)
+                        .font(.system(size: 18, weight: .semibold))
+                        .padding(.leading, 22)
+                    Spacer(minLength: 0)
                 }
             }
-            .background(alignment: .leading) {
-                if total > 0 {
-                    actionLabel(systemName: "ellipsis.circle.fill", tint: .blue, leading: true, progress: progress)
-                        .frame(width: max(0, clamped))
+            .allowsHitTesting(false)
+
+            content
+                .background(NotionStyle.background)
+                .offset(x: rightOffset)
+
+            // Left-swipe: a graphite "pencil line" emerges from the trailing
+            // edge and crosses the row as the user drags left. Scaled so
+            // reaching the commit threshold = a complete cross-out. At commit
+            // the stroke thickens and darkens — like the pencil pressed harder.
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    pencilLine(width: geo.size.width * deleteProgress)
                 }
+                .frame(maxHeight: .infinity)
             }
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 18, coordinateSpace: .local)
-                    .updating($drag) { value, state, _ in
-                        let h = value.translation.width
-                        let v = value.translation.height
-                        // Commit horizontal motion only when the drag is clearly
-                        // sideways — keeps vertical scroll free.
-                        guard abs(h) > abs(v) * 1.4 else { return }
-                        state = h
-                    }
-                    .onEnded { value in
-                        let h = value.translation.width
-                        let v = value.translation.height
-                        guard abs(h) > abs(v) * 1.4 else { return }
-                        if h <= -trigger {
-                            onDelete()
-                        } else if h >= trigger {
-                            onShowMenu()
+            .allowsHitTesting(false)
+        }
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 18, coordinateSpace: .local)
+                .onChanged { value in
+                    guard !triggered else { return }
+                    let h = value.translation.width
+                    let v = value.translation.height
+                    // Commit horizontal motion only when the drag is clearly
+                    // sideways — keeps vertical scroll free.
+                    guard abs(h) > abs(v) * 1.4 else { return }
+                    dragOffset = h
+                    // The menu opens on threshold-crossed mid-gesture so the
+                    // user can swipe-and-hold to peek the menu. Delete is
+                    // destructive — only commits on release, but fire a haptic
+                    // when the strike-through completes so the user knows
+                    // releasing now will commit.
+                    if h >= trigger {
+                        fire(onShowMenu)
+                    } else if h <= -trigger {
+                        if !crossedDeleteThreshold {
+                            crossedDeleteThreshold = true
+                            Haptics.medium()
                         }
+                    } else {
+                        crossedDeleteThreshold = false
                     }
-            )
+                }
+                .onEnded { value in
+                    let h = value.translation.width
+                    if !triggered, h <= -trigger {
+                        onDelete()
+                    }
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                        dragOffset = 0
+                    }
+                    triggered = false
+                    crossedDeleteThreshold = false
+                }
+        )
     }
 
+    private func fire(_ action: () -> Void) {
+        triggered = true
+        Haptics.medium()
+        action()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+            dragOffset = 0
+        }
+    }
+
+    /// A graphite-style cross-out line. Composited from a soft blurred halo
+    /// (the "graphite dust"), a slightly off-axis ghost stroke for hand-drawn
+    /// imperfection, and a crisp core. At the commit moment the stroke
+    /// thickens/darkens like the pencil pressed harder.
     @ViewBuilder
-    private func actionLabel(systemName: String, tint: Color, leading: Bool, progress: CGFloat) -> some View {
-        // Recessed well: flat darker fill + thin inset shadows at top and bottom
-        // edges so the strip reads as a slot the row was pressed into.
-        let edgeShadowHeight: CGFloat = 6
-        ZStack(alignment: leading ? .leading : .trailing) {
-            Color.black.opacity(0.06)
-            Image(systemName: systemName)
-                .foregroundStyle(tint)
-                .font(.system(size: 18, weight: .semibold))
-                .opacity(progress)
-                .padding(.horizontal, 22)
+    private func pencilLine(width: CGFloat) -> some View {
+        let armed = crossedDeleteThreshold
+        let coreHeight: CGFloat = armed ? 2.4 : 1.6
+        let haloHeight: CGFloat = armed ? 5.0 : 3.6
+        let coreOpacity: Double = armed ? 0.92 : 0.70
+        let haloOpacity: Double = armed ? 0.32 : 0.20
+        let coreColor = Color(white: 0.18)
+
+        ZStack {
+            Rectangle()
+                .fill(coreColor.opacity(haloOpacity))
+                .frame(height: haloHeight)
+                .blur(radius: 1.4)
+            Rectangle()
+                .fill(coreColor.opacity(coreOpacity * 0.45))
+                .frame(height: coreHeight * 0.7)
+                .offset(y: -0.6)
+            Rectangle()
+                .fill(coreColor.opacity(coreOpacity))
+                .frame(height: coreHeight)
         }
-        .overlay(alignment: .top) {
-            LinearGradient(
-                colors: [Color.black.opacity(0.18), Color.black.opacity(0)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: edgeShadowHeight)
-        }
-        .overlay(alignment: .bottom) {
-            LinearGradient(
-                colors: [Color.black.opacity(0), Color.black.opacity(0.18)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: edgeShadowHeight)
-        }
+        .frame(width: width)
+        .animation(.spring(response: 0.18, dampingFraction: 0.7), value: armed)
     }
 }
 #endif
