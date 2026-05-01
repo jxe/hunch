@@ -864,6 +864,7 @@ public struct PageView: View {
     /// lift unmount, nor the row reflow springs.
     private func endReorderLift(atY y: CGFloat, snapshot: [Block]) {
         guard let lift = reorderLift else { return }
+        SoundFX.play(.drop)
         let hidden = hiddenBlockIDs(in: snapshot)
         let target = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
         let ids = lift.ids
@@ -1247,12 +1248,14 @@ public struct PageView: View {
             if gapHeight >= pinchInsertCommitGap, !pinchCrossedInsertThreshold {
                 pinchCrossedInsertThreshold = true
                 Haptics.medium()
+                SoundFX.play(.pinchOpen)
             } else if gapHeight < pinchInsertCommitGap {
                 pinchCrossedInsertThreshold = false
             }
             if gapHeight >= pinchInsertFocusGap, !pinchCrossedFocusThreshold {
                 pinchCrossedFocusThreshold = true
                 Haptics.medium()
+                SoundFX.play(.pinchOpen)
             } else if gapHeight < pinchInsertFocusGap {
                 pinchCrossedFocusThreshold = false
             }
@@ -3402,6 +3405,7 @@ private struct IOSRowSwipeActions: ViewModifier {
                     let h = value.translation.width
                     if !triggered, h <= -trigger {
                         onDelete()
+                        SoundFX.play(.delete)
                     }
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
                         dragOffset = 0

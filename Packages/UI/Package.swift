@@ -18,7 +18,8 @@ let package = Package(
             name: "UI",
             dependencies: [
                 .product(name: "Core", package: "Core")
-            ]
+            ],
+            resources: [.process("Resources/Sounds")]
         ),
         .testTarget(
             name: "UITests",
