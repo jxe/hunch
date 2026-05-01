@@ -3364,11 +3364,11 @@ private struct IOSRowSwipeActions: ViewModifier {
             // reaching the commit threshold = a complete cross-out. At commit
             // the stroke thickens and darkens — like the pencil pressed harder.
             GeometryReader { geo in
-                HStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    pencilLine(width: geo.size.width * deleteProgress)
-                }
-                .frame(maxHeight: .infinity)
+                pencilLine(
+                    rowWidth: geo.size.width,
+                    lineLength: geo.size.width * deleteProgress
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
             .allowsHitTesting(false)
         }
@@ -3421,34 +3421,68 @@ private struct IOSRowSwipeActions: ViewModifier {
         }
     }
 
-    /// A graphite-style cross-out line. Composited from a soft blurred halo
-    /// (the "graphite dust"), a slightly off-axis ghost stroke for hand-drawn
-    /// imperfection, and a crisp core. At the commit moment the stroke
-    /// thickens/darkens like the pencil pressed harder.
+    /// A graphite-style cross-out line drawn in a `Canvas`. Composited from a
+    /// soft halo, a crisp core, and a deterministic scatter of grain dots that
+    /// simulate the graphite catching on tooth of the paper. The grain pattern
+    /// is keyed off a fixed seed so it stays put as the line extends — only the
+    /// trailing-aligned mask grows with `lineLength`. At commit the stroke
+    /// thickens/darkens and grain density bumps, like the pencil pressed harder.
     @ViewBuilder
-    private func pencilLine(width: CGFloat) -> some View {
+    private func pencilLine(rowWidth: CGFloat, lineLength: CGFloat) -> some View {
         let armed = crossedDeleteThreshold
-        let coreHeight: CGFloat = armed ? 2.4 : 1.6
-        let haloHeight: CGFloat = armed ? 5.0 : 3.6
-        let coreOpacity: Double = armed ? 0.92 : 0.70
-        let haloOpacity: Double = armed ? 0.32 : 0.20
         let coreColor = Color(white: 0.18)
+        let coreHeight: CGFloat = armed ? 2.4 : 1.6
+        let coreOpacity: Double = armed ? 0.92 : 0.72
+        let haloHeight: CGFloat = armed ? 6 : 4
+        let haloOpacity: Double = armed ? 0.22 : 0.12
+        let grainSpacing: CGFloat = armed ? 0.8 : 1.3
+        let grainBoost: Double = armed ? 0.18 : 0
 
-        ZStack {
-            Rectangle()
-                .fill(coreColor.opacity(haloOpacity))
-                .frame(height: haloHeight)
-                .blur(radius: 1.4)
-            Rectangle()
-                .fill(coreColor.opacity(coreOpacity * 0.45))
-                .frame(height: coreHeight * 0.7)
-                .offset(y: -0.6)
-            Rectangle()
-                .fill(coreColor.opacity(coreOpacity))
-                .frame(height: coreHeight)
+        Canvas { context, size in
+            let centerY = size.height / 2
+
+            let halo = Path(CGRect(
+                x: 0, y: centerY - haloHeight / 2,
+                width: size.width, height: haloHeight
+            ))
+            context.fill(halo, with: .color(coreColor.opacity(haloOpacity)))
+
+            let core = Path(CGRect(
+                x: 0, y: centerY - coreHeight / 2,
+                width: size.width, height: coreHeight
+            ))
+            context.fill(core, with: .color(coreColor.opacity(coreOpacity)))
+
+            var rng = SeededLCG(seed: 0xF1B2C3D4)
+            let grainCount = Int(size.width / grainSpacing)
+            for _ in 0..<grainCount {
+                let x = CGFloat(rng.next01()) * size.width
+                let yJitter = (CGFloat(rng.next01()) - 0.5) * 7
+                let r = 0.25 + CGFloat(rng.next01()) * 0.7
+                let opacity = 0.12 + rng.next01() * 0.42 + grainBoost
+                let dot = Path(ellipseIn: CGRect(
+                    x: x - r, y: centerY + yJitter - r,
+                    width: r * 2, height: r * 2
+                ))
+                context.fill(dot, with: .color(coreColor.opacity(opacity)))
+            }
         }
-        .frame(width: width)
+        .frame(width: rowWidth, height: 12)
+        .mask(alignment: .trailing) {
+            Color.black.frame(width: lineLength)
+        }
         .animation(.spring(response: 0.18, dampingFraction: 0.7), value: armed)
+    }
+}
+
+/// Linear-congruential PRNG — deterministic per seed so the grain pattern
+/// stays put across re-renders (and frames during animation).
+private struct SeededLCG {
+    private var state: UInt32
+    init(seed: UInt32) { self.state = seed }
+    mutating func next01() -> Double {
+        state = state &* 1_664_525 &+ 1_013_904_223
+        return Double(state) / Double(UInt32.max)
     }
 }
 #endif
