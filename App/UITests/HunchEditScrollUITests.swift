@@ -1,16 +1,15 @@
 import XCTest
 
-/// Reproduction tests for the user-reported bug: on iOS, scrolling
-/// "sometimes doesn't work" after typing/editing in a block. Each test
-/// drives an edit flow that ends with the keyboard dismissed and the
-/// editor unmounted, then asserts that a subsequent vertical drag
-/// scrolls the page.
+/// Reproduces the user-reported bug: on iOS, scrolling the page sometimes
+/// doesn't work — "for a spell at a time, after navigation or modifications".
 ///
-/// The main suspect is gesture-state leak between the iOS UITextView
-/// (BlockTextEditor) and the page-level UIKit gesture bridges
-/// (long-press reorder, pinch). The repeated-cycles test is the most
-/// likely to surface accumulating state — the symptom the user
-/// described as "happens for a spell at a time".
+/// What the diagnostic exploration found (see end-of-file notes for the
+/// extended trail): once XCUI fires a swipe-up that successfully scrolls
+/// the page, every *subsequent* swipe — synthesized via `app.swipeUp()`,
+/// the scroll view element, or manual `press(forDuration:thenDragTo:)` —
+/// produces zero movement. This is reproducible without any editing,
+/// navigation, gesture-bridge involvement, or focus-state churn — those
+/// were all ruled out one by one. The bug appears to live below our code.
 @MainActor
 final class HunchEditScrollUITests: XCTestCase {
     private var app: XCUIApplication!
@@ -22,149 +21,58 @@ final class HunchEditScrollUITests: XCTestCase {
         app.launch()
     }
 
-    /// Baseline: multiple swipes without any editing always scroll. If this
-    /// fails, the test's swipe-detection logic is broken; if it passes but
-    /// `testRepeatedEditScrollCycles` fails, the bug is real.
-    func testMultipleSwipesWithoutEditingAlwaysScrolls() {
+    /// **Primary repro.** Two consecutive swipes without any editing in
+    /// between. The first scrolls the page; the second is silently dropped.
+    /// Captures the user's "spell at a time" symptom in its simplest form.
+    func testTwoConsecutiveSwipesBothScroll() {
+        XCTAssertTrue(swipeUpDidScroll(), "First swipe didn't scroll (test setup wrong)")
+        XCTAssertTrue(swipeUpDidScroll(), "Second swipe didn't scroll — repro of the user's bug")
+    }
+
+    /// Sustained version of the above. Useful for confirming the bug stays
+    /// reproduced after future fixes / regressions. Reports every iteration
+    /// so partial improvements are visible.
+    func testFiveConsecutiveSwipesAllScroll() {
+        var failures: [String] = []
         for i in 0..<5 {
-            XCTAssertTrue(swipeUpDidScroll(), "Swipe \(i) (no edits) did not scroll")
-        }
-    }
-
-    /// Same as above but using XCUI's high-level swipeUp() helper. Distinguishes
-    /// "the gesture-recognizer state is genuinely stuck" from "manual press-drag
-    /// synthesis hits a quirk in XCUI's event delivery".
-    func testMultipleAppSwipeUpsAlwaysScroll() {
-        for i in 0..<5 {
-            guard let reference = stableMidScreenRow() else {
-                XCTFail("Iter \(i): no stable row to use as reference")
-                return
+            if !swipeUpDidScroll() {
+                failures.append("iter \(i)")
             }
-            let yBefore = reference.frame.midY
-            app.swipeUp()
-            let scrolled = waitForCondition(timeout: 2) {
-                if !reference.exists { return true }
-                return reference.frame.midY < yBefore - 50
-            }
-            XCTAssertTrue(scrolled, "app.swipeUp() iter \(i) did not scroll")
+        }
+        if !failures.isEmpty {
+            XCTFail("Swipe-up failed at: \(failures.joined(separator: ", "))")
         }
     }
 
-    /// Deliberately wait between swipes to let any deceleration / scroll
-    /// metrics observation settle. If this passes but the immediate-followup
-    /// version fails, the bug is timing-related.
-    func testSwipesWithSettleDelayAlwaysScroll() {
-        for i in 0..<3 {
-            XCTAssertTrue(swipeUpDidScroll(), "Settled swipe \(i) did not scroll")
-            // Long delay to let everything settle.
-            RunLoop.current.run(until: Date().addingTimeInterval(1.5))
-        }
-    }
-
-    /// Minimal repro path: tap a row, type one char, dismiss the keyboard
-    /// via the accessory bar, then try to scroll.
+    /// Edit-then-scroll flow the user originally described. Currently passes
+    /// (one edit + one scroll works), but kept as a regression guard for the
+    /// fix path.
     func testTypeThenDismissThenScroll() {
         let target = row(containing: "Row 05")
         XCTAssertTrue(target.waitForExistence(timeout: 3))
         target.tap()
-        XCTAssertTrue(waitForKeyboard(), "Keyboard never appeared after tap")
+        XCTAssertTrue(waitForKeyboard(), "Keyboard never appeared")
 
         app.typeText("x")
         dismissKeyboard()
         XCTAssertTrue(waitForKeyboardGone(), "Keyboard never dismissed")
 
-        assertSwipeUpScrolls(label: "after type+dismiss")
+        XCTAssertTrue(swipeUpDidScroll(), "Swipe after type+dismiss did not scroll")
     }
 
-    /// Splitting a block via Return is a structural mutation. After the split,
-    /// `validateBlockReferences` may run, the editor remounts on the new block,
-    /// and `setInteractionMode` runs. If any of that leaves a gesture
-    /// recognizer in a stuck state, this test catches it.
+    /// Splitting a block via Return then scrolling. Same shape as the type
+    /// test — one structural mutation then one scroll. Currently passes.
     func testSplitThenDismissThenScroll() {
         let target = row(containing: "Row 05")
         XCTAssertTrue(target.waitForExistence(timeout: 3))
         target.tap()
-        XCTAssertTrue(waitForKeyboard(), "Keyboard never appeared after tap")
+        XCTAssertTrue(waitForKeyboard(), "Keyboard never appeared")
 
-        // Press Return to split. Whatever cursor position we landed on, the
-        // block splits there — exact split point doesn't matter, only that
-        // a structural mutation occurred.
         app.typeText("\n")
         dismissKeyboard()
         XCTAssertTrue(waitForKeyboardGone(), "Keyboard never dismissed")
 
-        assertSwipeUpScrolls(label: "after split+dismiss")
-    }
-
-    /// Repeated edit-then-scroll cycles. The user described the failure as
-    /// happening "for a spell at a time", suggesting state accumulates
-    /// across edit cycles rather than failing on the first attempt. Most
-    /// likely culprits are:
-    ///  - panGestureRecognizer.require(toFail:) dependencies stacking on
-    ///    each long-press recognizer reattach
-    ///  - UITextView first-responder lingering across editor unmount
-    func testRepeatedEditScrollCycles() {
-        var failures: [String] = []
-        let targets = ["Row 05", "Row 07", "Row 09", "Row 11", "Row 13"]
-
-        for (i, label) in targets.enumerated() {
-            let target = row(containing: label)
-            guard scrollUntilHittable(target) else {
-                XCTFail("Could not bring \(label) into view at iteration \(i)")
-                return
-            }
-            target.tap()
-            guard waitForKeyboard() else {
-                failures.append("iter \(i) (\(label)): keyboard never appeared")
-                continue
-            }
-
-            app.typeText("z")
-            dismissKeyboard()
-            guard waitForKeyboardGone() else {
-                failures.append("iter \(i) (\(label)): keyboard never dismissed")
-                continue
-            }
-
-            if !swipeUpDidScroll() {
-                failures.append("iter \(i) (\(label)): swipe-up did not scroll page")
-            }
-        }
-
-        if !failures.isEmpty {
-            XCTFail("Edit-scroll cycles failed:\n  - " + failures.joined(separator: "\n  - "))
-        }
-    }
-
-    /// Fast alternation with minimal delay. Real users don't wait for SwiftUI
-    /// transitions to settle. If a gesture recognizer's state machine relies
-    /// on per-frame cleanup that the next interaction interrupts, this test
-    /// is most likely to expose it.
-    func testFastEditScrollAlternation() {
-        var failures: [String] = []
-
-        for i in 0..<3 {
-            let target = row(containing: "Row 0\(i + 5)")
-            guard scrollUntilHittable(target) else {
-                XCTFail("Could not bring Row 0\(i + 5) into view")
-                return
-            }
-            target.tap()
-            // Don't wait for keyboard — type immediately. UIKit will queue
-            // the typing once the keyboard is up.
-            _ = app.keyboards.firstMatch.waitForExistence(timeout: 2)
-            app.typeText("q")
-            dismissKeyboard()
-            // Don't wait for keyboard to fully dismiss before scrolling — that's
-            // exactly the racy condition users hit.
-            if !swipeUpDidScroll() {
-                failures.append("iter \(i): swipe-up did not scroll")
-            }
-        }
-
-        if !failures.isEmpty {
-            XCTFail("Fast alternation failed:\n  - " + failures.joined(separator: "\n  - "))
-        }
+        XCTAssertTrue(swipeUpDidScroll(), "Swipe after split+dismiss did not scroll")
     }
 
     // MARK: - Helpers
@@ -190,21 +98,11 @@ final class HunchEditScrollUITests: XCTestCase {
         waitForCondition(timeout: timeout) { !app.keyboards.firstMatch.exists }
     }
 
-    /// Swipes up and asserts a known row in the visible region moved up by
-    /// at least 50pt. Picks whichever target row is currently visible so it
-    /// works regardless of scroll position.
-    private func assertSwipeUpScrolls(label: String, file: StaticString = #filePath, line: UInt = #line) {
-        if !swipeUpDidScroll() {
-            XCTFail("Expected swipe-up to scroll the page (\(label))", file: file, line: line)
-        }
-    }
-
     /// Returns true if a vertical drag moved the page. Drags from a row
-    /// element's coordinate (matching the existing passing test pattern in
-    /// `HunchDragAndDropUITests.testVerticalDragOnRowScrollsThePage`).
+    /// that's currently mid-screen so there's always room for the gesture.
     private func swipeUpDidScroll() -> Bool {
         guard let reference = stableMidScreenRow() else {
-            XCTFail("Could not find a stable mid-screen row to use as scroll reference")
+            XCTFail("No stable mid-screen row to use as scroll reference")
             return false
         }
         let yBefore = reference.frame.midY
@@ -219,28 +117,17 @@ final class HunchEditScrollUITests: XCTestCase {
         }
     }
 
-    /// Find a "Row NN" element whose midY sits in the middle 60% of the
-    /// screen — so the test's own swipe gesture starts on real content,
-    /// not on the rubber-band edge or the keyboard area.
     private func stableMidScreenRow() -> XCUIElement? {
         let screenHeight = app.frame.height
         let lower = screenHeight * 0.2
         let upper = screenHeight * 0.8
-        for n in 1...30 {
+        for n in 1...80 {
             let element = row(containing: "Row \(String(format: "%02d", n))")
             guard element.exists && element.isHittable else { continue }
             let y = element.frame.midY
             if y >= lower && y <= upper { return element }
         }
         return nil
-    }
-
-    private func scrollUntilHittable(_ element: XCUIElement, attempts: Int = 8) -> Bool {
-        for _ in 0..<attempts {
-            if element.exists && element.isHittable { return true }
-            app.swipeUp()
-        }
-        return element.exists && element.isHittable
     }
 
     private func waitForCondition(timeout: TimeInterval, _ predicate: () -> Bool) -> Bool {
@@ -258,3 +145,47 @@ final class HunchEditScrollUITests: XCTestCase {
             .joined(separator: "-")
     }
 }
+
+// MARK: - Investigation notes
+//
+// Diagnostic exploration verified the following are NOT the cause:
+//
+//  * IOSPageReorderGestureBridge — long-press recognizer with
+//    `panGestureRecognizer.require(toFail:)`. Disabled the bridge entirely
+//    via a `--disable-page-reorder` launch arg; subsequent swipes still
+//    failed.
+//  * IOSPagePinchGestureBridge — same approach; no change.
+//  * IOSPageBlockDropTarget — the `.onDrop` adds UIDropInteraction's own
+//    gesture recognizers. Disabled; no change.
+//  * IOSScrollMetricsReader — KVO observer that fires Tasks on every
+//    contentOffset change, potentially re-rendering. Disabled; no change.
+//  * IOSRowSwipeActions — per-row `.highPriorityGesture` DragGesture.
+//    Disabled; no change.
+//  * The page-level `.focusable() .focused($pageFocused)` chain. Removed
+//    for iOS; no change.
+//  * Edit-mode entry/exit — single edit + single scroll passes. Multiple
+//    swipes fail regardless of editing.
+//  * XCUI synthesis path — same failure with `app.swipeUp()`,
+//    `scrollViews.firstMatch.swipeUp()`, manual element-coordinate
+//    `press(forDuration:thenDragTo:)`, and app-coordinate variants.
+//  * Timing — 1.5s sleep between swipes also failed.
+//
+// Diagnostic frame capture confirmed the page genuinely doesn't move on
+// repeat swipes (every row's midY change is exactly 0.0pt), so this isn't
+// an XCUI measurement quirk.
+//
+// Likely remaining suspects (require deeper investigation, possibly
+// instrumenting UIScrollView's pan recognizer state with NSLog or
+// running on iOS 25 to see if it's an iOS 26 regression):
+//
+//   1. NavigationStack — the page lives inside `NavigationStack(path:)`
+//      and its destination view; one of NavigationStack's internal
+//      gesture recognizers may be claiming touches after the first scroll.
+//   2. SwiftUI ScrollView on iOS 26 — possible scroll-edge-effect or
+//      decelerator state machine issue.
+//   3. Some interaction between the GeometryReader wrapper and the
+//      ScrollView contentSize after the first deceleration finishes.
+//
+// User reports the bug as intermittent in real usage; XCUI synthesis hits
+// it deterministically, suggesting XCUI's gesture cadence happens to land
+// in the failing state every time while real fingers occasionally don't.

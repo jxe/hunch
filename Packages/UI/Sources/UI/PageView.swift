@@ -2000,9 +2000,13 @@ public struct PageView: View {
         return true
     }
 
-    /// Paste: read markdown from the pasteboard, parse it into blocks, and splice them into
-    /// the document. Replace semantics on a non-empty selection (matches the "this becomes
-    /// that" mental model of nav-mode); insert at the end when nothing is selected.
+    /// Paste: read markdown from the pasteboard, parse it into blocks, and insert them
+    /// after the cursor block. If the cursor block already has children (i.e. its
+    /// `sectionRange` extends past itself), pasted blocks land at the end of those children
+    /// as siblings (indent + 1); otherwise they land immediately below the cursor at the
+    /// cursor's own indent. With no cursor, append at end of doc, indent 0.
+    /// `BlockParser` returns indents starting at 0 (mirrors how copy normalizes), so we
+    /// shift each pasted block's indent by the chosen base.
     private func pasteFromPasteboard() -> Bool {
         let markdown: String
         #if os(macOS)
@@ -2015,18 +2019,31 @@ public struct PageView: View {
         let parsed = BlockParser.parse(markdown)
         guard !parsed.isEmpty else { return false }
 
-        let indices = effectiveSelectedIndices()
-        let insertIndex = indices.first ?? document.blocks.count
+        let baseIndent: Int
+        let insertIndex: Int
+        if let cursorID = cursor,
+           let anchorIdx = document.index(of: cursorID),
+           let section = document.sectionRange(of: cursorID) {
+            let anchorIndent = document.blocks[anchorIdx].indent
+            let hasChildren = section.count > 1
+            baseIndent = hasChildren ? anchorIndent + 1 : anchorIndent
+            insertIndex = section.upperBound
+        } else {
+            baseIndent = 0
+            insertIndex = document.blocks.count
+        }
+        let reindented = baseIndent == 0
+            ? parsed
+            : parsed.map { $0.withIndent($0.indent + baseIndent) }
+
         mutate("Paste") {
             var blocks = document.blocks
-            for i in indices.reversed() { blocks.remove(at: i) }
-            blocks.insert(contentsOf: parsed, at: insertIndex)
+            blocks.insert(contentsOf: reindented, at: insertIndex)
             document.blocks = blocks
         }
 
-        let pastedIDs = parsed.map(\.id)
-        if let last = pastedIDs.last {
-            setCursor(last)
+        if let last = reindented.last {
+            setCursor(last.id)
         }
         return true
     }

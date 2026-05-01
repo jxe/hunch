@@ -582,7 +582,7 @@ final class WorkspaceModel {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let documentURL = root.appendingPathComponent("everything.md")
             var lines: [String] = ["# Tall Doc"]
-            for i in 1...30 {
+            for i in 1...80 {
                 lines.append("Row \(String(format: "%02d", i))")
             }
             let source = lines.joined(separator: "\n\n")
