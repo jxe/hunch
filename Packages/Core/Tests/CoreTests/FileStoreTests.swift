@@ -35,4 +35,41 @@ struct FileStoreTests {
         #expect(entries.contains { $0.relativePath == "a.md" })
         #expect(entries.contains { $0.relativePath == "nested/b.md" })
     }
+
+    @Test func scanSkipsWorkspaceTrash() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("console-trash-scan-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        try "# Keep".write(to: dir.appendingPathComponent("keep.md"), atomically: true, encoding: .utf8)
+        let trash = dir.appendingPathComponent(FileStore.trashDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        try "# Gone".write(to: trash.appendingPathComponent("gone.md"), atomically: true, encoding: .utf8)
+
+        let entries = try FileStore().scan(workspaceRoot: dir)
+        #expect(entries.map(\.relativePath) == ["keep.md"])
+    }
+
+    @Test func moveToTrashPreservesRelativePathAndUniquesCollisions() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("console-trash-move-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let nested = dir.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try "# One".write(to: nested.appendingPathComponent("page.md"), atomically: true, encoding: .utf8)
+        let existingTrash = dir
+            .appendingPathComponent(FileStore.trashDirectoryName, isDirectory: true)
+            .appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: existingTrash, withIntermediateDirectories: true)
+        try "# Old".write(to: existingTrash.appendingPathComponent("page.md"), atomically: true, encoding: .utf8)
+
+        let trashedPath = try FileStore().moveToTrash(relativePath: "nested/page.md", workspaceRoot: dir)
+
+        #expect(trashedPath == "\(FileStore.trashDirectoryName)/nested/page-2.md")
+        #expect(!FileManager.default.fileExists(atPath: nested.appendingPathComponent("page.md").path))
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(trashedPath).path))
+    }
 }

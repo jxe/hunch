@@ -21,6 +21,52 @@ private struct PageScrollMetrics: Equatable {
     var contentOffsetY: CGFloat = 0
 }
 
+private enum BlockTurnInto: CaseIterable {
+    case paragraph
+    case bullet
+    case numbered
+    case todo
+    case toggle
+    case heading1
+    case heading2
+    case heading3
+    case page
+
+    var title: String {
+        switch self {
+        case .paragraph: return "Text"
+        case .bullet: return "Bullet"
+        case .numbered: return "Number"
+        case .todo: return "To-do"
+        case .toggle: return "Toggle"
+        case .heading1: return "H1"
+        case .heading2: return "H2"
+        case .heading3: return "H3"
+        case .page: return "Page"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .paragraph: return "text.alignleft"
+        case .bullet: return "list.bullet"
+        case .numbered: return "list.number"
+        case .todo: return "checkmark.square"
+        case .toggle: return "chevron.right"
+        case .heading1: return "h.square"
+        case .heading2: return "h.square"
+        case .heading3: return "h.square"
+        case .page: return "doc"
+        }
+    }
+}
+
+private struct BlockIndentAction: Hashable {
+    let delta: Int
+    let title: String
+    let systemImage: String
+}
+
 public struct PageView: View {
     @Binding public var document: Document
     public let onSubpageTap: (String) -> Void
@@ -28,6 +74,7 @@ public struct PageView: View {
     /// Inverse of subpage creation: read the .md at the given relative path and return its blocks.
     /// `nil` means the file couldn't be read or parsed; the popover action becomes a no-op.
     public let onLoadSubpage: (_ relativePath: String) -> [Block]?
+    public let onMoveSubpageToTrash: (_ relativePath: String) -> Bool
     public let onNavigateBack: () -> Void
     public let onEdited: () -> Void
     public let onBlur: () -> Void
@@ -96,7 +143,8 @@ public struct PageView: View {
         var gapHeight: CGFloat
     }
 
-    /// iOS-only — drives the leading-swipe action sheet via `.sheet(item:)`.
+    /// Drives the compact block action popover. On iOS this is opened by a
+    /// leading row swipe; on macOS by clicking the drag handle or Cmd-/ in nav mode.
     /// Wraps `BlockID` because the latter is Hashable but not Identifiable.
     fileprivate struct BlockActionSheet: Identifiable {
         let id: BlockID
@@ -112,6 +160,7 @@ public struct PageView: View {
         onSubpageTap: @escaping (String) -> Void = { _ in },
         onCreateSubpage: @escaping (_ title: String, _ requestedPath: String?, _ initialContent: String?) -> String? = { _, requestedPath, _ in requestedPath },
         onLoadSubpage: @escaping (_ relativePath: String) -> [Block]? = { _ in nil },
+        onMoveSubpageToTrash: @escaping (_ relativePath: String) -> Bool = { _ in true },
         onNavigateBack: @escaping () -> Void = {},
         onEdited: @escaping () -> Void = {},
         onBlur: @escaping () -> Void = {}
@@ -120,6 +169,7 @@ public struct PageView: View {
         self.onSubpageTap = onSubpageTap
         self.onCreateSubpage = onCreateSubpage
         self.onLoadSubpage = onLoadSubpage
+        self.onMoveSubpageToTrash = onMoveSubpageToTrash
         self.onNavigateBack = onNavigateBack
         self.onEdited = onEdited
         self.onBlur = onBlur
@@ -277,6 +327,7 @@ public struct PageView: View {
                 KeyEquivalent("\u{7F}"),
                 KeyEquivalent("c"),
                 KeyEquivalent("k"),
+                KeyEquivalent("/"),
                 KeyEquivalent("[")
             ]) { press in
                 guard editingBlock == nil else { return .ignored }
@@ -289,6 +340,12 @@ public struct PageView: View {
 
                 if press.key == KeyEquivalent("c"), modifiers.contains(.command) {
                     return copySelectionToPasteboard() ? .handled : .ignored
+                }
+
+                if press.key == KeyEquivalent("/"), modifiers.contains(.command) {
+                    guard let id = topSelectedBlockID() else { return .ignored }
+                    actionSheet = BlockActionSheet(id: id)
+                    return .handled
                 }
 
                 if press.key == .delete || press.key == KeyEquivalent("\u{8}") || press.key == KeyEquivalent("\u{7F}") {
@@ -502,7 +559,7 @@ public struct PageView: View {
                     actionSheet = BlockActionSheet(id: block.id)
                 }
             )
-            .iosBlockActionPopover(
+            .blockActionPopover(
                 isPresented: Binding(
                     get: { actionSheet?.id == block.id },
                     set: { if !$0 { actionSheet = nil } }
@@ -536,6 +593,10 @@ public struct PageView: View {
                         } else if hoveredHandleBlockID == block.id {
                             hoveredHandleBlockID = nil
                         }
+                    }
+                    .onTapGesture {
+                        setCursor(block.id)
+                        actionSheet = BlockActionSheet(id: block.id)
                     }
                     // Keep the handle hit-testable AND the gesture mounted for
                     // the duration of an in-flight drag. As the cursor leaves
@@ -1619,57 +1680,74 @@ public struct PageView: View {
     }
 
     @discardableResult
-    private func convertToHeading(blockID: BlockID, level: Int) -> KeyPress.Result {
+    private func convert(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
+        if target == .page {
+            return convertBlockToSubpage(blockID: blockID, preferredTitle: nil)
+        }
         guard let i = document.index(of: blockID) else { return .ignored }
         let block = document.blocks[i]
+        if case .subpage = block {
+            return convertSubpage(blockID: blockID, to: target)
+        }
         guard let text = textForBlockTypeChange(block) else { return .ignored }
 
-        // Indent-descendants of the original block stay logically "under" the new
-        // heading, but headings own their section by being headings, not by depth —
-        // outdent the descendants by 1 so they sit at the heading's level (with
-        // relative depth among themselves preserved).
-        let range = document.sectionRange(of: blockID) ?? (i..<i+1)
-        mutate("Make Heading") {
-            var blocks = document.blocks
-            blocks[i] = .heading(id: blockID, level: level, text: text, indent: block.indent)
-            for j in (i + 1)..<range.upperBound {
-                blocks[j] = blocks[j].withIndent(blocks[j].indent - 1)
-            }
-            document.blocks = blocks
+        mutate("Turn Into") {
+            document.blocks[i] = blockForTurnInto(target, id: blockID, text: text, indent: block.indent)
+        }
+        if target == .toggle {
+            expandedToggles.insert(blockID)
+        } else {
+            expandedToggles.remove(blockID)
         }
         return .handled
     }
 
     @discardableResult
-    private func convertToToggle(blockID: BlockID) -> KeyPress.Result {
+    private func convertSubpage(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
+        guard target != .page else { return .ignored }
         guard let i = document.index(of: blockID) else { return .ignored }
-        let block = document.blocks[i]
-        // Subpage → toggle is the inverse of promote-to-subpage: load the file,
-        // strip a leading `# title` heading if it duplicates the subpage's title,
-        // and splice the rest in as the new toggle's body (one indent deeper).
-        if case .subpage(_, let title, let path, let indent) = block {
-            guard var loaded = onLoadSubpage(path) else { return .ignored }
-            if case .heading(_, 1, let leadingText, _) = loaded.first,
-               String(leadingText.characters).trimmingCharacters(in: .whitespacesAndNewlines) == title {
-                loaded.removeFirst()
-            }
-            let body = loaded.map { $0.withIndent($0.indent + indent + 1) }
-            let toggle = Block.toggle(id: blockID, title: AttributedString(title), indent: indent)
-            mutate("Make Toggle") {
-                document.blocks.replaceSubrange(i..<(i + 1), with: [toggle] + body)
-            }
+        guard case .subpage(_, let title, let path, let indent) = document.blocks[i] else { return .ignored }
+        guard var loaded = onLoadSubpage(path) else { return .ignored }
+        if case .heading(_, 1, let leadingText, _) = loaded.first,
+           String(leadingText.characters).trimmingCharacters(in: .whitespacesAndNewlines) == title {
+            loaded.removeFirst()
+        }
+        guard onMoveSubpageToTrash(path) else { return .ignored }
+
+        let body = loaded.map { $0.withIndent($0.indent + indent + 1) }
+        let replacement = blockForTurnInto(target, id: blockID, text: AttributedString(title), indent: indent)
+        mutate("Turn Into") {
+            document.blocks.replaceSubrange(i..<(i + 1), with: [replacement] + body)
+        }
+        if target == .toggle {
             expandedToggles.insert(blockID)
-            return .handled
+        } else {
+            expandedToggles.remove(blockID)
         }
-        guard let text = textForBlockTypeChange(block) else { return .ignored }
-        // Toggles use indent-descendants for their body just like bullets/numbered/quote,
-        // so we don't shift the descendants — just swap the type. Auto-expand so the
-        // body stays visible right after the conversion.
-        mutate("Make Toggle") {
-            document.blocks[i] = .toggle(id: blockID, title: text, indent: block.indent)
-        }
-        expandedToggles.insert(blockID)
         return .handled
+    }
+
+    private func blockForTurnInto(_ target: BlockTurnInto, id: BlockID, text: AttributedString, indent: Int) -> Block {
+        switch target {
+        case .paragraph:
+            return .paragraph(id: id, text: text, indent: indent)
+        case .bullet:
+            return .bullet(id: id, text: text, indent: indent)
+        case .numbered:
+            return .numbered(id: id, text: text, indent: indent)
+        case .todo:
+            return .todo(id: id, text: text, done: false, indent: indent)
+        case .toggle:
+            return .toggle(id: id, title: text, indent: indent)
+        case .heading1:
+            return .heading(id: id, level: 1, text: text, indent: indent)
+        case .heading2:
+            return .heading(id: id, level: 2, text: text, indent: indent)
+        case .heading3:
+            return .heading(id: id, level: 3, text: text, indent: indent)
+        case .page:
+            preconditionFailure("Page conversion creates a subpage file before replacing the block")
+        }
     }
 
     /// Extracts the text/title from a block whose type can be swapped for another
@@ -1695,103 +1773,84 @@ public struct PageView: View {
     fileprivate func blockActionMenuContent(for blockID: BlockID) -> some View {
         if let i = document.index(of: blockID) {
             let block = document.blocks[i]
-            VStack(alignment: .leading, spacing: 0) {
-                if !isStructuralBlock(block) {
-                    menuRow("Promote to subpage", systemImage: "rectangle.stack.badge.plus") {
-                        _ = convertBlockToSubpage(blockID: blockID, preferredTitle: nil)
-                    }
-                }
-                if case .subpage = block {
-                    menuRow("Expand subpage", systemImage: "arrow.down.right.and.arrow.up.left") {
-                        _ = expandSubpage(blockID: blockID)
-                    }
-                }
-                if canMakeToggle(block) {
-                    menuRow("Convert to toggle", systemImage: "chevron.right") {
-                        _ = convertToToggle(blockID: blockID)
-                    }
-                }
-                if canMakeHeading(block) {
-                    Text("Heading")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 14)
-                        .padding(.top, 10)
-                        .padding(.bottom, 4)
-                    HStack(spacing: 8) {
-                        ForEach([1, 2, 3], id: \.self) { level in
-                            Button {
-                                actionSheet = nil
-                                convertToHeading(blockID: blockID, level: level)
-                            } label: {
-                                Text("H\(level)")
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Turn Into")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 2)
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.fixed(68), spacing: 8), count: 3),
+                    alignment: .leading,
+                    spacing: 8
+                ) {
+                    ForEach(turnIntoTargets(for: block), id: \.self) { target in
+                        compactMenuButton(title: target.title, systemImage: target.systemImage) {
+                            _ = convert(blockID: blockID, to: target)
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 6)
                 }
-                if canChangeIndent(at: [i], by: +1) {
-                    menuRow("Indent", systemImage: "increase.indent") {
-                        _ = changeIndent(blockID, by: +1)
+                let indentTargets = indentActions(for: i)
+                if !indentTargets.isEmpty {
+                    Divider()
+                    HStack(spacing: 8) {
+                        ForEach(indentTargets, id: \.self) { action in
+                            compactMenuButton(title: action.title, systemImage: action.systemImage) {
+                                _ = changeIndent(blockID, by: action.delta)
+                            }
+                        }
                     }
-                }
-                if canChangeIndent(at: [i], by: -1) {
-                    menuRow("Outdent", systemImage: "decrease.indent") {
-                        _ = changeIndent(blockID, by: -1)
-                    }
-                }
-                menuRow("Delete", systemImage: "trash", role: .destructive) {
-                    deleteBlocks(ids: dragIDs(for: blockID), actionName: "Delete")
-                    showActionToast("Deleted")
                 }
             }
-            .padding(.vertical, 6)
-            .frame(minWidth: 220)
+            .padding(12)
+            .frame(width: 244, alignment: .leading)
         }
     }
 
     @ViewBuilder
-    private func menuRow(
-        _ title: String,
+    private func compactMenuButton(
+        title: String,
         systemImage: String,
-        role: ButtonRole? = nil,
         action: @escaping () -> Void
     ) -> some View {
-        Button(role: role) {
+        Button {
             actionSheet = nil
             action()
         } label: {
-            Label(title, systemImage: systemImage)
-                .labelStyle(.titleAndIcon)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+            VStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(height: 20)
+                Text(title)
+                    .font(NotionStyle.body(size: 11).weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+            .frame(width: 68, height: 54)
+            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(role == .destructive ? Color.red : Color.primary)
+        .buttonStyle(.bordered)
     }
 
-    private func canMakeHeading(_ block: Block) -> Bool {
+    private func turnIntoTargets(for block: Block) -> [BlockTurnInto] {
         switch block {
         case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle:
-            return true
-        case .code, .divider, .subpage:
-            return false
+            return BlockTurnInto.allCases
+        case .subpage:
+            return BlockTurnInto.allCases.filter { $0 != .page }
+        case .code, .divider:
+            return []
         }
     }
 
-    private func canMakeToggle(_ block: Block) -> Bool {
-        switch block {
-        case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .subpage:
-            return true
-        case .toggle, .code, .divider:
-            return false
+    private func indentActions(for index: Int) -> [BlockIndentAction] {
+        var actions: [BlockIndentAction] = []
+        if canChangeIndent(at: [index], by: -1) {
+            actions.append(BlockIndentAction(delta: -1, title: "Outdent", systemImage: "decrease.indent"))
         }
+        if canChangeIndent(at: [index], by: +1) {
+            actions.append(BlockIndentAction(delta: +1, title: "Indent", systemImage: "increase.indent"))
+        }
+        return actions
     }
 
     private func isStructuralBlock(_ block: Block) -> Bool {
@@ -2033,18 +2092,16 @@ private extension View {
     }
 
     @ViewBuilder
-    func iosBlockActionPopover<Content: View>(
+    func blockActionPopover<Content: View>(
         isPresented: Binding<Bool>,
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        #if os(iOS)
         self.popover(isPresented: isPresented) {
             content()
+                #if os(iOS)
                 .presentationCompactAdaptation(.popover)
+                #endif
         }
-        #else
-        self
-        #endif
     }
 
     @ViewBuilder

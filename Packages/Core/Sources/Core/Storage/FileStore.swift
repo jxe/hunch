@@ -4,9 +4,12 @@ public enum FileStoreError: Error {
     case readFailed(URL, underlying: Error)
     case writeFailed(URL, underlying: Error)
     case scanFailed(URL, underlying: Error)
+    case moveFailed(URL, underlying: Error)
 }
 
 public struct FileStore: Sendable {
+    public static let trashDirectoryName = ".Trash"
+
     public init() {}
 
     /// Recursive scan of `root` for `*.md` files, returning entries sorted by modification date desc.
@@ -23,6 +26,12 @@ public struct FileStore: Sendable {
 
         var entries: [WorkspaceEntry] = []
         for case let url as URL in enumerator {
+            if url.pathComponents.contains(Self.trashDirectoryName) {
+                if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
             guard url.pathExtension.lowercased() == "md" else { continue }
             let values = try url.resourceValues(forKeys: Set(resourceKeys))
             guard values.isRegularFile == true else { continue }
@@ -80,6 +89,24 @@ public struct FileStore: Sendable {
         try write(BlockSerializer.serialize(document.blocks), to: document.url)
     }
 
+    @discardableResult
+    public func moveToTrash(relativePath: String, workspaceRoot root: URL) throws -> String {
+        let source = root.appendingPathComponent(relativePath)
+        let destinationPath = uniqueTrashPath(for: relativePath, workspaceRoot: root)
+        let destination = root.appendingPathComponent(destinationPath)
+
+        do {
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.moveItem(at: source, to: destination)
+            return destinationPath
+        } catch {
+            throw FileStoreError.moveFailed(source, underlying: error)
+        }
+    }
+
     private func relativePath(of url: URL, under root: URL) -> String {
         let rootPath = root.standardizedFileURL.path
         let filePath = url.standardizedFileURL.path
@@ -87,5 +114,29 @@ public struct FileStore: Sendable {
             return String(filePath.dropFirst(rootPath.count + 1))
         }
         return url.lastPathComponent
+    }
+
+    private func uniqueTrashPath(for relativePath: String, workspaceRoot root: URL) -> String {
+        let nsPath = relativePath as NSString
+        let directory = nsPath.deletingLastPathComponent
+        let filename = nsPath.lastPathComponent as NSString
+        let stem = filename.deletingPathExtension
+        let ext = filename.pathExtension
+
+        func candidatePath(suffix: String = "") -> String {
+            let filename = ext.isEmpty ? "\(stem)\(suffix)" : "\(stem)\(suffix).\(ext)"
+            if directory == "." || directory.isEmpty {
+                return "\(Self.trashDirectoryName)/\(filename)"
+            }
+            return "\(Self.trashDirectoryName)/\(directory)/\(filename)"
+        }
+
+        var candidate = candidatePath()
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: root.appendingPathComponent(candidate).path) {
+            candidate = candidatePath(suffix: "-\(suffix)")
+            suffix += 1
+        }
+        return candidate
     }
 }

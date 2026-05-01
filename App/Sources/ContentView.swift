@@ -3,11 +3,14 @@ import Core
 import UI
 import UniformTypeIdentifiers
 
+private let markdownFileType = UTType(filenameExtension: "md") ?? .plainText
+
 @MainActor
 @Observable
 final class WorkspaceModel {
     var workspaceURL: URL?
     var entries: [WorkspaceEntry] = []
+    var homeRelativePath: String?
     var openDocument: Document?
     var error: String?
     /// Stack of pushed document URLs, root → top. Empty = page list root visible.
@@ -35,22 +38,41 @@ final class WorkspaceModel {
             installTallDocUITestWorkspace()
             return
         }
-        if let url = WorkspaceBookmark.resolve() {
-            accessedWorkspaceURL = url
-            workspaceURL = url
+        if let persisted = WorkspaceBookmark.resolve() {
+            accessedWorkspaceURL = persisted.url
+            workspaceURL = persisted.url
+            homeRelativePath = persisted.homeRelativePath
             rescan()
-            if let lastPath = UserDefaults.standard.string(forKey: "console.lastOpenPage"),
-               let entry = entries.first(where: { $0.relativePath == lastPath }) {
+            if let homeRelativePath,
+               let entry = entries.first(where: { $0.relativePath == homeRelativePath }) {
                 open(entry)
             }
         }
     }
 
+    func setWorkspaceFromKeyFile(_ url: URL) {
+        let root = url.deletingLastPathComponent()
+        let homePath = url.lastPathComponent
+        do {
+            try WorkspaceBookmark.save(url: root, homeRelativePath: homePath)
+            activateWorkspaceAccess(for: root)
+            workspaceURL = root
+            homeRelativePath = homePath
+            rescan()
+            if let entry = entries.first(where: { $0.relativePath == homePath }) {
+                open(entry)
+            }
+        } catch {
+            self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
+        }
+    }
+
     func setWorkspace(_ url: URL) {
         do {
-            try WorkspaceBookmark.save(url: url)
+            try WorkspaceBookmark.save(url: url, homeRelativePath: nil)
             activateWorkspaceAccess(for: url)
             workspaceURL = url
+            homeRelativePath = nil
             rescan()
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
@@ -62,9 +84,9 @@ final class WorkspaceModel {
     func switchWorkspace() {
         flushAndClose()
         WorkspaceBookmark.clear()
-        UserDefaults.standard.removeObject(forKey: "console.lastOpenPage")
         releaseWorkspaceAccess()
         workspaceURL = nil
+        homeRelativePath = nil
         entries = []
         openDocument = nil
         documentCache = [:]
@@ -83,7 +105,6 @@ final class WorkspaceModel {
     /// Sidebar tap: reset the stack to just this entry. The list is only visible
     /// at `path == []`, so this is effectively the "open from the root" path.
     func open(_ entry: WorkspaceEntry) {
-        UserDefaults.standard.set(entry.relativePath, forKey: "console.lastOpenPage")
         if path == [entry.url] { return }
         cacheOpenDocument()
         path = [entry.url]
@@ -93,10 +114,46 @@ final class WorkspaceModel {
     func openSubpage(relativePath: String) {
         guard let workspaceURL else { return }
         let target = workspaceURL.appendingPathComponent(relativePath)
-        UserDefaults.standard.set(relativePath, forKey: "console.lastOpenPage")
         if path.last == target { return }
         cacheOpenDocument()
         path.append(target)
+    }
+
+    func setHome(_ entry: WorkspaceEntry) {
+        homeRelativePath = entry.relativePath
+        WorkspaceBookmark.setHomeRelativePath(entry.relativePath)
+    }
+
+    @discardableResult
+    func moveToTrash(_ entry: WorkspaceEntry) -> Bool {
+        guard let workspaceURL else { return false }
+        if openDocument?.url == entry.url {
+            if isDirty, let openDocument {
+                do {
+                    try store.save(openDocument)
+                    isDirty = false
+                } catch {
+                    self.error = "Save failed: \(error.localizedDescription)"
+                    return false
+                }
+            }
+            flushAndClose()
+            openDocument = nil
+        }
+        documentCache.removeValue(forKey: entry.url)
+        path.removeAll { $0 == entry.url }
+        do {
+            _ = try store.moveToTrash(relativePath: entry.relativePath, workspaceRoot: workspaceURL)
+            if homeRelativePath == entry.relativePath {
+                homeRelativePath = nil
+                WorkspaceBookmark.setHomeRelativePath(nil)
+            }
+            rescan()
+            return true
+        } catch {
+            self.error = "Failed to move \(entry.relativePath) to trash: \(error.localizedDescription)"
+            return false
+        }
     }
 
     func goBack() {
@@ -160,6 +217,25 @@ final class WorkspaceModel {
         let target = workspaceURL.appendingPathComponent(relativePath)
         guard let doc = try? store.loadDocument(at: target) else { return nil }
         return doc.blocks
+    }
+
+    @discardableResult
+    func moveSubpageToTrash(relativePath: String) -> Bool {
+        guard let workspaceURL else { return false }
+        let target = workspaceURL.appendingPathComponent(relativePath)
+        documentCache.removeValue(forKey: target)
+        do {
+            _ = try store.moveToTrash(relativePath: relativePath, workspaceRoot: workspaceURL)
+            if homeRelativePath == relativePath {
+                homeRelativePath = nil
+                WorkspaceBookmark.setHomeRelativePath(nil)
+            }
+            rescan()
+            return true
+        } catch {
+            self.error = "Failed to move \(relativePath) to trash: \(error.localizedDescription)"
+            return false
+        }
     }
 
     func closeDocument() {
@@ -464,8 +540,15 @@ struct ContentView: View {
                 .padding(.vertical, 8)
             PageListView(
                 entries: model.entries,
+                homeRelativePath: model.homeRelativePath,
                 selection: pageSelection,
-                searchText: $pageSearchText
+                searchText: $pageSearchText,
+                onSetHome: { entry in
+                    model.setHome(entry)
+                },
+                onMoveToTrash: { entry in
+                    _ = model.moveToTrash(entry)
+                }
             )
         }
         .navigationTitle(model.workspaceURL?.lastPathComponent ?? "Workspace")
@@ -484,14 +567,14 @@ struct ContentView: View {
         }
         .fileImporter(
             isPresented: $showingSwitchPicker,
-            allowedContentTypes: [.folder],
+            allowedContentTypes: [markdownFileType],
             allowsMultipleSelection: false
         ) { result in
             switch result {
             case .success(let urls):
-                if let url = urls.first, url != model.workspaceURL {
+                if let url = urls.first {
                     model.switchWorkspace()
-                    model.setWorkspace(url)
+                    model.setWorkspaceFromKeyFile(url)
                 }
             case .failure(let error):
                 model.error = error.localizedDescription
@@ -516,6 +599,9 @@ struct ContentView: View {
                 },
                 onLoadSubpage: { relativePath in
                     model.loadSubpage(relativePath: relativePath)
+                },
+                onMoveSubpageToTrash: { relativePath in
+                    model.moveSubpageToTrash(relativePath: relativePath)
                 },
                 onNavigateBack: {
                     model.goBack()
@@ -545,15 +631,15 @@ private struct WorkspacePickerView: View {
             Image(systemName: "folder.badge.plus")
                 .font(.system(size: 64))
                 .foregroundStyle(NotionStyle.mutedForeground)
-            Text("Choose a workspace folder")
+            Text("Choose a key file")
                 .font(NotionStyle.body(size: 18).weight(.semibold))
                 .foregroundStyle(NotionStyle.foreground)
-            Text("Pick a folder of .md files. Hunch will use it as the source of truth.")
+            Text("Pick the .md file Hunch should open by default. Its folder becomes the workspace.")
                 .font(NotionStyle.body(size: 14))
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            Button("Choose folder") {
+            Button("Choose key file") {
                 showingPicker = true
             }
             .buttonStyle(.borderedProminent)
@@ -563,13 +649,13 @@ private struct WorkspacePickerView: View {
         .background(NotionStyle.background)
         .fileImporter(
             isPresented: $showingPicker,
-            allowedContentTypes: [.folder],
+            allowedContentTypes: [markdownFileType],
             allowsMultipleSelection: false
         ) { result in
             switch result {
             case .success(let urls):
                 if let url = urls.first {
-                    model.setWorkspace(url)
+                    model.setWorkspaceFromKeyFile(url)
                 }
             case .failure(let error):
                 model.error = error.localizedDescription

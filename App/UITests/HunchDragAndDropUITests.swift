@@ -71,6 +71,76 @@ final class HunchDragAndDropUITests: XCTestCase {
         )
     }
 
+    /// Mostly-vertical drags often include a bit of horizontal drift. The row
+    /// swipe action must not claim those touches before the ScrollView can pan.
+    func testMostlyVerticalDiagonalDragOnRowScrollsThePage() {
+        launchTallDocApp()
+
+        let row05 = row(containing: "Row 05")
+        XCTAssertTrue(row05.waitForExistence(timeout: 3))
+        let yBefore = row05.frame.midY
+
+        let start = row05.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5))
+        let end = start.withOffset(CGVector(dx: 64, dy: -180))
+        start.press(forDuration: 0.05, thenDragTo: end)
+
+        XCTAssertTrue(
+            waitForCondition(timeout: 2) {
+                row05.exists && row05.frame.midY < yBefore - 50
+            },
+            "Expected mostly-vertical diagonal drag to scroll — Row 05.midY started at \(yBefore), " +
+            "still at \(row05.frame.midY). Row swipe is likely eating the touch."
+        )
+    }
+
+    /// The active iOS editor is a UITextView inside the page ScrollView. Dragging
+    /// on it should still allow the page to scroll when the editor itself is not
+    /// scrollable.
+    func testVerticalDragOnEditingRowScrollsThePage() {
+        launchTallDocApp()
+
+        let row05 = row(containing: "Row 05")
+        XCTAssertTrue(row05.waitForExistence(timeout: 3))
+        row05.tap()
+        let yBefore = row05.frame.midY
+
+        let start = row05.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = start.withOffset(CGVector(dx: 0, dy: -180))
+        start.press(forDuration: 0.05, thenDragTo: end)
+
+        XCTAssertTrue(
+            waitForCondition(timeout: 2) {
+                row05.exists && row05.frame.midY < yBefore - 50
+            },
+            "Expected vertical drag on the active editor to scroll — Row 05.midY started at \(yBefore), " +
+            "still at \(row05.frame.midY). UITextView gestures may be eating the touch."
+        )
+    }
+
+    /// Slow scrolls that begin in the page padding/gutter must still scroll.
+    /// The page-level reorder long-press recognizer is attached to the whole
+    /// UIScrollView, so this catches it winning outside an actual row.
+    func testSlowVerticalDragFromPageGutterScrollsThePage() {
+        launchTallDocApp()
+
+        let row05 = row(containing: "Row 05")
+        XCTAssertTrue(row05.waitForExistence(timeout: 3))
+        let yBefore = row05.frame.midY
+
+        let appOrigin = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+        let start = appOrigin.withOffset(CGVector(dx: max(8, row05.frame.minX - 12), dy: row05.frame.midY))
+        let end = start.withOffset(CGVector(dx: 0, dy: -140))
+        start.press(forDuration: 0.5, thenDragTo: end)
+
+        XCTAssertTrue(
+            waitForCondition(timeout: 2) {
+                row05.exists && row05.frame.midY < yBefore - 30
+            },
+            "Expected slow vertical drag from page gutter to scroll — Row 05.midY started at \(yBefore), " +
+            "still at \(row05.frame.midY). Page reorder long-press may be winning outside rows."
+        )
+    }
+
     /// Slow vertical drag is the case from the bug report — finger movement is
     /// hesitant enough that the press passes the 0.34s long-press threshold,
     /// which the previous implementation latched into reorder mode and ate the
