@@ -23,6 +23,7 @@ final class WorkspaceModel {
     private let saver = DocumentSaveCoordinator()
     private var debounceTask: Task<Void, Never>?
     private var backstopTask: Task<Void, Never>?
+    private var titleRefreshTask: Task<Void, Never>?
     private var filePresenter: DocumentFilePresenter?
     private var accessedWorkspaceURL: URL?
     private var isDirty = false
@@ -97,6 +98,8 @@ final class WorkspaceModel {
         openDocument = nil
         documentCache = [:]
         titleCache = [:]
+        titleRefreshTask?.cancel()
+        titleRefreshTask = nil
         path = []
     }
 
@@ -108,10 +111,11 @@ final class WorkspaceModel {
                 WorkspaceEntry(
                     url: entry.url,
                     relativePath: entry.relativePath,
-                    title: currentTitle(for: entry.url, fallback: entry.title),
+                    title: cachedTitle(for: entry, fallback: entry.title),
                     modificationDate: entry.modificationDate
                 )
             }
+            refreshTitlesInBackground(for: scanned, workspaceURL: workspaceURL)
         } catch {
             self.error = "Failed to scan workspace: \(error.localizedDescription)"
         }
@@ -219,7 +223,7 @@ final class WorkspaceModel {
                 let body = initialContent ?? "# \(title)\n"
                 try body.write(to: target, atomically: true, encoding: .utf8)
             }
-            titleCache[target] = CachedTitle(title: currentTitle(for: target, fallback: title), modificationDate: modificationDate(for: target))
+            titleCache[target] = CachedTitle(title: title, modificationDate: modificationDate(for: target))
             rescan()
             return path
         } catch {
@@ -294,11 +298,13 @@ final class WorkspaceModel {
     func updateDocumentForPage(_ document: Document) {
         let updated = documentWithCurrentTitle(document)
         documentCache[updated.url] = updated
-        refreshTitleCache(from: updated)
+        let titleChanged = refreshTitleCache(from: updated)
         if openDocument?.url == updated.url {
             openDocument = updated
         }
-        refreshEntriesFromTitleCache()
+        if titleChanged {
+            refreshEntriesFromTitleCache()
+        }
     }
 
     func markEdited() {
@@ -402,28 +408,55 @@ final class WorkspaceModel {
         guard relativePath.hasSuffix(".md") else { return nil }
         guard let url = urlForRelativePath(relativePath) else { return nil }
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let fallback = url.deletingPathExtension().lastPathComponent
-        return currentTitle(for: url, fallback: fallback)
-    }
-
-    private func currentTitle(for url: URL, fallback: String) -> String {
         if let openDocument, openDocument.url == url {
-            refreshTitleCache(from: openDocument)
             return openDocument.title
         }
-
         let mtime = modificationDate(for: url)
         if let cached = titleCache[url], cached.modificationDate == mtime {
             return cached.title
         }
+        return nil
+    }
 
-        do {
-            let title = try store.loadDocumentTitle(at: url)
-            titleCache[url] = CachedTitle(title: title, modificationDate: mtime)
-            return title
-        } catch {
-            return fallback
+    private func cachedTitle(for entry: WorkspaceEntry, fallback: String) -> String {
+        currentTitleIfCached(for: entry.url, modificationDate: entry.modificationDate) ?? fallback
+    }
+
+    private func currentTitleIfCached(for url: URL, modificationDate: Date?) -> String? {
+        if let openDocument, openDocument.url == url {
+            return openDocument.title
         }
+        guard let cached = titleCache[url], cached.modificationDate == modificationDate else { return nil }
+        return cached.title
+    }
+
+    private func refreshTitlesInBackground(for scanned: [WorkspaceEntry], workspaceURL: URL) {
+        let stale = scanned.filter { entry in
+            currentTitleIfCached(for: entry.url, modificationDate: entry.modificationDate) == nil
+        }
+        guard !stale.isEmpty else { return }
+
+        titleRefreshTask?.cancel()
+        let store = self.store
+        titleRefreshTask = Task.detached(priority: .utility) { [weak self, store, stale, workspaceURL] in
+            var refreshed: [URL: CachedTitle] = [:]
+            for entry in stale {
+                guard !Task.isCancelled else { return }
+                if let title = try? store.loadDocumentTitle(at: entry.url) {
+                    refreshed[entry.url] = CachedTitle(title: title, modificationDate: entry.modificationDate)
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.applyRefreshedTitles(refreshed, workspaceURL: workspaceURL)
+            }
+        }
+    }
+
+    private func applyRefreshedTitles(_ refreshed: [URL: CachedTitle], workspaceURL: URL) {
+        guard self.workspaceURL == workspaceURL, !refreshed.isEmpty else { return }
+        titleCache.merge(refreshed) { _, new in new }
+        refreshEntriesFromTitleCache()
     }
 
     private func documentWithCurrentTitle(_ document: Document) -> Document {
@@ -433,9 +466,12 @@ final class WorkspaceModel {
         return updated
     }
 
-    private func refreshTitleCache(from document: Document) {
+    @discardableResult
+    private func refreshTitleCache(from document: Document) -> Bool {
         let updated = documentWithCurrentTitle(document)
+        let previousTitle = titleCache[updated.url]?.title
         titleCache[updated.url] = CachedTitle(title: updated.title, modificationDate: updated.modificationDate)
+        return previousTitle != updated.title
     }
 
     private func refreshEntriesFromTitleCache() {
