@@ -20,6 +20,8 @@ extension Block {
             return .quote(id: id, text: newText, indent: indent)
         case .toggle(let id, _, let indent):
             return .toggle(id: id, title: newText, indent: indent)
+        case .templateButton(let id, _, let indent):
+            return .templateButton(id: id, label: String(newText.characters), indent: indent)
         case .code, .divider, .subpage:
             return self
         }
@@ -46,8 +48,37 @@ extension Block {
             return .divider(id: id, indent: clamped)
         case .toggle(let id, let title, _):
             return .toggle(id: id, title: title, indent: clamped)
+        case .templateButton(let id, let label, _):
+            return .templateButton(id: id, label: label, indent: clamped)
         case .subpage(let id, let title, let path, _):
             return .subpage(id: id, title: title, path: path, indent: clamped)
+        }
+    }
+
+    public func withFreshID() -> Block {
+        switch self {
+        case .paragraph(_, let text, let indent):
+            return .paragraph(text: text, indent: indent)
+        case .heading(_, let level, let text, let indent):
+            return .heading(level: level, text: text, indent: indent)
+        case .bullet(_, let text, let indent):
+            return .bullet(text: text, indent: indent)
+        case .numbered(_, let text, let indent):
+            return .numbered(text: text, indent: indent)
+        case .todo(_, let text, let done, let indent):
+            return .todo(text: text, done: done, indent: indent)
+        case .quote(_, let text, let indent):
+            return .quote(text: text, indent: indent)
+        case .code(_, let source, let language, let indent):
+            return .code(source: source, language: language, indent: indent)
+        case .divider(_, let indent):
+            return .divider(indent: indent)
+        case .toggle(_, let title, let indent):
+            return .toggle(title: title, indent: indent)
+        case .templateButton(_, let label, let indent):
+            return .templateButton(label: label, indent: indent)
+        case .subpage(_, let title, let path, let indent):
+            return .subpage(title: title, path: path, indent: indent)
         }
     }
 }

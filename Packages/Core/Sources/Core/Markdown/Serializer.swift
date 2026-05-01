@@ -32,6 +32,23 @@ public enum BlockSerializer {
                 let raw = "<details><summary>" + inlineString(title) + "</summary>\n\n" + inner + "\n</details>\n\n"
                 chunk = indentLines(raw, indent: indent)
                 consumed = end - i
+            } else if case .templateButton(_, let label, let indent) = block {
+                var end = i + 1
+                while end < blocks.count, blocks[end].indent > indent {
+                    end += 1
+                }
+                let body = blocks[(i + 1)..<end].map { $0.withIndent($0.indent - (indent + 1)) }
+                var inner = serialize(body)
+                while inner.hasSuffix("\n\n") { inner.removeLast() }
+                if body.isEmpty {
+                    inner = ""
+                } else if !inner.hasSuffix("\n") {
+                    inner += "\n"
+                }
+                let fence = templateFence(for: inner)
+                let raw = fence + "{template-button} " + templateLabel(label) + "\n" + inner + fence + "\n\n"
+                chunk = indentLines(raw, indent: indent)
+                consumed = end - i
             } else {
                 chunk = serialize(block)
                 consumed = 1
@@ -88,6 +105,10 @@ public enum BlockSerializer {
             let raw = "<details><summary>" + inlineString(title) + "</summary>\n\n</details>\n\n"
             return indentLines(raw, indent: indent)
 
+        case .templateButton(_, let label, let indent):
+            let raw = ":::{template-button} " + templateLabel(label) + "\n:::\n\n"
+            return indentLines(raw, indent: indent)
+
         case .subpage(_, let title, let path, let indent):
             return indentPrefix(indent) + "[" + title + "](" + path + ")\n\n"
         }
@@ -104,6 +125,26 @@ public enum BlockSerializer {
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { line in line.isEmpty ? "" : prefix + line }
             .joined(separator: "\n")
+    }
+
+    private static func templateLabel(_ label: String) -> String {
+        label.replacingOccurrences(of: "\n", with: " ")
+    }
+
+    private static func templateFence(for body: String) -> String {
+        var longest = 0
+        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+            var count = 0
+            for char in trimmed {
+                guard char == ":" else { break }
+                count += 1
+            }
+            if count >= 3 {
+                longest = max(longest, count)
+            }
+        }
+        return String(repeating: ":", count: max(3, longest + 1))
     }
 
     // MARK: - AttributedString → markdown inline

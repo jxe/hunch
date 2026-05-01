@@ -68,6 +68,7 @@ public struct BlockRow: View {
     let onClickAtPoint: (CGPoint) -> Void
     /// Called when the toggle's chevron is tapped. No-op for non-toggle blocks.
     let onToggleExpansion: () -> Void
+    let onTemplateButtonPress: () -> Void
     /// Click point captured at tap time, threaded into the BlockTextEditor on its first
     /// mount so the cursor lands where the user clicked rather than at end-of-text.
     let initialCursorPoint: CGPoint?
@@ -85,6 +86,7 @@ public struct BlockRow: View {
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
         onClickAtPoint: @escaping (CGPoint) -> Void = { _ in },
         onToggleExpansion: @escaping () -> Void = {},
+        onTemplateButtonPress: @escaping () -> Void = {},
         initialCursorPoint: CGPoint? = nil
     ) {
         self._block = block
@@ -99,6 +101,7 @@ public struct BlockRow: View {
         self.onAutotransform = onAutotransform
         self.onClickAtPoint = onClickAtPoint
         self.onToggleExpansion = onToggleExpansion
+        self.onTemplateButtonPress = onTemplateButtonPress
         self.initialCursorPoint = initialCursorPoint
     }
 
@@ -152,6 +155,9 @@ public struct BlockRow: View {
 
         case .toggle(_, _, let indent):
             toggleRow(indent: indent)
+
+        case .templateButton(_, _, let indent):
+            templateButtonRow(indent: indent)
 
         case .subpage(_, let title, _, let indent):
             subpageRow(title: title, indent: indent)
@@ -281,6 +287,59 @@ public struct BlockRow: View {
             .buttonStyle(.plain)
 
             editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+        }
+        .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+    }
+
+    private func templateButtonRow(indent: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    onToggleExpansion()
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .foregroundStyle(NotionStyle.foreground)
+                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .alignmentGuide(.firstTextBaseline) { dimensions in
+                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isEditing {
+                HStack(spacing: 7) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                    editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+                }
+                .foregroundStyle(NotionStyle.foreground)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(NotionStyle.selectionBackground.opacity(0.75))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            } else {
+                Button {
+                    onTemplateButtonPress()
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body()))
+                            .font(NotionStyle.body())
+                            .lineSpacing(NotionStyle.bodyLineSpacing)
+                    }
+                    .foregroundStyle(NotionStyle.foreground)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(NotionStyle.selectionBackground.opacity(0.75))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
     }

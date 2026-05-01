@@ -122,6 +122,29 @@ struct DocumentMutationTests {
         }
     }
 
+    @Test func withTextOnTemplateButtonReplacesLabel() {
+        let original = Block.templateButton(label: "old label")
+        let updated = original.withText(AttributedString("new label"))
+        if case .templateButton(let id, let label, _) = updated {
+            #expect(id == original.id)
+            #expect(label == "new label")
+        } else {
+            Issue.record("expected template button")
+        }
+    }
+
+    @Test func withFreshIDPreservesTemplateButtonContent() {
+        let original = Block.templateButton(label: "Insert", indent: 2)
+        let copied = original.withFreshID()
+        #expect(copied.id != original.id)
+        if case .templateButton(_, let label, let indent) = copied {
+            #expect(label == "Insert")
+            #expect(indent == 2)
+        } else {
+            Issue.record("expected template button copy")
+        }
+    }
+
     @Test func withIndentClamps() {
         let bullet = Block.bullet(text: AttributedString("x"), indent: 0)
         if case .bullet(_, _, let i) = bullet.withIndent(99) {
@@ -263,6 +286,8 @@ struct DocumentMutationTests {
                  .quote(_, let text, _),
                  .toggle(_, let text, _):
                 return String(text.characters)
+            case .templateButton(_, let label, _):
+                return label
             case .code(_, let source, _, _):
                 return source
             case .divider:

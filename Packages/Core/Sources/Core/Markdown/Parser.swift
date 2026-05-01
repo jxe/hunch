@@ -3,9 +3,72 @@ import Markdown
 
 public enum BlockParser {
     public static func parse(_ source: String) -> [Block] {
+        parseTemplateContainers(source, baseIndent: 0)
+    }
+
+    private static func parseMarkdown(_ source: String, baseIndent: Int) -> [Block] {
         let document = Markdown.Document(parsing: source, options: [.parseBlockDirectives])
         let children = Array(document.children)
-        return assemble(children, indent: 0).blocks
+        return assemble(children, indent: 0).blocks.map { $0.withIndent($0.indent + baseIndent) }
+    }
+
+    private struct SourceLine {
+        let text: String
+        let terminator: String
+
+        var fullText: String { text + terminator }
+    }
+
+    private struct TemplateOpen {
+        let fence: String
+        let label: String
+        let leadingSpaces: Int
+    }
+
+    private static func parseTemplateContainers(_ source: String, baseIndent: Int) -> [Block] {
+        let lines = splitPreservingLineEndings(source)
+        var out: [Block] = []
+        var regular = ""
+        var i = 0
+
+        func flushRegular() {
+            guard !regular.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                regular = ""
+                return
+            }
+            out.append(contentsOf: parseMarkdown(regular, baseIndent: baseIndent))
+            regular = ""
+        }
+
+        while i < lines.count {
+            guard let open = parseTemplateOpen(lines[i].text) else {
+                regular += lines[i].fullText
+                i += 1
+                continue
+            }
+
+            flushRegular()
+            let closeIndex = findTemplateClose(in: lines, start: i + 1, fenceLength: open.fence.count)
+            let bodyLines: ArraySlice<SourceLine>
+            if let closeIndex {
+                bodyLines = lines[(i + 1)..<closeIndex]
+                i = closeIndex + 1
+            } else {
+                bodyLines = lines[(i + 1)..<lines.count]
+                i = lines.count
+            }
+
+            let blockIndent = baseIndent + (open.leadingSpaces / 2)
+            let bodySource = bodyLines
+                .map { stripLeadingSpaces(open.leadingSpaces, from: $0.fullText) }
+                .joined()
+            let body = parseTemplateContainers(bodySource, baseIndent: blockIndent + 1)
+            out.append(.templateButton(label: open.label, indent: blockIndent))
+            out.append(contentsOf: body)
+        }
+
+        flushRegular()
+        return out
     }
 
     /// Walks a sibling list of markup nodes, lifting `<details>...</details>` runs into
@@ -110,6 +173,17 @@ public enum BlockParser {
             // Toggle HTML blocks (<details>) are handled by `assemble`; any HTMLBlock that reaches
             // here is unrecognised — round-trip it as a paragraph of its raw source.
             return [.paragraph(text: AttributedString(html.rawHTML), indent: indent)]
+
+        case let directive as BlockDirective:
+            if directive.name == "template-button" {
+                let label = directive.argumentText.segments
+                    .map(\.untrimmedText)
+                    .joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let body = assemble(Array(directive.children), indent: indent + 1).blocks
+                return [.templateButton(label: label, indent: indent)] + body
+            }
+            return [.paragraph(text: AttributedString(directive.format()), indent: indent)]
 
         default:
             // Tables, images-as-blocks, and other unsupported nodes fall back to plain text.
@@ -263,6 +337,65 @@ public enum BlockParser {
             return inlineToAttributed(Array(p.inlineChildren))
         }
         return AttributedString(source)
+    }
+
+    private static func splitPreservingLineEndings(_ source: String) -> [SourceLine] {
+        var lines: [SourceLine] = []
+        var start = source.startIndex
+        var i = source.startIndex
+        while i < source.endIndex {
+            if source[i] == "\n" {
+                lines.append(SourceLine(text: String(source[start..<i]), terminator: "\n"))
+                i = source.index(after: i)
+                start = i
+            } else {
+                i = source.index(after: i)
+            }
+        }
+        if start < source.endIndex {
+            lines.append(SourceLine(text: String(source[start..<source.endIndex]), terminator: ""))
+        }
+        return lines
+    }
+
+    private static func parseTemplateOpen(_ line: String) -> TemplateOpen? {
+        let leading = line.prefix { $0 == " " }.count
+        let trimmed = line.dropFirst(leading)
+        var fenceLength = 0
+        for char in trimmed {
+            guard char == ":" else { break }
+            fenceLength += 1
+        }
+        guard fenceLength >= 3 else { return nil }
+        let afterFence = trimmed.dropFirst(fenceLength)
+        guard afterFence.hasPrefix("{template-button}") else { return nil }
+        let label = afterFence
+            .dropFirst("{template-button}".count)
+            .trimmingCharacters(in: .whitespaces)
+        return TemplateOpen(fence: String(repeating: ":", count: fenceLength), label: label, leadingSpaces: leading)
+    }
+
+    private static func findTemplateClose(in lines: [SourceLine], start: Int, fenceLength: Int) -> Int? {
+        var i = start
+        while i < lines.count {
+            let trimmed = lines[i].text.trimmingCharacters(in: .whitespaces)
+            if trimmed.count >= fenceLength && trimmed.allSatisfy({ $0 == ":" }) {
+                return i
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    private static func stripLeadingSpaces(_ count: Int, from line: String) -> String {
+        guard count > 0 else { return line }
+        var remaining = count
+        var index = line.startIndex
+        while remaining > 0, index < line.endIndex, line[index] == " " {
+            index = line.index(after: index)
+            remaining -= 1
+        }
+        return String(line[index...])
     }
 }
 

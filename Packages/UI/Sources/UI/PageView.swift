@@ -27,6 +27,7 @@ private enum BlockTurnInto: CaseIterable {
     case numbered
     case todo
     case toggle
+    case template
     case heading1
     case heading2
     case heading3
@@ -39,6 +40,7 @@ private enum BlockTurnInto: CaseIterable {
         case .numbered: return "Number"
         case .todo: return "To-do"
         case .toggle: return "Toggle"
+        case .template: return "Template"
         case .heading1: return "H1"
         case .heading2: return "H2"
         case .heading3: return "H3"
@@ -53,6 +55,7 @@ private enum BlockTurnInto: CaseIterable {
         case .numbered: return "list.number"
         case .todo: return "checkmark.square"
         case .toggle: return "chevron.right"
+        case .template: return "plus.square.on.square"
         case .heading1: return "h.square"
         case .heading2: return "h.square"
         case .heading3: return "h.square"
@@ -67,6 +70,7 @@ private enum BlockTurnInto: CaseIterable {
         case .numbered: return "n"
         case .todo: return "d"
         case .toggle: return "t"
+        case .template: return "m"
         case .heading1: return "1"
         case .heading2: return "2"
         case .heading3: return "3"
@@ -173,6 +177,7 @@ public struct PageView: View {
     /// page opens. Toggle expansion isn't persisted to markdown (matches the previous
     /// behavior, where the model carried `expanded` but the serializer dropped it).
     @State private var expandedToggles: Set<BlockID> = []
+    @State private var expandedTemplateButtons: Set<BlockID> = []
 
     public init(
         document: Binding<Document>,
@@ -325,6 +330,7 @@ public struct PageView: View {
                 }
                 pageFocused = true
                 expandedToggles = []
+                expandedTemplateButtons = []
                 // Captured undo entries reference the previous document's blocks — drop them.
                 undoController.reset()
             }
@@ -555,7 +561,7 @@ public struct PageView: View {
             numberingIndex: numberingIndex,
             isSelected: isSelected,
             isEditing: isEditing,
-            isExpanded: expandedToggles.contains(block.id),
+            isExpanded: expandedToggles.contains(block.id) || expandedTemplateButtons.contains(block.id),
             onKey: { key in handleEditorKey(key, blockID: block.id) },
             onEdited: onEdited,
             onAutotransform: { transform, remainingText in
@@ -566,11 +572,20 @@ public struct PageView: View {
                 enterEditMode(on: block.id)
             },
             onToggleExpansion: {
-                if expandedToggles.contains(block.id) {
+                if case .templateButton = block {
+                    if expandedTemplateButtons.contains(block.id) {
+                        expandedTemplateButtons.remove(block.id)
+                    } else {
+                        expandedTemplateButtons.insert(block.id)
+                    }
+                } else if expandedToggles.contains(block.id) {
                     expandedToggles.remove(block.id)
                 } else {
                     expandedToggles.insert(block.id)
                 }
+            },
+            onTemplateButtonPress: {
+                instantiateTemplateButton(blockID: block.id)
             },
             initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
         )
@@ -941,6 +956,8 @@ public struct PageView: View {
             return "Divider"
         case .toggle:
             return "Toggle"
+        case .templateButton:
+            return "Template button"
         case .subpage:
             return "Subpage"
         }
@@ -1005,6 +1022,27 @@ public struct PageView: View {
         setCursor(newBlock.id)
         editingBlock = nil
         editorFocused = nil
+        pageFocused = true
+    }
+
+    private func instantiateTemplateButton(blockID: BlockID) {
+        guard let i = document.index(of: blockID),
+              case .templateButton = document.blocks[i],
+              let range = document.sectionRange(of: blockID) else { return }
+        let body = document.blocks[(i + 1)..<range.upperBound]
+        guard !body.isEmpty else { return }
+
+        let copies = body.map { block in
+            block
+                .withIndent(max(0, block.indent - 1))
+                .withFreshID()
+        }
+        mutate("Insert Template") {
+            document.blocks.insert(contentsOf: copies, at: range.upperBound)
+        }
+        if let first = copies.first {
+            setCursor(first.id)
+        }
         pageFocused = true
     }
 
@@ -1253,49 +1291,47 @@ public struct PageView: View {
         selection = [id]
     }
 
-    /// Nav-mode →: open the toggle under the cursor. Returns false (no-op) if the cursor
-    /// isn't on a single-selected toggle.
+    /// Nav-mode →: open the collapsible section under the cursor.
     @discardableResult
     private func handleNavRightArrow() -> Bool {
         guard let id = cursor, selection.count == 1 else { return false }
         guard let block = document.blocks.first(where: { $0.id == id }),
-              case .toggle = block else { return false }
+              isCollapsibleSection(block) else { return false }
         withAnimation(.easeInOut(duration: 0.15)) {
-            expandedToggles.insert(id)
+            expandSection(block)
         }
         return true
     }
 
-    /// Nav-mode ←: close the toggle under the cursor if it's expanded; otherwise jump up
-    /// to the innermost enclosing toggle, close it, and move the selection there. Returns
-    /// false (no-op) when there's no toggle to act on.
+    /// Nav-mode ←: close the current section if expanded, otherwise close the innermost
+    /// enclosing collapsible section and move the selection there.
     @discardableResult
     private func handleNavLeftArrow() -> Bool {
         guard let id = cursor, selection.count == 1 else { return false }
         guard let cursorIdx = document.blocks.firstIndex(where: { $0.id == id }) else { return false }
 
-        if case .toggle = document.blocks[cursorIdx], expandedToggles.contains(id) {
+        if isSectionExpanded(document.blocks[cursorIdx]) {
             withAnimation(.easeInOut(duration: 0.15)) {
-                expandedToggles.remove(id)
+                collapseSection(document.blocks[cursorIdx])
             }
             return true
         }
 
-        guard let parentID = enclosingToggleID(at: cursorIdx) else { return false }
+        guard let parentID = enclosingCollapsibleSectionID(at: cursorIdx),
+              let parent = document.blocks.first(where: { $0.id == parentID }) else { return false }
         withAnimation(.easeInOut(duration: 0.15)) {
-            expandedToggles.remove(parentID)
+            collapseSection(parent)
         }
         setCursor(parentID)
         return true
     }
 
-    /// Innermost ancestor toggle whose section contains `cursorIdx`. nil when the cursor
-    /// isn't inside any toggle's body.
-    private func enclosingToggleID(at cursorIdx: Int) -> BlockID? {
+    /// Innermost ancestor collapsible section whose section contains `cursorIdx`.
+    private func enclosingCollapsibleSectionID(at cursorIdx: Int) -> BlockID? {
         var best: (id: BlockID, indent: Int)?
         for i in 0..<cursorIdx {
             let b = document.blocks[i]
-            guard case .toggle = b else { continue }
+            guard isCollapsibleSection(b) else { continue }
             if let range = document.sectionRange(of: b.id), range.contains(cursorIdx) {
                 if best == nil || b.indent > best!.indent {
                     best = (b.id, b.indent)
@@ -1306,14 +1342,15 @@ public struct PageView: View {
     }
 
     /// IDs of blocks that should be hidden from rendering and from arrow-nav because they
-    /// live inside a collapsed toggle's section. The toggle row itself is always visible;
-    /// only its body (subsequent blocks at greater indent) is hidden when collapsed.
+    /// live inside a collapsed section. The section row itself is always visible; only its
+    /// body (subsequent blocks at greater indent) is hidden when collapsed.
     private func hiddenBlockIDs(in blocks: [Block]) -> Set<BlockID> {
         var hidden: Set<BlockID> = []
         var i = 0
         while i < blocks.count {
             let block = blocks[i]
-            if case .toggle(let id, _, let indent) = block, !expandedToggles.contains(id) {
+            if isCollapsedSection(block) {
+                let indent = block.indent
                 var end = i + 1
                 while end < blocks.count, blocks[end].indent > indent {
                     hidden.insert(blocks[end].id)
@@ -1325,6 +1362,59 @@ public struct PageView: View {
             i += 1
         }
         return hidden
+    }
+
+    private func isCollapsibleSection(_ block: Block) -> Bool {
+        switch block {
+        case .toggle, .templateButton:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isCollapsedSection(_ block: Block) -> Bool {
+        switch block {
+        case .toggle(let id, _, _):
+            return !expandedToggles.contains(id)
+        case .templateButton(let id, _, _):
+            return !expandedTemplateButtons.contains(id)
+        default:
+            return false
+        }
+    }
+
+    private func isSectionExpanded(_ block: Block) -> Bool {
+        switch block {
+        case .toggle(let id, _, _):
+            return expandedToggles.contains(id)
+        case .templateButton(let id, _, _):
+            return expandedTemplateButtons.contains(id)
+        default:
+            return false
+        }
+    }
+
+    private func expandSection(_ block: Block) {
+        switch block {
+        case .toggle(let id, _, _):
+            expandedToggles.insert(id)
+        case .templateButton(let id, _, _):
+            expandedTemplateButtons.insert(id)
+        default:
+            break
+        }
+    }
+
+    private func collapseSection(_ block: Block) {
+        switch block {
+        case .toggle(let id, _, _):
+            expandedToggles.remove(id)
+        case .templateButton(let id, _, _):
+            expandedTemplateButtons.remove(id)
+        default:
+            break
+        }
     }
 
     private func previousVisibleBlock(before id: BlockID, in blocks: [Block], hidden: Set<BlockID>) -> Block? {
@@ -1754,6 +1844,9 @@ public struct PageView: View {
         if target == .page {
             return convertBlockToSubpage(blockID: blockID, preferredTitle: nil)
         }
+        if target == .template {
+            return convertBlockToTemplate(blockID: blockID)
+        }
         guard let i = document.index(of: blockID) else { return .ignored }
         let block = document.blocks[i]
         if case .subpage = block {
@@ -1769,6 +1862,28 @@ public struct PageView: View {
         } else {
             expandedToggles.remove(blockID)
         }
+        return .handled
+    }
+
+    @discardableResult
+    private func convertBlockToTemplate(blockID: BlockID) -> KeyPress.Result {
+        guard let i = document.index(of: blockID) else { return .ignored }
+        let block = document.blocks[i]
+        guard let text = textForBlockTypeChange(block) else { return .ignored }
+        let label = cleanedTitle(String(text.characters)) ?? "Template"
+        let range = document.sectionRange(of: blockID) ?? (i..<i + 1)
+        let hasBody = range.upperBound > i + 1
+        let replacement = Block.templateButton(id: blockID, label: label, indent: block.indent)
+        let defaultBody = Block.paragraph(text: AttributedString(), indent: block.indent + 1)
+
+        mutate("Turn Into") {
+            document.blocks[i] = replacement
+            if !hasBody {
+                document.blocks.insert(defaultBody, at: i + 1)
+            }
+        }
+        expandedToggles.remove(blockID)
+        expandedTemplateButtons.insert(blockID)
         return .handled
     }
 
@@ -1791,8 +1906,11 @@ public struct PageView: View {
         }
         if target == .toggle {
             expandedToggles.insert(blockID)
+        } else if target == .template {
+            expandedTemplateButtons.insert(blockID)
         } else {
             expandedToggles.remove(blockID)
+            expandedTemplateButtons.remove(blockID)
         }
         return .handled
     }
@@ -1809,6 +1927,8 @@ public struct PageView: View {
             return .todo(id: id, text: text, done: false, indent: indent)
         case .toggle:
             return .toggle(id: id, title: text, indent: indent)
+        case .template:
+            return .templateButton(id: id, label: String(text.characters), indent: indent)
         case .heading1:
             return .heading(id: id, level: 1, text: text, indent: indent)
         case .heading2:
@@ -1832,6 +1952,8 @@ public struct PageView: View {
              .quote(_, let t, _),
              .toggle(_, let t, _):
             return t
+        case .templateButton(_, let label, _):
+            return AttributedString(label)
         case .todo(_, let t, _, _):
             return t
         case .code, .divider, .subpage:
@@ -1960,7 +2082,10 @@ public struct PageView: View {
 
     private func turnIntoTargets(for blocks: [Block]) -> [BlockTurnInto] {
         BlockTurnInto.allCases.filter { target in
-            blocks.allSatisfy { canTurn($0, into: target) }
+            if target == .template, blocks.count > 1 {
+                return false
+            }
+            return blocks.allSatisfy { canTurn($0, into: target) }
         }
     }
 
@@ -1968,9 +2093,11 @@ public struct PageView: View {
         switch target {
         case .page:
             return !isStructuralBlock(block)
+        case .template:
+            return textForBlockTypeChange(block) != nil
         default:
             switch block {
-            case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle, .subpage:
+            case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle, .templateButton, .subpage:
                 return true
             case .code, .divider:
                 return false
@@ -2094,6 +2221,7 @@ public struct PageView: View {
         case .heading(_, _, _, let indent),
              .paragraph(_, _, let indent),
              .toggle(_, _, let indent),
+             .templateButton(_, _, let indent),
              .code(_, _, _, let indent),
              .divider(_, let indent),
              .subpage(_, _, _, let indent):
@@ -2778,7 +2906,7 @@ private struct IOSRowSwipeActions: ViewModifier {
                         .frame(width: max(0, clamped))
                 }
             }
-            .gesture(
+            .simultaneousGesture(
                 DragGesture(minimumDistance: 18, coordinateSpace: .local)
                     .updating($drag) { value, state, _ in
                         let h = value.translation.width

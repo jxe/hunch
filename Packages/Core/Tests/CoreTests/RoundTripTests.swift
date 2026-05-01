@@ -313,6 +313,81 @@ struct RoundTripTests {
         }
     }
 
+    @Test func templateButtonSimple() {
+        let src = """
+        :::{template-button} Meeting notes
+        ## Agenda
+        - Topic
+        :::
+        """
+        let blocks = BlockParser.parse(src)
+        #expect(blocks.count == 3)
+        guard case .templateButton(_, let label, let indent) = blocks[0] else {
+            Issue.record("not a template button")
+            return
+        }
+        #expect(label == "Meeting notes")
+        #expect(indent == 0)
+        if case .heading(_, 2, let text, let i) = blocks[1] {
+            #expect(String(text.characters) == "Agenda")
+            #expect(i == 1)
+        } else {
+            Issue.record("body heading missing")
+        }
+        if case .bullet(_, let text, let i) = blocks[2] {
+            #expect(String(text.characters) == "Topic")
+            #expect(i == 1)
+        } else {
+            Issue.record("body bullet missing")
+        }
+        roundTrip(src)
+    }
+
+    @Test func templateButtonNestedAndIndented() {
+        let src = """
+          :::{template-button} Outer: punctuation, ok!
+          - one
+            - two
+          :::{template-button} Inner
+          Body
+          :::
+          :::
+        """
+        let blocks = BlockParser.parse(src)
+        guard case .templateButton(_, let outer, 1) = blocks[0] else {
+            Issue.record("outer template missing")
+            return
+        }
+        #expect(outer == "Outer: punctuation, ok!")
+        let innerIndex = blocks.firstIndex {
+            if case .templateButton(_, "Inner", _) = $0 { return true }
+            return false
+        }
+        guard let innerIndex, case .templateButton(_, _, let innerIndent) = blocks[innerIndex] else {
+            Issue.record("inner template missing")
+            return
+        }
+        #expect(innerIndent == 2)
+        roundTrip(src)
+    }
+
+    @Test func templateButtonFenceCollisionUsesLongerFence() {
+        let blocks: [Block] = [
+            .templateButton(label: "Snippet"),
+            .paragraph(text: AttributedString("::::"), indent: 1)
+        ]
+        let serialized = BlockSerializer.serialize(blocks)
+        #expect(serialized.hasPrefix(":::::{template-button} Snippet"))
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 2)
+        if case .paragraph(_, let text, let indent) = reparsed[1] {
+            #expect(String(text.characters) == "::::")
+            #expect(indent == 1)
+        } else {
+            Issue.record("body paragraph missing")
+        }
+    }
+
     // MARK: - helpers
 
     private func roundTrip(_ source: String, file: StaticString = #filePath, line: UInt = #line) {
@@ -338,6 +413,7 @@ struct RoundTripTests {
         case .code(_, _, let lang, let i): return "code-\(lang ?? "nil")-\(i)"
         case .divider(_, let i): return "divider-\(i)"
         case .toggle(_, _, let i): return "toggle-\(i)"
+        case .templateButton(_, _, let i): return "template-\(i)"
         case .subpage(_, _, _, let i): return "subpage-\(i)"
         }
     }
@@ -349,6 +425,8 @@ struct RoundTripTests {
              .todo(_, let t, _, _), .quote(_, let t, _),
              .toggle(_, let t, _):
             return String(t.characters)
+        case .templateButton(_, let label, _):
+            return label
         case .code(_, let s, _, _): return s.trimmingCharacters(in: .whitespacesAndNewlines)
         case .divider: return ""
         case .subpage(_, let title, _, _): return title

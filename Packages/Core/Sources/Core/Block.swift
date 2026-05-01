@@ -10,6 +10,7 @@ public enum Block: Identifiable, Equatable, Sendable {
     case code(id: BlockID = BlockID(), source: String, language: String?, indent: Int = 0)
     case divider(id: BlockID = BlockID(), indent: Int = 0)
     case toggle(id: BlockID = BlockID(), title: AttributedString, indent: Int = 0)
+    case templateButton(id: BlockID = BlockID(), label: String, indent: Int = 0)
     case subpage(id: BlockID = BlockID(), title: String, path: String, indent: Int = 0)
 
     public var id: BlockID {
@@ -23,6 +24,7 @@ public enum Block: Identifiable, Equatable, Sendable {
              .code(let id, _, _, _),
              .divider(let id, _),
              .toggle(let id, _, _),
+             .templateButton(let id, _, _),
              .subpage(let id, _, _, _):
             return id
         }
@@ -39,6 +41,7 @@ public enum Block: Identifiable, Equatable, Sendable {
              .code(_, _, _, let i),
              .divider(_, let i),
              .toggle(_, _, let i),
+             .templateButton(_, _, let i),
              .subpage(_, _, _, let i):
             return i
         }
@@ -58,6 +61,8 @@ public enum Block: Identifiable, Equatable, Sendable {
             return text
         case .toggle(_, let title, _):
             return title
+        case .templateButton(_, let label, _):
+            return AttributedString(label)
         case .code, .divider, .subpage:
             return AttributedString()
         }
