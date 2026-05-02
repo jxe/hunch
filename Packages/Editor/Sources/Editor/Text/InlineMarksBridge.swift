@@ -56,7 +56,7 @@ enum InlineMark {
 /// We deliberately drive bold/italic/code/strike off of platform attributes (font traits,
 /// strikethrough style) when reading back, because that's what the platform text view
 /// mutates during edits. The custom typed `AttributedStringKey`s live only in the model.
-enum InlineMarksKit {
+enum InlineMarksBridge {
 
     /// Convert a model `AttributedString` into the `NSAttributedString` for textStorage.
     /// `baseFontSize` and `baseBold` come from the row's typography (e.g. an H2 row has

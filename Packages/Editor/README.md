@@ -85,9 +85,11 @@ into a new empty paragraph at that index.
 
 **Voice recording**
 Cmd-Shift-V starts a `PageSpeechRecorder`; transcripts append to the
-focused block in real time. The host can also kick off a recording via
-`VoiceRecordingLaunchRequest.requestStart()` (e.g. from a Siri intent) —
-the editor consumes the pending request on its next `onChange(of: scenePhase)`.
+focused block in real time. The host can also kick off a recording at
+any time by calling `editorState.requestStartVoiceRecording()` — the
+editor watches `voiceRecordingStartTicket` and runs the same path as
+the mic button. (Hunch wires this from a Siri intent via its own
+`VoiceRecordingLaunchRequest` bridge in `App/Sources/`.)
 
 **Copy / paste**
 The editor reads/writes the system pasteboard. The host owns the wire

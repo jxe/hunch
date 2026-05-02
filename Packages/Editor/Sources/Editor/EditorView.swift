@@ -94,7 +94,6 @@ public struct EditorView: View {
     @State var pinchAutoScrollVelocity: CGFloat = 0
     @State var speechRecorder = PageSpeechRecorder()
     @State var speechError: String?
-    @Environment(\.scenePhase) private var scenePhase
 
     /// Drives the compact block action popover. On iOS this is opened by a
     /// leading row swipe; on macOS by clicking the drag handle or Cmd-/ in nav mode.
@@ -151,7 +150,7 @@ public struct EditorView: View {
                     ForEach(visiblePairs, id: \.element.id) { (i, block) in
                         let prev = previousVisibleBlock(before: block.id, in: snapshot, hidden: hidden)
                         let gap = BlockSpacing.gap(before: block, after: prev)
-                        let pinchExtraTopGap: CGFloat = (state.pinchPreview?.insertIndex == i) ? (state.pinchPreview?.gapHeight ?? 0) : 0
+                        let pinchExtraTopGap = pinchExtraGap(forIndex: i)
                         let reorderExtraTopGap = reorderDriftGap(for: i)
                         rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
                             .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
@@ -161,7 +160,7 @@ public struct EditorView: View {
                     // Trailing slot for "insert at end" — claims the existing bottom 32pt
                     // page padding. Total visual spacing unchanged: the outer
                     // `.padding(.vertical, 32)` becomes `.padding(.top, 32)` only.
-                    let trailingPinchGap: CGFloat = (state.pinchPreview?.insertIndex == snapshot.count) ? (state.pinchPreview?.gapHeight ?? 0) : 0
+                    let trailingPinchGap = pinchExtraGap(forIndex: snapshot.count)
                     gapDropTarget(at: snapshot.count, height: 32 + trailingPinchGap + reorderDriftGap(for: snapshot.count))
                         .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverIndex)
                 }
@@ -255,7 +254,6 @@ public struct EditorView: View {
                 }
                 requestPageNavigationFocus()
                 installUndoApply()
-                consumePendingVoiceRecordingStart()
             }
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
@@ -274,16 +272,11 @@ public struct EditorView: View {
             .onChange(of: state.anchor) { _, _ in
                 actionSheet = nil
             }
-            .onChange(of: scenePhase) { _, newValue in
-                if newValue == .active {
-                    consumePendingVoiceRecordingStart()
-                }
+            .onChange(of: state.voiceRecordingStartTicket) { _, _ in
+                Task { await handleVoiceRecordingStart() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .hunchEscapeKeyDown)) { _ in
                 handleEscapeKey()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: VoiceRecordingLaunchRequest.notificationName)) { _ in
-                consumePendingVoiceRecordingStart()
             }
             .onKeyPress(keys: [
                 .upArrow, .downArrow, .leftArrow, .rightArrow, .return, .escape, .tab,
@@ -298,93 +291,7 @@ public struct EditorView: View {
                 KeyEquivalent("s"),
                 KeyEquivalent("/"),
                 KeyEquivalent("[")
-            ]) { press in
-                guard state.editingBlock == nil else { return .ignored }
-                let modifiers = press.modifiers
-
-                if press.key == KeyEquivalent("["), modifiers.contains(.command) {
-                    onNavigateBack()
-                    return .handled
-                }
-
-                if press.key == KeyEquivalent("c"), modifiers.contains(.command) {
-                    return copySelectionToPasteboard() ? .handled : .ignored
-                }
-
-                if press.key == KeyEquivalent("v"), modifiers.contains(.command) {
-                    return pasteFromPasteboard() ? .handled : .ignored
-                }
-
-                if press.key == KeyEquivalent("x"), modifiers.contains(.command) {
-                    return cutSelectionToPasteboard() ? .handled : .ignored
-                }
-
-                if press.key == KeyEquivalent("s"), modifiers.contains([.command, .shift]) {
-                    return toggleStrikethroughOnSelection() ? .handled : .ignored
-                }
-
-                if press.key == KeyEquivalent("/"), modifiers.contains(.command) {
-                    guard let id = topSelectedBlockID() else { return .ignored }
-                    actionSheet = BlockActionSheet(id: id)
-                    return .handled
-                }
-
-                if press.key == .delete || press.key == KeyEquivalent("\u{8}") || press.key == KeyEquivalent("\u{7F}") {
-                    deleteSelection()
-                    return .handled
-                }
-                // Shift+Tab arrives as a distinct character (BackTab, U+0019), not as
-                // .tab + shift modifier — SwiftUI's `.onKeyPress(.tab)` won't match it.
-                if press.key == KeyEquivalent("\u{19}") {
-                    indentSelection(by: -1)
-                    return .handled
-                }
-
-                switch press.key {
-                case .upArrow:
-                    if modifiers.contains(.option) {
-                        moveSelectionInDocument(by: -1)
-                    } else if modifiers.contains(.shift) {
-                        extendSelection(by: -1)
-                    } else {
-                        moveCursor(by: -1)
-                    }
-                    return .handled
-                case .downArrow:
-                    if modifiers.contains(.option) {
-                        moveSelectionInDocument(by: +1)
-                    } else if modifiers.contains(.shift) {
-                        extendSelection(by: +1)
-                    } else {
-                        moveCursor(by: +1)
-                    }
-                    return .handled
-                case .rightArrow:
-                    return handleNavRightArrow() ? .handled : .ignored
-                case .leftArrow:
-                    return handleNavLeftArrow() ? .handled : .ignored
-                case .tab:
-                    indentSelection(by: modifiers.contains(.shift) ? -1 : +1)
-                    return .handled
-                case .return:
-                    if let id = state.cursor, state.selection.count == 1 {
-                        if navigateIntoSubpage(id) {
-                            return .handled
-                        }
-                        enterEditMode(on: id)
-                    }
-                    return .handled
-                case .escape:
-                    handleEscapeKey()
-                    return .handled
-                default:
-                    if press.key == KeyEquivalent("k"), modifiers.contains(.command) {
-                        guard let id = state.cursor, state.selection.count == 1 else { return .ignored }
-                        return convertBlockToSubpage(blockID: id, preferredTitle: nil)
-                    }
-                    return .ignored
-                }
-            }
+            ], action: handleNavKeyPress)
             .toolbar {
                 ToolbarItem(placement: speechToolbarPlacement) {
                     speechRecordButton
@@ -750,6 +657,97 @@ public struct EditorView: View {
     }
 
     // MARK: - Undo
+
+    /// Top-level key handler routed from `.onKeyPress` in the body. Extracted
+    /// from the body so SwiftUI's body type-checker doesn't have to swallow
+    /// the whole switch in one go.
+    func handleNavKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        guard state.editingBlock == nil else { return .ignored }
+        let modifiers = press.modifiers
+
+        if press.key == KeyEquivalent("["), modifiers.contains(.command) {
+            onNavigateBack()
+            return .handled
+        }
+
+        if press.key == KeyEquivalent("c"), modifiers.contains(.command) {
+            return copySelectionToPasteboard() ? .handled : .ignored
+        }
+
+        if press.key == KeyEquivalent("v"), modifiers.contains(.command) {
+            return pasteFromPasteboard() ? .handled : .ignored
+        }
+
+        if press.key == KeyEquivalent("x"), modifiers.contains(.command) {
+            return cutSelectionToPasteboard() ? .handled : .ignored
+        }
+
+        if press.key == KeyEquivalent("s"), modifiers.contains([.command, .shift]) {
+            return toggleStrikethroughOnSelection() ? .handled : .ignored
+        }
+
+        if press.key == KeyEquivalent("/"), modifiers.contains(.command) {
+            guard let id = topSelectedBlockID() else { return .ignored }
+            actionSheet = BlockActionSheet(id: id)
+            return .handled
+        }
+
+        if press.key == .delete || press.key == KeyEquivalent("\u{8}") || press.key == KeyEquivalent("\u{7F}") {
+            deleteSelection()
+            return .handled
+        }
+        // Shift+Tab arrives as a distinct character (BackTab, U+0019), not as
+        // .tab + shift modifier — SwiftUI's `.onKeyPress(.tab)` won't match it.
+        if press.key == KeyEquivalent("\u{19}") {
+            indentSelection(by: -1)
+            return .handled
+        }
+
+        switch press.key {
+        case .upArrow:
+            if modifiers.contains(.option) {
+                moveSelectionInDocument(by: -1)
+            } else if modifiers.contains(.shift) {
+                extendSelection(by: -1)
+            } else {
+                moveCursor(by: -1)
+            }
+            return .handled
+        case .downArrow:
+            if modifiers.contains(.option) {
+                moveSelectionInDocument(by: +1)
+            } else if modifiers.contains(.shift) {
+                extendSelection(by: +1)
+            } else {
+                moveCursor(by: +1)
+            }
+            return .handled
+        case .rightArrow:
+            return handleNavRightArrow() ? .handled : .ignored
+        case .leftArrow:
+            return handleNavLeftArrow() ? .handled : .ignored
+        case .tab:
+            indentSelection(by: modifiers.contains(.shift) ? -1 : +1)
+            return .handled
+        case .return:
+            if let id = state.cursor, state.selection.count == 1 {
+                if navigateIntoSubpage(id) {
+                    return .handled
+                }
+                enterEditMode(on: id)
+            }
+            return .handled
+        case .escape:
+            handleEscapeKey()
+            return .handled
+        default:
+            if press.key == KeyEquivalent("k"), modifiers.contains(.command) {
+                guard let id = state.cursor, state.selection.count == 1 else { return .ignored }
+                return convertBlockToSubpage(blockID: id, preferredTitle: nil)
+            }
+            return .ignored
+        }
+    }
 
     /// Wrap a structural mutation so its inverse is registered with `undoController`.
     /// Callers must only call `mutate` when actually changing something — the helper

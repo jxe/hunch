@@ -6,6 +6,13 @@ extension EditorView {
     static var pinchInsertCommitGap: CGFloat { 40 }
     static var pinchInsertFocusGap: CGFloat { 110 }
 
+    /// Extra top-padding to reveal an opening pinch-gap above the row at
+    /// `index`. Zero unless the active pinch preview is targeting that slot.
+    func pinchExtraGap(forIndex index: Int) -> CGFloat {
+        guard let preview = state.pinchPreview, preview.insertIndex == index else { return 0 }
+        return preview.gapHeight
+    }
+
     /// Soft asymptote past `soft` — gap continues to track fingers but tightens
     /// toward `max`. Replaces a hard clamp, which feels dead at the limit.
     fileprivate func pinchRubberBand(_ x: CGFloat, soft: CGFloat = 140, max: CGFloat = 240) -> CGFloat {

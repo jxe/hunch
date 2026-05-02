@@ -2,15 +2,16 @@ import SwiftUI
 
 // MARK: - Voice recording / speech-to-text
 //
-// Toolbar mic button + the consume-pending-start hook (kicked off externally
-// by Siri intents via `VoiceRecordingLaunchRequest`). Transcripts are inserted
-// either into the active editor's text via `insertText:` (for live typing
-// experience while still in edit mode) or as a new paragraph at end-of-doc.
+// Toolbar mic button + the host-driven start hook
+// (`EditorState.requestStartVoiceRecording()` bumps `voiceRecordingStartTicket`
+// — the editor watches that and runs the same path as the mic button).
+// Transcripts are inserted either into the active editor's text via
+// `insertText:` (for live typing experience while still in edit mode) or
+// as a new paragraph at end-of-doc.
 
 extension EditorView {
-    func consumePendingVoiceRecordingStart() {
-        guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
-        Task { await handleSpeechRecordButton() }
+    func handleVoiceRecordingStart() async {
+        await handleSpeechRecordButton()
     }
 
     var speechErrorBinding: Binding<Bool> {

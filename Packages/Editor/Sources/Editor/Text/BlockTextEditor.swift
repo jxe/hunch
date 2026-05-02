@@ -280,18 +280,18 @@ struct MacBlockTextEditor: NSViewRepresentable {
     }
 
     private func loadAttributedString(into view: ContainedTextView) {
-        let ns = InlineMarksKit.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
+        let ns = InlineMarksBridge.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
         view.textStorage?.setAttributedString(ns)
     }
 
     private func applyTypingAttributes(to view: NSTextView) {
         // NB: don't write `view.font =` here. NSTextView's font setter applies across the
         // entire text storage, which would stomp the per-range bold/italic font traits
-        // that `InlineMarksKit.toggleMark` writes. The base font is already applied per-
+        // that `InlineMarksBridge.toggleMark` writes. The base font is already applied per-
         // range by `loadAttributedString` (via toNS).
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
-        let font = InlineMarksKit.interFont(size: fontSize, bold: bold, italic: false)
+        let font = InlineMarksBridge.interFont(size: fontSize, bold: bold, italic: false)
         view.defaultParagraphStyle = style
         view.typingAttributes = [
             .font: font,
@@ -301,7 +301,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     }
 
     nonisolated static func resolveNSFont(size: CGFloat, bold: Bool) -> NSFont {
-        InlineMarksKit.interFont(size: size, bold: bold, italic: false)
+        InlineMarksBridge.interFont(size: size, bold: bold, italic: false)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -333,7 +333,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
             // The BlockRow setter dedupes via `attributedStringMarksEqual` so we don't
             // chunk autosave debounces on no-op keystrokes.
             let nsAttr = tv.textStorage ?? NSTextStorage()
-            parent.text = InlineMarksKit.toModel(nsAttr)
+            parent.text = InlineMarksBridge.toModel(nsAttr)
             reportMentionTrigger(in: tv, composing: isComposing)
         }
 
@@ -500,7 +500,7 @@ final class ContainedTextView: NSTextView {
               let parent = coordinator?.parent else { return }
         let range = selectedRange()
         guard range.length > 0 else { return }
-        InlineMarksKit.toggleMark(mark, on: range, in: storage, baseFontSize: parent.fontSize, baseBold: parent.bold)
+        InlineMarksBridge.toggleMark(mark, on: range, in: storage, baseFontSize: parent.fontSize, baseBold: parent.bold)
         didChangeText()
     }
 
@@ -631,7 +631,7 @@ final class IOSEditorBridge {
             return
         }
         let storage = tv.textStorage
-        InlineMarksKit.toggleMark(mark, on: range, in: storage, baseFontSize: fontSize, baseBold: bold)
+        InlineMarksBridge.toggleMark(mark, on: range, in: storage, baseFontSize: fontSize, baseBold: bold)
         // Notify the delegate so the binding picks up the new attributes.
         tv.delegate?.textViewDidChange?(tv)
     }
@@ -761,7 +761,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     }
 
     private func loadAttributedString(into tv: ContainedTextViewIOS) {
-        let ns = InlineMarksKit.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
+        let ns = InlineMarksBridge.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
         tv.textStorage.setAttributedString(ns)
     }
 
@@ -778,7 +778,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     }
 
     nonisolated static func resolveUIFont(size: CGFloat, bold: Bool) -> UIFont {
-        InlineMarksKit.interFont(size: size, bold: bold, italic: false)
+        InlineMarksBridge.interFont(size: size, bold: bold, italic: false)
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -810,7 +810,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             // pattern as the macOS coordinator.
             parent.documentUndoController?
                 .registerTextChange(blockID: parent.blockID, oldText: parent.text)
-            let model = InlineMarksKit.toModel(textView.textStorage)
+            let model = InlineMarksBridge.toModel(textView.textStorage)
             parent.text = model
             reportMentionTrigger(in: textView, composing: composing)
         }

@@ -1,5 +1,8 @@
 import AudioToolbox
 import Foundation
+#if os(iOS)
+import UIKit
+#endif
 
 @MainActor
 enum SoundFX {
@@ -24,5 +27,37 @@ enum SoundFX {
         AudioServicesCreateSystemSoundID(url as CFURL, &id)
         cache[effect] = id
         return id
+    }
+}
+
+#if os(iOS)
+private typealias ImpactStyle = UIImpactFeedbackGenerator.FeedbackStyle
+#else
+private enum ImpactStyle {
+    case light
+    case medium
+    case heavy
+}
+#endif
+
+enum Haptics {
+    static func light() {
+        impact(.light)
+    }
+
+    static func medium() {
+        impact(.medium)
+    }
+
+    static func heavy() {
+        impact(.heavy)
+    }
+
+    private static func impact(_ style: ImpactStyle) {
+        #if os(iOS)
+        let generator = UIImpactFeedbackGenerator(style: style)
+        generator.prepare()
+        generator.impactOccurred()
+        #endif
     }
 }

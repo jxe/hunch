@@ -1031,6 +1031,7 @@ private struct EditorPage: View {
     @Binding var versionHistoryURL: URL?
 
     @State private var editorState = EditorState()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         EditorView(
@@ -1090,6 +1091,22 @@ private struct EditorPage: View {
                 .accessibilityLabel("Version History")
             }
         }
+        .onAppear { forwardPendingVoiceRecording() }
+        .onChange(of: scenePhase) { _, new in
+            if new == .active { forwardPendingVoiceRecording() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: VoiceRecordingLaunchRequest.notificationName)) { _ in
+            // The intent fires from another process and writes the pending-start
+            // flag before posting the notification — consume the flag too so a
+            // later `.active` transition doesn't fire a second time.
+            _ = VoiceRecordingLaunchRequest.consumePendingStart()
+            editorState.requestStartVoiceRecording()
+        }
+    }
+
+    private func forwardPendingVoiceRecording() {
+        guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
+        editorState.requestStartVoiceRecording()
     }
 }
 

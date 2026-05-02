@@ -88,7 +88,7 @@ deeper. Sidebar taps (`model.open`) reset `path` to a single entry.
 on macOS by the Cmd+[ menu and the system back chevron. Subpage rows are
 the existing render path: a paragraph that is a single `.md` link is
 detected in `BlockParser` and rendered via `subpageRow` in
-`BlockRendering.swift`. (Inline `[text](path.md)` clicks inside body text
+`BlockRow.swift`. (Inline `[text](path.md)` clicks inside body text
 don't navigate yet — see `tasks/inline-link-click-navigation.md`.)
 
 **Nav mode is multi-select.** `Mode.navigating(Selection)` carries
@@ -101,14 +101,14 @@ in the selection.
 
 **Editor binding is `Binding<AttributedString>`** so inline marks
 (bold/italic/code/strike/link) round-trip through edits.
-`InlineMarksNSKit` (UI, macOS) bridges between the model's custom typed
+`InlineMarksBridge` (UI, macOS) bridges between the model's custom typed
 `AttributedStringKey`s and `NSTextStorage`. Bold/italic/code are derived
 from font symbolic traits on round-trip back, because that's what
 NSTextView mutates during edits. Cmd-B/I/E/Shift-S toggle marks on the
 selection.
 
 **Markdown autotransforms.** Pure detection in
-`Packages/Editor/Sources/Editor/Transforms/Autotransforms.swift`;
+`Packages/Editor/Sources/Editor/Autotransforms.swift`;
 replacement blocks via `BlockTransform.apply(to:)`; spliced into the
 document by `EditorView.applyAutotransform`. Prefix triggers (`# `, `## `, `### `, `- `,
 `* `, `1. `, `[] `, `[ ] `, `> ` for toggle, `" ` for quote) fire from
@@ -181,9 +181,10 @@ consumes. Override `keyDown(_:)` on a custom NSTextView subclass instead
 
 Pre-March-2026 Notion. **Don't use `react-notion-x`'s CSS as truth** —
 its values diverge from real Notion. Work from the screenshots in
-`References/typography/`. Constants live in `NotionStyle.swift` (sizes,
-colors, fonts) and `BlockSpacing.swift` (per-block margins, sibling-aware
-gaps). Don't sprinkle magic numbers into `BlockRendering.swift`.
+`References/typography/`. Constants live in `NotionStyle.swift` — both the `NotionStyle` enum
+(sizes, colors, fonts) and the `BlockSpacing` enum (per-block margins,
+sibling-aware gaps) are in that file. Don't sprinkle magic numbers
+into `BlockRow.swift`.
 
 ## Debugging UI runtime issues
 
