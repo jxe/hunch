@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import GameController
+#endif
 
 // MARK: - Turn Into menu / block action popover
 //
@@ -578,3 +581,85 @@ extension EditorView {
         return stem + ".md"
     }
 }
+
+// MARK: - Block menu styling
+
+struct BlockMenuTileStyle: ButtonStyle {
+    @State private var isHovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(NotionStyle.foreground)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(fillColor(isPressed: configuration.isPressed))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.08), value: isHovering)
+            #if os(macOS)
+            .onHover { isHovering = $0 }
+            #endif
+    }
+
+    private func fillColor(isPressed: Bool) -> Color {
+        if isPressed { return NotionStyle.dividerColor }
+        if isHovering { return NotionStyle.dividerColor.opacity(0.5) }
+        return .clear
+    }
+}
+
+struct BlockMenuShortcutChip: View {
+    let label: String
+    #if os(iOS)
+    // On iOS the chip only makes sense when a hardware keyboard is around to
+    // hit the shortcut. HardwareKeyboardObserver flips when GameController's
+    // GCKeyboard reports connect/disconnect; @ObservedObject re-evaluates body
+    // on change so the chip appears/disappears live.
+    @ObservedObject private var keyboard = HardwareKeyboardObserver.shared
+    #endif
+
+    var body: some View {
+        #if os(iOS)
+        if keyboard.isConnected {
+            chip
+        }
+        #else
+        chip
+        #endif
+    }
+
+    private var chip: some View {
+        Text(label)
+            .font(NotionStyle.mono(size: 9))
+            .foregroundStyle(NotionStyle.mutedForeground)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(NotionStyle.codeBackground)
+            )
+    }
+}
+
+#if os(iOS)
+@MainActor
+final class HardwareKeyboardObserver: ObservableObject {
+    static let shared = HardwareKeyboardObserver()
+
+    @Published private(set) var isConnected: Bool = GCKeyboard.coalesced != nil
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: .GCKeyboardDidConnect, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.isConnected = true }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .GCKeyboardDidDisconnect, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.isConnected = GCKeyboard.coalesced != nil }
+        }
+    }
+}
+#endif

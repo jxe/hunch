@@ -2,14 +2,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 #if os(iOS)
 import UIKit
-import GameController
 #endif
 
-// Platform-bridge code for EditorView: View modifiers that wrap the
-// platform-specific gestures, plus the UIKit gesture-recognizer bridges,
-// scroll-metrics reader, row swipe modifier, and the small helpers (PRNG,
-// keyboard observer) those depend on. None of this touches Editor model
-// types directly — it's all closure-based callbacks.
+// Gesture / interaction plumbing for EditorView: cross-platform View
+// modifiers that wrap the per-platform gestures, plus the iOS UIKit
+// gesture-recognizer bridges (reorder / pinch / swipe), the scroll-metrics
+// reader, the page-level drop delegate, and the small geometry helpers
+// (preference key, PRNG) those depend on. None of this touches Editor
+// model types directly — it's all closure-based callbacks.
 
 extension View {
     @ViewBuilder
@@ -249,66 +249,6 @@ struct SeededLCG {
     mutating func next01() -> Double {
         state = state &* 1_664_525 &+ 1_013_904_223
         return Double(state) / Double(UInt32.max)
-    }
-}
-
-// MARK: - Block menu styling (used by the Turn Into popover)
-
-struct BlockMenuTileStyle: ButtonStyle {
-    @State private var isHovering = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(NotionStyle.foreground)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(fillColor(isPressed: configuration.isPressed))
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
-            .animation(.easeOut(duration: 0.08), value: isHovering)
-            #if os(macOS)
-            .onHover { isHovering = $0 }
-            #endif
-    }
-
-    private func fillColor(isPressed: Bool) -> Color {
-        if isPressed { return NotionStyle.dividerColor }
-        if isHovering { return NotionStyle.dividerColor.opacity(0.5) }
-        return .clear
-    }
-}
-
-struct BlockMenuShortcutChip: View {
-    let label: String
-    #if os(iOS)
-    // On iOS the chip only makes sense when a hardware keyboard is around to
-    // hit the shortcut. HardwareKeyboardObserver flips when GameController's
-    // GCKeyboard reports connect/disconnect; @ObservedObject re-evaluates body
-    // on change so the chip appears/disappears live.
-    @ObservedObject private var keyboard = HardwareKeyboardObserver.shared
-    #endif
-
-    var body: some View {
-        #if os(iOS)
-        if keyboard.isConnected {
-            chip
-        }
-        #else
-        chip
-        #endif
-    }
-
-    private var chip: some View {
-        Text(label)
-            .font(NotionStyle.mono(size: 9))
-            .foregroundStyle(NotionStyle.mutedForeground)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(NotionStyle.codeBackground)
-            )
     }
 }
 
@@ -1100,26 +1040,6 @@ struct IOSRowSwipeGestureBridge: UIViewRepresentable {
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
         ) -> Bool {
             true
-        }
-    }
-}
-
-@MainActor
-final class HardwareKeyboardObserver: ObservableObject {
-    static let shared = HardwareKeyboardObserver()
-
-    @Published private(set) var isConnected: Bool = GCKeyboard.coalesced != nil
-
-    private init() {
-        NotificationCenter.default.addObserver(
-            forName: .GCKeyboardDidConnect, object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.isConnected = true }
-        }
-        NotificationCenter.default.addObserver(
-            forName: .GCKeyboardDidDisconnect, object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.isConnected = GCKeyboard.coalesced != nil }
         }
     }
 }

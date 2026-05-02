@@ -1,61 +1,5 @@
 import SwiftUI
 
-/// Translates a `Core.AttributedString` (with our custom inline marks) into a SwiftUI-renderable
-/// `AttributedString` that uses Foundation/SwiftUI attributes (font weight, italic, link, etc.).
-public enum InlineRenderer {
-    public static func swiftUIAttributed(
-        _ source: AttributedString,
-        baseFont: Font = NotionStyle.body(),
-        resolvingPageTitle pageTitle: (String) -> String? = { _ in nil }
-    ) -> AttributedString {
-        var result = AttributedString()
-        for run in source.runs {
-            let segment = source[run.range]
-            let link = run.link
-            let display = link.flatMap { url -> String? in
-                let destination = url.absoluteString
-                guard destination.hasSuffix(".md") else { return nil }
-                return pageTitle(destination)
-            } ?? String(segment.characters)
-            var attributed = AttributedString(display)
-
-            let bold = run[InlineAttributes.BoldAttribute.self] == true
-            let italic = run[InlineAttributes.ItalicAttribute.self] == true
-            let code = run[InlineAttributes.CodeAttribute.self] == true
-            let strike = run[InlineAttributes.StrikethroughAttribute.self] == true
-            if code {
-                attributed.font = NotionStyle.mono(size: NotionStyle.inlineCodeSize)
-                attributed.foregroundColor = NotionStyle.codeForeground
-                attributed.backgroundColor = NotionStyle.codeBackground
-            } else {
-                var font = baseFont
-                if bold && italic {
-                    font = font.weight(.semibold).italic()
-                } else if bold {
-                    font = font.weight(.semibold)
-                } else if italic {
-                    font = font.italic()
-                }
-                attributed.font = font
-            }
-
-            if strike {
-                attributed.strikethroughStyle = .single
-            }
-            if let link {
-                attributed.link = link
-                attributed.underlineStyle = .single
-                attributed.foregroundColor = NotionStyle.linkForeground
-            }
-
-            result.append(attributed)
-        }
-        return result
-    }
-}
-
-// MARK: - Block row
-
 public struct BlockRow: View {
     @Binding var block: Block
     public let isPageTitle: Bool
@@ -485,31 +429,4 @@ func attributedStringMarksEqual(_ a: AttributedString, _ b: AttributedString) ->
         if ra.link != rb.link { return false }
     }
     return true
-}
-
-func previousBlock(before id: BlockID, in blocks: [Block]) -> Block? {
-    guard let i = blocks.firstIndex(where: { $0.id == id }), i > 0 else { return nil }
-    return blocks[i - 1]
-}
-
-/// Per-block 1-indexed position among consecutive sibling `.numbered` blocks at the same indent.
-public enum NumberingContext {
-    public static func compute(_ blocks: [Block]) -> [BlockID: Int] {
-        var result: [BlockID: Int] = [:]
-        var counters: [Int: Int] = [:]
-        for block in blocks {
-            switch block {
-            case .numbered(_, _, let indent):
-                let next = (counters[indent] ?? 0) + 1
-                counters[indent] = next
-                result[block.id] = next
-                for key in counters.keys where key > indent {
-                    counters[key] = 0
-                }
-            default:
-                counters.removeAll()
-            }
-        }
-        return result
-    }
 }
