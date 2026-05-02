@@ -46,10 +46,12 @@ public actor HistoryStore {
     public func listSnapshots(for relativePath: String) throws -> [HistorySnapshot] {
         let dir = directoryURL(for: relativePath)
         guard FileManager.default.fileExists(atPath: dir.path) else { return [] }
+        // No `.skipsHiddenFiles`: macOS reports children of a `.dotfile` parent
+        // as hidden even when their own names don't start with `.`, which would
+        // drop every snapshot. The `.md` filter below excludes incidental dotfiles.
         let urls = try FileManager.default.contentsOfDirectory(
             at: dir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+            includingPropertiesForKeys: [.contentModificationDateKey]
         )
         var out: [HistorySnapshot] = []
         for url in urls where url.pathExtension.lowercased() == "md" {
@@ -87,8 +89,7 @@ public actor HistoryStore {
         guard FileManager.default.fileExists(atPath: dir.path) else { return nil }
         let urls = try FileManager.default.contentsOfDirectory(
             at: dir,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
+            includingPropertiesForKeys: nil
         )
         var latest: LatestSnapshot?
         for url in urls where url.pathExtension.lowercased() == "md" {

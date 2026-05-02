@@ -89,6 +89,32 @@ struct HistoryStoreTests {
         #expect(snapshots.count == 1)
     }
 
+    @Test func snapshotsListWhenFilesAreHidden() async throws {
+        // Repro for iCloud-synced Documents: files inside `.history/<rel>/` get
+        // UF_HIDDEN inherited from the dotfile parent, so the listing must not
+        // pass `.skipsHiddenFiles`.
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = HistoryStore(workspaceRoot: root)
+        try await store.snapshotIfNeeded(relativePath: "page.md", contents: "v1")
+
+        let snapshotsDir = root.appendingPathComponent(".history/page.md", isDirectory: true)
+        for url in try FileManager.default.contentsOfDirectory(at: snapshotsDir, includingPropertiesForKeys: nil) {
+            var copy = url
+            var values = URLResourceValues()
+            values.isHidden = true
+            try copy.setResourceValues(values)
+        }
+
+        let listed = try await store.listSnapshots(for: "page.md")
+        #expect(listed.count == 1)
+
+        // And debounce/identical-content checks must still see the latest snapshot.
+        try await store.snapshotIfNeeded(relativePath: "page.md", contents: "v1", minInterval: 60)
+        #expect(try await store.listSnapshots(for: "page.md").count == 1)
+    }
+
     @Test func fileStoreScanSkipsHistoryDirectory() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -91,6 +91,39 @@ struct TrashStoreTests {
         #expect(FileManager.default.fileExists(atPath: restored.path))
     }
 
+    @Test func listEntriesIncludesHiddenFiles() async throws {
+        // Repro for iCloud-synced Documents: files inside `.Trash/` get
+        // UF_HIDDEN inherited from the dotfile parent, so the listing must not
+        // pass `.skipsHiddenFiles`.
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try "# Old".write(to: root.appendingPathComponent("doomed.md"), atomically: true, encoding: .utf8)
+        let fileStore = FileStore()
+        _ = try fileStore.moveToTrash(relativePath: "doomed.md", workspaceRoot: root)
+
+        let store = TrashStore(workspaceRoot: root)
+        try await store.recordBlockDeletion(
+            source: "Page.md",
+            indices: [0],
+            blocks: [.paragraph(text: AttributedString("blk"), indent: 0)],
+            actionName: "Delete"
+        )
+
+        let trashDir = root.appendingPathComponent(".Trash", isDirectory: true)
+        if let enumerator = FileManager.default.enumerator(at: trashDir, includingPropertiesForKeys: nil) {
+            for case var url as URL in enumerator {
+                var values = URLResourceValues()
+                values.isHidden = true
+                try url.setResourceValues(values)
+            }
+        }
+
+        let entries = try await store.listEntries()
+        #expect(entries.contains { $0.isPageEntry && $0.sourcePath == "doomed.md" })
+        #expect(entries.contains { !$0.isPageEntry && $0.sourcePath == "Page.md" })
+    }
+
     @Test func deleteRecordRemovesBlockEntryFile() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -63,10 +63,12 @@ public actor TrashStore {
         let trashDir = workspaceRoot.appendingPathComponent(FileStore.trashDirectoryName, isDirectory: true)
         guard FileManager.default.fileExists(atPath: trashDir.path) else { return [] }
         let resourceKeys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
+        // No `.skipsHiddenFiles`: macOS marks children of a `.dotfile` parent as
+        // hidden even when their own names don't start with `.`. The `.md` filter
+        // below covers incidental dotfiles like `.DS_Store`.
         guard let enumerator = FileManager.default.enumerator(
             at: trashDir,
-            includingPropertiesForKeys: resourceKeys,
-            options: [.skipsHiddenFiles]
+            includingPropertiesForKeys: resourceKeys
         ) else { return [] }
 
         var entries: [TrashEntry] = []
@@ -99,8 +101,7 @@ public actor TrashStore {
         guard FileManager.default.fileExists(atPath: dir.path) else { return [] }
         let urls = try FileManager.default.contentsOfDirectory(
             at: dir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+            includingPropertiesForKeys: [.contentModificationDateKey]
         )
         var entries: [TrashEntry] = []
         for url in urls where url.pathExtension.lowercased() == "md" {
