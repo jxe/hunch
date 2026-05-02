@@ -15,13 +15,13 @@ public enum BlockKey: Sendable, Equatable {
     case escape
     case cmdK(selectedText: String?)
     case navigateBack
-    /// Up arrow pressed while the cursor is on the editor's first line. PageView
+    /// Up arrow pressed while the cursor is on the editor's first line. EditorView
     /// treats this as Esc + up: exit edit mode and select the previous block.
     case exitEditUp
     /// Down arrow pressed while the cursor is on the editor's last line.
     case exitEditDown
     // The mention popover (@-menu) is open over the active editor; the editor
-    // forwards these unconditionally so PageView can drive menu navigation
+    // forwards these unconditionally so EditorView can drive menu navigation
     // without taking focus away from the text.
     case mentionUp
     case mentionDown
@@ -60,11 +60,11 @@ public struct BlockTextEditor: View {
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     /// Fires whenever the cursor sits after an in-progress `@query` (or transitions out
-    /// of one — `nil` then). PageView holds the popover state and decides whether to
+    /// of one — `nil` then). EditorView holds the popover state and decides whether to
     /// show / dismiss the menu based on this stream.
     let onMentionTriggerChange: (MentionTrigger?) -> Void
     /// When true, the editor unconditionally forwards ↑/↓/Return/Esc to `onKey` as
-    /// `mentionUp/Down/Commit/Dismiss` so PageView can drive the popover. When false,
+    /// `mentionUp/Down/Commit/Dismiss` so EditorView can drive the popover. When false,
     /// arrow keys behave normally (intra-block nav or exit-edit on boundary).
     let mentionActive: Bool
     /// Optional point (in the editor's local coordinate space) where the cursor should
@@ -109,9 +109,9 @@ public struct BlockTextEditor: View {
 
     public var body: some View {
         #if os(macOS)
-        // The editor only mounts when its row is the active editing block (PageView gates
+        // The editor only mounts when its row is the active editing block (EditorView gates
         // this via `isEditing`). So unconditionally request focus on mount — `@FocusState`
-        // writes from PageView's `enterEditMode` are deferred and don't propagate before
+        // writes from EditorView's `enterEditMode` are deferred and don't propagate before
         // `makeNSView`/`viewDidMoveToWindow` fire, which previously left `wantsFocus=false`
         // and the focus grab silently no-op'd.
         MacBlockTextEditor(
@@ -148,7 +148,7 @@ public struct BlockTextEditor: View {
         }
         #else
         // Mirrors the macOS path: the view only mounts when this row is the
-        // active editor (PageView gates via `isEditing`), so request focus
+        // active editor (EditorView gates via `isEditing`), so request focus
         // unconditionally on mount. `onFocusChange` reflects the UITextView's
         // first-responder state back into SwiftUI's `@FocusState`.
         IOSBlockTextEditorView(
@@ -411,7 +411,7 @@ final class ContainedTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         if let onKey = coordinator?.parent.onKey {
             // While the mention popover is open, intercept menu-nav keys before the
-            // editor's normal handling so PageView can drive selection / commit.
+            // editor's normal handling so EditorView can drive selection / commit.
             if coordinator?.parent.mentionActive == true {
                 switch event.keyCode {
                 case 126: // Up

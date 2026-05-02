@@ -42,7 +42,7 @@ struct HunchApp: App {
                 .disabled(!model.canGoBack)
             }
             // Replace the system Edit > Undo / Redo with bindings that route through the
-            // currently-focused PageView's `DocumentUndoController`. Without this the
+            // currently-focused EditorView's `DocumentUndoController`. Without this the
             // menu walks the responder chain and lands on NSTextView's local manager —
             // which we've disabled, so Cmd-Z would just beep.
             CommandGroup(replacing: .undoRedo) {

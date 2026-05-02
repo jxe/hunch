@@ -10,7 +10,7 @@ private struct DocumentUndoControllerKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    /// The shared document-level `UndoManager` for the current `PageView`. Distinct from
+    /// The shared document-level `UndoManager` for the current `EditorView`. Distinct from
     /// SwiftUI's built-in `\.undoManager` (which is read-only and tied to the responder
     /// chain) — this one we control and inject explicitly.
     var documentUndoManager: UndoManager? {
@@ -18,7 +18,7 @@ extension EnvironmentValues {
         set { self[DocumentUndoManagerKey.self] = newValue }
     }
 
-    /// The `DocumentUndoController` for the current `PageView`. Editor views read this to
+    /// The `DocumentUndoController` for the current `EditorView`. Editor views read this to
     /// register typing-session snapshots on focus loss.
     var documentUndoController: DocumentUndoController? {
         get { self[DocumentUndoControllerKey.self] }
@@ -31,7 +31,7 @@ public struct DocumentUndoControllerFocusKey: FocusedValueKey {
 }
 
 extension FocusedValues {
-    /// The currently-focused `PageView`'s undo controller. Used by the App-level
+    /// The currently-focused `EditorView`'s undo controller. Used by the App-level
     /// CommandGroup that replaces `.undoRedo` so Cmd-Z routes to our shared manager
     /// regardless of which subview holds first responder.
     public var documentUndoController: DocumentUndoController? {
@@ -42,20 +42,20 @@ extension FocusedValues {
 
 /// Document-level undo coordinator. One instance per open document.
 ///
-/// `UndoManager.registerUndo(withTarget:)` requires a class target — `PageView`
+/// `UndoManager.registerUndo(withTarget:)` requires a class target — `EditorView`
 /// is a struct, so this small class owns the manager and routes undo events
-/// back into the page via the `apply` closure (set by `PageView` on appear).
+/// back into the page via the `apply` closure (set by `EditorView` on appear).
 ///
 /// NSTextView's typing-undo also feeds this manager via the Coordinator's
 /// `undoManager(for:)` delegate hook, so Cmd-Z walks one unified timeline.
 @MainActor
 public final class DocumentUndoController {
     public let undoManager: UndoManager
-    /// Set by `PageView` once mounted. Receives a snapshot of `[Block]` to
+    /// Set by `EditorView` once mounted. Receives a snapshot of `[Block]` to
     /// restore. The closure is responsible for fixing up cursor/selection
     /// against the new block set and for re-registering the inverse for redo.
     var apply: (([Block]) -> Void)?
-    /// Set by `PageView`. Restores a single block's text — used for typing-burst
+    /// Set by `EditorView`. Restores a single block's text — used for typing-burst
     /// undo entries. Closure must re-register the inverse so redo works.
     var applyTextChange: ((BlockID, AttributedString) -> Void)?
 

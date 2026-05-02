@@ -97,8 +97,21 @@ public extension Notification.Name {
     static let hunchEscapeKeyDown = Notification.Name("hunch.escapeKeyDown")
 }
 
-public struct PageView: View {
+/// Single-page block editor.
+///
+/// **One EditorView per document.** Each `(document, state)` pair is one editing
+/// session. Don't reuse the same EditorView with a different `Document` or
+/// `EditorState` — the editor caches focus, undo, and gesture state internally
+/// and assumes both are stable. To switch documents, create a fresh
+/// `EditorView` with a fresh `EditorState` (typically by giving each navigation
+/// destination its own wrapper view that owns the state).
+public struct EditorView: View {
     @Binding public var document: Document
+    /// Editor session state — selection, edit mode, gestures, hover, expanded
+    /// toggles, drop targets. Owned by the host (typically `@State` in a parent
+    /// view) so sibling UI can observe what the user is doing. Mutation flows
+    /// through named methods inside the package; the host can read but not write.
+    public var state: EditorState
     /// Host callback that provides `@`-mention candidates for the given query string.
     /// The editor renders up to the first 8 results; the host owns filtering/ranking.
     public let suggestPages: (_ query: String) -> [MentionItem]
@@ -124,7 +137,7 @@ public struct PageView: View {
     public let onBlur: () -> Void
     /// Capture a block-level deletion before mutation so it can be restored from the
     /// recently-deleted view. The host model knows the document's relative path —
-    /// PageView just supplies the indices, blocks, and a friendly action name.
+    /// the editor just supplies the indices, blocks, and a friendly action name.
     public let onRecordBlockDeletion: (_ indices: [Int], _ blocks: [Block], _ actionName: String) -> Void
     /// Serialize blocks into a string the editor will write to the system pasteboard
     /// on copy/cut. The host chooses the format (markdown, plain text, etc.). Default
@@ -134,16 +147,11 @@ public struct PageView: View {
     /// insert on paste. Returning nil cancels the paste. Default returns nil.
     public let parseBlocksFromPasteboard: (_ string: String) -> [Block]?
 
-    /// Set of currently-selected blocks in nav mode. Always contiguous in document order
-    /// (we only build it via cursor/anchor extension). Empty in edit mode.
-    @State private var selection: Set<BlockID> = []
-    /// Anchor end of a Shift-extend operation. Stays put while `cursor` moves.
-    @State private var anchor: BlockID?
-    /// Moving end of the selection. With no shift held, `anchor == cursor` and the selection
-    /// is a single block. Used as the focus point for Enter→edit, Option+arrow move, etc.
-    @State private var cursor: BlockID?
-    /// The single block whose text is currently mounted as a `BlockTextEditor`. nil = nav mode.
-    @State private var editingBlock: BlockID?
+    // View-shaped @State that doesn't move into EditorState because it's tied to
+    // SwiftUI/UIKit lifecycle (FocusState must live on a View; row-frame cache
+    // is a layout output; gesture-internal flags are bookkeeping for UIKit
+    // bridges; Environment must be read inside View.body).
+
     /// Drives the active editor's `.focused()` (iOS path; macOS uses NSResponder directly).
     @FocusState private var editorFocused: BlockID?
     /// Drives the page container's focusability for nav-mode key handling.
@@ -154,42 +162,11 @@ public struct PageView: View {
     @State private var pendingCursorPoint: (id: BlockID, point: CGPoint)?
     /// Document-level undo coordinator. Owns the shared `UndoManager` that NSTextView
     /// typing-undo and structural ops (split/merge/indent/slide/delete/autotransform/
-    /// drag-drop) all register against. Recreated implicitly when PageView's identity
+    /// drag-drop) all register against. Recreated implicitly when EditorView's identity
     /// resets; explicitly cleared on document switch via `.onChange(of: document.id)`.
     @State private var undoController = DocumentUndoController()
-    /// The block whose row currently has cursor hover. Combined with
-    /// `hoveredHandleBlockID` to decide whether to reveal the drag handle — needs
-    /// two signals because the handle is an overlay positioned in the leading gutter
-    /// (outside the row's hit area), so the cursor leaves the row when it moves
-    /// onto the handle.
-    @State private var hoveredBlockID: BlockID?
-    /// The block whose drag handle currently has cursor hover. The handle's own
-    /// `.onHover` keeps the reveal state alive while the cursor is over it, even
-    /// though `hoveredBlockID` has gone nil.
-    @State private var hoveredHandleBlockID: BlockID?
-    /// Insertion index between rows where a drop is currently being targeted. Drives
-    /// the visual drop indicator. nil when no drop is in progress.
-    @State private var dropHoverIndex: Int?
-    /// When the drop pointer is squarely on a closed toggle/templateButton row's body,
-    /// this records that block's id and the drop will append the dragged content as
-    /// the parent's last child (with indent shifted to parent.indent + 1). Mutually
-    /// exclusive with `dropHoverIndex`.
-    @State private var dropOntoBlockID: BlockID?
-    @State private var currentDropTarget: DropTarget?
     @State private var rowFrames: [BlockID: CGRect] = [:]
-    @State private var actionToast: String?
     @State private var lastDropHapticIndex: Int?
-    /// Unified reorder lift state. Set on iOS at long-press completion (with a
-    /// placeholder centered touchOffset, re-anchored on the first real drag
-    /// event) and on macOS on the first DragGesture event past the 4pt
-    /// threshold. The fields are platform-agnostic; only the gesture that
-    /// triggers it differs.
-    @State private var reorderLift: ReorderLift?
-    /// Active pinch-open-to-insert preview state. Drives an inline gap that grows
-    /// between two rows as the user spreads their fingers; nil when no pinch is
-    /// in progress (or when the pinch's startLocation didn't pin to a row pair).
-    /// Committed on release past threshold; spring-closed below threshold.
-    @State private var pinchPreview: PinchPreviewState?
     @State private var pinchGestureActive = false
     @State private var pinchCrossedInsertThreshold = false
     @State private var pinchCrossedFocusThreshold = false
@@ -205,11 +182,6 @@ public struct PageView: View {
     @State private var speechError: String?
     @Environment(\.scenePhase) private var scenePhase
 
-    struct PinchPreviewState: Equatable {
-        var insertIndex: Int
-        var gapHeight: CGFloat
-    }
-
     /// Drives the compact block action popover. On iOS this is opened by a
     /// leading row swipe; on macOS by clicking the drag handle or Cmd-/ in nav mode.
     /// Wraps `BlockID` because the latter is Hashable but not Identifiable.
@@ -217,24 +189,10 @@ public struct PageView: View {
         let id: BlockID
     }
     @State private var actionSheet: BlockActionSheet?
-    /// Toggle expansion is page-local view state — defaults to all closed every time the
-    /// page opens. Toggle expansion isn't persisted to markdown (matches the previous
-    /// behavior, where the model carried `expanded` but the serializer dropped it).
-    @State private var expandedToggles: Set<BlockID> = []
-    @State private var expandedTemplateButtons: Set<BlockID> = []
-
-    /// Active mention menu state. When non-nil, the editor diverts ↑/↓/Return/Esc to
-    /// menu navigation instead of the usual edit-mode handling.
-    @State private var mentionMenu: MentionMenuState?
-
-    fileprivate struct MentionMenuState: Equatable {
-        let blockID: BlockID
-        var trigger: MentionTrigger
-        var selectedIndex: Int
-    }
 
     public init(
         document: Binding<Document>,
+        state: EditorState,
         suggestPages: @escaping (_ query: String) -> [MentionItem] = { _ in [] },
         onSubpageTap: @escaping (_ pageID: String) -> Void = { _ in },
         pageTitle: @escaping (_ pageID: String) -> String? = { _ in nil },
@@ -250,6 +208,7 @@ public struct PageView: View {
         parseBlocksFromPasteboard: @escaping (_ string: String) -> [Block]? = { _ in nil }
     ) {
         self._document = document
+        self.state = state
         self.suggestPages = suggestPages
         self.onSubpageTap = onSubpageTap
         self.pageTitle = pageTitle
@@ -278,19 +237,19 @@ public struct PageView: View {
                     ForEach(visiblePairs, id: \.element.id) { (i, block) in
                         let prev = previousVisibleBlock(before: block.id, in: snapshot, hidden: hidden)
                         let gap = BlockSpacing.gap(before: block, after: prev)
-                        let pinchExtraTopGap: CGFloat = (pinchPreview?.insertIndex == i) ? (pinchPreview?.gapHeight ?? 0) : 0
+                        let pinchExtraTopGap: CGFloat = (state.pinchPreview?.insertIndex == i) ? (state.pinchPreview?.gapHeight ?? 0) : 0
                         let reorderExtraTopGap = reorderDriftGap(for: i)
                         rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
                             .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
-                            .animation(.spring(response: 0.26, dampingFraction: 0.76), value: dropHoverIndex)
+                            .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverIndex)
                             .background(rowFrameReporter(id: block.id))
                     }
                     // Trailing slot for "insert at end" — claims the existing bottom 32pt
                     // page padding. Total visual spacing unchanged: the outer
                     // `.padding(.vertical, 32)` becomes `.padding(.top, 32)` only.
-                    let trailingPinchGap: CGFloat = (pinchPreview?.insertIndex == snapshot.count) ? (pinchPreview?.gapHeight ?? 0) : 0
+                    let trailingPinchGap: CGFloat = (state.pinchPreview?.insertIndex == snapshot.count) ? (state.pinchPreview?.gapHeight ?? 0) : 0
                     gapDropTarget(at: snapshot.count, height: 32 + trailingPinchGap + reorderDriftGap(for: snapshot.count))
-                        .animation(.spring(response: 0.26, dampingFraction: 0.76), value: dropHoverIndex)
+                        .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverIndex)
                 }
                 .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
                 .padding(.horizontal, horizontalPadding)
@@ -310,7 +269,7 @@ public struct PageView: View {
                     tickReorderLift(blockID: blockID, at: location, anchorAt: location, snapshot: snapshot)
                     Haptics.light()
                 } onChanged: { location in
-                    guard let id = reorderLift?.ids.first else { return }
+                    guard let id = state.reorderLift?.ids.first else { return }
                     tickReorderLift(blockID: id, at: location, anchorAt: location, snapshot: snapshot)
                 } onEnded: { location in
                     endReorderLift(atY: location.y, snapshot: snapshot)
@@ -318,7 +277,7 @@ public struct PageView: View {
                     cancelReorderLift()
                 }
                 .iosPagePinch(
-                    isEnabled: editingBlock == nil,
+                    isEnabled: state.editingBlock == nil,
                     onUpdate: { value in handlePinchUpdate(value) },
                     onCommit: { value in handlePinchCommit(value) }
                 )
@@ -332,13 +291,13 @@ public struct PageView: View {
                     performPayloadDrop(payload, atY: y, snapshot: snapshot)
                 },
                 onCancel: {
-                    dropHoverIndex = nil
-                    dropOntoBlockID = nil
-                    currentDropTarget = nil
+                    state.dropHoverIndex = nil
+                    state.dropOntoBlockID = nil
+                    state.currentDropTarget = nil
                 }
             )
             .iosScrollMetrics($scrollMetrics)
-            .macNearestRowHover(rowFrames: rowFrames, hoveredBlockID: $hoveredBlockID)
+            .macNearestRowHover(rowFrames: rowFrames) { id in state.hoveredBlock = id }
             .background(NotionStyle.background)
             .iosTapBelowRows {
                 handleTapBelowRows(at: $0)
@@ -347,12 +306,12 @@ public struct PageView: View {
                 reorderLiftView()
             }
             .overlay(alignment: .bottom) {
-                if let actionToast {
+                if let toast = state.actionToast {
                     HStack(spacing: 12) {
-                        Text(actionToast)
+                        Text(toast)
                         Button("Undo") {
                             undoController.undoManager.undo()
-                            self.actionToast = nil
+                            state.actionToast = nil
                         }
                     }
                     .font(NotionStyle.body(size: 13))
@@ -368,7 +327,7 @@ public struct PageView: View {
             // shared timeline.
             .environment(\.documentUndoManager, undoController.undoManager)
             .environment(\.documentUndoController, undoController)
-            // Publish for App-level CommandGroup so Cmd-Z routes through this PageView's
+            // Publish for App-level CommandGroup so Cmd-Z routes through this EditorView's
             // undo manager regardless of where focus actually lives. Uses scene-level
             // exposure (rather than `.focusedValue`) because in edit mode the NSTextView
             // holds AppKit-level focus, which SwiftUI's per-view focus tracking misses —
@@ -377,8 +336,8 @@ public struct PageView: View {
             .focusable()
             .focused($pageFocused)
             .onAppear {
-                if cursor == nil, let first = document.blocks.first {
-                    setCursor(first.id)
+                if state.cursor == nil, let first = document.blocks.first {
+                    state.setCursor(first.id)
                 }
                 requestPageNavigationFocus()
                 installUndoApply()
@@ -389,31 +348,16 @@ public struct PageView: View {
                     onBlur()
                 }
             }
-            .onChange(of: document.id) { _, _ in
-                editingBlock = nil
-                editorFocused = nil
-                actionSheet = nil
-                if let first = document.blocks.first {
-                    setCursor(first.id)
-                } else {
-                    clearCursor()
-                }
-                requestPageNavigationFocus()
-                expandedToggles = []
-                expandedTemplateButtons = []
-                // Captured undo entries reference the previous document's blocks — drop them.
-                undoController.reset()
-            }
-            .onChange(of: dropHoverIndex) { _, newValue in
+            .onChange(of: state.dropHoverIndex) { _, newValue in
                 handleDropHoverChange(newValue)
             }
-            .onChange(of: selection) { _, _ in
+            .onChange(of: state.selection) { _, _ in
                 actionSheet = nil
             }
-            .onChange(of: cursor) { _, _ in
+            .onChange(of: state.cursor) { _, _ in
                 actionSheet = nil
             }
-            .onChange(of: anchor) { _, _ in
+            .onChange(of: state.anchor) { _, _ in
                 actionSheet = nil
             }
             .onChange(of: scenePhase) { _, newValue in
@@ -441,7 +385,7 @@ public struct PageView: View {
                 KeyEquivalent("/"),
                 KeyEquivalent("[")
             ]) { press in
-                guard editingBlock == nil else { return .ignored }
+                guard state.editingBlock == nil else { return .ignored }
                 let modifiers = press.modifiers
 
                 if press.key == KeyEquivalent("["), modifiers.contains(.command) {
@@ -509,7 +453,7 @@ public struct PageView: View {
                     indentSelection(by: modifiers.contains(.shift) ? -1 : +1)
                     return .handled
                 case .return:
-                    if let id = cursor, selection.count == 1 {
+                    if let id = state.cursor, state.selection.count == 1 {
                         if navigateIntoSubpage(id) {
                             return .handled
                         }
@@ -521,7 +465,7 @@ public struct PageView: View {
                     return .handled
                 default:
                     if press.key == KeyEquivalent("k"), modifiers.contains(.command) {
-                        guard let id = cursor, selection.count == 1 else { return .ignored }
+                        guard let id = state.cursor, state.selection.count == 1 else { return .ignored }
                         return convertBlockToSubpage(blockID: id, preferredTitle: nil)
                     }
                     return .ignored
@@ -546,7 +490,7 @@ public struct PageView: View {
             actionSheet = nil
             return
         }
-        if editingBlock != nil {
+        if state.editingBlock != nil {
             exitEditMode()
             return
         }
@@ -634,7 +578,7 @@ public struct PageView: View {
         #else
         let isSelected = effectiveSelectedIDs().contains(block.id)
         #endif
-        let isEditing = editingBlock == block.id
+        let isEditing = state.editingBlock == block.id
 
         BlockRow(
             block: binding,
@@ -643,8 +587,8 @@ public struct PageView: View {
             numberingIndex: numberingIndex,
             isSelected: isSelected,
             isEditing: isEditing,
-            isExpanded: expandedToggles.contains(block.id) || expandedTemplateButtons.contains(block.id),
-            isDropTarget: dropOntoBlockID == block.id,
+            isExpanded: state.expandedToggles.contains(block.id) || state.expandedTemplates.contains(block.id),
+            isDropTarget: state.dropOntoBlockID == block.id,
             onKey: { key in handleEditorKey(key, blockID: block.id) },
             onEdited: onEdited,
             onAutotransform: { transform, remainingText in
@@ -653,22 +597,22 @@ public struct PageView: View {
             onMentionTriggerChange: { trigger in
                 handleMentionTriggerChange(trigger, blockID: block.id)
             },
-            mentionActive: mentionMenu?.blockID == block.id,
+            mentionActive: state.mentionMenu?.blockID == block.id,
             onClickAtPoint: { point in
                 pendingCursorPoint = (block.id, point)
                 enterEditMode(on: block.id)
             },
             onToggleExpansion: {
                 if case .templateButton = block {
-                    if expandedTemplateButtons.contains(block.id) {
-                        expandedTemplateButtons.remove(block.id)
+                    if state.expandedTemplates.contains(block.id) {
+                        state.expandedTemplates.remove(block.id)
                     } else {
-                        expandedTemplateButtons.insert(block.id)
+                        state.expandedTemplates.insert(block.id)
                     }
-                } else if expandedToggles.contains(block.id) {
-                    expandedToggles.remove(block.id)
+                } else if state.expandedToggles.contains(block.id) {
+                    state.expandedToggles.remove(block.id)
                 } else {
-                    expandedToggles.insert(block.id)
+                    state.expandedToggles.insert(block.id)
                 }
             },
             onTemplateButtonPress: {
@@ -706,8 +650,8 @@ public struct PageView: View {
             }
             .blockActionPopover(
                 isPresented: Binding(
-                    get: { mentionMenu?.blockID == block.id },
-                    set: { if !$0 { mentionMenu = nil } }
+                    get: { state.mentionMenu?.blockID == block.id },
+                    set: { if !$0 { state.closeMentionMenu() } }
                 )
             ) {
                 mentionMenuContent()
@@ -727,7 +671,7 @@ public struct PageView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier(accessibilityIdentifier(for: block))
             .accessibilityLabel(accessibilityLabel(for: block))
-            .accessibilityValue(reorderLift?.ids.contains(block.id) == true ? "reorder-source" : "")
+            .accessibilityValue(state.reorderLift?.ids.contains(block.id) == true ? "reorder-source" : "")
             .onTapGesture {
                 if case .subpage(_, _, let path, _) = block {
                     focusPageNavigation(on: block.id)
@@ -745,9 +689,9 @@ public struct PageView: View {
                     .offset(x: -DragHandle.gutterWidth, y: 2)
                     .onHover { hovering in
                         if hovering {
-                            hoveredHandleBlockID = block.id
-                        } else if hoveredHandleBlockID == block.id {
-                            hoveredHandleBlockID = nil
+                            state.hoveredHandle = block.id
+                        } else if state.hoveredHandle == block.id {
+                            state.hoveredHandle = nil
                         }
                     }
                     .onTapGesture {
@@ -779,17 +723,17 @@ public struct PageView: View {
     }
 
     private func topSelectedBlockID() -> BlockID? {
-        for block in document.blocks where selection.contains(block.id) {
+        for block in document.blocks where state.selection.contains(block.id) {
             return block.id
         }
         return nil
     }
 
     private func showHandleOverlay(for id: BlockID) -> Bool {
-        if selection.count > 1 {
+        if state.selection.count > 1 {
             return id == topSelectedBlockID()
         }
-        return hoveredBlockID == id || hoveredHandleBlockID == id
+        return state.hoveredBlock == id || state.hoveredHandle == id
     }
 
     private func rowFrameReporter(id: BlockID) -> some View {
@@ -808,11 +752,11 @@ public struct PageView: View {
     }
 
     private func reorderDriftGap(for index: Int) -> CGFloat {
-        guard dropHoverIndex == index else { return 0 }
+        guard state.dropHoverIndex == index else { return 0 }
         // Dropping the source row at its own slot is a no-op — don't open a
         // gap there. (Also avoids layout churn that would destabilise the
         // lift's frozen sourceFrame.)
-        if let lift = reorderLift,
+        if let lift = state.reorderLift,
            index >= lift.sourceIndex && index <= lift.sourceEndIndex + 1 {
             return 0
         }
@@ -820,12 +764,12 @@ public struct PageView: View {
     }
 
     private func reorderSourceOpacity(for id: BlockID) -> Double {
-        return reorderLift?.ids.contains(id) == true ? 0.12 : 1
+        return state.reorderLift?.ids.contains(id) == true ? 0.12 : 1
     }
 
     private func isMacDraggingFromRow(_ id: BlockID) -> Bool {
         #if os(macOS)
-        return reorderLift?.ids.contains(id) == true
+        return state.reorderLift?.ids.contains(id) == true
         #else
         return false
         #endif
@@ -833,7 +777,7 @@ public struct PageView: View {
 
     @ViewBuilder
     private func reorderLiftView() -> some View {
-        if let lift = reorderLift {
+        if let lift = state.reorderLift {
             BlockRow(
                 block: .constant(lift.block),
                 editorFocused: $editorFocused,
@@ -869,7 +813,7 @@ public struct PageView: View {
         let idSet = Set(ids)
         let sourceIndices = snapshot.enumerated()
             .compactMap { idSet.contains($0.element.id) ? $0.offset : nil }
-        reorderLift = ReorderLift(
+        state.setReorderLift(ReorderLift(
             block: block,
             ids: ids,
             sourceFrame: sourceFrame,
@@ -878,7 +822,7 @@ public struct PageView: View {
             touchOffset: CGSize(width: sourceFrame.width / 2, height: sourceFrame.height / 2),
             location: CGPoint(x: sourceFrame.midX, y: sourceFrame.midY),
             pendingAnchor: true
-        )
+        ))
     }
 
     /// Per-event update: creates the lift if missing (macOS click-and-drag
@@ -897,8 +841,8 @@ public struct PageView: View {
     /// lift exists with a real anchor — `rowFrames[id]` keeps shifting as the
     /// drift gap animates open and recomputing against a moving frame would
     /// drift the lift away from the cursor.
-    private func tickReorderLift(blockID: BlockID, at location: CGPoint, anchorAt anchor: CGPoint, snapshot: [Block]) {
-        if reorderLift == nil {
+    private func tickReorderLift(blockID: BlockID, at location: CGPoint, anchorAt anchorPoint: CGPoint, snapshot: [Block]) {
+        if state.reorderLift == nil {
             guard let block = snapshot.first(where: { $0.id == blockID }),
                   let sourceFrame = rowFrames[blockID],
                   let sourceIndex = snapshot.firstIndex(where: { $0.id == blockID })
@@ -907,29 +851,29 @@ public struct PageView: View {
             let idSet = Set(ids)
             let sourceIndices = snapshot.enumerated()
                 .compactMap { idSet.contains($0.element.id) ? $0.offset : nil }
-            reorderLift = ReorderLift(
+            state.setReorderLift(ReorderLift(
                 block: block,
                 ids: ids,
                 sourceFrame: sourceFrame,
                 sourceIndex: sourceIndex,
                 sourceEndIndex: sourceIndices.last ?? sourceIndex,
                 touchOffset: CGSize(
-                    width: anchor.x - sourceFrame.minX,
-                    height: anchor.y - sourceFrame.minY
+                    width: anchorPoint.x - sourceFrame.minX,
+                    height: anchorPoint.y - sourceFrame.minY
                 ),
                 location: location,
                 pendingAnchor: false
-            )
-        } else if var lift = reorderLift {
+            ))
+        } else if var lift = state.reorderLift {
             if lift.pendingAnchor {
                 lift.touchOffset = CGSize(
-                    width: anchor.x - lift.sourceFrame.minX,
-                    height: anchor.y - lift.sourceFrame.minY
+                    width: anchorPoint.x - lift.sourceFrame.minX,
+                    height: anchorPoint.y - lift.sourceFrame.minY
                 )
                 lift.pendingAnchor = false
             }
             lift.location = location
-            reorderLift = lift
+            state.setReorderLift(lift)
         }
         applyDropTarget(at: location.y, snapshot: snapshot)
     }
@@ -938,18 +882,18 @@ public struct PageView: View {
     /// move inside one no-animation transaction so neither the gap close, the
     /// lift unmount, nor the row reflow springs.
     private func endReorderLift(atY y: CGFloat, snapshot: [Block]) {
-        guard let lift = reorderLift else { return }
+        guard let lift = state.reorderLift else { return }
         SoundFX.play(.drop)
         let hidden = hiddenBlockIDs(in: snapshot)
-        let target = currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
         let ids = lift.ids
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            dropHoverIndex = nil
-            dropOntoBlockID = nil
-            currentDropTarget = nil
-            reorderLift = nil
+            state.dropHoverIndex = nil
+            state.dropOntoBlockID = nil
+            state.currentDropTarget = nil
+            state.setReorderLift(nil)
             switch target {
             case .insertBefore(let index):
                 moveBlocks(ids: ids, toIndexBefore: index)
@@ -965,19 +909,11 @@ public struct PageView: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            dropHoverIndex = nil
-            dropOntoBlockID = nil
-            currentDropTarget = nil
-            reorderLift = nil
+            state.dropHoverIndex = nil
+            state.dropOntoBlockID = nil
+            state.currentDropTarget = nil
+            state.setReorderLift(nil)
         }
-    }
-
-    /// Resolved drop target: either a between-rows insertion (snapshot index in
-    /// `document.blocks`) or an "append as child" of a closed parent.
-    private enum DropTarget {
-        case insertBefore(Int)
-        case asLastChildOf(BlockID)
-        case intoSubpage(BlockID, String)
     }
 
     /// Update `dropHoverIndex` / `dropOntoBlockID` based on the live drop point.
@@ -986,22 +922,22 @@ public struct PageView: View {
     private func applyDropTarget(at y: CGFloat, snapshot: [Block]) {
         let hidden = hiddenBlockIDs(in: snapshot)
         let target = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
-        currentDropTarget = target
+        state.currentDropTarget = target
         switch target {
         case .insertBefore(let index):
-            dropOntoBlockID = nil
-            dropHoverIndex = index
+            state.dropOntoBlockID = nil
+            state.dropHoverIndex = index
         case .asLastChildOf(let id):
-            dropHoverIndex = nil
-            dropOntoBlockID = id
+            state.dropHoverIndex = nil
+            state.dropOntoBlockID = id
         case .intoSubpage(let id, _):
-            dropHoverIndex = nil
-            dropOntoBlockID = id
+            state.dropHoverIndex = nil
+            state.dropOntoBlockID = id
         }
     }
 
     private func resolveDropTarget(atY y: CGFloat, snapshot: [Block], hidden: Set<BlockID>) -> DropTarget {
-        let liftIDs = reorderLift?.ids ?? []
+        let liftIDs = state.reorderLift?.ids ?? []
         // Hit-test for "drop on closed parent". Use a small edge band so the
         // gap above/below the row still feels reachable.
         let edgeBand: CGFloat = 6
@@ -1019,14 +955,14 @@ public struct PageView: View {
         let visibleCount = ReorderDropResolver.insertionIndex(
             forY: y,
             rowFrames: orderedDropFrames(snapshot: snapshot),
-            previousIndex: dropHoverIndex
+            previousIndex: state.dropHoverIndex
         )
         return .insertBefore(snapshotIndex(forVisibleCount: visibleCount, snapshot: snapshot, hidden: hidden))
     }
 
     private func performPayloadDrop(_ payload: BlockDragPayload, atY y: CGFloat, snapshot: [Block]) {
         let hidden = hiddenBlockIDs(in: snapshot)
-        let target = currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
         switch target {
         case .insertBefore(let index):
             moveBlocks(ids: payload.ids, toIndexBefore: index)
@@ -1085,7 +1021,7 @@ public struct PageView: View {
     /// is part of a multi-block selection, drag the whole selection (in document
     /// order); otherwise just the single row.
     private func dragIDs(for blockID: BlockID) -> [BlockID] {
-        if selection.contains(blockID) && selection.count > 1 {
+        if state.selection.contains(blockID) && state.selection.count > 1 {
             return effectiveSelectedIDsInDocumentOrder()
         }
         return document.indicesIncludingSections(of: [blockID]).map { document.blocks[$0].id }
@@ -1228,8 +1164,8 @@ public struct PageView: View {
 
         // Auto-expand the parent so the user can see the result.
         switch parent {
-        case .toggle(let id, _, _): expandedToggles.insert(id)
-        case .templateButton(let id, _, _): expandedTemplateButtons.insert(id)
+        case .toggle(let id, _, _): state.expandedToggles.insert(id)
+        case .templateButton(let id, _, _): state.expandedTemplates.insert(id)
         default: break
         }
     }
@@ -1311,7 +1247,7 @@ public struct PageView: View {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        if editingBlock != nil,
+        if state.editingBlock != nil,
            sendInsertActionToFirstResponder(trimmed) {
             exitEditMode()
             return
@@ -1380,8 +1316,8 @@ public struct PageView: View {
     /// distance, no insert preview (pinch-close commits on release).
     private func handlePinchUpdate(_ value: PagePinchValue) {
         pinchGestureActive = true
-        guard editingBlock == nil else {
-            if pinchPreview != nil { pinchPreview = nil }
+        guard state.editingBlock == nil else {
+            if state.pinchPreview != nil { state.setPinchPreview(nil) }
             pinchPendingInsertIndex = nil
             stopPinchAutoScroll()
             return
@@ -1394,7 +1330,7 @@ public struct PageView: View {
             // it fixed so the gap stays anchored where the user started pinching.
             let insertIndex = pinchPendingInsertIndex ?? pinchInsertIndex(for: value.startLocation)
             pinchPendingInsertIndex = insertIndex
-            pinchPreview = PinchPreviewState(insertIndex: insertIndex, gapHeight: gapHeight)
+            state.setPinchPreview(PinchPreviewState(insertIndex: insertIndex, gapHeight: gapHeight))
             if gapHeight >= pinchInsertCommitGap, !pinchCrossedInsertThreshold {
                 pinchCrossedInsertThreshold = true
                 Haptics.medium()
@@ -1409,8 +1345,8 @@ public struct PageView: View {
             } else if gapHeight < pinchInsertFocusGap {
                 pinchCrossedFocusThreshold = false
             }
-        } else if pinchPreview != nil {
-            pinchPreview = nil
+        } else if state.pinchPreview != nil {
+            state.setPinchPreview(nil)
             pinchPendingInsertIndex = nil
             pinchCrossedInsertThreshold = false
             pinchCrossedFocusThreshold = false
@@ -1418,10 +1354,10 @@ public struct PageView: View {
     }
 
     private func handlePinchCommit(_ value: PagePinchValue) {
-        let preview = pinchPreview
+        let preview = state.pinchPreview
         let gap = preview?.gapHeight ?? pinchRubberBand(max(0, value.spreadDelta))
 
-        if gap >= pinchInsertCommitGap, editingBlock == nil {
+        if gap >= pinchInsertCommitGap, state.editingBlock == nil {
             let insertIndex = pinchPendingInsertIndex
                 ?? preview?.insertIndex
                 ?? pinchInsertIndex(for: value.startLocation)
@@ -1439,11 +1375,11 @@ public struct PageView: View {
             Haptics.heavy()
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                 insertBlock(newBlock, at: insertIndex, focus: true)
-                pinchPreview = nil
+                state.setPinchPreview(nil)
             }
         } else {
             withAnimation(.spring(response: 0.34, dampingFraction: 0.72)) {
-                pinchPreview = nil
+                state.setPinchPreview(nil)
             }
         }
         pinchPendingInsertIndex = nil
@@ -1528,7 +1464,7 @@ public struct PageView: View {
     }
 
     private func handleTapBelowRows(at point: CGPoint) {
-        guard editingBlock == nil else { return }
+        guard state.editingBlock == nil else { return }
         guard let lastBlock = document.blocks.last, let frame = rowFrames[lastBlock.id] else {
             insertParagraph(at: document.blocks.count)
             return
@@ -1538,11 +1474,11 @@ public struct PageView: View {
     }
 
     private func showActionToast(_ message: String) {
-        actionToast = message
+        state.actionToast = message
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
-            if actionToast == message {
-                actionToast = nil
+            if state.actionToast == message {
+                state.actionToast = nil
             }
         }
     }
@@ -1575,15 +1511,14 @@ public struct PageView: View {
             let beforeRedo = document.blocks
             document.blocks = newBlocks
 
-            // Validate cursor/selection against the new block set.
+            // Validate cursor/selection/edit-mode against the new block set in one
+            // sweep — drops invalid IDs from the navigating selection, falls back
+            // to nav mode if the editing block disappeared.
             let validIDs = Set(newBlocks.map { $0.id })
-            selection = selection.intersection(validIDs)
-            if let c = cursor, !validIDs.contains(c) { cursor = newBlocks.first?.id }
-            if let a = anchor, !validIDs.contains(a) { anchor = cursor }
-            if let e = editingBlock, !validIDs.contains(e) {
-                focusPageNavigation(on: cursor)
+            state.revalidate(against: validIDs, fallbackCursor: newBlocks.first?.id)
+            if state.editingBlock == nil {
+                editorFocused = nil
             }
-            if selection.isEmpty, let c = cursor { selection = [c] }
 
             // Re-register inverse — when this runs during isUndoing, UndoManager pushes
             // it to the redo stack; during isRedoing, it goes back on the undo stack.
@@ -1603,22 +1538,18 @@ public struct PageView: View {
 
     /// Collapse selection to a single block. The next Shift-extend will pivot off this block.
     private func setCursor(_ id: BlockID) {
-        cursor = id
-        anchor = id
-        selection = [id]
+        state.setCursor(id)
     }
 
     private func clearCursor() {
-        selection = []
-        anchor = nil
-        cursor = nil
+        state.clearCursor()
     }
 
     private func focusPageNavigation(on id: BlockID? = nil) {
-        editingBlock = nil
+        state.exitEditModeWithoutCursor()
         editorFocused = nil
         if let id, document.blocks.contains(where: { $0.id == id }) {
-            setCursor(id)
+            state.setCursor(id)
         }
         requestPageNavigationFocus()
     }
@@ -1637,7 +1568,7 @@ public struct PageView: View {
     @discardableResult
     private func handleNavRightArrow() -> Bool {
         if setTodoDoneOnSelection(true) { return true }
-        guard let id = cursor, selection.count == 1 else { return false }
+        guard let id = state.cursor, state.selection.count == 1 else { return false }
         if navigateIntoSubpage(id) { return true }
         guard let block = document.blocks.first(where: { $0.id == id }),
               isCollapsibleSection(block) else { return false }
@@ -1653,7 +1584,7 @@ public struct PageView: View {
     @discardableResult
     private func handleNavLeftArrow() -> Bool {
         if setTodoDoneOnSelection(false) { return true }
-        guard let id = cursor, selection.count == 1 else { return false }
+        guard let id = state.cursor, state.selection.count == 1 else { return false }
         guard let cursorIdx = document.blocks.firstIndex(where: { $0.id == id }) else { return false }
 
         if isSectionExpanded(document.blocks[cursorIdx]) {
@@ -1800,9 +1731,9 @@ public struct PageView: View {
     private func isCollapsedSection(_ block: Block) -> Bool {
         switch block {
         case .toggle(let id, _, _):
-            return !expandedToggles.contains(id)
+            return !state.expandedToggles.contains(id)
         case .templateButton(let id, _, _):
-            return !expandedTemplateButtons.contains(id)
+            return !state.expandedTemplates.contains(id)
         default:
             return false
         }
@@ -1811,9 +1742,9 @@ public struct PageView: View {
     private func isSectionExpanded(_ block: Block) -> Bool {
         switch block {
         case .toggle(let id, _, _):
-            return expandedToggles.contains(id)
+            return state.expandedToggles.contains(id)
         case .templateButton(let id, _, _):
-            return expandedTemplateButtons.contains(id)
+            return state.expandedTemplates.contains(id)
         default:
             return false
         }
@@ -1822,9 +1753,9 @@ public struct PageView: View {
     private func expandSection(_ block: Block) {
         switch block {
         case .toggle(let id, _, _):
-            expandedToggles.insert(id)
+            state.expandedToggles.insert(id)
         case .templateButton(let id, _, _):
-            expandedTemplateButtons.insert(id)
+            state.expandedTemplates.insert(id)
         default:
             break
         }
@@ -1833,9 +1764,9 @@ public struct PageView: View {
     private func collapseSection(_ block: Block) {
         switch block {
         case .toggle(let id, _, _):
-            expandedToggles.remove(id)
+            state.expandedToggles.remove(id)
         case .templateButton(let id, _, _):
-            expandedTemplateButtons.remove(id)
+            state.expandedTemplates.remove(id)
         default:
             break
         }
@@ -1859,7 +1790,7 @@ public struct PageView: View {
         let hidden = hiddenBlockIDs(in: blocks)
         let visible = blocks.filter { !hidden.contains($0.id) }
         guard !visible.isEmpty else { return }
-        let currentIndex = cursor.flatMap { id in visible.firstIndex(where: { $0.id == id }) } ?? 0
+        let currentIndex = state.cursor.flatMap { id in visible.firstIndex(where: { $0.id == id }) } ?? 0
         let nextIndex = max(0, min(visible.count - 1, currentIndex + delta))
         setCursor(visible[nextIndex].id)
     }
@@ -1871,23 +1802,20 @@ public struct PageView: View {
         let blocks = document.blocks
         guard !blocks.isEmpty else { return }
 
-        if anchor == nil {
-            anchor = cursor ?? blocks.first?.id
-        }
-        if cursor == nil {
-            cursor = anchor
-        }
+        let initialAnchor = state.anchor ?? state.cursor ?? blocks.first?.id
+        let initialCursor = state.cursor ?? initialAnchor
 
-        guard let anchorID = anchor, let cursorID = cursor,
+        guard let anchorID = initialAnchor, let cursorID = initialCursor,
               let anchorIndex = blocks.firstIndex(where: { $0.id == anchorID }),
               let cursorIndex = blocks.firstIndex(where: { $0.id == cursorID }) else { return }
 
         let nextIndex = outlineSelectionStep(from: cursorIndex, anchoredAt: anchorIndex, by: delta)
-        cursor = blocks[nextIndex].id
+        let newCursor = blocks[nextIndex].id
 
         let lo = min(anchorIndex, nextIndex)
         let hi = max(anchorIndex, nextIndex)
-        selection = Set(blocks[lo...hi].map { $0.id })
+        let newSelection = Set(blocks[lo...hi].map { $0.id })
+        state.setNavSelection(blocks: newSelection, anchor: anchorID, cursor: newCursor)
     }
 
     private func outlineSelectionStep(from cursorIndex: Int, anchoredAt anchorIndex: Int, by delta: Int) -> Int {
@@ -1937,11 +1865,11 @@ public struct PageView: View {
     /// Indices of selected blocks in document order. Empty if no selection.
     private func selectedIndices() -> [Int] {
         document.blocks.enumerated()
-            .compactMap { (i, block) in selection.contains(block.id) ? i : nil }
+            .compactMap { (i, block) in state.selection.contains(block.id) ? i : nil }
     }
 
     private func effectiveSelectedIndices() -> [Int] {
-        document.indicesIncludingSections(of: selection)
+        document.indicesIncludingSections(of: state.selection)
     }
 
     private func effectiveSelectedIDs() -> Set<BlockID> {
@@ -1955,12 +1883,6 @@ public struct PageView: View {
     // MARK: - Edit-mode transitions
 
     private func enterEditMode(on id: BlockID) {
-        // Switching active editor — drop any stale mention popover that may have been
-        // left attached to a different row.
-        if mentionMenu?.blockID != id {
-            mentionMenu = nil
-        }
-
         guard let block = document.blocks.first(where: { $0.id == id }) else { return }
         switch block {
         case .code, .divider, .subpage:
@@ -1969,17 +1891,17 @@ public struct PageView: View {
         default:
             break
         }
-        setCursor(id)
-        editingBlock = id
+        // .editing(id, overlay: nil) — also drops any stale mention overlay attached
+        // to a different row, since the new mode replaces the old one wholesale.
+        state.enterEditMode(on: id)
         editorFocused = id
     }
 
     private func exitEditMode() {
-        let was = editingBlock
-        // Drop the @-menu state with the editor — the popover is anchored to the
-        // editing row, and a stale mentionMenu after exit would attach to a
-        // read-only Text that can no longer drive the input.
-        mentionMenu = nil
+        let was = state.editingBlock
+        // Mode → .navigating(...) drops any active mention overlay along with it,
+        // since the popover is anchored to the editing row and would otherwise
+        // attach to a read-only Text that can no longer drive the input.
         focusPageNavigation(on: was)
         onBlur()
     }
@@ -2078,7 +2000,7 @@ public struct PageView: View {
     }
 
     private func copySelectionToPasteboard() -> Bool {
-        copyBlocksToPasteboard(ids: selection)
+        copyBlocksToPasteboard(ids: state.selection)
     }
 
     /// Cut: copy the selection to the pasteboard, then delete it as a single undo entry.
@@ -2087,7 +2009,7 @@ public struct PageView: View {
         let indices = effectiveSelectedIndices()
         guard !indices.isEmpty else { return false }
         guard indices.count < document.blocks.count else { return false }
-        guard copyBlocksToPasteboard(ids: selection) else { return false }
+        guard copyBlocksToPasteboard(ids: state.selection) else { return false }
 
         let firstIndex = indices.first!
         mutate("Cut") {
@@ -2125,7 +2047,7 @@ public struct PageView: View {
 
         let baseIndent: Int
         let insertIndex: Int
-        if let cursorID = cursor,
+        if let cursorID = state.cursor,
            let anchorIdx = document.index(of: cursorID),
            let section = document.sectionRange(of: cursorID) {
             let anchorIndent = document.blocks[anchorIdx].indent
@@ -2216,7 +2138,7 @@ public struct PageView: View {
         case .mentionCommit:
             return commitMentionSelection()
         case .mentionDismiss:
-            mentionMenu = nil
+            state.closeMentionMenu()
             return .handled
         }
     }
@@ -2226,7 +2148,7 @@ public struct PageView: View {
     /// Candidates for the active query, capped at 8. The host owns filtering/ranking;
     /// the editor just renders whatever it gets back.
     fileprivate var mentionMatches: [MentionItem] {
-        guard let menu = mentionMenu else { return [] }
+        guard let menu = state.mentionMenu else { return [] }
         return Array(suggestPages(menu.trigger.query).prefix(8))
     }
 
@@ -2235,51 +2157,49 @@ public struct PageView: View {
             // The editor lost the @-region (cursor moved past whitespace, range cleared,
             // etc.). Drop the menu — even if its blockID still matches, we shouldn't
             // hold stale state.
-            if mentionMenu?.blockID == blockID {
-                mentionMenu = nil
-            }
+            state.closeMentionMenu(forBlockID: blockID)
             return
         }
-        if var existing = mentionMenu, existing.blockID == blockID {
+        if var existing = state.mentionMenu, existing.blockID == blockID {
             // Query / range changed — keep the menu open, refresh state. Reset the
             // selection if the new filter would put it out of bounds.
             existing.trigger = trigger
-            mentionMenu = existing
+            state.setMentionMenu(existing)
             let count = mentionMatches.count
             if count == 0 {
                 existing.selectedIndex = 0
             } else if existing.selectedIndex >= count {
                 existing.selectedIndex = count - 1
             }
-            mentionMenu = existing
+            state.setMentionMenu(existing)
         } else {
-            mentionMenu = MentionMenuState(blockID: blockID, trigger: trigger, selectedIndex: 0)
+            state.setMentionMenu(MentionMenuState(blockID: blockID, trigger: trigger, selectedIndex: 0))
         }
     }
 
     private func moveMentionSelection(by delta: Int) -> KeyPress.Result {
-        guard var menu = mentionMenu else { return .ignored }
+        guard var menu = state.mentionMenu else { return .ignored }
         let matches = mentionMatches
         guard !matches.isEmpty else { return .handled }
         let count = matches.count
         // Wrap around — feels right for a short list and makes ↑ on the first row a
         // shortcut to the last entry.
         menu.selectedIndex = ((menu.selectedIndex + delta) % count + count) % count
-        mentionMenu = menu
+        state.setMentionMenu(menu)
         return .handled
     }
 
     private func commitMentionSelection() -> KeyPress.Result {
-        guard let menu = mentionMenu else { return .ignored }
+        guard let menu = state.mentionMenu else { return .ignored }
         let matches = mentionMatches
         guard !matches.isEmpty else {
             // No matches — Return on an empty filter just dismisses the menu without
             // splitting the block.
-            mentionMenu = nil
+            state.closeMentionMenu()
             return .handled
         }
         let safeIndex = max(0, min(menu.selectedIndex, matches.count - 1))
-        commitMention(matches[safeIndex], state: menu)
+        commitMention(matches[safeIndex], menu: menu)
         return .handled
     }
 
@@ -2288,14 +2208,14 @@ public struct PageView: View {
     /// `[title]` mid-sentence — so we mirror Cmd-K's `convertBlockToSubpage` shape
     /// (whole block becomes the link). Any text before/after the `@query` span is
     /// preserved as adjacent paragraphs.
-    private func commitMention(_ item: MentionItem, state: MentionMenuState) {
-        defer { mentionMenu = nil }
-        guard let blockIndex = document.index(of: state.blockID) else { return }
+    private func commitMention(_ item: MentionItem, menu: MentionMenuState) {
+        defer { state.closeMentionMenu() }
+        guard let blockIndex = document.index(of: menu.blockID) else { return }
         let block = document.blocks[blockIndex]
         let plain = String(block.text.characters) as NSString
 
-        let triggerStart = state.trigger.nsRange.location
-        let triggerEnd = triggerStart + state.trigger.nsRange.length
+        let triggerStart = menu.trigger.nsRange.location
+        let triggerEnd = triggerStart + menu.trigger.nsRange.length
         guard triggerEnd <= plain.length else { return }
         let beforeText = plain.substring(with: NSRange(location: 0, length: triggerStart))
         let afterText = plain.substring(with: NSRange(location: triggerEnd, length: plain.length - triggerEnd))
@@ -2341,7 +2261,7 @@ public struct PageView: View {
             Group {
                 Button("") { _ = commitMentionSelection() }
                     .keyboardShortcut(.return, modifiers: [])
-                Button("") { mentionMenu = nil }
+                Button("") { state.closeMentionMenu() }
                     .keyboardShortcut(.escape, modifiers: [])
             }
             .frame(width: 0, height: 0)
@@ -2356,16 +2276,16 @@ public struct PageView: View {
                     .padding(.vertical, 10)
             } else {
                 ForEach(Array(matches.enumerated()), id: \.element.id) { index, item in
-                    mentionRow(item: item, isSelected: mentionMenu?.selectedIndex == index)
+                    mentionRow(item: item, isSelected: state.mentionMenu?.selectedIndex == index)
                         .onTapGesture {
-                            guard let menu = mentionMenu else { return }
-                            commitMention(item, state: menu)
+                            guard let menu = state.mentionMenu else { return }
+                            commitMention(item, menu: menu)
                         }
                         .onHover { hovering in
                             #if os(macOS)
-                            if hovering, var menu = mentionMenu {
+                            if hovering, var menu = state.mentionMenu {
                                 menu.selectedIndex = index
-                                mentionMenu = menu
+                                state.setMentionMenu(menu)
                             }
                             #endif
                         }
@@ -2579,8 +2499,8 @@ public struct PageView: View {
             mutate("Turn Into") {
                 document.blocks[i] = .divider(id: blockID, indent: block.indent)
             }
-            expandedToggles.remove(blockID)
-            expandedTemplateButtons.remove(blockID)
+            state.expandedToggles.remove(blockID)
+            state.expandedTemplates.remove(blockID)
             return .handled
         }
         if case .subpage = block {
@@ -2592,9 +2512,9 @@ public struct PageView: View {
             document.blocks[i] = blockForTurnInto(target, id: blockID, text: text, indent: block.indent)
         }
         if target == .toggle {
-            expandedToggles.insert(blockID)
+            state.expandedToggles.insert(blockID)
         } else {
-            expandedToggles.remove(blockID)
+            state.expandedToggles.remove(blockID)
         }
         return .handled
     }
@@ -2616,8 +2536,8 @@ public struct PageView: View {
                 document.blocks.insert(defaultBody, at: i + 1)
             }
         }
-        expandedToggles.remove(blockID)
-        expandedTemplateButtons.insert(blockID)
+        state.expandedToggles.remove(blockID)
+        state.expandedTemplates.insert(blockID)
         return .handled
     }
 
@@ -2639,12 +2559,12 @@ public struct PageView: View {
             document.blocks.replaceSubrange(i..<(i + 1), with: [replacement] + body)
         }
         if target == .toggle {
-            expandedToggles.insert(blockID)
+            state.expandedToggles.insert(blockID)
         } else if target == .template {
-            expandedTemplateButtons.insert(blockID)
+            state.expandedTemplates.insert(blockID)
         } else {
-            expandedToggles.remove(blockID)
-            expandedTemplateButtons.remove(blockID)
+            state.expandedToggles.remove(blockID)
+            state.expandedTemplates.remove(blockID)
         }
         return .handled
     }
@@ -2827,8 +2747,8 @@ public struct PageView: View {
 
     private func menuTargetIDs(anchorID: BlockID) -> [BlockID] {
         #if os(macOS)
-        if selection.contains(anchorID), selection.count > 1 {
-            let selectedBlocks = document.blocks.filter { selection.contains($0.id) }
+        if state.selection.contains(anchorID), state.selection.count > 1 {
+            let selectedBlocks = document.blocks.filter { state.selection.contains($0.id) }
             guard let baseIndent = selectedBlocks.map(\.indent).min() else { return [anchorID] }
             let baseIDs = selectedBlocks
                 .filter { $0.indent == baseIndent }
@@ -2990,7 +2910,7 @@ public struct PageView: View {
         // descendants — start expanded so they don't immediately vanish from the page.
         if transform == .toggle {
             for case .toggle(let id, _, _) in replacements {
-                expandedToggles.insert(id)
+                state.expandedToggles.insert(id)
             }
         }
         let focusTarget = replacements[transform.focusReplacementIndex]
@@ -3101,14 +3021,14 @@ private extension View {
     }
 
     @ViewBuilder
-    func macNearestRowHover(rowFrames: [BlockID: CGRect], hoveredBlockID: Binding<BlockID?>) -> some View {
+    func macNearestRowHover(rowFrames: [BlockID: CGRect], onChange: @escaping (BlockID?) -> Void) -> some View {
         #if os(macOS)
         self.onContinuousHover { phase in
             switch phase {
             case .active(let location):
-                hoveredBlockID.wrappedValue = nearestRowID(to: location, in: rowFrames)
+                onChange(nearestRowID(to: location, in: rowFrames))
             case .ended:
-                hoveredBlockID.wrappedValue = nil
+                onChange(nil)
             }
         }
         #else
@@ -3281,7 +3201,7 @@ private struct IOSNavigationBackGestureGate: UIViewControllerRepresentable {
 #endif
 
 private enum PageHoverCoordinateSpace {
-    static let name = "PageView.hover"
+    static let name = "EditorView.hover"
 }
 
 private struct RowFramePreferenceKey: PreferenceKey {
@@ -3296,24 +3216,6 @@ private func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> Bl
     frames.min { lhs, rhs in
         abs(lhs.value.midY - point.y) < abs(rhs.value.midY - point.y)
     }?.key
-}
-
-struct ReorderLift {
-    /// Lead block — this is what `reorderLiftView()` renders inside the lift.
-    var block: Block
-    /// All blocks being reordered. Single-row drags carry one ID; drags
-    /// initiated from a multi-block selection carry the whole selection.
-    var ids: [BlockID]
-    var sourceFrame: CGRect
-    var sourceIndex: Int
-    var sourceEndIndex: Int
-    var touchOffset: CGSize
-    var location: CGPoint
-    /// True while the lift is mounted but `touchOffset` is a placeholder
-    /// (centered on the source row) waiting for a real cursor location to
-    /// re-anchor against. Used on iOS when prelift state is mounted before
-    /// the first concrete touch point is applied.
-    var pendingAnchor: Bool
 }
 
 struct IOSPageReorderGeometry {

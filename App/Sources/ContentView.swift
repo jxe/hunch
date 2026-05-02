@@ -659,7 +659,7 @@ final class WorkspaceModel {
 
     // MARK: - Recovery (trash + history)
 
-    /// Fire-and-forget capture of a block-level deletion. Called from `PageView`'s
+    /// Fire-and-forget capture of a block-level deletion. Called from `EditorView`'s
     /// delete paths before the document mutation so the block contents survive.
     func recordBlockDeletion(indices: [Int], blocks: [Block], actionName: String) {
         guard let trashStore, let workspaceURL, let openDocument else { return }
@@ -996,62 +996,17 @@ struct ContentView: View {
     @ViewBuilder
     private func pageDetail(for url: URL) -> some View {
         if let document = model.documentForPage(url: url) {
-            PageView(
-                document: Binding(
-                    get: { model.documentForPage(url: url) ?? document },
-                    set: { model.updateDocumentForPage($0) }
-                ),
-                suggestPages: { query in
-                    model.mentionItems(matching: query)
-                },
-                onSubpageTap: { pageID in
-                    model.openSubpage(relativePath: pageID)
-                },
-                pageTitle: { pageID in
-                    model.pageTitle(for: pageID)
-                },
-                onCreateSubpage: { title, requestedID, initialContent in
-                    model.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
-                },
-                onLoadSubpage: { pageID in
-                    model.loadSubpage(relativePath: pageID)
-                },
-                onAbsorbSubpage: { pageID in
-                    model.moveSubpageToTrash(relativePath: pageID)
-                },
-                onAppendToSubpage: { pageID, blocks in
-                    model.appendToSubpage(relativePath: pageID, blocks: blocks)
-                },
-                onNavigateBack: {
-                    model.goBack()
-                },
-                onEdited: {
-                    model.markEdited()
-                },
-                onBlur: {
-                    Task { await model.saveNow() }
-                },
-                onRecordBlockDeletion: { indices, blocks, actionName in
-                    model.recordBlockDeletion(indices: indices, blocks: blocks, actionName: actionName)
-                },
-                serializeBlocksForPasteboard: { blocks in
-                    BlockSerializer.serialize(blocks)
-                },
-                parseBlocksFromPasteboard: { string in
-                    let blocks = BlockParser.parse(string)
-                    return blocks.isEmpty ? nil : blocks
-                }
+            // Wrap the editor in a per-URL view so SwiftUI's view-identity gives
+            // us a fresh EditorState (and undo controller, focus, etc.) each
+            // time the user navigates to a different document. The Editor
+            // contract is one EditorState per document; navigating to a new
+            // page mounts a new EditorPage with new state.
+            EditorPage(
+                url: url,
+                document: document,
+                model: model,
+                versionHistoryURL: $versionHistoryURL
             )
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        versionHistoryURL = url
-                    } label: {
-                        Image(systemName: "clock.arrow.circlepath")
-                    }
-                    .accessibilityLabel("Version History")
-                }
-            }
             .sheet(item: Binding(
                 get: { versionHistoryURL.map(URLBox.init) },
                 set: { versionHistoryURL = $0?.url }
@@ -1062,6 +1017,78 @@ struct ContentView: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(NotionStyle.background)
+        }
+    }
+}
+
+/// Per-URL editor page. Owns an `EditorState` whose lifetime matches the
+/// navigation destination's view-identity — pushing a new URL mounts a fresh
+/// `EditorPage` (and a fresh `EditorState`); navigating back unmounts it.
+private struct EditorPage: View {
+    let url: URL
+    let document: Document
+    @Bindable var model: WorkspaceModel
+    @Binding var versionHistoryURL: URL?
+
+    @State private var editorState = EditorState()
+
+    var body: some View {
+        EditorView(
+            document: Binding(
+                get: { model.documentForPage(url: url) ?? document },
+                set: { model.updateDocumentForPage($0) }
+            ),
+            state: editorState,
+            suggestPages: { query in
+                model.mentionItems(matching: query)
+            },
+            onSubpageTap: { pageID in
+                model.openSubpage(relativePath: pageID)
+            },
+            pageTitle: { pageID in
+                model.pageTitle(for: pageID)
+            },
+            onCreateSubpage: { title, requestedID, initialContent in
+                model.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
+            },
+            onLoadSubpage: { pageID in
+                model.loadSubpage(relativePath: pageID)
+            },
+            onAbsorbSubpage: { pageID in
+                model.moveSubpageToTrash(relativePath: pageID)
+            },
+            onAppendToSubpage: { pageID, blocks in
+                model.appendToSubpage(relativePath: pageID, blocks: blocks)
+            },
+            onNavigateBack: {
+                model.goBack()
+            },
+            onEdited: {
+                model.markEdited()
+            },
+            onBlur: {
+                Task { await model.saveNow() }
+            },
+            onRecordBlockDeletion: { indices, blocks, actionName in
+                model.recordBlockDeletion(indices: indices, blocks: blocks, actionName: actionName)
+            },
+            serializeBlocksForPasteboard: { blocks in
+                BlockSerializer.serialize(blocks)
+            },
+            parseBlocksFromPasteboard: { string in
+                let blocks = BlockParser.parse(string)
+                return blocks.isEmpty ? nil : blocks
+            }
+        )
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    versionHistoryURL = url
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .accessibilityLabel("Version History")
+            }
         }
     }
 }

@@ -62,7 +62,7 @@ public struct BlockRow: View {
     public let numberingIndex: Int?
     public let isSelected: Bool
     public let isEditing: Bool
-    /// Toggle expansion is owned by the parent (PageView) so the body blocks render as
+    /// Toggle expansion is owned by the parent (EditorView) so the body blocks render as
     /// regular siblings in the page's block loop. Ignored for non-toggle blocks.
     public let isExpanded: Bool
     /// Drag-and-drop hovering this row as the "drop on parent" target — paints a
@@ -73,7 +73,7 @@ public struct BlockRow: View {
     let onEdited: () -> Void
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     /// Forwarded to the editor — fires whenever the cursor sits after an in-progress
-    /// `@query` (or transitions out of one). PageView holds the popover state.
+    /// `@query` (or transitions out of one). EditorView holds the popover state.
     let onMentionTriggerChange: (MentionTrigger?) -> Void
     /// Forwarded to the editor — when true, ↑/↓/Return/Esc are diverted to menu-nav
     /// events instead of intra-block / exit-edit.

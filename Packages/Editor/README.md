@@ -1,8 +1,11 @@
 # Editor
 
-A single-page block editor for iOS 26 / macOS 26, written in SwiftUI. Operates
-on an in-memory `Document` — a list of `Block` cases. **No opinion on
-serialization, persistence, or navigation.** The host wires those up.
+A single-page block editor for iOS 26 / macOS 26, written in SwiftUI. The
+host owns two model types per editing session: a `Document` (the persisted
+content — a list of `Block` cases) and an `EditorState` (the volatile
+session state — selection, edit mode, gestures, expanded toggles).
+**No opinion on serialization, persistence, or navigation.** The host
+wires those up.
 
 Built for [Hunch](https://github.com/joeedelman/hunch). Designed to be
 embeddable in other apps that want Notion-flavoured block editing without
@@ -127,9 +130,10 @@ struct ContentView: View {
         title: "Untitled",
         blocks: [.paragraph(text: AttributedString(""))]
     )
+    @State var editorState = EditorState()
 
     var body: some View {
-        PageView(document: $document)
+        EditorView(document: $document, state: editorState)
     }
 }
 ```
@@ -138,8 +142,9 @@ That's a working editor. No serialization, no navigation, no @-mention —
 all defaults. Add callbacks as you need features:
 
 ```swift
-PageView(
+EditorView(
     document: $document,
+    state: editorState,
     suggestPages: { query in myCatalog.search(query) },
     onSubpageTap: { pageID in router.push(pageID) },
     pageTitle: { pageID in myCatalog.title(for: pageID) },
@@ -147,6 +152,13 @@ PageView(
     parseBlocksFromPasteboard: { string in myMarkdown.parse(string) }
 )
 ```
+
+**One `EditorView` per document.** The pair `(document, state)` is one
+editing session — the editor caches focus, undo, and gesture state
+internally and assumes both are stable. To switch documents (e.g. on
+navigation), mount a fresh `EditorView` with a fresh `EditorState`. In
+Hunch this is done by giving each `NavigationStack` destination its own
+wrapper view that owns the state via `@State`.
 
 ---
 
@@ -189,9 +201,65 @@ the editor doesn't read or write to it.
 
 ---
 
+## EditorState
+
+The volatile session state that lives alongside `Document`: selection,
+edit mode, in-flight gestures, expanded toggles, hover, drop targets.
+The host constructs and owns one `EditorState` per `EditorView` (and can
+`@Bindable` it for sibling UI like a status bar to observe). Mutation
+flows through named methods inside the package — `internal(set)` blocks
+external writes.
+
+The state space is two orthogonal axes plus ambient annotations:
+
+```swift
+public struct EditorState {
+    public internal(set) var mode: Mode
+    public internal(set) var gesture: Gesture?
+
+    // Ambient — coexist with any (mode, gesture)
+    public internal(set) var hoveredBlock: BlockID?
+    public internal(set) var hoveredHandle: BlockID?
+    public internal(set) var dropHoverIndex: Int?
+    public internal(set) var dropOntoBlockID: BlockID?
+    public internal(set) var currentDropTarget: DropTarget?
+    public internal(set) var expandedToggles: Set<BlockID>
+    public internal(set) var expandedTemplates: Set<BlockID>
+    public internal(set) var actionToast: String?
+}
+
+public enum Mode {
+    case navigating(Selection)
+    case editing(BlockID, overlay: Overlay?)
+}
+
+public enum Overlay { case mention(MentionMenuState) }
+
+public enum Gesture {
+    case reordering(ReorderLift)
+    case pinchOpening(PinchPreviewState)
+}
+```
+
+- `mode` — what the user is fundamentally doing. `.navigating` carries
+  block-level selection (set, anchor, cursor); `.editing` names the
+  block whose text is mounted in a live editor, with an optional
+  modal overlay (currently the @-mention popover).
+- `gesture` — a transient manipulation riding on top of nav mode.
+  Invariant: a non-nil `gesture` only coexists with `mode == .navigating`
+  — beginning a gesture commits or cancels any active edit first.
+- Ambient state coexists with any `(mode, gesture)` combination.
+
+Convenience read accessors flatten the cases back to individual
+properties: `state.selection`, `state.cursor`, `state.anchor`,
+`state.editingBlock`, `state.mentionMenu`, `state.reorderLift`,
+`state.pinchPreview`. These are derived from `mode` and `gesture`.
+
+---
+
 ## Callback contract
 
-Every `PageView` callback has a sensible default (no-op or pass-through)
+Every `EditorView` callback has a sensible default (no-op or pass-through)
 so partially-wired hosts compile.
 
 | Callback | Type | When it fires | Return semantics |
@@ -225,7 +293,7 @@ so partially-wired hosts compile.
 - **swift-tools 6.2** in the consumer's `Package.swift` (or modern Xcode
   project). Editor uses `swiftLanguageModes: [.v6]`.
 - **No `UndoManager` provisioning.** `DocumentUndoController` is owned
-  internally and recreated implicitly when `PageView`'s SwiftUI identity
+  internally and recreated implicitly when `EditorView`'s SwiftUI identity
   resets; explicitly cleared on document switch via `.onChange(of:
   document.id)`.
 
