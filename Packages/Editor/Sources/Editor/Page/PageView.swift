@@ -193,6 +193,11 @@ public struct PageView: View {
     @State private var pinchGestureActive = false
     @State private var pinchCrossedInsertThreshold = false
     @State private var pinchCrossedFocusThreshold = false
+    /// Index of the slot the gap will open at, captured once at gesture start.
+    /// Recomputing each update is wrong: as the gap grows it shifts the rows
+    /// below it, mutating their `midY`, which can flip the calculation to an
+    /// adjacent slot mid-gesture.
+    @State private var pinchPendingInsertIndex: Int?
     @State private var scrollMetrics = PageScrollMetrics()
     @State private var pinchAutoScrollTask: Task<Void, Never>?
     @State private var pinchAutoScrollVelocity: CGFloat = 0
@@ -1257,13 +1262,48 @@ public struct PageView: View {
     }
 
     private func insertParagraph(at index: Int, focus: Bool = true) {
-        let newBlock = Block.paragraph(text: AttributedString())
+        insertBlock(.paragraph(text: AttributedString()), at: index, focus: focus)
+    }
+
+    private func insertBlock(_ newBlock: Block, at index: Int, focus: Bool = true) {
         let insertionIndex = max(0, min(index, document.blocks.count))
         mutate("Insert Block") {
             document.blocks.insert(newBlock, at: insertionIndex)
         }
         if focus {
             enterEditMode(on: newBlock.id)
+        }
+    }
+
+    /// Pick a sensible block kind for a pinch-open insert at `index`. Continues
+    /// list/quote runs by mirroring the neighbour's kind & indent — above wins,
+    /// otherwise below, otherwise paragraph. Captures cases like inserting
+    /// between two bullets, after the last bullet of a list, or between a
+    /// heading and the first item of a list (all should yield a list item).
+    private func smartInsertBlock(at index: Int) -> Block {
+        let blocks = document.blocks
+        let above = (index - 1 >= 0 && index - 1 < blocks.count) ? blocks[index - 1] : nil
+        let below = (index >= 0 && index < blocks.count) ? blocks[index] : nil
+        if let kind = listLikeTemplate(from: above) { return kind }
+        if let kind = listLikeTemplate(from: below) { return kind }
+        return .paragraph(text: AttributedString())
+    }
+
+    /// If `block` is a list-like row (bullet/numbered/todo/quote), return a
+    /// fresh empty block of the same kind & indent. Otherwise nil.
+    private func listLikeTemplate(from block: Block?) -> Block? {
+        guard let block else { return nil }
+        switch block {
+        case .bullet(_, _, let indent):
+            return .bullet(text: AttributedString(), indent: indent)
+        case .numbered(_, _, let indent):
+            return .numbered(text: AttributedString(), indent: indent)
+        case .todo(_, _, _, let indent):
+            return .todo(text: AttributedString(), done: false, indent: indent)
+        case .quote(_, _, let indent):
+            return .quote(text: AttributedString(), indent: indent)
+        default:
+            return nil
         }
     }
 
@@ -1319,13 +1359,18 @@ public struct PageView: View {
         pinchGestureActive = true
         guard editingBlock == nil else {
             if pinchPreview != nil { pinchPreview = nil }
+            pinchPendingInsertIndex = nil
             stopPinchAutoScroll()
             return
         }
         updatePinchAutoScroll(for: value.location)
         if value.spreadDelta > 0 {
             let gapHeight = pinchRubberBand(value.spreadDelta)
-            let insertIndex = pinchInsertIndex(for: value.startLocation)
+            // Compute the insert index lazily on the first spread-positive update,
+            // before the gap opens and starts shifting rowFrames. After that, hold
+            // it fixed so the gap stays anchored where the user started pinching.
+            let insertIndex = pinchPendingInsertIndex ?? pinchInsertIndex(for: value.startLocation)
+            pinchPendingInsertIndex = insertIndex
             pinchPreview = PinchPreviewState(insertIndex: insertIndex, gapHeight: gapHeight)
             if gapHeight >= pinchInsertCommitGap, !pinchCrossedInsertThreshold {
                 pinchCrossedInsertThreshold = true
@@ -1343,6 +1388,7 @@ public struct PageView: View {
             }
         } else if pinchPreview != nil {
             pinchPreview = nil
+            pinchPendingInsertIndex = nil
             pinchCrossedInsertThreshold = false
             pinchCrossedFocusThreshold = false
         }
@@ -1353,8 +1399,15 @@ public struct PageView: View {
         let gap = preview?.gapHeight ?? pinchRubberBand(max(0, value.spreadDelta))
 
         if gap >= pinchInsertCommitGap, editingBlock == nil {
-            let insertIndex = preview?.insertIndex ?? pinchInsertIndex(for: value.startLocation)
-            let shouldFocus = gap >= pinchInsertFocusGap
+            let insertIndex = pinchPendingInsertIndex
+                ?? preview?.insertIndex
+                ?? pinchInsertIndex(for: value.startLocation)
+            // Tier 1 (smaller pinch): pick a kind based on neighbors.
+            // Tier 2 (larger pinch, past the second threshold): always H1.
+            // Both tiers focus the new block.
+            let newBlock: Block = (gap >= pinchInsertFocusGap)
+                ? .heading(level: 1, text: AttributedString())
+                : smartInsertBlock(at: insertIndex)
             // Bundle the structural insert and the gap collapse into the same
             // spring transaction so the new row appears inside the opened gap
             // and the surrounding rows close in around it. Without the shared
@@ -1362,7 +1415,7 @@ public struct PageView: View {
             // pops in afterwards — visually disjoint.
             Haptics.heavy()
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                insertParagraph(at: insertIndex, focus: shouldFocus)
+                insertBlock(newBlock, at: insertIndex, focus: true)
                 pinchPreview = nil
             }
         } else {
@@ -1370,6 +1423,7 @@ public struct PageView: View {
                 pinchPreview = nil
             }
         }
+        pinchPendingInsertIndex = nil
         pinchCrossedInsertThreshold = false
         pinchCrossedFocusThreshold = false
         pinchGestureActive = false
