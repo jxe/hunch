@@ -103,14 +103,14 @@ extension EditorView {
     fileprivate func updatePinchAutoScroll(for location: CGPoint) {
         let threshold: CGFloat = 88
         let maxVelocity: CGFloat = 520
-        let viewportHeight = scrollMetrics.viewportHeight
-        guard viewportHeight > threshold * 2 else {
+        let effectiveBottom = scrollMetrics.viewportHeight - scrollMetrics.topInset - scrollMetrics.bottomInset
+        guard effectiveBottom > threshold * 2 else {
             stopPinchAutoScroll()
             return
         }
 
         let topDistance = location.y
-        let bottomDistance = viewportHeight - location.y
+        let bottomDistance = effectiveBottom - location.y
         let velocity: CGFloat
         if topDistance < threshold {
             let progress = min(1, max(0, (threshold - topDistance) / threshold))
@@ -157,10 +157,8 @@ extension EditorView {
     func scrollBy(_ deltaY: CGFloat) {
         let maxOffset = max(0, scrollMetrics.contentHeight - scrollMetrics.viewportHeight)
         let nextOffset = min(maxOffset, max(0, scrollMetrics.contentOffsetY + deltaY))
-        NSLog("[SCROLL-BY] dY=%f curOff=%f next=%f maxOff=%f", deltaY, scrollMetrics.contentOffsetY, nextOffset, maxOffset)
-        guard abs(nextOffset - scrollMetrics.contentOffsetY) > 0.5 else { NSLog("[SCROLL-BY] no-op"); return }
+        guard abs(nextOffset - scrollMetrics.contentOffsetY) > 0.5 else { return }
         #if os(iOS)
-        NSLog("[SCROLL-BY] iOS PageScrollController scrollView=%@", PageScrollController.shared.scrollView == nil ? "nil" : "set")
         PageScrollController.shared.scroll(toY: nextOffset)
         #else
         scrollPosition.scrollTo(point: CGPoint(x: 0, y: nextOffset))

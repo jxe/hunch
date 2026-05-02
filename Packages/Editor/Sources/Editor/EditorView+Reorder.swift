@@ -182,19 +182,22 @@ extension EditorView {
     /// Edge-band autoscroll for an active reorder lift. Mirrors the pinch
     /// auto-scroll pattern in `EditorView+Pinch.swift` — same threshold/velocity
     /// curve, separate state so the two gestures don't fight over one Task.
+    /// Bottom edge sits at the *content area* bottom (viewport minus top &
+    /// bottom insets) so it's symmetric with the top: `pageLocation.y` already
+    /// has top inset subtracted, so y=0 is the top of the content area; for the
+    /// bottom band to fire at max velocity past the bottom edge, it must sit at
+    /// the bottom of the content area too.
     func updateReorderAutoScroll(for location: CGPoint) {
         let threshold: CGFloat = 110
         let maxVelocity: CGFloat = 620
-        let viewportHeight = scrollMetrics.viewportHeight
-        NSLog("[REORDER-AS] update loc.y=%f viewportH=%f contentH=%f offsetY=%f", location.y, viewportHeight, scrollMetrics.contentHeight, scrollMetrics.contentOffsetY)
-        guard viewportHeight > threshold * 2 else {
-            NSLog("[REORDER-AS] viewport too small, bailing")
+        let effectiveBottom = scrollMetrics.viewportHeight - scrollMetrics.topInset - scrollMetrics.bottomInset
+        guard effectiveBottom > threshold * 2 else {
             stopReorderAutoScroll()
             return
         }
 
         let topDistance = location.y
-        let bottomDistance = viewportHeight - location.y
+        let bottomDistance = effectiveBottom - location.y
         let velocity: CGFloat
         if topDistance < threshold {
             let progress = min(1, max(0, (threshold - topDistance) / threshold))
@@ -205,7 +208,6 @@ extension EditorView {
         } else {
             velocity = 0
         }
-        NSLog("[REORDER-AS] velocity=%f topD=%f bottomD=%f", velocity, topDistance, bottomDistance)
 
         reorderAutoScrollVelocity = velocity
         if abs(velocity) > 1 {
@@ -216,21 +218,18 @@ extension EditorView {
     }
 
     fileprivate func startReorderAutoScrollIfNeeded() {
-        guard reorderAutoScrollTask == nil else { NSLog("[REORDER-AS] task already running"); return }
-        NSLog("[REORDER-AS] starting task")
+        guard reorderAutoScrollTask == nil else { return }
         reorderAutoScrollTask = Task { @MainActor in
             let frameDuration: TimeInterval = 1.0 / 60.0
             while !Task.isCancelled {
                 let velocity = reorderAutoScrollVelocity
-                if abs(velocity) <= 1 { NSLog("[REORDER-AS] velocity dropped, breaking"); break }
-                NSLog("[REORDER-AS] tick velocity=%f scrollBy=%f", velocity, velocity * frameDuration)
+                if abs(velocity) <= 1 { break }
                 scrollBy(velocity * frameDuration)
                 if let liftY = state.reorderLift?.location.y {
                     applyDropTarget(at: liftY, snapshot: document.blocks)
                 }
                 try? await Task.sleep(for: .milliseconds(16))
             }
-            NSLog("[REORDER-AS] task ended")
             reorderAutoScrollTask = nil
         }
     }

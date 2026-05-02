@@ -196,6 +196,13 @@ public struct EditorView: View {
                     onUpdate: { value in handlePinchUpdate(value) },
                     onCommit: { value in handlePinchCommit(value) }
                 )
+                // Mount the iOS metrics reader INSIDE the ScrollView so its UIView's
+                // superview chain walks up through the UIScrollView. Attached as a
+                // background of the outer ScrollView, the background sits as a
+                // sibling and superview never reaches the scroll view → metrics stay
+                // at zero, autoscroll bails. macScrollMetrics uses
+                // `.onScrollGeometryChange` so it doesn't need to be inside.
+                .iosScrollMetrics($scrollMetrics)
             }
             .coordinateSpace(name: PageHoverCoordinateSpace.name)
             .iosPageBlockDropTarget(
@@ -211,7 +218,6 @@ public struct EditorView: View {
                     state.currentDropTarget = nil
                 }
             )
-            .iosScrollMetrics($scrollMetrics)
             .macScrollMetrics($scrollMetrics)
             .macScrollPosition($scrollPosition)
             .macNearestRowHover(rowFrames: rowFrames) { id in state.hoveredBlock = id }
@@ -1301,12 +1307,26 @@ public struct EditorView: View {
         pasted = str
         #endif
         guard let parsed = parseBlocksFromPasteboard(pasted), !parsed.isEmpty else { return false }
+        return spliceParsedBlocksAfter(state.cursor, parsed: parsed, focusLast: false)
+    }
+
+    /// Splice host-parsed blocks into the document after `anchorID` (or at the end of
+    /// the document if `anchorID == nil` / not found). Indent + insertion-point logic:
+    /// if the anchor has indent-children, pasted blocks land after the last child as
+    /// siblings of the children (indent + 1); otherwise they land immediately below
+    /// the anchor at the anchor's own indent. The host is expected to return blocks
+    /// normalized to indent 0; we shift each by the chosen base. Returns true and
+    /// either selects (`focusLast == false`, nav-mode) or enters edit mode on
+    /// (`focusLast == true`, edit-mode paste) the last spliced block.
+    @discardableResult
+    private func spliceParsedBlocksAfter(_ anchorID: BlockID?, parsed: [Block], focusLast: Bool) -> Bool {
+        guard !parsed.isEmpty else { return false }
 
         let baseIndent: Int
         let insertIndex: Int
-        if let cursorID = state.cursor,
-           let anchorIdx = document.index(of: cursorID),
-           let section = document.sectionRange(of: cursorID) {
+        if let anchorID,
+           let anchorIdx = document.index(of: anchorID),
+           let section = document.sectionRange(of: anchorID) {
             let anchorIndent = document.blocks[anchorIdx].indent
             let hasChildren = section.count > 1
             baseIndent = hasChildren ? anchorIndent + 1 : anchorIndent
@@ -1326,7 +1346,11 @@ public struct EditorView: View {
         }
 
         if let last = reindented.last {
-            setCursor(last.id)
+            if focusLast {
+                DispatchQueue.main.async { self.enterEditMode(on: last.id) }
+            } else {
+                setCursor(last.id)
+            }
         }
         return true
     }
@@ -1397,7 +1421,30 @@ public struct EditorView: View {
         case .mentionDismiss:
             state.closeMentionMenu()
             return .handled
+        case .paste(let str):
+            return handleEditorPaste(str, blockID: blockID)
         }
+    }
+
+    /// Decide what to do with a paste arriving from the active row's editor:
+    /// - If parsing fails or returns empty, return `.ignored` so the platform
+    ///   text view does its native paste of the raw string.
+    /// - If parsing returns exactly one `.paragraph`, also return `.ignored`:
+    ///   native paste preserves cursor position + typing-undo coalescing for
+    ///   plain inline text. (Inline-mark interpretation of single-paragraph
+    ///   markdown is a known follow-up.)
+    /// - Otherwise (≥2 blocks, or a single non-paragraph block like `- foo`),
+    ///   splice the parsed blocks immediately below the row's section and
+    ///   move focus to the last one.
+    private func handleEditorPaste(_ str: String, blockID: BlockID) -> KeyPress.Result {
+        guard let parsed = parseBlocksFromPasteboard(str), !parsed.isEmpty else {
+            return .ignored
+        }
+        if parsed.count == 1, case .paragraph = parsed[0] {
+            return .ignored
+        }
+        spliceParsedBlocksAfter(blockID, parsed: parsed, focusLast: true)
+        return .handled
     }
 
 

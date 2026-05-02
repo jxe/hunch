@@ -27,6 +27,12 @@ public enum BlockKey: Sendable, Equatable {
     case mentionDown
     case mentionCommit
     case mentionDismiss
+    /// Cmd-V / paste action received by the editor with the raw pasteboard
+    /// string. EditorView decides whether the parsed result splits into
+    /// multiple blocks (handled here, splice below the row) or is a single
+    /// paragraph (return `.ignored` so the platform text view does its native
+    /// paste, preserving cursor + undo coalescing).
+    case paste(String)
 }
 
 
@@ -544,6 +550,21 @@ final class ContainedTextView: NSTextView {
         invalidateIntrinsicContentSize()
     }
 
+    /// Intercept Cmd-V / paste action. NSTextView routes both the menu item and the
+    /// keyboard shortcut through `paste(_:)`. We hand the raw pasteboard string up to
+    /// EditorView via the `.paste` BlockKey; if it splices multi-block content it
+    /// returns `.handled` and we skip super. Single-paragraph pastes return `.ignored`
+    /// and fall through to the native handler so cursor placement + native typing-undo
+    /// coalescing both stay correct.
+    override func paste(_ sender: Any?) {
+        if let onKey = coordinator?.parent.onKey,
+           let str = NSPasteboard.general.string(forType: .string),
+           onKey(.paste(str)) == .handled {
+            return
+        }
+        super.paste(sender)
+    }
+
     /// NSTextView routes Esc via `cancelOperation(_:)` rather than firing it through
     /// `keyDown`'s normal switch. Hook that path explicitly so our `.escape` handler
     /// (exit edit mode, return to nav mode) runs. We resign first responder to nil first
@@ -895,6 +916,20 @@ final class ContainedTextViewIOS: UITextView {
             return
         }
         super.deleteBackward()
+    }
+
+    /// Intercept the system paste action. Hand the raw pasteboard string up to
+    /// EditorView via `.paste`; if it splices multi-block content it returns
+    /// `.handled` and we skip super. Single-paragraph pastes return `.ignored`
+    /// and fall through to UITextView's native paste so cursor placement and
+    /// native undo behavior stay correct.
+    override func paste(_ sender: Any?) {
+        if let coordinator,
+           let str = UIPasteboard.general.string,
+           coordinator.parent.onKey(.paste(str)) == .handled {
+            return
+        }
+        super.paste(sender)
     }
 
     override func insertText(_ text: String) {

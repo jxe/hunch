@@ -236,6 +236,15 @@ struct PageScrollMetrics: Equatable {
     var viewportHeight: CGFloat = 0
     var contentHeight: CGFloat = 0
     var contentOffsetY: CGFloat = 0
+    /// Top + bottom adjusted-content-insets on iOS (nav bar + safe area on top,
+    /// home-indicator safe area on bottom). The autoscroll edge bands are
+    /// measured against the *content area* (`viewportHeight - topInset -
+    /// bottomInset`), not the raw viewport: `pageLocation` already shifts y=0
+    /// to "top of content area", and for the bottom band to be symmetric the
+    /// edge must sit at the bottom of the content area too. Both default to 0
+    /// on macOS — viewport == content area there.
+    var topInset: CGFloat = 0
+    var bottomInset: CGFloat = 0
 }
 
 enum PageHoverCoordinateSpace {
@@ -784,7 +793,9 @@ struct IOSScrollMetricsReader: UIViewRepresentable {
             let next = PageScrollMetrics(
                 viewportHeight: scrollView.bounds.height,
                 contentHeight: scrollView.contentSize.height,
-                contentOffsetY: scrollView.contentOffset.y
+                contentOffsetY: scrollView.contentOffset.y,
+                topInset: scrollView.adjustedContentInset.top,
+                bottomInset: scrollView.adjustedContentInset.bottom
             )
             if metrics.wrappedValue != next {
                 metrics.wrappedValue = next
