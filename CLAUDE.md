@@ -11,17 +11,18 @@ user-picked workspace folder.
 ## Repo shape
 
 - `Packages/Editor/` — single SwiftUI SPM package. The single-page editor:
-  `Block` model, `PageView`, `BlockTextEditor` (NSTextView wrapper on macOS,
-  plain TextEditor on iOS), block rendering, autotransforms (`# `, `- `,
-  `> `, ` ``` `, `---`, `[]/[ ]`, `1. `, `" `), @-mention detection,
-  inline-mark `AttributedStringKey`s. **No swift-markdown dep.** Operates
-  on the in-memory `Document` only — the host is responsible for
-  serialization, persistence, navigation, and multi-page operations. SPM
-  tests live here. See `Packages/Editor/README.md` for the embedding
-  contract.
+  `Block` / `Document` model, `EditorView`, `EditorState`, `BlockTextEditor`
+  (NSTextView wrapper on macOS, plain TextEditor on iOS), block rendering,
+  autotransforms (`# `, `- `, `> `, ` ``` `, `---`, `[]/[ ]`, `1. `, `" `),
+  @-mention detection, inline-mark `AttributedStringKey`s. **No
+  swift-markdown dep.** Operates on the in-memory `Document` only — the
+  host is responsible for serialization, persistence, navigation, and
+  multi-page operations. SPM tests live here. See
+  `Packages/Editor/README.md` for the embedding contract.
 - `App/Sources/` — Hunch.app target. `HunchApp`/`ContentView` (with
   `WorkspaceModel` bridging the editor's id-based callbacks to filesystem
-  paths), Inter font registration, plus:
+  paths, and a small `EditorPage` wrapper that owns one `EditorState` per
+  navigation destination), Inter font registration, plus:
   - `App/Sources/Markdown/` — `BlockParser` and `BlockSerializer`
     (swift-markdown lives here, not in the Editor).
   - `App/Sources/Storage/` — `FileStore`, `DocumentSaveCoordinator`
@@ -55,9 +56,27 @@ xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform
 ## Architecture you need to know to make changes
 
 **One editor at a time.** Blocks render as read-only `Text` until
-`editingBlock == block.id`; that row swaps in `BlockTextEditor`. N
-simultaneous TextEditors are a focus-arbitration footgun on macOS — don't
-go back to that.
+`state.mode == .editing(block.id, _)`; that row swaps in `BlockTextEditor`.
+N simultaneous TextEditors are a focus-arbitration footgun on macOS —
+don't go back to that.
+
+**Editor session state lives in `EditorState`.** Selection, edit mode,
+in-flight gestures (reorder, pinch), expanded toggles, hover, drop targets
+— all on the `EditorState` `@Observable` class. The state space is two
+orthogonal axes: `mode: Mode` (`.navigating(Selection)` or
+`.editing(BlockID, overlay: Overlay?)`) and `gesture: Gesture?`
+(`.reordering(...)` / `.pinchOpening(...)`), plus ambient annotations.
+Mention popover is `.editing(_, .mention(...))`, an overlay *within*
+edit mode, not a peer mode. Invariant: a non-nil `gesture` only
+coexists with `mode == .navigating(...)`. Mutation goes through named
+methods (`enterEditMode`, `setReorderLift`, `setMentionMenu`, etc.) —
+`internal(set)` blocks external writes so the host can read but not write.
+
+**One `EditorView` per document.** The pair `(document, state)` is one
+editing session. The `EditorPage` wrapper view in `ContentView.swift`
+owns `@State EditorState` so each navigation destination gets fresh
+state. EditorView caches focus, undo, and gesture state internally and
+assumes both inputs are stable.
 
 **Page navigation is a `NavigationStack(path: [URL])`.** `WorkspaceModel.path`
 is the source of truth for what's open: `path == []` shows the page list root,
@@ -72,12 +91,13 @@ detected in `BlockParser` and rendered via `subpageRow` in
 `BlockRendering.swift`. (Inline `[text](path.md)` clicks inside body text
 don't navigate yet — see `tasks/inline-link-click-navigation.md`.)
 
-**Nav mode is multi-select.** `PageView` holds `selection: Set<BlockID>`,
-`cursor` (moving end), `anchor` (fixed end). ↑/↓ collapses to a single
-block, Shift+↑/↓ extends, Return enters edit mode (only when
-`selection.count == 1`) or opens a selected subpage, → also opens a
-selected subpage, Esc exits, Delete removes the selection, Option+↑/↓
-slides, Tab/Shift-Tab indent/outdent list items in the selection.
+**Nav mode is multi-select.** `Mode.navigating(Selection)` carries
+`blocks: Set<BlockID>`, `cursor` (moving end), `anchor` (fixed end).
+↑/↓ collapses to a single block, Shift+↑/↓ extends, Return enters edit
+mode (only when `state.selection.count == 1`) or opens a selected
+subpage, → also opens a selected subpage, Esc exits, Delete removes the
+selection, Option+↑/↓ slides, Tab/Shift-Tab indent/outdent list items
+in the selection.
 
 **Editor binding is `Binding<AttributedString>`** so inline marks
 (bold/italic/code/strike/link) round-trip through edits.
@@ -88,9 +108,9 @@ NSTextView mutates during edits. Cmd-B/I/E/Shift-S toggle marks on the
 selection.
 
 **Markdown autotransforms.** Pure detection in
-`Packages/Core/Sources/Core/Markdown/Autotransforms.swift`; replacement
-blocks via `BlockTransform.apply(to:)`; spliced into the document by
-`PageView.applyAutotransform`. Prefix triggers (`# `, `## `, `### `, `- `,
+`Packages/Editor/Sources/Editor/Transforms/Autotransforms.swift`;
+replacement blocks via `BlockTransform.apply(to:)`; spliced into the
+document by `EditorView.applyAutotransform`. Prefix triggers (`# `, `## `, `### `, `- `,
 `* `, `1. `, `[] `, `[ ] `, `> ` for toggle, `" ` for quote) fire from
 the coordinator's `textDidChange` (IME-marked-text guarded) before the
 binding propagates. Enter triggers (`---`, ` ``` `) fire from
@@ -191,5 +211,6 @@ Xcode tools that earn their keep:
 - Prefer editing existing files over adding new ones.
 - Comments explain *why*, never *what*. Skip them when the code is clear.
 - Don't add CHANGELOG.md, TROUBLESHOOTING.md, etc. unless asked.
-- Keep `swift test --package-path Packages/Core` green before committing
-  UI changes — the parser/serializer is the load-bearing core.
+- Keep `swift test --package-path Packages/Editor` green before committing
+  UI changes — the autotransform / mention / reorder / mutation layer is
+  load-bearing and the only test surface inside the package.
