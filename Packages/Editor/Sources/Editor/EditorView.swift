@@ -213,7 +213,7 @@ public struct EditorView: View {
             )
             .iosScrollMetrics($scrollMetrics)
             .macScrollMetrics($scrollMetrics)
-            .scrollPosition($scrollPosition)
+            .macScrollPosition($scrollPosition)
             .macNearestRowHover(rowFrames: rowFrames) { id in state.hoveredBlock = id }
             .background(NotionStyle.background)
             .iosTapBelowRows {

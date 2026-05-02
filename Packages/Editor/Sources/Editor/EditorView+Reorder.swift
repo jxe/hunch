@@ -186,7 +186,9 @@ extension EditorView {
         let threshold: CGFloat = 110
         let maxVelocity: CGFloat = 620
         let viewportHeight = scrollMetrics.viewportHeight
+        NSLog("[REORDER-AS] update loc.y=%f viewportH=%f contentH=%f offsetY=%f", location.y, viewportHeight, scrollMetrics.contentHeight, scrollMetrics.contentOffsetY)
         guard viewportHeight > threshold * 2 else {
+            NSLog("[REORDER-AS] viewport too small, bailing")
             stopReorderAutoScroll()
             return
         }
@@ -203,6 +205,7 @@ extension EditorView {
         } else {
             velocity = 0
         }
+        NSLog("[REORDER-AS] velocity=%f topD=%f bottomD=%f", velocity, topDistance, bottomDistance)
 
         reorderAutoScrollVelocity = velocity
         if abs(velocity) > 1 {
@@ -213,24 +216,21 @@ extension EditorView {
     }
 
     fileprivate func startReorderAutoScrollIfNeeded() {
-        guard reorderAutoScrollTask == nil else { return }
+        guard reorderAutoScrollTask == nil else { NSLog("[REORDER-AS] task already running"); return }
+        NSLog("[REORDER-AS] starting task")
         reorderAutoScrollTask = Task { @MainActor in
             let frameDuration: TimeInterval = 1.0 / 60.0
             while !Task.isCancelled {
                 let velocity = reorderAutoScrollVelocity
-                if abs(velocity) <= 1 { break }
+                if abs(velocity) <= 1 { NSLog("[REORDER-AS] velocity dropped, breaking"); break }
+                NSLog("[REORDER-AS] tick velocity=%f scrollBy=%f", velocity, velocity * frameDuration)
                 scrollBy(velocity * frameDuration)
-                // The lift's `location` is in the viewport's named coordinate
-                // space, so it stays correct visually as content scrolls under
-                // the cursor. But `applyDropTarget` reads `rowFrames` (which
-                // shift after the scroll's layout pass) — tick it again so the
-                // drop indicator tracks the new row under the cursor while the
-                // user's finger is stationary.
                 if let liftY = state.reorderLift?.location.y {
                     applyDropTarget(at: liftY, snapshot: document.blocks)
                 }
                 try? await Task.sleep(for: .milliseconds(16))
             }
+            NSLog("[REORDER-AS] task ended")
             reorderAutoScrollTask = nil
         }
     }

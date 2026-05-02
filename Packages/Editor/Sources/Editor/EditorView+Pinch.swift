@@ -157,8 +157,10 @@ extension EditorView {
     func scrollBy(_ deltaY: CGFloat) {
         let maxOffset = max(0, scrollMetrics.contentHeight - scrollMetrics.viewportHeight)
         let nextOffset = min(maxOffset, max(0, scrollMetrics.contentOffsetY + deltaY))
-        guard abs(nextOffset - scrollMetrics.contentOffsetY) > 0.5 else { return }
+        NSLog("[SCROLL-BY] dY=%f curOff=%f next=%f maxOff=%f", deltaY, scrollMetrics.contentOffsetY, nextOffset, maxOffset)
+        guard abs(nextOffset - scrollMetrics.contentOffsetY) > 0.5 else { NSLog("[SCROLL-BY] no-op"); return }
         #if os(iOS)
+        NSLog("[SCROLL-BY] iOS PageScrollController scrollView=%@", PageScrollController.shared.scrollView == nil ? "nil" : "set")
         PageScrollController.shared.scroll(toY: nextOffset)
         #else
         scrollPosition.scrollTo(point: CGPoint(x: 0, y: nextOffset))

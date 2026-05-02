@@ -166,8 +166,7 @@ extension View {
     /// macOS counterpart to `iosScrollMetrics` — wires SwiftUI's
     /// `.onScrollGeometryChange` to publish the same `PageScrollMetrics`. Pinch
     /// and reorder auto-scroll both read from this; programmatic scroll on
-    /// macOS goes through `ScrollPosition.scrollTo(point:)` (attached separately
-    /// via `.scrollPosition($scrollPosition)`).
+    /// macOS goes through `macScrollPosition` below.
     @ViewBuilder
     func macScrollMetrics(_ metrics: Binding<PageScrollMetrics>) -> some View {
         #if os(macOS)
@@ -181,6 +180,19 @@ extension View {
             .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { _, new in
                 metrics.wrappedValue.viewportHeight = new
             }
+        #else
+        self
+        #endif
+    }
+
+    /// macOS-only `.scrollPosition` binding for programmatic scroll (auto-scroll
+    /// during pinch / reorder). NOT applied on iOS — there, programmatic scroll
+    /// goes through the UIScrollView bridge in `PageScrollController`. Attaching
+    /// `.scrollPosition` on iOS competes with that path and silently breaks it.
+    @ViewBuilder
+    func macScrollPosition(_ position: Binding<ScrollPosition>) -> some View {
+        #if os(macOS)
+        self.scrollPosition(position)
         #else
         self
         #endif
