@@ -46,19 +46,26 @@ public final class EditorState {
     // Transient bottom-of-page toast (e.g. "Deleted") with an Undo affordance.
     public internal(set) var actionToast: String? = nil
 
-    /// Counter the editor watches via `onChange`; bumping it asks the editor
-    /// to start a voice recording (same effect as tapping the mic button).
-    /// The host bumps it; the editor reacts. We use a counter (not a Bool)
-    /// so two consecutive requests both fire even if the editor hasn't yet
-    /// noticed the first.
-    public internal(set) var voiceRecordingStartTicket: Int = 0
+    /// Voice-recording controller. Lives on `EditorState` so host UI (toolbar
+    /// buttons, status indicators) can read recording state without poking at
+    /// the editor's internals. The editor still owns the *flow* — it watches
+    /// `voiceRecordingToggleTicket`, drives the recorder, and inserts the
+    /// transcript into the document — but the recorder instance is here.
+    public internal(set) var speechRecorder = PageSpeechRecorder()
+
+    /// Counter the editor watches via `onChange`; bumping it toggles the
+    /// recording (start when idle, stop+transcribe+insert when recording).
+    /// Source-agnostic — bumped by the toolbar button, Siri intents, hotkeys,
+    /// tests. We use a counter (not a Bool) so two consecutive requests both
+    /// fire even if the editor hasn't yet noticed the first.
+    public internal(set) var voiceRecordingToggleTicket: Int = 0
 
     public init() {}
 
-    /// Ask the editor to start a voice recording. Source-agnostic — fine to
-    /// call from a button, a Siri intent bridge, a hotkey, or a test.
-    public func requestStartVoiceRecording() {
-        voiceRecordingStartTicket &+= 1
+    /// Ask the editor to toggle voice recording. If idle → start; if recording
+    /// → stop, transcribe, and insert the transcript at the current focus.
+    public func requestToggleVoiceRecording() {
+        voiceRecordingToggleTicket &+= 1
     }
 }
 

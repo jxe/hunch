@@ -134,6 +134,7 @@ extension EditorView {
             state.setReorderLift(lift)
         }
         applyDropTarget(at: location.y, snapshot: snapshot)
+        updateReorderAutoScroll(for: location)
     }
 
     /// Resolves the drop slot from `y`, then clears the lift and applies the
@@ -141,6 +142,7 @@ extension EditorView {
     /// lift unmount, nor the row reflow springs.
     func endReorderLift(atY y: CGFloat, snapshot: [Block]) {
         guard let lift = state.reorderLift else { return }
+        stopReorderAutoScroll()
         SoundFX.play(.drop)
         let hidden = hiddenBlockIDs(in: snapshot)
         let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
@@ -164,6 +166,7 @@ extension EditorView {
     }
 
     func cancelReorderLift() {
+        stopReorderAutoScroll()
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -172,6 +175,70 @@ extension EditorView {
             state.currentDropTarget = nil
             state.setReorderLift(nil)
         }
+    }
+
+    // MARK: - Auto-scroll while dragging near the viewport edge
+
+    /// Edge-band autoscroll for an active reorder lift. Mirrors the pinch
+    /// auto-scroll pattern in `EditorView+Pinch.swift` — same threshold/velocity
+    /// curve, separate state so the two gestures don't fight over one Task.
+    func updateReorderAutoScroll(for location: CGPoint) {
+        let threshold: CGFloat = 110
+        let maxVelocity: CGFloat = 620
+        let viewportHeight = scrollMetrics.viewportHeight
+        guard viewportHeight > threshold * 2 else {
+            stopReorderAutoScroll()
+            return
+        }
+
+        let topDistance = location.y
+        let bottomDistance = viewportHeight - location.y
+        let velocity: CGFloat
+        if topDistance < threshold {
+            let progress = min(1, max(0, (threshold - topDistance) / threshold))
+            velocity = -maxVelocity * progress * progress
+        } else if bottomDistance < threshold {
+            let progress = min(1, max(0, (threshold - bottomDistance) / threshold))
+            velocity = maxVelocity * progress * progress
+        } else {
+            velocity = 0
+        }
+
+        reorderAutoScrollVelocity = velocity
+        if abs(velocity) > 1 {
+            startReorderAutoScrollIfNeeded()
+        } else {
+            stopReorderAutoScroll()
+        }
+    }
+
+    fileprivate func startReorderAutoScrollIfNeeded() {
+        guard reorderAutoScrollTask == nil else { return }
+        reorderAutoScrollTask = Task { @MainActor in
+            let frameDuration: TimeInterval = 1.0 / 60.0
+            while !Task.isCancelled {
+                let velocity = reorderAutoScrollVelocity
+                if abs(velocity) <= 1 { break }
+                scrollBy(velocity * frameDuration)
+                // The lift's `location` is in the viewport's named coordinate
+                // space, so it stays correct visually as content scrolls under
+                // the cursor. But `applyDropTarget` reads `rowFrames` (which
+                // shift after the scroll's layout pass) — tick it again so the
+                // drop indicator tracks the new row under the cursor while the
+                // user's finger is stationary.
+                if let liftY = state.reorderLift?.location.y {
+                    applyDropTarget(at: liftY, snapshot: document.blocks)
+                }
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+            reorderAutoScrollTask = nil
+        }
+    }
+
+    func stopReorderAutoScroll() {
+        reorderAutoScrollVelocity = 0
+        reorderAutoScrollTask?.cancel()
+        reorderAutoScrollTask = nil
     }
 
     /// Update `dropHoverIndex` / `dropOntoBlockID` based on the live drop point.

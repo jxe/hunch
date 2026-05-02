@@ -163,6 +163,29 @@ extension View {
         #endif
     }
 
+    /// macOS counterpart to `iosScrollMetrics` — wires SwiftUI's
+    /// `.onScrollGeometryChange` to publish the same `PageScrollMetrics`. Pinch
+    /// and reorder auto-scroll both read from this; programmatic scroll on
+    /// macOS goes through `ScrollPosition.scrollTo(point:)` (attached separately
+    /// via `.scrollPosition($scrollPosition)`).
+    @ViewBuilder
+    func macScrollMetrics(_ metrics: Binding<PageScrollMetrics>) -> some View {
+        #if os(macOS)
+        self
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, new in
+                metrics.wrappedValue.contentOffsetY = new
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, new in
+                metrics.wrappedValue.contentHeight = new
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { _, new in
+                metrics.wrappedValue.viewportHeight = new
+            }
+        #else
+        self
+        #endif
+    }
+
     @ViewBuilder
     func iosTapBelowRows(_ onTap: @escaping (CGPoint) -> Void) -> some View {
         #if os(iOS)

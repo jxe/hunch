@@ -1090,6 +1090,9 @@ private struct EditorPage: View {
                 }
                 .accessibilityLabel("Version History")
             }
+            ToolbarItem(placement: .primaryAction) {
+                EditorRecordingButton(state: editorState)
+            }
         }
         .onAppear { forwardPendingVoiceRecording() }
         .onChange(of: scenePhase) { _, new in
@@ -1100,13 +1103,13 @@ private struct EditorPage: View {
             // flag before posting the notification — consume the flag too so a
             // later `.active` transition doesn't fire a second time.
             _ = VoiceRecordingLaunchRequest.consumePendingStart()
-            editorState.requestStartVoiceRecording()
+            editorState.requestToggleVoiceRecording()
         }
     }
 
     private func forwardPendingVoiceRecording() {
         guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
-        editorState.requestStartVoiceRecording()
+        editorState.requestToggleVoiceRecording()
     }
 }
 

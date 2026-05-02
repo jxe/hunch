@@ -90,9 +90,11 @@ public struct EditorView: View {
     /// adjacent slot mid-gesture.
     @State var pinchPendingInsertIndex: Int?
     @State var scrollMetrics = PageScrollMetrics()
+    @State var scrollPosition = ScrollPosition()
     @State var pinchAutoScrollTask: Task<Void, Never>?
     @State var pinchAutoScrollVelocity: CGFloat = 0
-    @State var speechRecorder = PageSpeechRecorder()
+    @State var reorderAutoScrollTask: Task<Void, Never>?
+    @State var reorderAutoScrollVelocity: CGFloat = 0
     @State var speechError: String?
 
     /// Drives the compact block action popover. On iOS this is opened by a
@@ -210,6 +212,8 @@ public struct EditorView: View {
                 }
             )
             .iosScrollMetrics($scrollMetrics)
+            .macScrollMetrics($scrollMetrics)
+            .scrollPosition($scrollPosition)
             .macNearestRowHover(rowFrames: rowFrames) { id in state.hoveredBlock = id }
             .background(NotionStyle.background)
             .iosTapBelowRows {
@@ -272,8 +276,8 @@ public struct EditorView: View {
             .onChange(of: state.anchor) { _, _ in
                 actionSheet = nil
             }
-            .onChange(of: state.voiceRecordingStartTicket) { _, _ in
-                Task { await handleVoiceRecordingStart() }
+            .onChange(of: state.voiceRecordingToggleTicket) { _, _ in
+                Task { await handleVoiceRecordingToggle() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .hunchEscapeKeyDown)) { _ in
                 handleEscapeKey()
@@ -292,11 +296,6 @@ public struct EditorView: View {
                 KeyEquivalent("/"),
                 KeyEquivalent("[")
             ], action: handleNavKeyPress)
-            .toolbar {
-                ToolbarItem(placement: speechToolbarPlacement) {
-                    speechRecordButton
-                }
-            }
             .alert("Recording", isPresented: speechErrorBinding) {
                 Button("OK") { speechError = nil }
             } message: {

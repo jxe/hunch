@@ -2,16 +2,28 @@ import SwiftUI
 
 // MARK: - Voice recording / speech-to-text
 //
-// Toolbar mic button + the host-driven start hook
-// (`EditorState.requestStartVoiceRecording()` bumps `voiceRecordingStartTicket`
-// — the editor watches that and runs the same path as the mic button).
-// Transcripts are inserted either into the active editor's text via
-// `insertText:` (for live typing experience while still in edit mode) or
-// as a new paragraph at end-of-doc.
+// `EditorState` owns the `PageSpeechRecorder` instance and a
+// `voiceRecordingToggleTicket`. The host renders `EditorRecordingButton` in
+// its toolbar; tapping it bumps the ticket. The Siri/intent bridge bumps the
+// same ticket. The editor watches the ticket and runs the actual flow:
+// idle → start; recording → stop, transcribe, insert at the active focus.
 
 extension EditorView {
-    func handleVoiceRecordingStart() async {
-        await handleSpeechRecordButton()
+    func handleVoiceRecordingToggle() async {
+        do {
+            switch state.speechRecorder.state {
+            case .idle:
+                try await state.speechRecorder.start()
+            case .recording:
+                let transcript = try await state.speechRecorder.stopAndTranscribe()
+                insertTranscript(transcript)
+            case .transcribing:
+                break
+            }
+        } catch {
+            state.speechRecorder.cancel()
+            speechError = error.localizedDescription
+        }
     }
 
     var speechErrorBinding: Binding<Bool> {
@@ -19,62 +31,6 @@ extension EditorView {
             get: { speechError != nil },
             set: { newValue in if !newValue { speechError = nil } }
         )
-    }
-
-    var speechToolbarPlacement: ToolbarItemPlacement {
-        #if os(iOS)
-        .topBarTrailing
-        #else
-        .primaryAction
-        #endif
-    }
-
-    var speechRecordButton: some View {
-        Button {
-            Task { await handleSpeechRecordButton() }
-        } label: {
-            switch speechRecorder.state {
-            case .idle:
-                Image(systemName: "mic")
-            case .recording:
-                Image(systemName: "stop.circle.fill")
-                    .foregroundStyle(.red)
-            case .transcribing:
-                ProgressView()
-                    .controlSize(.small)
-            }
-        }
-        .disabled(speechRecorder.state == .transcribing)
-        .help(speechRecordButtonHelp)
-        .accessibilityLabel(speechRecordButtonHelp)
-    }
-
-    fileprivate var speechRecordButtonHelp: String {
-        switch speechRecorder.state {
-        case .idle:
-            return "Record Audio"
-        case .recording:
-            return "Stop Recording"
-        case .transcribing:
-            return "Transcribing"
-        }
-    }
-
-    fileprivate func handleSpeechRecordButton() async {
-        do {
-            switch speechRecorder.state {
-            case .idle:
-                try await speechRecorder.start()
-            case .recording:
-                let transcript = try await speechRecorder.stopAndTranscribe()
-                insertTranscript(transcript)
-            case .transcribing:
-                break
-            }
-        } catch {
-            speechRecorder.cancel()
-            speechError = error.localizedDescription
-        }
     }
 
     fileprivate func insertTranscript(_ transcript: String) {
@@ -109,5 +65,46 @@ extension EditorView {
             for: nil
         )
         #endif
+    }
+}
+
+// MARK: - Public toolbar button
+
+/// The mic / stop / progress button the host places in its own toolbar. Reads
+/// recording state from `EditorState.speechRecorder`; tapping bumps
+/// `voiceRecordingToggleTicket`, which the editor observes to run the flow.
+public struct EditorRecordingButton: View {
+    @Bindable var state: EditorState
+
+    public init(state: EditorState) {
+        self.state = state
+    }
+
+    public var body: some View {
+        Button {
+            state.requestToggleVoiceRecording()
+        } label: {
+            switch state.speechRecorder.state {
+            case .idle:
+                Image(systemName: "mic")
+            case .recording:
+                Image(systemName: "stop.circle.fill")
+                    .foregroundStyle(.red)
+            case .transcribing:
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .disabled(state.speechRecorder.state == .transcribing)
+        .help(label)
+        .accessibilityLabel(label)
+    }
+
+    private var label: String {
+        switch state.speechRecorder.state {
+        case .idle:         return "Record Audio"
+        case .recording:    return "Stop Recording"
+        case .transcribing: return "Transcribing"
+        }
     }
 }

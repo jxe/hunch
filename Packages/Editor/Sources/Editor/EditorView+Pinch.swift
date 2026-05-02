@@ -150,12 +150,18 @@ extension EditorView {
         pinchAutoScrollTask = nil
     }
 
-    fileprivate func scrollBy(_ deltaY: CGFloat) {
+    /// Programmatic scroll by `deltaY` pixels — clamped to content extent. Shared
+    /// by pinch and reorder auto-scroll. iOS routes through the UIScrollView
+    /// bridge populated by `IOSScrollMetricsReader`; macOS uses SwiftUI's
+    /// `ScrollPosition` populated alongside it.
+    func scrollBy(_ deltaY: CGFloat) {
         let maxOffset = max(0, scrollMetrics.contentHeight - scrollMetrics.viewportHeight)
         let nextOffset = min(maxOffset, max(0, scrollMetrics.contentOffsetY + deltaY))
         guard abs(nextOffset - scrollMetrics.contentOffsetY) > 0.5 else { return }
         #if os(iOS)
         PageScrollController.shared.scroll(toY: nextOffset)
+        #else
+        scrollPosition.scrollTo(point: CGPoint(x: 0, y: nextOffset))
         #endif
     }
 
