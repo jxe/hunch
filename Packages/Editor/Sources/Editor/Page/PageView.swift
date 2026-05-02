@@ -611,7 +611,7 @@ public struct PageView: View {
                 try await speechRecorder.start()
             case .recording:
                 let transcript = try await speechRecorder.stopAndTranscribe()
-                appendTranscript(transcript)
+                insertTranscript(transcript)
             case .transcribing:
                 break
             }
@@ -1307,15 +1307,38 @@ public struct PageView: View {
         }
     }
 
-    private func appendTranscript(_ transcript: String) {
+    private func insertTranscript(_ transcript: String) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        if editingBlock != nil,
+           sendInsertActionToFirstResponder(trimmed) {
+            exitEditMode()
+            return
+        }
 
         let newBlock = Block.paragraph(text: AttributedString(trimmed))
         mutate("Insert Transcript") {
             document.blocks.append(newBlock)
         }
         focusPageNavigation(on: newBlock.id)
+    }
+
+    private func sendInsertActionToFirstResponder(_ text: String) -> Bool {
+        #if os(macOS)
+        return NSApp.sendAction(
+            #selector(NSText.insertText(_:)),
+            to: nil,
+            from: text
+        )
+        #else
+        return UIApplication.shared.sendAction(
+            #selector(UIResponder.insertText(_:)),
+            to: nil,
+            from: text,
+            for: nil
+        )
+        #endif
     }
 
     private func instantiateTemplateButton(blockID: BlockID) {
