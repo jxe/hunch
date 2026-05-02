@@ -1333,7 +1333,7 @@ public struct PageView: View {
         )
         #else
         return UIApplication.shared.sendAction(
-            #selector(UIResponder.insertText(_:)),
+            #selector(UIKeyInput.insertText(_:)),
             to: nil,
             from: text,
             for: nil
