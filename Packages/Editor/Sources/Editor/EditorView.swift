@@ -300,6 +300,8 @@ public struct EditorView: View {
                 KeyEquivalent("x"),
                 KeyEquivalent("k"),
                 KeyEquivalent("s"),
+                KeyEquivalent("b"),
+                KeyEquivalent("i"),
                 KeyEquivalent("/"),
                 KeyEquivalent("[")
             ], action: handleNavKeyPress)
@@ -701,6 +703,14 @@ public struct EditorView: View {
             return toggleStrikethroughOnSelection() ? .handled : .ignored
         }
 
+        if press.key == KeyEquivalent("b"), modifiers.contains(.command), !modifiers.contains(.shift) {
+            return toggleBoldOnSelection() ? .handled : .ignored
+        }
+
+        if press.key == KeyEquivalent("i"), modifiers.contains(.command), !modifiers.contains(.shift) {
+            return toggleItalicOnSelection() ? .handled : .ignored
+        }
+
         if press.key == KeyEquivalent("/"), modifiers.contains(.command) {
             guard let id = topSelectedBlockID() else { return .ignored }
             actionSheet = BlockActionSheet(id: id)
@@ -876,13 +886,46 @@ public struct EditorView: View {
         return true
     }
 
-    /// Toggle strikethrough across every text-bearing block in the current selection.
-    /// If all of them are already fully struck, remove strikethrough; otherwise add it
-    /// uniformly. Skips blocks without an `AttributedString` body (code/divider/subpage)
-    /// and template buttons (whose `withText` flattens formatting). Returns `true` if it
-    /// acted.
+    /// Toggle strikethrough across every text-bearing block the user has explicitly
+    /// selected — parent rows only, never the implicit section children. If all of them
+    /// are already fully struck, remove strikethrough; otherwise add it uniformly. Skips
+    /// blocks without an `AttributedString` body (code/divider/subpage) and template
+    /// buttons (whose `withText` flattens formatting). Returns `true` if it acted.
     private func toggleStrikethroughOnSelection() -> Bool {
-        let indices = effectiveSelectedIndices()
+        toggleInlineMarkOnSelection(
+            attribute: InlineAttributes.StrikethroughAttribute.self,
+            setLabel: "Strikethrough",
+            clearLabel: "Remove Strikethrough"
+        )
+    }
+
+    /// Toggle bold across every text-bearing block the user has explicitly selected.
+    /// Parent-only — does not expand to section children. See
+    /// `toggleStrikethroughOnSelection` for the shared semantics.
+    private func toggleBoldOnSelection() -> Bool {
+        toggleInlineMarkOnSelection(
+            attribute: InlineAttributes.BoldAttribute.self,
+            setLabel: "Bold",
+            clearLabel: "Remove Bold"
+        )
+    }
+
+    /// Toggle italic across every text-bearing block the user has explicitly selected.
+    /// Parent-only — does not expand to section children.
+    private func toggleItalicOnSelection() -> Bool {
+        toggleInlineMarkOnSelection(
+            attribute: InlineAttributes.ItalicAttribute.self,
+            setLabel: "Italic",
+            clearLabel: "Remove Italic"
+        )
+    }
+
+    private func toggleInlineMarkOnSelection<K: AttributedStringKey>(
+        attribute: K.Type,
+        setLabel: String,
+        clearLabel: String
+    ) -> Bool where K.Value == Bool {
+        let indices = selectedIndices()
         let targets = indices.filter { i in
             switch document.blocks[i] {
             case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
@@ -894,29 +937,29 @@ public struct EditorView: View {
         guard !targets.isEmpty else { return false }
 
         var sawAnyText = false
-        var allStruck = true
+        var allMarked = true
         for i in targets {
             let text = document.blocks[i].text
             if text.runs.isEmpty { continue }
             sawAnyText = true
             for run in text.runs {
-                if run[InlineAttributes.StrikethroughAttribute.self] != true {
-                    allStruck = false
+                if run[K.self] != true {
+                    allMarked = false
                     break
                 }
             }
-            if !allStruck { break }
+            if !allMarked { break }
         }
         guard sawAnyText else { return false }
-        let newValue = !allStruck
+        let newValue = !allMarked
 
-        mutate(newValue ? "Strikethrough" : "Remove Strikethrough") {
+        mutate(newValue ? setLabel : clearLabel) {
             var blocks = document.blocks
             for i in targets {
                 var text = blocks[i].text
                 let range = text.startIndex..<text.endIndex
                 if range.lowerBound < range.upperBound {
-                    text[range][InlineAttributes.StrikethroughAttribute.self] = newValue
+                    text[range][K.self] = newValue
                     blocks[i] = blocks[i].withText(text)
                 }
             }
