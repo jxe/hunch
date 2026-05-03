@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 // MARK: - Reorder lift, drop targets, and block-move helpers
 
@@ -22,7 +25,10 @@ extension EditorView {
     }
 
     func reorderSourceOpacity(for id: BlockID) -> Double {
-        return state.reorderLift?.ids.contains(id) == true ? 0.12 : 1
+        guard let lift = state.reorderLift, lift.ids.contains(id) else { return 1 }
+        // Option-drag duplicates — keep originals fully visible so the user
+        // sees both the source and the floating ghost at once.
+        return lift.isCopy ? 1 : 0.12
     }
 
     func isMacDraggingFromRow(_ id: BlockID) -> Bool {
@@ -46,6 +52,12 @@ extension EditorView {
                 pageTitle: pageTitle
             )
             .frame(width: lift.sourceFrame.width, height: lift.sourceFrame.height, alignment: .leading)
+            .overlay(alignment: .topLeading) {
+                if lift.isCopy {
+                    copyBadge
+                        .offset(x: -10, y: -10)
+                }
+            }
             .scaleEffect(1.035)
             .position(
                 x: lift.location.x - lift.touchOffset.width + (lift.sourceFrame.width / 2),
@@ -54,6 +66,16 @@ extension EditorView {
             .allowsHitTesting(false)
             .zIndex(100)
         }
+    }
+
+    private var copyBadge: some View {
+        Image(systemName: "plus")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 18, height: 18)
+            .background(Circle().fill(Color.green))
+            .overlay(Circle().stroke(Color.white, lineWidth: 1.5))
+            .shadow(color: .black.opacity(0.2), radius: 2, x: 0, y: 1)
     }
 
     /// Pre-mounts the lift in a `pendingAnchor` state at the source row's
@@ -100,6 +122,7 @@ extension EditorView {
     /// drift gap animates open and recomputing against a moving frame would
     /// drift the lift away from the cursor.
     func tickReorderLift(blockID: BlockID, at location: CGPoint, anchorAt anchorPoint: CGPoint, snapshot: [Block]) {
+        let isCopy = currentReorderCopyIntent()
         if state.reorderLift == nil {
             guard let block = snapshot.first(where: { $0.id == blockID }),
                   let sourceFrame = rowFrames[blockID],
@@ -120,7 +143,8 @@ extension EditorView {
                     height: anchorPoint.y - sourceFrame.minY
                 ),
                 location: location,
-                pendingAnchor: false
+                pendingAnchor: false,
+                isCopy: isCopy
             ))
         } else if var lift = state.reorderLift {
             if lift.pendingAnchor {
@@ -131,10 +155,21 @@ extension EditorView {
                 lift.pendingAnchor = false
             }
             lift.location = location
+            lift.isCopy = isCopy
             state.setReorderLift(lift)
         }
         applyDropTarget(at: location.y, snapshot: snapshot)
         updateReorderAutoScroll(for: location)
+    }
+
+    /// Option held → drop performs a duplicate. macOS-only; iOS has no
+    /// modifier keys during a drag so always returns false there.
+    private func currentReorderCopyIntent() -> Bool {
+        #if os(macOS)
+        return NSEvent.modifierFlags.contains(.option)
+        #else
+        return false
+        #endif
     }
 
     /// Resolves the drop slot from `y`, then clears the lift and applies the
@@ -147,6 +182,9 @@ extension EditorView {
         let hidden = hiddenBlockIDs(in: snapshot)
         let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
         let ids = lift.ids
+        // Re-check Option at drop time so a release-just-before-drop reverts
+        // to a move; the drop is the load-bearing read.
+        let isCopy = currentReorderCopyIntent()
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -156,10 +194,20 @@ extension EditorView {
             state.setReorderLift(nil)
             switch target {
             case .insertBefore(let index):
-                moveBlocks(ids: ids, toIndexBefore: index)
+                if isCopy {
+                    copyBlocks(ids: ids, toIndexBefore: index, snapshot: snapshot)
+                } else {
+                    moveBlocks(ids: ids, toIndexBefore: index)
+                }
             case .asLastChildOf(let parentID):
-                moveBlocks(ids: ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
+                if isCopy {
+                    copyBlocks(ids: ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
+                } else {
+                    moveBlocks(ids: ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
+                }
             case .intoSubpage(_, let path):
+                // Cross-document copy is out of scope for now — Option drop
+                // onto a subpage falls through to a move.
                 moveBlocks(ids: ids, intoSubpagePath: path)
             }
         }
@@ -435,6 +483,71 @@ extension EditorView {
         case .templateButton(let id, _, _): state.expandedTemplates.insert(id)
         default: break
         }
+    }
+
+    /// Option-drag duplicate: insert fresh-ID copies of `ids` (in their original
+    /// document order, indents preserved) at `target`, leaving the originals
+    /// in place. Selects the new copies. The `snapshot` parameter is unused —
+    /// we source from the live document to match `spliceParsedBlocksAfter` —
+    /// but kept on the signature so the call site mirrors `moveBlocks`.
+    fileprivate func copyBlocks(ids: [BlockID], toIndexBefore target: Int, snapshot _: [Block]) {
+        let idSet = Set(ids)
+        let sourceBlocks = document.blocks.filter { idSet.contains($0.id) }
+        guard !sourceBlocks.isEmpty else { return }
+        let copies = sourceBlocks.map { $0.withFreshID() }
+        let clampedTarget = min(max(0, target), document.blocks.count)
+
+        mutate(copies.count > 1 ? "Duplicate Blocks" : "Duplicate Block") {
+            var blocks = document.blocks
+            blocks.insert(contentsOf: copies, at: clampedTarget)
+            document.blocks = blocks
+        }
+        selectAfterCopy(copies)
+    }
+
+    /// Option-drag onto a collapsed parent: append duplicates as the parent's
+    /// last children, indent-shifted so the topmost copy lands at
+    /// `parent.indent + 1` (mirrors the non-copy variant).
+    fileprivate func copyBlocks(ids: [BlockID], asChildrenOf parentID: BlockID, snapshot _: [Block], hidden _: Set<BlockID>) {
+        guard let liveParentIndex = document.blocks.firstIndex(where: { $0.id == parentID }),
+              !ids.contains(parentID)
+        else { return }
+
+        let parent = document.blocks[liveParentIndex]
+        let idSet = Set(ids)
+        let sourceBlocks = document.blocks.filter { idSet.contains($0.id) }
+        guard !sourceBlocks.isEmpty else { return }
+
+        let oldRootIndent = sourceBlocks.map(\.indent).min() ?? 0
+        let newRootIndent = parent.indent + 1
+        let indentDelta = newRootIndent - oldRootIndent
+        let copies = sourceBlocks.map { $0.withFreshID().withIndent(max(0, $0.indent + indentDelta)) }
+
+        var insertAt = liveParentIndex + 1
+        let liveHidden = hiddenBlockIDs(in: document.blocks)
+        while insertAt < document.blocks.count && liveHidden.contains(document.blocks[insertAt].id) {
+            insertAt += 1
+        }
+
+        mutate(copies.count > 1 ? "Duplicate Blocks" : "Duplicate Block") {
+            var blocks = document.blocks
+            blocks.insert(contentsOf: copies, at: insertAt)
+            document.blocks = blocks
+        }
+
+        switch parent {
+        case .toggle(let id, _, _): state.expandedToggles.insert(id)
+        case .templateButton(let id, _, _): state.expandedTemplates.insert(id)
+        default: break
+        }
+        selectAfterCopy(copies)
+    }
+
+    /// Set selection to the freshly-inserted copies in document order.
+    private func selectAfterCopy(_ copies: [Block]) {
+        let ids = copies.map(\.id)
+        guard let first = ids.first, let last = ids.last else { return }
+        state.setNavSelection(blocks: Set(ids), anchor: first, cursor: last)
     }
 
     /// Drop-on-subpage: append `ids` to the end of the child page's `.md` file

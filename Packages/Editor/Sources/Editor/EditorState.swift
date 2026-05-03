@@ -142,6 +142,9 @@ public struct ReorderLift: Equatable, Sendable {
     /// waiting for a real cursor location to re-anchor against. Used on iOS
     /// when the prelift state is mounted before the first concrete touch.
     public var pendingAnchor: Bool
+    /// macOS Option-drag: drop performs a duplicate instead of a move, and
+    /// the source rows stay at full opacity. Live-updated each gesture tick.
+    public var isCopy: Bool
 
     public init(
         block: Block,
@@ -151,7 +154,8 @@ public struct ReorderLift: Equatable, Sendable {
         sourceEndIndex: Int,
         touchOffset: CGSize,
         location: CGPoint,
-        pendingAnchor: Bool
+        pendingAnchor: Bool,
+        isCopy: Bool = false
     ) {
         self.block = block
         self.ids = ids
@@ -161,6 +165,7 @@ public struct ReorderLift: Equatable, Sendable {
         self.touchOffset = touchOffset
         self.location = location
         self.pendingAnchor = pendingAnchor
+        self.isCopy = isCopy
     }
 }
 
