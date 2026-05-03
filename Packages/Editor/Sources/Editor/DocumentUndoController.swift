@@ -58,6 +58,13 @@ public final class DocumentUndoController {
     /// Set by `EditorView`. Restores a single block's text — used for typing-burst
     /// undo entries. Closure must re-register the inverse so redo works.
     var applyTextChange: ((BlockID, AttributedString) -> Void)?
+    /// Published by the active editor's Coordinator on `textDidBeginEditing`, cleared
+    /// on `textDidEndEditing`. EditorView calls this before any state mutation that
+    /// would unmount the live editor (e.g. clicking into another block) so the
+    /// in-flight text reaches the binding before the BlockTextEditor tears down —
+    /// otherwise the binding write happens during SwiftUI's update pass and doesn't
+    /// reliably propagate to the read-only Text that takes the row's slot.
+    var commitActiveEditor: (() -> Void)?
 
     /// Time-window for coalescing consecutive typing entries on the same block. Within
     /// this window, additional `registerTextChange` calls are folded into the existing

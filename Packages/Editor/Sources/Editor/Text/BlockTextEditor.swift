@@ -419,6 +419,15 @@ struct MacBlockTextEditor: NSViewRepresentable {
             // SwiftUI focus write: NSTextView fires this delegate synchronously from
             // `makeFirstResponder` calls that may originate inside a view-update pass.
             parent.documentUndoController?.breakTextCoalescing()
+            // Publish a synchronous-commit closure that EditorView calls before any
+            // state mutation that would unmount this editor. See `commitActiveEditor`
+            // on DocumentUndoController for the rationale.
+            if let tv = notification.object as? NSTextView {
+                parent.documentUndoController?.commitActiveEditor = { [weak self, weak tv] in
+                    guard let self, let tv else { return }
+                    self.commitLiveText(tv)
+                }
+            }
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(true)
             }
@@ -431,6 +440,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
             if let tv = notification.object as? NSTextView {
                 commitLiveText(tv)
             }
+            parent.documentUndoController?.commitActiveEditor = nil
             parent.documentUndoController?.breakTextCoalescing()
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(false)
@@ -535,8 +545,8 @@ final class ContainedTextView: NSTextView {
                 let shift = event.modifierFlags.contains(.shift)
                 if onKey(shift ? .shiftTab : .tab) == .handled { return }
             case 53: // Escape
-                // Esc triggers a blur via `cancelOperation`, which fires textDidEndEditing
-                // and commits there — no separate commit needed here.
+                // cancelOperation handles Esc via NSTextView's normal routing — keyDown
+                // never fires for Esc on NSTextView (it's intercepted as a command).
                 if onKey(.escape) == .handled { return }
             case 40: // K
                 if event.modifierFlags.contains(.command) {
@@ -580,12 +590,18 @@ final class ContainedTextView: NSTextView {
             case 126: // Up arrow
                 if !event.modifierFlags.contains([.shift, .option]),
                    cursorIsOnFirstLine() {
-                    // Exits edit mode → blur → textDidEndEditing commits. No commit here.
+                    // Exit-up/down only mutate state — they don't synchronously fire
+                    // textDidEndEditing. The blur happens later when SwiftUI tears down
+                    // the BlockTextEditor (after the state change), and a binding write
+                    // during teardown doesn't reliably propagate to the freshly-rendered
+                    // read-only Text. Commit synchronously *before* the state mutation.
+                    coordinator?.commitLiveText(self)
                     if onKey(.exitEditUp) == .handled { return }
                 }
             case 125: // Down arrow
                 if !event.modifierFlags.contains([.shift, .option]),
                    cursorIsOnLastLine() {
+                    coordinator?.commitLiveText(self)
                     if onKey(.exitEditDown) == .handled { return }
                 }
             default:
@@ -683,6 +699,12 @@ final class ContainedTextView: NSTextView {
             // editor focused — don't resign first responder.
             return
         }
+        // Commit BEFORE resigning first responder. textDidEndEditing also calls
+        // commitLiveText, but in some paths that fires during SwiftUI's view teardown
+        // and the binding write doesn't reliably reach the read-only Text that's about
+        // to take this row's slot. Calling synchronously here guarantees the model is
+        // current before any state mutation kicks off the unmount.
+        coordinator?.commitLiveText(self)
         window?.makeFirstResponder(nil)
         if let onKey = coordinator?.parent.onKey, onKey(.escape) == .handled {
             return
@@ -895,7 +917,9 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
                 _ = onKey(.cmdK(selectedText: selected))
             },
             onDismiss: {
-                // resignFirstResponder fires textViewDidEndEditing → commitLiveText.
+                // Commit synchronously before the state-mutating onKey(.escape) so the
+                // binding is current before SwiftUI tears down BlockTextEditor.
+                tv.coordinator?.commitLiveText(tv)
                 tv.resignFirstResponder()
                 _ = onKey(.escape)
             }
@@ -1006,6 +1030,12 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
 
         func textViewDidBeginEditing(_ textView: UITextView) {
             parent.documentUndoController?.breakTextCoalescing()
+            // See Mac twin: publish a sync-commit closure for EditorView to call before
+            // any state mutation that would unmount this editor.
+            parent.documentUndoController?.commitActiveEditor = { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                self.commitLiveText(textView)
+            }
             // Defer the @FocusState write — this delegate fires synchronously
             // from `updateUIView`'s own `becomeFirstResponder`, which runs
             // inside a SwiftUI view-update pass. A synchronous write triggers
@@ -1018,6 +1048,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         func textViewDidEndEditing(_ textView: UITextView) {
             // Single coarse commit on session end — see Mac twin for rationale.
             commitLiveText(textView)
+            parent.documentUndoController?.commitActiveEditor = nil
             parent.documentUndoController?.breakTextCoalescing()
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(false)

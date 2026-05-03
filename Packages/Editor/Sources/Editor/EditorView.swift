@@ -830,6 +830,10 @@ public struct EditorView: View {
     }
 
     func focusPageNavigation(on id: BlockID? = nil) {
+        // Commit any in-flight editor text into the model before tearing down the
+        // active editor. The same teardown-pass binding-write race applies here as in
+        // `enterEditMode` — see the rationale on `commitActiveEditor`.
+        undoController.commitActiveEditor?()
         state.exitEditModeWithoutCursor()
         editorFocused = nil
         if let id, document.blocks.contains(where: { $0.id == id }) {
@@ -1223,6 +1227,13 @@ public struct EditorView: View {
             return
         default:
             break
+        }
+        // If a different block is currently being edited, sync its live text into the
+        // model BEFORE we mutate state.editingBlock. The state change unmounts the old
+        // BlockTextEditor; a binding write during that teardown pass doesn't reliably
+        // reach the freshly-rendered read-only Text. Explicit commit fixes this.
+        if let currentEditing = state.editingBlock, currentEditing != id {
+            undoController.commitActiveEditor?()
         }
         // .editing(id, overlay: nil) — also drops any stale mention overlay attached
         // to a different row, since the new mode replaces the old one wholesale.
