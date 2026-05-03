@@ -97,15 +97,6 @@ public struct BlockRow: View {
                         .allowsHitTesting(false)
                 }
             }
-            .background(rowRestingBackground)
-    }
-
-    private var rowRestingBackground: Color {
-        #if os(iOS)
-        NotionStyle.background
-        #else
-        Color.clear
-        #endif
     }
 
     /// AttributedString projection of the block's text for editing. Marks (bold/italic/

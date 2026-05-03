@@ -9,7 +9,7 @@ public enum FileStoreError: Error {
 }
 
 public struct FileStore: Sendable {
-    public static let trashDirectoryName = ".Trash"
+    public static let trashDirectoryName = "Trash"
     public static let historyDirectoryName = ".history"
 
     public init() {}

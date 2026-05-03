@@ -87,28 +87,32 @@ public struct VersionHistoryView: View {
                 description: Text("Earlier versions will appear here as you edit and save the page.")
             )
         case .loaded:
-            HStack(spacing: 0) {
+            #if os(iOS)
+            VStack(spacing: 0) {
                 listColumn
-                    .frame(minWidth: 220, idealWidth: 260)
+                    .frame(maxHeight: 220)
                 Divider()
                 previewColumn
             }
+            #else
+            HStack(spacing: 0) {
+                listColumn
+                    .frame(minWidth: 180, idealWidth: 200, maxWidth: 240)
+                Divider()
+                previewColumn
+            }
+            #endif
         }
     }
 
     private var listColumn: some View {
         List(selection: $selection) {
             ForEach(snapshots) { snapshot in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(formatted(snapshot.timestamp))
-                        .font(NotionStyle.body())
-                        .foregroundStyle(NotionStyle.foreground)
-                    Text(snapshot.timestamp, style: .relative)
-                        .font(NotionStyle.body(size: 12))
-                        .foregroundStyle(NotionStyle.mutedForeground)
-                }
-                .padding(.vertical, 4)
-                .tag(snapshot.id)
+                Text(formatted(snapshot.timestamp))
+                    .font(NotionStyle.body())
+                    .foregroundStyle(NotionStyle.foreground)
+                    .padding(.vertical, 4)
+                    .tag(snapshot.id)
             }
         }
         .listStyle(.plain)
@@ -132,7 +136,28 @@ public struct VersionHistoryView: View {
     }
 
     private func formatted(_ date: Date) -> String {
-        date.formatted(date: .abbreviated, time: .shortened)
+        let now = Date()
+        let cal = Calendar.current
+        let secs = now.timeIntervalSince(date)
+
+        if secs < 60 { return "Just now" }
+        if secs < 3600 { return "\(Int(secs / 60)) min ago" }
+        if cal.isDateInToday(date) {
+            return "Today, " + date.formatted(date: .omitted, time: .shortened)
+        }
+        if cal.isDateInYesterday(date) {
+            return "Yesterday, " + date.formatted(date: .omitted, time: .shortened)
+        }
+        let daysAgo = cal.dateComponents([.day], from: date, to: now).day ?? 0
+        if daysAgo < 7 {
+            return date.formatted(.dateTime.weekday(.wide)) + ", "
+                 + date.formatted(date: .omitted, time: .shortened)
+        }
+        if cal.component(.year, from: date) == cal.component(.year, from: now) {
+            return date.formatted(.dateTime.month(.abbreviated).day()) + ", "
+                 + date.formatted(date: .omitted, time: .shortened)
+        }
+        return date.formatted(date: .abbreviated, time: .omitted)
     }
 
     private func refresh() async {

@@ -664,13 +664,19 @@ final class WorkspaceModel {
     func recordBlockDeletion(indices: [Int], blocks: [Block], actionName: String) {
         guard let trashStore, let workspaceURL, let openDocument else { return }
         let source = relativePath(of: openDocument.url, under: workspaceURL)
-        Task.detached { [trashStore, source, indices, blocks, actionName] in
-            try? await trashStore.recordBlockDeletion(
-                source: source,
-                indices: indices,
-                blocks: blocks,
-                actionName: actionName
-            )
+        Task { [weak self, trashStore, source, indices, blocks, actionName] in
+            do {
+                try await trashStore.recordBlockDeletion(
+                    source: source,
+                    indices: indices,
+                    blocks: blocks,
+                    actionName: actionName
+                )
+            } catch {
+                await MainActor.run {
+                    self?.error = "Recording block deletion failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
@@ -928,7 +934,9 @@ struct ContentView: View {
                 onRestoreBlocks: { entry in await model.restoreDeletedBlocks(entry) },
                 onClose: { showingRecentlyDeleted = false }
             )
+            #if os(macOS)
             .frame(minWidth: 480, minHeight: 480)
+            #endif
         }
         .navigationTitle(model.workspaceURL?.lastPathComponent ?? "Workspace")
         .searchable(text: $pageSearchText, placement: .automatic, prompt: "Search pages")
@@ -980,7 +988,9 @@ struct ContentView: View {
             onRestore: { snapshot in await model.restoreSnapshot(snapshot) },
             onClose: { versionHistoryURL = nil }
         )
+        #if os(macOS)
         .frame(minWidth: 600, minHeight: 480)
+        #endif
     }
 
     private func workspaceRelativePath(for url: URL) -> String {

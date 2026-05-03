@@ -842,24 +842,38 @@ struct IOSRowSwipeActions: ViewModifier {
         let revealProgress = min(1, rightOffset / trigger)
         let deleteProgress = min(1, max(0, -dragOffset) / trigger)
 
+        let crossed = revealProgress >= 1
+        let iconSize: CGFloat = crossed ? 26 : 14 + (revealProgress * 8)
+
+        let isSwiping = revealProgress > 0
+
         ZStack {
-            // Right-swipe only: recessed well + ellipsis icon. Hidden behind
-            // the row at rest; uncovered as the row slides right.
-            ZStack {
-                Color.black.opacity(0.06)
-                HStack(spacing: 0) {
-                    Image(systemName: "ellipsis.circle.fill")
-                        .foregroundStyle(.blue)
-                        .font(.system(size: 18, weight: .semibold))
-                        .padding(.leading, 22)
-                    Spacer(minLength: 0)
+            // Right-swipe affordance: icon sits at the leading edge, hidden
+            // behind the row's bg at rest, revealed as the row slides right.
+            HStack(spacing: 0) {
+                ZStack {
+                    Capsule()
+                        .fill(Color.blue.opacity(0.18))
+                        .frame(width: 44, height: 34)
+                        .opacity(crossed ? 1 : 0)
+                        .scaleEffect(crossed ? 1 : 0.6)
+
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(crossed ? Color.blue : Color.blue.opacity(0.65))
+                        .font(.system(size: iconSize, weight: .semibold))
                 }
+                .padding(.leading, 4)
+                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: crossed)
+
+                Spacer(minLength: 0)
             }
-            .opacity(revealProgress)
+            .opacity(isSwiping ? 1 : 0)
             .allowsHitTesting(false)
 
+            // Background appears the moment a swipe starts so the row's
+            // trailing edge cleanly reveals the icon as it slides right.
             content
-                .background(NotionStyle.background)
+                .background(isSwiping ? NotionStyle.background : Color.clear)
                 .offset(x: rightOffset)
 
             // Left-swipe: a graphite "pencil line" emerges from the trailing
