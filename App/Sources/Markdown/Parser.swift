@@ -26,6 +26,133 @@ public enum BlockParser {
         let leadingSpaces: Int
     }
 
+    private struct ToggleOpen {
+        let leadingSpaces: Int
+        let title: String
+    }
+
+    /// Pre-parse pass for `▸ Title` toggles. Lifts toggle paragraphs out of the source by
+    /// indent — body extent is "subsequent lines blank OR indented strictly more than the
+    /// toggle's leading spaces, stopping at the first non-blank line at-or-below that
+    /// indent." Body is dedented one indent unit (2 spaces) and recursively parsed at
+    /// `toggleIndent + 1`. Non-toggle text is passed to `parseMarkdown` (terminator);
+    /// toggle body recurses through `parseTemplateContainers` so a `:::` template inside
+    /// a toggle body is recognised.
+    ///
+    /// Fenced code blocks (``` `` ```) are treated as opaque both in the outer scan and in
+    /// the body-extent scan, so a `▸ ` line inside fenced code is not lifted, and a code
+    /// line outdented to column 0 inside the toggle's body code fence does not terminate
+    /// the body.
+    private static func parseToggleContainers(_ source: String, baseIndent: Int) -> [Block] {
+        let lines = splitPreservingLineEndings(source)
+        var out: [Block] = []
+        var regular = ""
+        var i = 0
+        var fenceLength: Int? = nil
+
+        func flushRegular() {
+            guard !regular.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                regular = ""
+                return
+            }
+            out.append(contentsOf: parseMarkdown(regular, baseIndent: baseIndent))
+            regular = ""
+        }
+
+        while i < lines.count {
+            let lineText = lines[i].text
+
+            if let f = fenceLength {
+                if isClosingFence(lineText, expectedLength: f) { fenceLength = nil }
+                regular += lines[i].fullText
+                i += 1
+                continue
+            }
+            if let len = openingFenceLength(lineText) {
+                fenceLength = len
+                regular += lines[i].fullText
+                i += 1
+                continue
+            }
+
+            guard let open = parseToggleOpen(lineText) else {
+                regular += lines[i].fullText
+                i += 1
+                continue
+            }
+
+            flushRegular()
+
+            let toggleIndent = baseIndent + (open.leadingSpaces / 2)
+
+            var j = i + 1
+            var bodyFence: Int? = nil
+            while j < lines.count {
+                let bl = lines[j].text
+                if let f = bodyFence {
+                    if isClosingFence(bl, expectedLength: f) { bodyFence = nil }
+                    j += 1
+                    continue
+                }
+                let trimmed = bl.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty {
+                    j += 1
+                    continue
+                }
+                let leadingHere = bl.prefix { $0 == " " }.count
+                if leadingHere <= open.leadingSpaces { break }
+                if let len = openingFenceLength(bl) { bodyFence = len }
+                j += 1
+            }
+
+            var bodyEnd = j
+            while bodyEnd > i + 1 {
+                let prev = lines[bodyEnd - 1].text.trimmingCharacters(in: .whitespaces)
+                if prev.isEmpty { bodyEnd -= 1 } else { break }
+            }
+
+            let bodySource = lines[(i + 1)..<bodyEnd]
+                .map { stripLeadingSpaces(open.leadingSpaces + 2, from: $0.fullText) }
+                .joined()
+
+            let body = parseTemplateContainers(bodySource, baseIndent: toggleIndent + 1)
+            out.append(.toggle(title: inlineParse(open.title), indent: toggleIndent))
+            out.append(contentsOf: body)
+
+            i = j
+        }
+
+        flushRegular()
+        return out
+    }
+
+    private static func parseToggleOpen(_ line: String) -> ToggleOpen? {
+        let leading = line.prefix { $0 == " " }.count
+        let trimmed = line.dropFirst(leading)
+        guard trimmed.hasPrefix("▸ ") else { return nil }
+        let title = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        return ToggleOpen(leadingSpaces: leading, title: title)
+    }
+
+    private static func openingFenceLength(_ line: String) -> Int? {
+        let trimmed = line.drop { $0 == " " }
+        var count = 0
+        for ch in trimmed {
+            if ch == "`" { count += 1 } else { break }
+        }
+        return count >= 3 ? count : nil
+    }
+
+    private static func isClosingFence(_ line: String, expectedLength: Int) -> Bool {
+        let trimmed = line.drop { $0 == " " }
+        var count = 0
+        for ch in trimmed {
+            if ch == "`" { count += 1 } else { break }
+        }
+        if count < expectedLength { return false }
+        return trimmed.dropFirst(count).allSatisfy { $0 == " " }
+    }
+
     private static func parseTemplateContainers(_ source: String, baseIndent: Int) -> [Block] {
         let lines = splitPreservingLineEndings(source)
         var out: [Block] = []
@@ -37,7 +164,7 @@ public enum BlockParser {
                 regular = ""
                 return
             }
-            out.append(contentsOf: parseMarkdown(regular, baseIndent: baseIndent))
+            out.append(contentsOf: parseToggleContainers(regular, baseIndent: baseIndent))
             regular = ""
         }
 
@@ -63,7 +190,7 @@ public enum BlockParser {
             let bodySource = bodyLines
                 .map { stripLeadingSpaces(open.leadingSpaces, from: $0.fullText) }
                 .joined()
-            let body = parseTemplateContainers(bodySource, baseIndent: blockIndent + 1)
+            let body = parseToggleContainers(bodySource, baseIndent: blockIndent + 1)
             out.append(.templateButton(label: open.label, indent: blockIndent))
             out.append(contentsOf: body)
         }
@@ -72,6 +199,12 @@ public enum BlockParser {
         return out
     }
 
+    /// Legacy `<details>` parser — retained for files written before the `▸ Title`
+    /// serialization. The serializer no longer emits `<details>`, but workspaces that
+    /// predate the change still contain HTML-toggle envelopes; this pass continues to
+    /// parse them so existing files load. **Do not delete** — files convert lazily on
+    /// next save.
+    ///
     /// Walks a sibling list of markup nodes, lifting `<details>...</details>` runs into
     /// a `.toggle` marker followed by the body blocks at `indent + 1`. cmark-gfm closes an
     /// HTML block at a blank line, so a real-world `<details>` toggle with markdown children

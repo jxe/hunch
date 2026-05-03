@@ -125,10 +125,16 @@ consumes. Override `keyDown(_:)` on a custom NSTextView subclass instead
 - **swift-markdown is the only third-party dep.** Its
   `MarkupFormatter.format()` normalises surface syntax — accepted; we
   don't try byte-exact preservation.
-- **Toggles are encoded as `<details><summary>…</summary>…</details>`**
-  HTML blocks. cmark splits these across siblings at blank lines;
-  `BlockParser.assemble` stitches them back. If toggles stop
-  round-tripping, suspect that pass.
+- **Toggles are encoded as `▸ Title` paragraphs** with body blocks
+  indented one unit (2 spaces) deeper. The `parseToggleContainers`
+  pre-pass in `BlockParser` lifts toggles by indent before
+  swift-markdown sees the source — fenced code blocks are treated as
+  opaque so a `▸ ` line inside code isn't lifted, and a code line
+  outdented to column 0 inside a body fence doesn't terminate the
+  body. The legacy `<details><summary>…</summary>…</details>` format
+  is still parsed for backward compatibility (see the `assemble`
+  function in `Parser.swift`); files convert to the new format on
+  next save.
 
 ## Notion typography target
 

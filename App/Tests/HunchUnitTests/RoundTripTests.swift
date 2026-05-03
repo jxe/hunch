@@ -160,12 +160,9 @@ struct RoundTripTests {
 
     @Test func toggleSimple() {
         let src = """
-        <details><summary>Title</summary>
-
-        - a
-        - b
-
-        </details>
+        ▸ Title
+          - a
+          - b
         """
         let blocks = BlockParser.parse(src)
         // Body blocks are flat siblings at indent + 1, not nested in a children array.
@@ -182,6 +179,45 @@ struct RoundTripTests {
         if case .bullet(_, _, let i) = blocks[2] {
             #expect(i == 1)
         } else { Issue.record("second body block not bullet") }
+    }
+
+    @Test func toggleSimpleLegacyParse() {
+        // Legacy `<details>` files still parse — workspaces predating the `▸` format.
+        let src = """
+        <details><summary>Title</summary>
+
+        - a
+        - b
+
+        </details>
+        """
+        let blocks = BlockParser.parse(src)
+        #expect(blocks.count == 3)
+        guard case .toggle(_, let title, let toggleIndent) = blocks[0] else {
+            Issue.record("not a toggle")
+            return
+        }
+        #expect(String(title.characters) == "Title")
+        #expect(toggleIndent == 0)
+        if case .bullet(_, _, let i) = blocks[1] { #expect(i == 1) }
+        else { Issue.record("first body block not bullet") }
+        if case .bullet(_, _, let i) = blocks[2] { #expect(i == 1) }
+        else { Issue.record("second body block not bullet") }
+    }
+
+    @Test func toggleLegacyConvertsOnReserialize() {
+        let src = """
+        <details><summary>Old</summary>
+
+        body paragraph
+
+        </details>
+        """
+        let blocks = BlockParser.parse(src)
+        let serialized = BlockSerializer.serialize(blocks)
+        #expect(serialized.contains("▸ Old"))
+        #expect(!serialized.contains("<details>"))
+        #expect(!serialized.contains("</details>"))
     }
 
     @Test func subpage() {
@@ -258,13 +294,10 @@ struct RoundTripTests {
         // Verify a paragraph in the body is at the right indent on parse, that it survives
         // re-serialize, and that adding an indent + 1 sibling extends the toggle's section.
         let src = """
-        <details><summary>Toggle</summary>
+        ▸ Toggle
+          Body paragraph.
 
-        Body paragraph.
-
-        - bullet
-
-        </details>
+          - bullet
         """
         var blocks = BlockParser.parse(src)
         #expect(blocks.count == 3)
@@ -288,18 +321,11 @@ struct RoundTripTests {
 
     @Test func toggleNestedRoundTrip() {
         let src = """
-        <details><summary>Outer</summary>
-
-        - one
-        - two
-
-        <details><summary>Inner</summary>
-
-        - inner-one
-
-        </details>
-
-        </details>
+        ▸ Outer
+          - one
+          - two
+          ▸ Inner
+            - inner-one
         """
         let blocks = BlockParser.parse(src)
         // Outer toggle, two outer-body bullets at indent 1, inner toggle at indent 1, one
@@ -324,6 +350,206 @@ struct RoundTripTests {
         for (a, b) in zip(blocks, reparsed) {
             #expect(blockKind(a) == blockKind(b))
         }
+    }
+
+    @Test func toggleNestedLegacyParse() {
+        let src = """
+        <details><summary>Outer</summary>
+
+        - one
+
+        <details><summary>Inner</summary>
+
+        - inner-one
+
+        </details>
+
+        </details>
+        """
+        let blocks = BlockParser.parse(src)
+        guard case .toggle(_, let outerTitle, 0) = blocks[0] else {
+            Issue.record("outer not toggle"); return
+        }
+        #expect(String(outerTitle.characters) == "Outer")
+        let innerIdx = blocks.firstIndex { if case .toggle = $0 { return $0.id != blocks[0].id } else { return false } }
+        guard let innerIdx, case .toggle(_, _, 1) = blocks[innerIdx] else {
+            Issue.record("inner toggle not at indent 1"); return
+        }
+    }
+
+    @Test func toggleMixedLegacyAndNewFormats() {
+        let src = """
+        <details><summary>Legacy</summary>
+
+        legacy body
+
+        </details>
+
+        ▸ New
+          new body
+        """
+        let blocks = BlockParser.parse(src)
+        let toggles = blocks.compactMap { b -> String? in
+            if case .toggle(_, let t, _) = b { return String(t.characters) }
+            return nil
+        }
+        #expect(toggles == ["Legacy", "New"])
+    }
+
+    @Test func toggleBodyAllBlockKinds() {
+        let src = """
+        ▸ Wrap
+          paragraph
+
+          # heading 1
+
+          - bullet
+          1. numbered
+          - [ ] todo
+          > quote
+          ---
+          [Subpage](sub.md)
+          :::{template-button} Template
+          template body
+          :::
+        """
+        let blocks = BlockParser.parse(src)
+        // First block is the toggle. All others should be at indent 1 (or deeper for
+        // template body).
+        guard case .toggle(_, _, 0) = blocks[0] else { Issue.record("not toggle"); return }
+        let kinds = blocks.dropFirst().map(blockKind)
+        // Sanity: every body block is at indent ≥ 1 (none leaked out to indent 0).
+        for b in blocks.dropFirst() {
+            #expect(b.indent >= 1, "body block leaked to indent < 1: \(blockKind(b))")
+        }
+        // Re-serialize / re-parse: shape stable.
+        let reparsed = BlockParser.parse(BlockSerializer.serialize(blocks))
+        let reKinds = reparsed.dropFirst().map(blockKind)
+        #expect(kinds == reKinds, "shape diverged on round-trip")
+    }
+
+    @Test func toggleBodyContainsCodeBlock() {
+        // Code block inside a toggle body — body-extent detector must treat fenced code
+        // as opaque so a code line outdented to column 0 doesn't terminate the body.
+        let src = """
+        ▸ Wrap
+          ```python
+          def foo():
+              return 1
+          ```
+        """
+        let blocks = BlockParser.parse(src)
+        guard blocks.count == 2 else { Issue.record("expected 2 blocks, got \(blocks.count)"); return }
+        guard case .toggle(_, _, 0) = blocks[0] else { Issue.record("not toggle"); return }
+        if case .code(_, let source, let lang, let i) = blocks[1] {
+            #expect(lang == "python")
+            #expect(source.contains("return 1"))
+            #expect(i == 1)
+        } else {
+            Issue.record("body not code")
+        }
+        roundTrip(src)
+    }
+
+    @Test func toggleDeeplyNested() {
+        let src = """
+        ▸ A
+          ▸ B
+            ▸ C
+              ▸ D
+                leaf
+        """
+        let blocks = BlockParser.parse(src)
+        #expect(blocks.count == 5)
+        for (idx, expected) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
+            if case .toggle(_, _, let i) = blocks[idx] { #expect(i == expected) }
+            else { Issue.record("blocks[\(idx)] not toggle") }
+        }
+        if case .paragraph(_, _, let i) = blocks[4] { #expect(i == 4) }
+        else { Issue.record("leaf not paragraph") }
+    }
+
+    @Test func toggleInsideTemplateBody() {
+        let src = """
+        :::{template-button} Wrap
+        ▸ Inner
+          inner body
+        :::
+        """
+        let blocks = BlockParser.parse(src)
+        // template at 0, toggle at 1, paragraph at 2.
+        #expect(blocks.count == 3)
+        guard case .templateButton(_, _, 0) = blocks[0] else { Issue.record("not template"); return }
+        guard case .toggle(_, _, 1) = blocks[1] else { Issue.record("not toggle at 1"); return }
+        if case .paragraph(_, _, let i) = blocks[2] { #expect(i == 2) }
+        else { Issue.record("body not paragraph") }
+    }
+
+    @Test func templateButtonInsideToggleBody() {
+        let src = """
+        ▸ Wrap
+          :::{template-button} Inside
+          template body
+          :::
+        """
+        let blocks = BlockParser.parse(src)
+        #expect(blocks.count == 3)
+        guard case .toggle(_, _, 0) = blocks[0] else { Issue.record("not toggle"); return }
+        guard case .templateButton(_, let label, 1) = blocks[1] else {
+            Issue.record("not template at 1"); return
+        }
+        #expect(label == "Inside")
+        if case .paragraph(_, _, let i) = blocks[2] { #expect(i == 2) }
+        else { Issue.record("template body not paragraph at 2") }
+    }
+
+    @Test func toggleEmptyBody() {
+        let src = "▸ Title\n"
+        let blocks = BlockParser.parse(src)
+        #expect(blocks.count == 1)
+        guard case .toggle(_, let title, 0) = blocks[0] else { Issue.record("not toggle"); return }
+        #expect(String(title.characters) == "Title")
+        // Empty body still round-trips.
+        let reparsed = BlockParser.parse(BlockSerializer.serialize(blocks))
+        #expect(reparsed.count == 1)
+    }
+
+    @Test func toggleFollowedByNonToggle() {
+        let src = """
+        ▸ T
+          body line
+        following paragraph
+        """
+        let blocks = BlockParser.parse(src)
+        #expect(blocks.count == 3)
+        guard case .toggle(let id, _, 0) = blocks[0] else { Issue.record("not toggle"); return }
+        if case .paragraph(_, _, let i) = blocks[1] { #expect(i == 1) }
+        else { Issue.record("body not paragraph at 1") }
+        if case .paragraph(_, let t, let i) = blocks[2] {
+            #expect(String(t.characters) == "following paragraph")
+            #expect(i == 0)
+        } else { Issue.record("following not paragraph at 0") }
+        // Section range: toggle owns only the body-indent block.
+        let doc = Document(url: URL(fileURLWithPath: "/tmp/x.md"), title: "T", blocks: blocks)
+        #expect(doc.sectionRange(of: id) == 0..<2)
+    }
+
+    @Test func toggleTitleWithInlineMarks() {
+        let src = "▸ **Bold** *italic* `code` [link](https://example.com)\n"
+        let blocks = BlockParser.parse(src)
+        #expect(blocks.count == 1)
+        guard case .toggle(_, let title, _) = blocks[0] else { Issue.record("not toggle"); return }
+        var sawBold = false, sawItalic = false, sawCode = false, sawLink = false
+        for run in title.runs {
+            if run[InlineAttributes.BoldAttribute.self] == true { sawBold = true }
+            if run[InlineAttributes.ItalicAttribute.self] == true { sawItalic = true }
+            if run[InlineAttributes.CodeAttribute.self] == true { sawCode = true }
+            if run.link != nil { sawLink = true }
+        }
+        #expect(sawBold)
+        #expect(sawItalic)
+        #expect(sawCode)
+        #expect(sawLink)
     }
 
     @Test func templateButtonSimple() {

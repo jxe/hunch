@@ -31,7 +31,7 @@ public final class PageSpeechRecorder {
         #if os(iOS)
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers, .defaultToSpeaker])
+            try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker])
             try session.setActive(true, options: [])
         } catch {
             NSLog("[PageSpeechRecorder] audio session activation failed: %@", String(describing: error))

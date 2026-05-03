@@ -12,6 +12,22 @@ struct TrashStoreTests {
         return dir
     }
 
+    private func setHiddenRecursively(at root: URL) throws {
+        let children = (try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        )) ?? []
+        for var child in children {
+            let isDir = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            if isDir {
+                try setHiddenRecursively(at: child)
+            }
+            var values = URLResourceValues()
+            values.isHidden = true
+            try child.setResourceValues(values)
+        }
+    }
+
     @Test func recordsAndListsBlockDeletion() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -110,14 +126,7 @@ struct TrashStoreTests {
             actionName: "Delete"
         )
 
-        let trashDir = root.appendingPathComponent(".Trash", isDirectory: true)
-        if let enumerator = FileManager.default.enumerator(at: trashDir, includingPropertiesForKeys: nil) {
-            for case var url as URL in enumerator {
-                var values = URLResourceValues()
-                values.isHidden = true
-                try url.setResourceValues(values)
-            }
-        }
+        try setHiddenRecursively(at: root.appendingPathComponent(".Trash", isDirectory: true))
 
         let entries = try await store.listEntries()
         #expect(entries.contains { $0.isPageEntry && $0.sourcePath == "doomed.md" })
