@@ -12,11 +12,18 @@ final class WorkspaceModel {
     var homeRelativePath: String?
     var openDocument: Document?
     var error: String?
-    /// Stack of pushed document URLs, root → top. Empty = page list root visible.
+    /// Stack of pages pushed *on top* of the home root, root → top. Empty =
+    /// home page is visible (or, if no home is set, the page list fallback).
     /// Bound to `NavigationStack(path:)`; mutating drives push/pop, and the
     /// NavigationStack writes back here on edge-swipe / system back.
     var path: [URL] = []
     var canGoBack: Bool { !path.isEmpty }
+
+    /// URL of the designated home page, if one is set and resolves to a known entry.
+    var homeURL: URL? {
+        guard let homeRelativePath else { return nil }
+        return entries.first { $0.relativePath == homeRelativePath }?.url
+    }
 
     private let store = FileStore()
     private let saver = DocumentSaveCoordinator()
@@ -132,12 +139,23 @@ final class WorkspaceModel {
         }
     }
 
-    /// Sidebar tap: reset the stack to just this entry. The list is only visible
-    /// at `path == []`, so this is effectively the "open from the root" path.
+    /// Page-list selection: navigate to `entry`. If `entry` is the home page,
+    /// drain the path so the home root becomes visible; otherwise replace the
+    /// stack with a single entry pushed on top of home.
     func open(_ entry: WorkspaceEntry) {
-        if path == [entry.url] { return }
-        cacheOpenDocument()
-        path = [entry.url]
+        if entry.relativePath == homeRelativePath {
+            if path.isEmpty {
+                // Already at the home slot. Drive a load in case the home
+                // doc isn't in `openDocument` yet (e.g. just after restore).
+                handlePathChange()
+            } else {
+                cacheOpenDocument()
+                path = []
+            }
+        } else if path != [entry.url] {
+            cacheOpenDocument()
+            path = [entry.url]
+        }
     }
 
     /// Subpage / inline link: push deeper.
@@ -192,11 +210,13 @@ final class WorkspaceModel {
         path.removeLast()
     }
 
-    /// Reconcile `openDocument` with `path.last`. Call from a `.onChange(of: path)`
-    /// observer in the view layer. Handles all three transitions (push, pop,
-    /// drain to empty); flushes the outgoing doc before loading the new one.
+    /// Reconcile `openDocument` with the currently visible page. The visible
+    /// page is `path.last` if any subpages are pushed, otherwise the home page
+    /// (if one is set). Call from a `.onChange(of: path)` observer in the view
+    /// layer. Handles all transitions (push, pop, drain to home, drain to
+    /// empty); flushes the outgoing doc before loading the new one.
     func handlePathChange() {
-        let topURL = path.last
+        let topURL = path.last ?? homeURL
         if openDocument?.url == topURL { return }
         cacheOpenDocument()
         flushAndClose()
@@ -834,6 +854,7 @@ struct ContentView: View {
     @State private var pageSearchText = ""
     @State private var showingRecentlyDeleted = false
     @State private var versionHistoryURL: URL?
+    @State private var showingPageList = false
 
     var body: some View {
         Group {
@@ -841,7 +862,7 @@ struct ContentView: View {
                 WorkspacePickerView(model: model)
             } else {
                 NavigationStack(path: $model.path) {
-                    sidebar
+                    rootView
                         .navigationDestination(for: URL.self) { url in
                             pageDetail(for: url)
                         }
@@ -852,6 +873,20 @@ struct ContentView: View {
                 // the ProgressView fallback forever.
                 .onChange(of: model.path, initial: true) { _, _ in
                     model.handlePathChange()
+                }
+                .sheet(isPresented: $showingPageList) {
+                    pageListSheet
+                }
+                .sheet(isPresented: $showingRecentlyDeleted) {
+                    RecentlyDeletedView(
+                        loadEntries: { await model.listDeletedEntries() },
+                        onRestorePage: { entry in await model.restoreDeletedPage(entry) },
+                        onRestoreBlocks: { entry in await model.restoreDeletedBlocks(entry) },
+                        onClose: { showingRecentlyDeleted = false }
+                    )
+                    #if os(macOS)
+                    .frame(minWidth: 480, minHeight: 480)
+                    #endif
                 }
             }
         }
@@ -868,6 +903,35 @@ struct ContentView: View {
         }
     }
 
+    /// NavigationStack root: the home page editor when home is set and loaded;
+    /// the page-list sidebar otherwise (fresh workspace, no home picked yet).
+    @ViewBuilder
+    private var rootView: some View {
+        if let homeURL = model.homeURL {
+            if let document = model.documentForPage(url: homeURL) {
+                EditorPage(
+                    url: homeURL,
+                    document: document,
+                    model: model,
+                    versionHistoryURL: $versionHistoryURL,
+                    onShowPageList: { showingPageList = true }
+                )
+                .sheet(item: Binding(
+                    get: { versionHistoryURL.map(URLBox.init) },
+                    set: { versionHistoryURL = $0?.url }
+                )) { box in
+                    versionHistorySheet(for: box.url)
+                }
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(NotionStyle.background)
+            }
+        } else {
+            sidebar
+        }
+    }
+
     private var errorBinding: Binding<Bool> {
         Binding(
             get: { model.error != nil },
@@ -875,11 +939,10 @@ struct ContentView: View {
         )
     }
 
-    /// Drives `PageListView`'s selection. The list is only visible at
-    /// `path == []` (NavigationStack root), so the highlight reflects the
-    /// root-pushed doc and tapping a row pushes onto the stack via
-    /// `model.open`. Nil writes (auto-deselect on stack pop) are ignored —
-    /// NavigationStack itself owns the path.
+    /// Drives the fallback `sidebar` (only visible when no home is set, as the
+    /// NavigationStack root). The highlight reflects the pushed doc and
+    /// tapping a row pushes onto the stack via `model.open`. Nil writes
+    /// (auto-deselect on stack pop) are ignored — NavigationStack owns path.
     private var pageSelection: Binding<WorkspaceEntry.ID?> {
         Binding(
             get: { model.path.first },
@@ -889,6 +952,72 @@ struct ContentView: View {
                 }
             }
         )
+    }
+
+    /// Sheet selection: opening any entry from the page-list sheet routes
+    /// through `model.open` (which decides whether to drain the path back to
+    /// home or push the entry on top) and dismisses the sheet.
+    private var pageSheetSelection: Binding<WorkspaceEntry.ID?> {
+        Binding(
+            get: { nil },
+            set: { newID in
+                guard let id = newID,
+                      let entry = model.entries.first(where: { $0.id == id }) else { return }
+                model.open(entry)
+                showingPageList = false
+            }
+        )
+    }
+
+    /// Page-list sheet shown from the home toolbar icon. Mirrors the sidebar's
+    /// content (PageListView + Recently Deleted) but in a modal context.
+    private var pageListSheet: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 0) {
+                PageListView(
+                    entries: model.entries,
+                    homeRelativePath: model.homeRelativePath,
+                    selection: pageSheetSelection,
+                    searchText: $pageSearchText,
+                    onSetHome: { entry in
+                        model.setHome(entry)
+                    },
+                    onMoveToTrash: { entry in
+                        _ = model.moveToTrash(entry)
+                    }
+                )
+                Divider()
+                Button {
+                    showingPageList = false
+                    showingRecentlyDeleted = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "trash")
+                        Text("Recently Deleted")
+                        Spacer()
+                    }
+                    .font(NotionStyle.body())
+                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+            }
+            .navigationTitle("Pages")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .searchable(text: $pageSearchText, placement: .automatic, prompt: "Search pages")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showingPageList = false }
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 360, minHeight: 480)
+        #endif
     }
 
     private var sidebar: some View {
@@ -926,17 +1055,6 @@ struct ContentView: View {
                 .padding(.vertical, 8)
             }
             .buttonStyle(.plain)
-        }
-        .sheet(isPresented: $showingRecentlyDeleted) {
-            RecentlyDeletedView(
-                loadEntries: { await model.listDeletedEntries() },
-                onRestorePage: { entry in await model.restoreDeletedPage(entry) },
-                onRestoreBlocks: { entry in await model.restoreDeletedBlocks(entry) },
-                onClose: { showingRecentlyDeleted = false }
-            )
-            #if os(macOS)
-            .frame(minWidth: 480, minHeight: 480)
-            #endif
         }
         .navigationTitle(model.workspaceURL?.lastPathComponent ?? "Workspace")
         .searchable(text: $pageSearchText, placement: .automatic, prompt: "Search pages")
@@ -1039,6 +1157,9 @@ private struct EditorPage: View {
     let document: Document
     @Bindable var model: WorkspaceModel
     @Binding var versionHistoryURL: URL?
+    /// Non-nil only for the home root: adds a toolbar button that surfaces
+    /// the page-list sheet. Subpages get `nil` and don't show the icon.
+    var onShowPageList: (() -> Void)? = nil
 
     @State private var editorState = EditorState()
     @Environment(\.scenePhase) private var scenePhase
@@ -1092,6 +1213,14 @@ private struct EditorPage: View {
             }
         )
         .toolbar {
+            if let onShowPageList {
+                ToolbarItem(placement: .navigation) {
+                    Button(action: onShowPageList) {
+                        Image(systemName: "square.stack")
+                    }
+                    .accessibilityLabel("Show Page List")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     versionHistoryURL = url
