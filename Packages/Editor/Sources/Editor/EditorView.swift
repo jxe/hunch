@@ -148,6 +148,13 @@ public struct EditorView: View {
             let layout = computeVisibleLayout(snapshot: snapshot, hidden: hidden)
             let visiblePairs = layout.pairs
             let prevVisibleBlocks = layout.prevVisible
+            // Hoisted out of the ForEach: previously each row called effectiveSelectedIDs()
+            // which is itself O(N), making selection lookup O(N²) per body re-eval.
+            #if os(iOS)
+            let selectedIDs: Set<BlockID> = []
+            #else
+            let selectedIDs = effectiveSelectedIDs()
+            #endif
             let horizontalPadding = NotionStyle.pageHorizontalPadding(for: geometry.size.width)
 
             ScrollView {
@@ -158,7 +165,7 @@ public struct EditorView: View {
                         let gap = BlockSpacing.gap(before: block, after: prev)
                         let pinchExtraTopGap = pinchExtraGap(forIndex: i)
                         let reorderExtraTopGap = reorderDriftGap(for: i)
-                        rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id])
+                        rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
                             .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
                             .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverIndex)
                             .background(rowFrameReporter(id: block.id))
@@ -333,7 +340,7 @@ public struct EditorView: View {
     // MARK: - Row builder
 
     @ViewBuilder
-    private func rowView(for binding: Binding<Block>, snapshot: [Block], numberingIndex: Int?) -> some View {
+    private func rowView(for binding: Binding<Block>, snapshot: [Block], numberingIndex: Int?, selectedIDs: Set<BlockID>) -> some View {
         let block = binding.wrappedValue
         // iOS has no nav-mode multi-select — there's no hardware keyboard arrow nav and the
         // blue tint after dismissing the keyboard is just visual noise. Hardcode false to
@@ -341,7 +348,7 @@ public struct EditorView: View {
         #if os(iOS)
         let isSelected = false
         #else
-        let isSelected = effectiveSelectedIDs().contains(block.id)
+        let isSelected = selectedIDs.contains(block.id)
         #endif
         let isEditing = state.editingBlock == block.id
         // The macOS action menu opens in nav mode, where the block is already painted with

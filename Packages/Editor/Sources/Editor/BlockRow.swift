@@ -1,6 +1,6 @@
 import SwiftUI
 
-public struct BlockRow: View {
+public struct BlockRow: View, Equatable {
     @Binding var block: Block
     public let isPageTitle: Bool
     public let numberingIndex: Int?
@@ -15,6 +15,38 @@ public struct BlockRow: View {
     /// True when the block action popover (Cmd-/ menu) is targeting this row —
     /// paints a ring around it so the popover's anchor block is unambiguous.
     public let isActionMenuTarget: Bool
+
+    // MARK: - Equatable
+    //
+    // SwiftUI uses == to skip body re-eval when nothing this row cares about
+    // changed. The closure properties (onKey, onAutotransform, etc.) are
+    // intentionally omitted — closures aren't meaningfully comparable, and ours
+    // capture only stable references (block.id, EditorView's `self` whose backing
+    // is class-typed `state` and Bindings). `editorFocused` is also omitted: the
+    // editor only mounts when `isEditing` is true, so focus changes already imply
+    // an `isEditing` flip on both old and new editing rows.
+    //
+    // KNOWN STALENESS: `pageTitle` is a closure that resolves subpage paths to
+    // names against the host's workspace model. If a subpage is renamed but no
+    // other field changes, this row's `Text` caches the old name until something
+    // else (typing, scrolling, mode flip) triggers a re-render. Add a
+    // `pageTitleVersion: Int` to == — and bump it from the host on workspace
+    // mutations — if this becomes user-visible.
+    //
+    // INVARIANT: every NEW stored property that affects rendering must be added
+    // to this comparison, OR a documented reason for its omission. Forgetting one
+    // means stale rendering with no compiler help.
+    nonisolated public static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
+        lhs.block == rhs.block
+            && lhs.isPageTitle == rhs.isPageTitle
+            && lhs.numberingIndex == rhs.numberingIndex
+            && lhs.isSelected == rhs.isSelected
+            && lhs.isEditing == rhs.isEditing
+            && lhs.isExpanded == rhs.isExpanded
+            && lhs.isDropTarget == rhs.isDropTarget
+            && lhs.isActionMenuTarget == rhs.isActionMenuTarget
+            && lhs.mentionActive == rhs.mentionActive
+    }
     @FocusState.Binding var editorFocused: BlockID?
     let onKey: (BlockKey) -> KeyPress.Result
     let onEdited: () -> Void
