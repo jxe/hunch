@@ -33,10 +33,10 @@ public struct BlockRow: View {
     let onToggleExpansion: () -> Void
     let onTemplateButtonPress: () -> Void
     let pageTitle: (String) -> String?
-    /// Cursor target captured at tap or split time, threaded into the BlockTextEditor on
-    /// its first mount so the cursor lands at the click point or explicit offset rather
-    /// than at end-of-text.
-    let initialCursor: InitialCursorTarget?
+    /// Forwarded to the BlockTextEditor — called once on its first mount to fetch
+    /// the cursor target captured at tap/split/merge time. EditorView constructs
+    /// this closure to atomically read-and-clear `EditorState.pendingInitialCursor`.
+    let consumeInitialCursor: () -> InitialCursorTarget?
 
     public init(
         block: Binding<Block>,
@@ -57,7 +57,7 @@ public struct BlockRow: View {
         onToggleExpansion: @escaping () -> Void = {},
         onTemplateButtonPress: @escaping () -> Void = {},
         pageTitle: @escaping (String) -> String? = { _ in nil },
-        initialCursor: InitialCursorTarget? = nil
+        consumeInitialCursor: @escaping () -> InitialCursorTarget? = { nil }
     ) {
         self._block = block
         self.isPageTitle = isPageTitle
@@ -77,7 +77,7 @@ public struct BlockRow: View {
         self.onToggleExpansion = onToggleExpansion
         self.onTemplateButtonPress = onTemplateButtonPress
         self.pageTitle = pageTitle
-        self.initialCursor = initialCursor
+        self.consumeInitialCursor = consumeInitialCursor
     }
 
     public var body: some View {
@@ -388,7 +388,7 @@ public struct BlockRow: View {
                 onAutotransform: onAutotransform,
                 onMentionTriggerChange: onMentionTriggerChange,
                 mentionActive: mentionActive,
-                initialCursor: initialCursor
+                consumeInitialCursor: consumeInitialCursor
             )
             .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
             .strikethrough(strikethrough)

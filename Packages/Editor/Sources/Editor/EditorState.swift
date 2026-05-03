@@ -26,6 +26,15 @@ public final class EditorState {
     public internal(set) var mode: Mode = .navigating(Selection())
     public internal(set) var gesture: Gesture? = nil
 
+    /// Where the live editor should park the cursor on its next mount of the
+    /// editing block. Set when transitioning into edit mode (click point, start
+    /// of a split tail, merge join point) or mid-session for a structural shape
+    /// change that re-mounts the editor (e.g. unbullet). Consumed-and-cleared
+    /// atomically by `takePendingInitialCursor()`; `exitEditMode()` clears any
+    /// uncomsumed value so a stale target can't leak across sessions. Nil means
+    /// "seek to end".
+    public internal(set) var pendingInitialCursor: InitialCursorTarget? = nil
+
     // Hover — visible across all modes/gestures, drives drag-handle reveal.
     public internal(set) var hoveredBlock: BlockID? = nil
     public internal(set) var hoveredHandle: BlockID? = nil
@@ -269,9 +278,14 @@ extension EditorState {
 // MARK: - Edit-mode transitions
 
 extension EditorState {
-    /// Enter edit mode on the given block, dropping any stale overlay.
-    func enterEditMode(on id: BlockID) {
+    /// Enter edit mode on the given block, dropping any stale overlay. Pass
+    /// `initialCursor` when there's a specific position the cursor should land on
+    /// (click point, start of split tail, merge join point); leave it nil to seek
+    /// to end. The pending-cursor channel is rewritten on every call so a target
+    /// from a previous edit session can't leak into the next mount.
+    func enterEditMode(on id: BlockID, initialCursor: InitialCursorTarget? = nil) {
         mode = .editing(id, overlay: nil)
+        pendingInitialCursor = initialCursor
     }
 
     /// Drop back to nav mode with the previously-editing block as the cursor.
@@ -279,11 +293,32 @@ extension EditorState {
     func exitEditMode() {
         guard case .editing(let id, _) = mode else { return }
         mode = .navigating(Selection(blocks: [id], anchor: id, cursor: id))
+        pendingInitialCursor = nil
     }
 
     /// Drop edit mode AND any selection — page is unfocused entirely.
     func exitEditModeWithoutCursor() {
         mode = .navigating(Selection())
+        pendingInitialCursor = nil
+    }
+
+    /// Update the pending initial cursor mid-session, e.g. when an unbullet
+    /// converts the row's block type and the editor is about to re-mount. No-op
+    /// outside edit mode.
+    func setPendingInitialCursor(_ target: InitialCursorTarget) {
+        guard case .editing = mode else { return }
+        pendingInitialCursor = target
+    }
+
+    /// Atomically read and clear `pendingInitialCursor`. Called by the live
+    /// editor exactly once during mount (`makeNSView` / `makeUIView`) so a
+    /// re-mount within the same edit session — without an explicit
+    /// `setPendingInitialCursor` to update it — falls back to seek-to-end
+    /// rather than re-applying the original target.
+    func takePendingInitialCursor() -> InitialCursorTarget? {
+        let value = pendingInitialCursor
+        pendingInitialCursor = nil
+        return value
     }
 }
 

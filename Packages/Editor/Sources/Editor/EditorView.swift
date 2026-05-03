@@ -70,11 +70,6 @@ public struct EditorView: View {
     @FocusState var editorFocused: BlockID?
     /// Drives the page container's focusability for nav-mode key handling.
     @FocusState var pageFocused: Bool
-    /// Initial cursor target captured the moment a non-editing row was tapped (`.point`)
-    /// or a split inserted a fresh sibling (`.offset`). Forwarded to the editor on its
-    /// first mount so the cursor lands at the captured target. Stale values are harmless
-    /// — the editor only consumes it once on `makeNSView`.
-    @State private var pendingCursor: (id: BlockID, target: InitialCursorTarget)?
     /// Document-level undo coordinator. Owns the shared `UndoManager` that NSTextView
     /// typing-undo and structural ops (split/merge/indent/slide/delete/autotransform/
     /// drag-drop) all register against. Recreated implicitly when EditorView's identity
@@ -389,7 +384,7 @@ public struct EditorView: View {
                 instantiateTemplateButton(blockID: block.id)
             },
             pageTitle: pageTitle,
-            initialCursor: (pendingCursor?.id == block.id) ? pendingCursor?.target : nil
+            consumeInitialCursor: { state.takePendingInitialCursor() }
         )
             // Whole-row reorder on macOS. Coexists with click-to-edit
             // (.onTapGesture below) because of the 4pt minimumDistance: a
@@ -1198,7 +1193,8 @@ public struct EditorView: View {
 
     /// Enter edit mode on a block. Pass `initialCursor` when there's a specific
     /// position the cursor should land on (click point, start of split tail, merge
-    /// join point); leave it nil to seek to end.
+    /// join point); leave it nil to seek to end. Routes through `EditorState`,
+    /// which owns the pending-cursor channel and clears it on session boundaries.
     private func enterEditMode(on id: BlockID, initialCursor: InitialCursorTarget? = nil) {
         guard let block = document.blocks.first(where: { $0.id == id }) else { return }
         switch block {
@@ -1208,30 +1204,10 @@ public struct EditorView: View {
         default:
             break
         }
-        if let initialCursor {
-            stagePendingCursor(id, initialCursor)
-        } else {
-            // Always rewrite the channel so a target from a previous edit session
-            // (e.g. an earlier click into this same block) can't leak into the next
-            // mount and put the cursor in the middle.
-            pendingCursor = nil
-        }
         // .editing(id, overlay: nil) — also drops any stale mention overlay attached
         // to a different row, since the new mode replaces the old one wholesale.
-        state.enterEditMode(on: id)
+        state.enterEditMode(on: id, initialCursor: initialCursor)
         editorFocused = id
-    }
-
-    /// Set the pending-cursor channel and schedule its clear on the next runloop
-    /// tick. SwiftUI's current render reads the value once into the freshly-mounted
-    /// editor's `pendingInitialCursor`, then the channel goes empty — a future
-    /// re-mount of this same block (e.g. nav-mode Enter back into it) seeks to end
-    /// instead of re-using the stale target.
-    private func stagePendingCursor(_ id: BlockID, _ target: InitialCursorTarget) {
-        pendingCursor = (id, target)
-        DispatchQueue.main.async {
-            pendingCursor = nil
-        }
     }
 
     func exitEditMode() {
@@ -1698,7 +1674,7 @@ public struct EditorView: View {
             switch block {
             case .bullet, .numbered, .todo, .heading, .quote, .toggle:
                 let preservedText = block.text
-                stagePendingCursor(block.id, .offset(0))
+                state.setPendingInitialCursor(.offset(0))
                 mutate("Convert to Paragraph") {
                     document.blocks[i] = .paragraph(id: block.id, text: preservedText, indent: block.indent)
                 }

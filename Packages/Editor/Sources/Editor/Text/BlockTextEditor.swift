@@ -82,11 +82,11 @@ public struct BlockTextEditor: View {
     /// `mentionUp/Down/Commit/Dismiss` so EditorView can drive the popover. When false,
     /// arrow keys behave normally (intra-block nav or exit-edit on boundary).
     let mentionActive: Bool
-    /// Optional point (in the editor's local coordinate space) where the cursor should
-    /// land on initial focus. When the user clicks on a read-only block, the click
-    /// location is propagated here so the cursor lands where they clicked rather than at
-    /// end-of-text. Consumed once on mount.
-    let initialCursor: InitialCursorTarget?
+    /// Called exactly once during the underlying NSView/UIView's `make…` to fetch
+    /// the cursor target for this mount. The host atomically reads-and-clears its
+    /// pending-cursor channel inside the closure, so a second mount of the same
+    /// block (e.g. nav-mode Enter back into it) sees nil and seeks to end.
+    let consumeInitialCursor: () -> InitialCursorTarget?
     /// Document-level undo controller. NSTextView keeps its own per-instance typing-undo
     /// (used while the editor is mounted, fine-grained character-by-character). On focus
     /// loss, the Coordinator registers ONE coarse "Type" entry on this controller's shared
@@ -106,7 +106,7 @@ public struct BlockTextEditor: View {
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
         onMentionTriggerChange: @escaping (MentionTrigger?) -> Void = { _ in },
         mentionActive: Bool = false,
-        initialCursor: InitialCursorTarget? = nil
+        consumeInitialCursor: @escaping () -> InitialCursorTarget? = { nil }
     ) {
         self._text = text
         self.font = font
@@ -119,7 +119,7 @@ public struct BlockTextEditor: View {
         self.onAutotransform = onAutotransform
         self.onMentionTriggerChange = onMentionTriggerChange
         self.mentionActive = mentionActive
-        self.initialCursor = initialCursor
+        self.consumeInitialCursor = consumeInitialCursor
     }
 
     public var body: some View {
@@ -146,7 +146,7 @@ public struct BlockTextEditor: View {
             onAutotransform: onAutotransform,
             onMentionTriggerChange: onMentionTriggerChange,
             mentionActive: mentionActive,
-            initialCursor: initialCursor,
+            consumeInitialCursor: consumeInitialCursor,
             blockID: blockID,
             documentUndoController: documentUndoController
         )
@@ -185,7 +185,7 @@ public struct BlockTextEditor: View {
             onAutotransform: onAutotransform,
             onMentionTriggerChange: onMentionTriggerChange,
             mentionActive: mentionActive,
-            initialCursor: initialCursor,
+            consumeInitialCursor: consumeInitialCursor,
             documentUndoController: documentUndoController
         )
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -227,7 +227,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     let onMentionTriggerChange: (MentionTrigger?) -> Void
     let mentionActive: Bool
-    let initialCursor: InitialCursorTarget?
+    let consumeInitialCursor: () -> InitialCursorTarget?
     let blockID: BlockID
     let documentUndoController: DocumentUndoController?
 
@@ -260,7 +260,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
         context.coordinator.lastBold = bold
         context.coordinator.lastLineSpacing = lineSpacing
         view.wantsFocus = isFocused
-        view.pendingInitialCursor = initialCursor
+        view.pendingInitialCursor = consumeInitialCursor()
         return view
     }
 
@@ -718,7 +718,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     let onMentionTriggerChange: (MentionTrigger?) -> Void
     let mentionActive: Bool
-    let initialCursor: InitialCursorTarget?
+    let consumeInitialCursor: () -> InitialCursorTarget?
     let documentUndoController: DocumentUndoController?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -739,7 +739,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         loadAttributedString(into: tv)
         applyTypingAttributes(to: tv)
         tv.wantsFocus = isFocused
-        tv.pendingInitialCursor = initialCursor
+        tv.pendingInitialCursor = consumeInitialCursor()
         bridge.textView = tv
         bridge.fontSize = fontSize
         bridge.bold = bold
