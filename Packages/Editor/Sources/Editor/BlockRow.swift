@@ -12,6 +12,9 @@ public struct BlockRow: View {
     /// Drag-and-drop hovering this row as the "drop on parent" target — paints a
     /// child-slot preview indicating the dragged content will be appended inside.
     public let isDropTarget: Bool
+    /// True when the block action popover (Cmd-/ menu) is targeting this row —
+    /// paints a ring around it so the popover's anchor block is unambiguous.
+    public let isActionMenuTarget: Bool
     @FocusState.Binding var editorFocused: BlockID?
     let onKey: (BlockKey) -> KeyPress.Result
     let onEdited: () -> Void
@@ -43,6 +46,7 @@ public struct BlockRow: View {
         isEditing: Bool = false,
         isExpanded: Bool = false,
         isDropTarget: Bool = false,
+        isActionMenuTarget: Bool = false,
         onKey: @escaping (BlockKey) -> KeyPress.Result = { _ in .ignored },
         onEdited: @escaping () -> Void = {},
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
@@ -61,6 +65,7 @@ public struct BlockRow: View {
         self.isEditing = isEditing
         self.isExpanded = isExpanded
         self.isDropTarget = isDropTarget
+        self.isActionMenuTarget = isActionMenuTarget
         self._editorFocused = editorFocused
         self.onKey = onKey
         self.onEdited = onEdited
@@ -91,6 +96,18 @@ public struct BlockRow: View {
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
                                 .stroke(NotionStyle.linkForeground.opacity(0.55), lineWidth: 1.5)
+                        )
+                        .padding(.leading, leadingInset)
+                        .padding(.trailing, 4)
+                        .allowsHitTesting(false)
+                } else if isActionMenuTarget {
+                    let leadingInset = CGFloat(block.indent) * NotionStyle.indentStep
+                    let gold = Color(red: 0.83, green: 0.66, blue: 0.18)
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(gold.opacity(0.05))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(gold.opacity(0.42), lineWidth: 1)
                         )
                         .padding(.leading, leadingInset)
                         .padding(.trailing, 4)

@@ -338,6 +338,14 @@ public struct EditorView: View {
         let isSelected = effectiveSelectedIDs().contains(block.id)
         #endif
         let isEditing = state.editingBlock == block.id
+        // The macOS action menu opens in nav mode, where the block is already painted with
+        // the blue nav-selection tint — a second ring would just duplicate it. iOS has no
+        // nav-mode multi-select (always one anchor block), so the ring is the only marker.
+        #if os(iOS)
+        let isActionMenuTarget = (actionSheet?.id == block.id)
+        #else
+        let isActionMenuTarget = false
+        #endif
 
         BlockRow(
             block: binding,
@@ -348,6 +356,7 @@ public struct EditorView: View {
             isEditing: isEditing,
             isExpanded: state.expandedToggles.contains(block.id) || state.expandedTemplates.contains(block.id),
             isDropTarget: state.dropOntoBlockID == block.id,
+            isActionMenuTarget: isActionMenuTarget,
             onKey: { key in handleEditorKey(key, blockID: block.id) },
             onEdited: onEdited,
             onAutotransform: { transform, remainingText in

@@ -12,21 +12,44 @@ import GameController
 // `expandSubpage`) live here too — they're the actions the menu fires.
 
 enum BlockTurnInto: CaseIterable {
-    // Declaration order drives the on-screen order in the 3-col Turn Into grid.
-    // Grouped so each row reads as a category: headings, list types,
-    // everything else (Template alone trails because most blocks can't become
-    // one and `turnIntoTargets` filters it out for multi-selection).
-    case heading1
-    case heading2
-    case heading3
+    // Declaration order is no longer the source of truth for menu order —
+    // `BlockTurnInto.orderedGroups` defines the on-screen ordering with category
+    // dividers between groups. Keep cases together by family for readability.
+    case paragraph
+    case page
     case bullet
     case numbered
     case todo
-    case paragraph
     case toggle
-    case page
+    case heading1
+    case heading2
+    case heading3
     case divider
     case template
+
+    enum Category: CaseIterable {
+        case basic
+        case lists
+        case headings
+        case structural
+    }
+
+    var category: Category {
+        switch self {
+        case .paragraph, .page: return .basic
+        case .bullet, .numbered, .todo, .toggle: return .lists
+        case .heading1, .heading2, .heading3: return .headings
+        case .divider, .template: return .structural
+        }
+    }
+
+    /// Display order: members of each category in the order they appear inside
+    /// `BlockTurnInto.allCases`. Drives the horizontal turn-into row.
+    static var orderedGroups: [(Category, [BlockTurnInto])] {
+        Category.allCases.map { category in
+            (category, BlockTurnInto.allCases.filter { $0.category == category })
+        }
+    }
 
     var title: String {
         switch self {
@@ -328,7 +351,13 @@ extension EditorView {
         let targetIndices = targetIDs.compactMap { document.index(of: $0) }
         let targetBlocks = targetIndices.map { document.blocks[$0] }
         if !targetBlocks.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
+            let availableTargets = Set(turnIntoTargets(for: targetBlocks))
+            let selectedTarget = selectedTurnIntoTarget(for: targetBlocks)
+            let visibleGroups: [(BlockTurnInto.Category, [BlockTurnInto])] = BlockTurnInto.orderedGroups
+                .map { ($0.0, $0.1.filter { availableTargets.contains($0) || $0 == selectedTarget }) }
+                .filter { !$0.1.isEmpty }
+            let indentTargets = indentActions(for: targetIndices)
+            VStack(alignment: .leading, spacing: 8) {
                 Button("Close") {
                     actionSheet = nil
                 }
@@ -336,27 +365,31 @@ extension EditorView {
                 .frame(width: 0, height: 0)
                 .opacity(0)
                 .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 8) {
-                    blockMenuSectionHeader("Turn Into")
-                    LazyVGrid(
-                        columns: Array(repeating: GridItem(.fixed(68), spacing: 8), count: 3),
-                        alignment: .leading,
-                        spacing: 8
-                    ) {
-                        ForEach(turnIntoTargets(for: targetBlocks), id: \.self) { target in
-                            compactMenuButton(
-                                title: target.title,
-                                systemImage: target.systemImage,
-                                keyboardShortcut: target.keyboardShortcut
-                            ) {
-                                _ = convert(blockIDs: targetIDs, to: target)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(visibleGroups.enumerated()), id: \.offset) { idx, group in
+                            if idx > 0 {
+                                blockMenuGroupDivider()
+                            }
+                            ForEach(group.1, id: \.self) { target in
+                                compactMenuButton(
+                                    title: target.title,
+                                    systemImage: target.systemImage,
+                                    keyboardShortcut: target.keyboardShortcut,
+                                    isSelected: target == selectedTarget
+                                ) {
+                                    if target != selectedTarget {
+                                        _ = convert(blockIDs: targetIDs, to: target)
+                                    }
+                                }
                             }
                         }
                     }
+                    .padding(.horizontal, 2)
                 }
-                let indentTargets = indentActions(for: targetIndices)
-                VStack(alignment: .leading, spacing: 8) {
-                    blockMenuSectionHeader("Actions")
+
+                ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         compactMenuButton(
                             title: "Copy",
@@ -367,7 +400,6 @@ extension EditorView {
                         ) {
                             _ = copyBlocksToPasteboard(ids: targetIDs)
                         }
-                        .frame(maxWidth: .infinity)
                         ForEach(indentTargets, id: \.self) { action in
                             compactMenuButton(
                                 title: action.title,
@@ -376,23 +408,21 @@ extension EditorView {
                             ) {
                                 indentMenuTargets(targetIDs, by: action.delta)
                             }
-                            .frame(maxWidth: .infinity)
                         }
                     }
+                    .padding(.horizontal, 2)
                 }
             }
             .padding(12)
-            .frame(width: 248, alignment: .leading)
+            .frame(width: 296, alignment: .leading)
         }
     }
 
     @ViewBuilder
-    fileprivate func blockMenuSectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 10, weight: .semibold))
-            .tracking(0.6)
-            .textCase(.uppercase)
-            .foregroundStyle(NotionStyle.mutedForeground)
+    fileprivate func blockMenuGroupDivider() -> some View {
+        Rectangle()
+            .fill(NotionStyle.dividerColor)
+            .frame(width: 1, height: 28)
             .padding(.horizontal, 2)
     }
 
@@ -403,6 +433,7 @@ extension EditorView {
         keyboardShortcut: KeyEquivalent,
         keyboardShortcutModifiers: EventModifiers = [],
         keyboardShortcutLabel: String? = nil,
+        isSelected: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button {
@@ -425,9 +456,9 @@ extension EditorView {
                     .padding(.top, 4)
                     .padding(.trailing, 5)
             }
-            .frame(height: 60)
+            .frame(width: 60, height: 60)
         }
-        .buttonStyle(BlockMenuTileStyle())
+        .buttonStyle(BlockMenuTileStyle(isSelected: isSelected))
         .keyboardShortcut(keyboardShortcut, modifiers: keyboardShortcutModifiers)
     }
 
@@ -456,11 +487,16 @@ extension EditorView {
             if target == .template, blocks.count > 1 {
                 return false
             }
-            if blocks.allSatisfy({ currentTurnIntoTarget(for: $0) == target }) {
-                return false
-            }
             return blocks.allSatisfy { canTurn($0, into: target) }
         }
+    }
+
+    /// The single turn-into target representing what `blocks` already is. Nil for
+    /// heterogeneous selections (no shared current type) and for blocks whose
+    /// current type isn't a turn-into option (e.g. `.code`, `.quote`).
+    fileprivate func selectedTurnIntoTarget(for blocks: [Block]) -> BlockTurnInto? {
+        guard let first = blocks.first.flatMap({ currentTurnIntoTarget(for: $0) }) else { return nil }
+        return blocks.allSatisfy({ currentTurnIntoTarget(for: $0) == first }) ? first : nil
     }
 
     fileprivate func currentTurnIntoTarget(for block: Block) -> BlockTurnInto? {
@@ -585,11 +621,16 @@ extension EditorView {
 // MARK: - Block menu styling
 
 struct BlockMenuTileStyle: ButtonStyle {
+    let isSelected: Bool
     @State private var isHovering = false
+
+    init(isSelected: Bool = false) {
+        self.isSelected = isSelected
+    }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(NotionStyle.foreground)
+            .foregroundStyle(isSelected ? NotionStyle.linkForeground : NotionStyle.foreground)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(fillColor(isPressed: configuration.isPressed))
@@ -603,6 +644,11 @@ struct BlockMenuTileStyle: ButtonStyle {
     }
 
     private func fillColor(isPressed: Bool) -> Color {
+        if isSelected {
+            if isPressed { return NotionStyle.linkForeground.opacity(0.28) }
+            if isHovering { return NotionStyle.linkForeground.opacity(0.20) }
+            return NotionStyle.linkForeground.opacity(0.14)
+        }
         if isPressed { return NotionStyle.dividerColor }
         if isHovering { return NotionStyle.dividerColor.opacity(0.5) }
         return .clear
