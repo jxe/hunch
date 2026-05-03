@@ -1653,6 +1653,17 @@ public struct EditorView: View {
     ///      goes away.
     ///   2. If the row is already an empty paragraph, remove it and move the
     ///      cursor to the previous block.
+    /// Handle backspace pressed with the cursor at offset 0 of a block. Three shapes:
+    /// 1. Non-paragraph (bullet/numbered/todo/heading/quote/toggle) with any text →
+    ///    convert to a paragraph at the same indent, preserving the text. Cursor
+    ///    stays at offset 0 of the same row.
+    /// 2. Empty paragraph → delete the row and focus the previous block (cursor at
+    ///    end). No-op if there's nothing to focus.
+    /// 3. Non-empty paragraph → merge its text into the previous text-bearing block
+    ///    (paragraph/heading/bullet/numbered/todo/quote/toggle). Cursor lands at the
+    ///    join point. If the previous block isn't text-bearing (code/divider/subpage/
+    ///    templateButton) we ignore — the user can navigate up and delete it
+    ///    explicitly.
     private func deleteEmptyBlock(_ blockID: BlockID) -> KeyPress.Result {
         guard let i = document.index(of: blockID) else { return .ignored }
         let block = document.blocks[i]
@@ -1663,20 +1674,59 @@ public struct EditorView: View {
         }()
 
         if !isParagraph {
-            mutate("Convert to Paragraph") {
-                document.blocks[i] = .paragraph(id: block.id, text: AttributedString(), indent: block.indent)
+            // Convert to paragraph in place, preserving any text. The cursor stays at
+            // offset 0 — if the editor re-mounts because the row layout changed, the
+            // pendingCursor steers it back to 0 instead of seek-to-end.
+            switch block {
+            case .bullet, .numbered, .todo, .heading, .quote, .toggle:
+                let preservedText = block.text
+                pendingCursor = (block.id, .offset(0))
+                mutate("Convert to Paragraph") {
+                    document.blocks[i] = .paragraph(id: block.id, text: preservedText, indent: block.indent)
+                }
+                return .handled
+            default:
+                return .ignored
+            }
+        }
+
+        let plain = String(block.text.characters)
+
+        if plain.isEmpty {
+            guard document.blocks.count > 1 else { return .ignored }
+            let previous = i > 0 ? document.blocks[i - 1].id : document.blocks.first?.id
+            mutate("Delete Block") {
+                document.blocks.remove(at: i)
+            }
+            if let previous {
+                enterEditMode(on: previous)
             }
             return .handled
         }
 
-        guard document.blocks.count > 1 else { return .ignored }
-        let previous = i > 0 ? document.blocks[i - 1].id : document.blocks.first?.id
-        mutate("Delete Block") {
-            document.blocks.remove(at: i)
+        // Non-empty paragraph: merge into the previous text-bearing block.
+        guard i > 0 else { return .ignored }
+        let previous = document.blocks[i - 1]
+        switch previous {
+        case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
+            break
+        case .code, .divider, .subpage, .templateButton:
+            return .ignored
         }
-        if let previous {
-            enterEditMode(on: previous)
+        let previousID = previous.id
+        let previousLen = previous.text.characters.count
+        var combined = previous.text
+        combined.append(block.text)
+        let merged = previous.withText(combined)
+
+        mutate("Merge Block") {
+            var blocks = document.blocks
+            blocks[i - 1] = merged
+            blocks.remove(at: i)
+            document.blocks = blocks
         }
+        pendingCursor = (previousID, .offset(previousLen))
+        enterEditMode(on: previousID)
         return .handled
     }
 

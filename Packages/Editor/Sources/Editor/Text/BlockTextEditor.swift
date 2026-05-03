@@ -415,6 +415,12 @@ final class ContainedTextView: NSTextView {
     /// after consumption so subsequent focus grabs (e.g. coming back from another
     /// block) seek to end instead.
     var pendingInitialCursor: InitialCursorTarget?
+    /// Idempotency latch on `applyPendingCursorPositionOrSeekToEnd`. Both
+    /// `viewDidMoveToWindow` and `updateNSView` schedule a focus-grab + apply on
+    /// initial mount; without this latch the second one runs after the first has
+    /// already consumed `pendingInitialCursor`, falls into the seek-to-end branch
+    /// and overwrites the just-set cursor position.
+    private var didApplyInitialCursor = false
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -429,8 +435,11 @@ final class ContainedTextView: NSTextView {
 
     /// Applies `pendingInitialCursor` if set (placing the cursor at the click point or
     /// the explicit character offset), or falls back to seeking the cursor to the end
-    /// of the text. Clears the pending target after applying.
+    /// of the text. Idempotent — subsequent calls during the same view's lifetime are
+    /// no-ops, so a second async focus-grab can't drag the cursor back to end.
     func applyPendingCursorPositionOrSeekToEnd() {
+        if didApplyInitialCursor { return }
+        didApplyInitialCursor = true
         if let target = pendingInitialCursor {
             pendingInitialCursor = nil
             let len = (string as NSString).length
@@ -470,7 +479,12 @@ final class ContainedTextView: NSTextView {
                 let cursor = (selectedRange().location)
                 if onKey(.enter(cursorOffset: cursor)) == .handled { return }
             case 51: // Delete (backspace)
-                if string.isEmpty {
+                // Fire `.backspaceAtStart` whenever the cursor is at the very start
+                // of the row with no selection — the page handler decides what to do
+                // based on block type and whether the row is empty (unbullet, merge,
+                // delete-block).
+                let range = selectedRange()
+                if range.location == 0, range.length == 0 {
                     if onKey(.backspaceAtStart) == .handled { return }
                 }
             case 48: // Tab
@@ -936,6 +950,11 @@ final class ContainedTextViewIOS: UITextView {
     /// mount — at the time `updateUIView` runs, `window` may still be nil and
     /// `becomeFirstResponder` would silently no-op.
     var wantsFocus: Bool = false
+    /// Idempotency latch on `applyPendingCursorPositionOrSeekToEnd`. Mirrors the
+    /// macOS path — both `didMoveToWindow` and `updateUIView` schedule a focus-grab
+    /// + apply on initial mount; without this latch the second one runs after the
+    /// first has consumed `pendingInitialCursor` and seeks back to end.
+    private var didApplyInitialCursor = false
 
     /// With `isScrollEnabled = false` (required so SwiftUI sizes us to content
     /// height), UITextView's default intrinsicContentSize reports the width
@@ -966,11 +985,12 @@ final class ContainedTextViewIOS: UITextView {
     }
 
     override func deleteBackward() {
-        // Empty-block backspace fires `.backspaceAtStart`. The page-level handler
-        // converts the row to a paragraph (first press on a non-paragraph) or
-        // removes it (second press / paragraph case).
-        let isEmpty = (text ?? "").isEmpty
-        if isEmpty,
+        // Backspace at the very start of the row (cursor at offset 0, no selection)
+        // fires `.backspaceAtStart`. The page-level handler decides what to do based
+        // on block type and whether the row is empty — convert to paragraph (first
+        // press on a non-paragraph), merge with the previous block (paragraph + text),
+        // or delete (empty paragraph).
+        if selectedRange.location == 0, selectedRange.length == 0,
            let coordinator,
            coordinator.parent.onKey(.backspaceAtStart) == .handled {
             return
@@ -1012,8 +1032,11 @@ final class ContainedTextViewIOS: UITextView {
 
     /// Mirrors the macOS helper — places the cursor at a captured tap point or an
     /// explicit character offset on initial focus, or seeks to end if no target is
-    /// pending.
+    /// pending. Idempotent — subsequent calls during the same view's lifetime are
+    /// no-ops, so a second async focus-grab can't drag the cursor back to end.
     func applyPendingCursorPositionOrSeekToEnd() {
+        if didApplyInitialCursor { return }
+        didApplyInitialCursor = true
         let len = (text as NSString?)?.length ?? 0
         if let target = pendingInitialCursor {
             pendingInitialCursor = nil
