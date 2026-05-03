@@ -70,10 +70,11 @@ public struct EditorView: View {
     @FocusState var editorFocused: BlockID?
     /// Drives the page container's focusability for nav-mode key handling.
     @FocusState var pageFocused: Bool
-    /// Click point captured the moment a non-editing row was tapped. Forwarded to the
-    /// editor on its first mount so the cursor lands where the user clicked. Stale values
-    /// are harmless — the editor only consumes the point once on `makeNSView`.
-    @State private var pendingCursorPoint: (id: BlockID, point: CGPoint)?
+    /// Initial cursor target captured the moment a non-editing row was tapped (`.point`)
+    /// or a split inserted a fresh sibling (`.offset`). Forwarded to the editor on its
+    /// first mount so the cursor lands at the captured target. Stale values are harmless
+    /// — the editor only consumes it once on `makeNSView`.
+    @State private var pendingCursor: (id: BlockID, target: InitialCursorTarget)?
     /// Document-level undo coordinator. Owns the shared `UndoManager` that NSTextView
     /// typing-undo and structural ops (split/merge/indent/slide/delete/autotransform/
     /// drag-drop) all register against. Recreated implicitly when EditorView's identity
@@ -367,7 +368,7 @@ public struct EditorView: View {
             },
             mentionActive: state.mentionMenu?.blockID == block.id,
             onClickAtPoint: { point in
-                pendingCursorPoint = (block.id, point)
+                pendingCursor = (block.id, .point(point))
                 enterEditMode(on: block.id)
             },
             onToggleExpansion: {
@@ -387,7 +388,7 @@ public struct EditorView: View {
                 instantiateTemplateButton(blockID: block.id)
             },
             pageTitle: pageTitle,
-            initialCursorPoint: (pendingCursorPoint?.id == block.id) ? pendingCursorPoint?.point : nil
+            initialCursor: (pendingCursor?.id == block.id) ? pendingCursor?.target : nil
         )
             // Whole-row reorder on macOS. Coexists with click-to-edit
             // (.onTapGesture below) because of the 4pt minimumDistance: a
@@ -448,7 +449,7 @@ public struct EditorView: View {
                 }
                 // Clicks outside the editable text region (markers, paddings) — no
                 // position info, cursor lands at end via the editor's default behavior.
-                pendingCursorPoint = nil
+                pendingCursor = nil
                 enterEditMode(on: block.id)
             }
             .overlay(alignment: .topLeading) {
@@ -1491,9 +1492,8 @@ public struct EditorView: View {
                 mutate("Split Block") {
                     document.blocks.insert(newBlock, at: endOfSection)
                 }
-                DispatchQueue.main.async {
-                    enterEditMode(on: newBlock.id)
-                }
+                pendingCursor = (newBlock.id, .offset(0))
+                enterEditMode(on: newBlock.id)
                 return .handled
             } else {
                 let firstChild = document.blocks[firstChildIdx]
@@ -1501,9 +1501,8 @@ public struct EditorView: View {
                 mutate("Split Block") {
                     document.blocks.insert(newBlock, at: firstChildIdx)
                 }
-                DispatchQueue.main.async {
-                    enterEditMode(on: newBlock.id)
-                }
+                pendingCursor = (newBlock.id, .offset(0))
+                enterEditMode(on: newBlock.id)
                 return .handled
             }
         }
@@ -1532,9 +1531,8 @@ public struct EditorView: View {
             blocks.insert(newBlock, at: i + 1)
             document.blocks = blocks
         }
-        DispatchQueue.main.async {
-            enterEditMode(on: newBlock.id)
-        }
+        pendingCursor = (newBlock.id, .offset(0))
+        enterEditMode(on: newBlock.id)
         return .handled
     }
 

@@ -6,6 +6,15 @@ import AppKit
 import UIKit
 #endif
 
+/// Where to place the cursor on the editor's first focus grab.
+/// `.point` is what click-to-edit captures; the editor maps the point to a character
+/// index via NSTextView's `characterIndexForInsertion(at:)`. `.offset` is what split /
+/// programmatic-focus paths use when they already know the desired character index.
+public enum InitialCursorTarget: Sendable, Equatable {
+    case point(CGPoint)
+    case offset(Int)
+}
+
 /// Block-level keyboard events the page-level handler reacts to.
 public enum BlockKey: Sendable, Equatable {
     case enter(cursorOffset: Int)
@@ -77,7 +86,7 @@ public struct BlockTextEditor: View {
     /// land on initial focus. When the user clicks on a read-only block, the click
     /// location is propagated here so the cursor lands where they clicked rather than at
     /// end-of-text. Consumed once on mount.
-    let initialCursorPoint: CGPoint?
+    let initialCursor: InitialCursorTarget?
     /// Document-level undo controller. NSTextView keeps its own per-instance typing-undo
     /// (used while the editor is mounted, fine-grained character-by-character). On focus
     /// loss, the Coordinator registers ONE coarse "Type" entry on this controller's shared
@@ -97,7 +106,7 @@ public struct BlockTextEditor: View {
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
         onMentionTriggerChange: @escaping (MentionTrigger?) -> Void = { _ in },
         mentionActive: Bool = false,
-        initialCursorPoint: CGPoint? = nil
+        initialCursor: InitialCursorTarget? = nil
     ) {
         self._text = text
         self.font = font
@@ -110,7 +119,7 @@ public struct BlockTextEditor: View {
         self.onAutotransform = onAutotransform
         self.onMentionTriggerChange = onMentionTriggerChange
         self.mentionActive = mentionActive
-        self.initialCursorPoint = initialCursorPoint
+        self.initialCursor = initialCursor
     }
 
     public var body: some View {
@@ -137,7 +146,7 @@ public struct BlockTextEditor: View {
             onAutotransform: onAutotransform,
             onMentionTriggerChange: onMentionTriggerChange,
             mentionActive: mentionActive,
-            initialCursorPoint: initialCursorPoint,
+            initialCursor: initialCursor,
             blockID: blockID,
             documentUndoController: documentUndoController
         )
@@ -176,7 +185,7 @@ public struct BlockTextEditor: View {
             onAutotransform: onAutotransform,
             onMentionTriggerChange: onMentionTriggerChange,
             mentionActive: mentionActive,
-            initialCursorPoint: initialCursorPoint,
+            initialCursor: initialCursor,
             documentUndoController: documentUndoController
         )
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -218,7 +227,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     let onMentionTriggerChange: (MentionTrigger?) -> Void
     let mentionActive: Bool
-    let initialCursorPoint: CGPoint?
+    let initialCursor: InitialCursorTarget?
     let blockID: BlockID
     let documentUndoController: DocumentUndoController?
 
@@ -251,7 +260,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
         context.coordinator.lastBold = bold
         context.coordinator.lastLineSpacing = lineSpacing
         view.wantsFocus = isFocused
-        view.pendingInitialCursorPoint = initialCursorPoint
+        view.pendingInitialCursor = initialCursor
         return view
     }
 
@@ -402,10 +411,10 @@ final class ContainedTextView: NSTextView {
     /// Set by `updateNSView` whenever the SwiftUI focus state targets this block. Picked up
     /// in `viewDidMoveToWindow` so the second-chance focus grab works on initial mount.
     var wantsFocus: Bool = false
-    /// If non-nil, the cursor is placed at this point (in the view's local coords) on
-    /// initial focus. Cleared after consumption so subsequent focus grabs (e.g. coming
-    /// back from another block) seek to end instead.
-    var pendingInitialCursorPoint: CGPoint?
+    /// If non-nil, the cursor is placed at this target on initial focus. Cleared
+    /// after consumption so subsequent focus grabs (e.g. coming back from another
+    /// block) seek to end instead.
+    var pendingInitialCursor: InitialCursorTarget?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -418,14 +427,19 @@ final class ContainedTextView: NSTextView {
         }
     }
 
-    /// Applies `pendingInitialCursorPoint` if set (placing the cursor at the click), or
-    /// falls back to seeking the cursor to the end of the text. Clears the pending point
-    /// after applying.
+    /// Applies `pendingInitialCursor` if set (placing the cursor at the click point or
+    /// the explicit character offset), or falls back to seeking the cursor to the end
+    /// of the text. Clears the pending target after applying.
     func applyPendingCursorPositionOrSeekToEnd() {
-        if let point = pendingInitialCursorPoint {
-            pendingInitialCursorPoint = nil
-            let charIndex = characterIndexForInsertion(at: point)
-            setSelectedRange(NSRange(location: charIndex, length: 0))
+        if let target = pendingInitialCursor {
+            pendingInitialCursor = nil
+            let len = (string as NSString).length
+            let idx: Int
+            switch target {
+            case .point(let p): idx = characterIndexForInsertion(at: p)
+            case .offset(let o): idx = max(0, min(o, len))
+            }
+            setSelectedRange(NSRange(location: idx, length: 0))
         } else {
             setSelectedRange(NSRange(location: (string as NSString).length, length: 0))
         }
@@ -690,7 +704,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     let onMentionTriggerChange: (MentionTrigger?) -> Void
     let mentionActive: Bool
-    let initialCursorPoint: CGPoint?
+    let initialCursor: InitialCursorTarget?
     let documentUndoController: DocumentUndoController?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -711,7 +725,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         loadAttributedString(into: tv)
         applyTypingAttributes(to: tv)
         tv.wantsFocus = isFocused
-        tv.pendingInitialCursorPoint = initialCursorPoint
+        tv.pendingInitialCursor = initialCursor
         bridge.textView = tv
         bridge.fontSize = fontSize
         bridge.bold = bold
@@ -914,10 +928,9 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
 /// rather than inserting characters into the row.
 final class ContainedTextViewIOS: UITextView {
     weak var coordinator: IOSBlockTextEditorView.Coordinator?
-    /// If non-nil, the cursor is placed at this point (in the view's local coords)
-    /// on initial focus. Cleared after consumption so subsequent focus grabs
-    /// fall through to seek-to-end.
-    var pendingInitialCursorPoint: CGPoint?
+    /// If non-nil, the cursor is placed at this target on initial focus. Cleared
+    /// after consumption so subsequent focus grabs fall through to seek-to-end.
+    var pendingInitialCursor: InitialCursorTarget?
     /// Set by `updateUIView` whenever this row should be the active editor. Picked
     /// up in `didMoveToWindow` so the second-chance focus grab works on initial
     /// mount — at the time `updateUIView` runs, `window` may still be nil and
@@ -997,26 +1010,33 @@ final class ContainedTextViewIOS: UITextView {
         super.insertText(text)
     }
 
-    /// Mirrors the macOS helper — places the cursor at a captured tap point on
-    /// initial focus, or seeks to end if there's no pending point.
+    /// Mirrors the macOS helper — places the cursor at a captured tap point or an
+    /// explicit character offset on initial focus, or seeks to end if no target is
+    /// pending.
     func applyPendingCursorPositionOrSeekToEnd() {
-        if let point = pendingInitialCursorPoint {
-            pendingInitialCursorPoint = nil
-            // Force layout: at didMoveToWindow / first updateUIView UITextView's
-            // text container hasn't necessarily run layout, and `closestPosition`
-            // returns the doc-end position when the layout is empty. Without this
-            // the caret silently snaps to end on every tap-to-edit. `layoutIfNeeded`
-            // alone is enough on TextKit 2 — touching `.layoutManager` here would
-            // silently downgrade the view to TextKit 1 compatibility mode.
-            layoutIfNeeded()
-            if let position = closestPosition(to: point) {
-                let offset = self.offset(from: beginningOfDocument, to: position)
-                selectedRange = NSRange(location: offset, length: 0)
+        let len = (text as NSString?)?.length ?? 0
+        if let target = pendingInitialCursor {
+            pendingInitialCursor = nil
+            switch target {
+            case .point(let point):
+                // Force layout: at didMoveToWindow / first updateUIView UITextView's
+                // text container hasn't necessarily run layout, and `closestPosition`
+                // returns the doc-end position when the layout is empty. Without this
+                // the caret silently snaps to end on every tap-to-edit. `layoutIfNeeded`
+                // alone is enough on TextKit 2 — touching `.layoutManager` here would
+                // silently downgrade the view to TextKit 1 compatibility mode.
+                layoutIfNeeded()
+                if let position = closestPosition(to: point) {
+                    let offset = self.offset(from: beginningOfDocument, to: position)
+                    selectedRange = NSRange(location: offset, length: 0)
+                    return
+                }
+            case .offset(let o):
+                selectedRange = NSRange(location: max(0, min(o, len)), length: 0)
                 return
             }
         }
-        let end = (text as NSString?)?.length ?? 0
-        selectedRange = NSRange(location: end, length: 0)
+        selectedRange = NSRange(location: len, length: 0)
     }
 }
 

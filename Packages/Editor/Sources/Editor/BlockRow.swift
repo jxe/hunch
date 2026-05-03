@@ -33,9 +33,10 @@ public struct BlockRow: View {
     let onToggleExpansion: () -> Void
     let onTemplateButtonPress: () -> Void
     let pageTitle: (String) -> String?
-    /// Click point captured at tap time, threaded into the BlockTextEditor on its first
-    /// mount so the cursor lands where the user clicked rather than at end-of-text.
-    let initialCursorPoint: CGPoint?
+    /// Cursor target captured at tap or split time, threaded into the BlockTextEditor on
+    /// its first mount so the cursor lands at the click point or explicit offset rather
+    /// than at end-of-text.
+    let initialCursor: InitialCursorTarget?
 
     public init(
         block: Binding<Block>,
@@ -56,7 +57,7 @@ public struct BlockRow: View {
         onToggleExpansion: @escaping () -> Void = {},
         onTemplateButtonPress: @escaping () -> Void = {},
         pageTitle: @escaping (String) -> String? = { _ in nil },
-        initialCursorPoint: CGPoint? = nil
+        initialCursor: InitialCursorTarget? = nil
     ) {
         self._block = block
         self.isPageTitle = isPageTitle
@@ -76,7 +77,7 @@ public struct BlockRow: View {
         self.onToggleExpansion = onToggleExpansion
         self.onTemplateButtonPress = onTemplateButtonPress
         self.pageTitle = pageTitle
-        self.initialCursorPoint = initialCursorPoint
+        self.initialCursor = initialCursor
     }
 
     public var body: some View {
@@ -387,7 +388,7 @@ public struct BlockRow: View {
                 onAutotransform: onAutotransform,
                 onMentionTriggerChange: onMentionTriggerChange,
                 mentionActive: mentionActive,
-                initialCursorPoint: initialCursorPoint
+                initialCursor: initialCursor
             )
             .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
             .strikethrough(strikethrough)
