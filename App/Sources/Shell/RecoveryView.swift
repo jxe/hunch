@@ -1,35 +1,40 @@
 import SwiftUI
 import Editor
 
-public struct RecentlyDeletedView: View {
-    let loadEntries: () async -> [TrashEntry]
-    let onRestorePage: (TrashEntry) async -> Bool
-    let onRestoreBlocks: (TrashEntry) async -> Bool
+/// Unified workspace-wide recovery sheet. Surfaces both deleted whole pages
+/// (from `TrashStore`) and lost blocks (from `RecoveryStore`) — anything that
+/// disappeared from a doc and can be brought back.
+///
+/// `filter` is `.all` (everything) or `.page(rel)` (one source page only —
+/// used by the editor toolbar's clock button).
+public struct RecoveryView: View {
+    let filter: RecoveryListFilter
+    let loadEntries: (RecoveryListFilter) async -> [RecoverableEntry]
+    let onRestore: (RecoverableEntry) async -> Bool
     let onClose: () -> Void
 
-    @State private var entries: [TrashEntry] = []
-    @State private var selection: TrashEntry.ID?
+    @State private var entries: [RecoverableEntry] = []
     @State private var loadState: LoadState = .loading
-    @State private var pendingRestore: TrashEntry?
+    @State private var pendingRestore: RecoverableEntry?
 
     enum LoadState { case loading, loaded, empty }
 
     public init(
-        loadEntries: @escaping () async -> [TrashEntry],
-        onRestorePage: @escaping (TrashEntry) async -> Bool,
-        onRestoreBlocks: @escaping (TrashEntry) async -> Bool,
+        filter: RecoveryListFilter,
+        loadEntries: @escaping (RecoveryListFilter) async -> [RecoverableEntry],
+        onRestore: @escaping (RecoverableEntry) async -> Bool,
         onClose: @escaping () -> Void
     ) {
+        self.filter = filter
         self.loadEntries = loadEntries
-        self.onRestorePage = onRestorePage
-        self.onRestoreBlocks = onRestoreBlocks
+        self.onRestore = onRestore
         self.onClose = onClose
     }
 
     public var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Recently Deleted")
+                .navigationTitle(navigationTitleText)
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
@@ -57,6 +62,13 @@ public struct RecentlyDeletedView: View {
         }
     }
 
+    private var navigationTitleText: String {
+        switch filter {
+        case .all: return "Recover"
+        case .page(let rel): return "Recover · \(rel)"
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
         switch loadState {
@@ -65,9 +77,9 @@ public struct RecentlyDeletedView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .empty:
             ContentUnavailableView(
-                "Nothing recently deleted",
-                systemImage: "trash",
-                description: Text("Pages or blocks you delete will appear here.")
+                "Nothing to recover",
+                systemImage: "clock.arrow.circlepath",
+                description: Text("Pages and blocks you delete or edit out will appear here.")
             )
         case .loaded:
             list
@@ -75,10 +87,9 @@ public struct RecentlyDeletedView: View {
     }
 
     private var list: some View {
-        List(selection: $selection) {
+        List {
             ForEach(entries) { entry in
                 row(for: entry)
-                    .tag(entry.id)
                     .contentShape(Rectangle())
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button {
@@ -100,9 +111,9 @@ public struct RecentlyDeletedView: View {
         .listStyle(.plain)
     }
 
-    private func row(for entry: TrashEntry) -> some View {
+    private func row(for entry: RecoverableEntry) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: entry.isPageEntry ? "doc.text" : "square.stack.3d.up")
+            Image(systemName: icon(for: entry))
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
@@ -123,35 +134,47 @@ public struct RecentlyDeletedView: View {
         .padding(.vertical, 4)
     }
 
-    private func secondaryLine(for entry: TrashEntry) -> String {
-        if entry.isPageEntry {
-            return entry.sourcePath
+    private func icon(for entry: RecoverableEntry) -> String {
+        switch entry {
+        case .deletedPage: return "doc.text"
+        case .lostBlock(let lost):
+            switch lost.record.cause {
+            case .deleted: return "square.stack.3d.up"
+            case .edited: return "pencil"
+            }
         }
-        return entry.sourcePath + " · blocks"
     }
 
-    private func restoreMessage(for entry: TrashEntry) -> String {
-        if entry.isPageEntry {
-            return "“\(entry.displayTitle)” will be moved back to \(entry.sourcePath)."
+    private func secondaryLine(for entry: RecoverableEntry) -> String {
+        switch entry {
+        case .deletedPage: return entry.sourcePath
+        case .lostBlock(let lost):
+            let suffix = lost.record.cause == .deleted ? "deleted" : "edited out"
+            return entry.sourcePath + " · " + suffix
         }
-        return "Blocks will be reinserted into \(entry.sourcePath) at their original positions."
+    }
+
+    private func restoreMessage(for entry: RecoverableEntry) -> String {
+        switch entry {
+        case .deletedPage:
+            return "“\(entry.displayTitle)” will be moved back to \(entry.sourcePath)."
+        case .lostBlock(let lost):
+            let location = lost.record.anchorFingerprint != nil
+                ? "after the original anchor block"
+                : "at the end of the page"
+            return "Block will be inserted in \(entry.sourcePath) \(location), without overwriting the current contents."
+        }
     }
 
     private func refresh() async {
         loadState = entries.isEmpty ? .loading : .loaded
-        let next = await loadEntries()
+        let next = await loadEntries(filter)
         entries = next
         loadState = next.isEmpty ? .empty : .loaded
     }
 
-    private func performRestore(_ entry: TrashEntry) async {
-        let ok: Bool
-        if entry.isPageEntry {
-            ok = await onRestorePage(entry)
-        } else {
-            ok = await onRestoreBlocks(entry)
-        }
-        if ok {
+    private func performRestore(_ entry: RecoverableEntry) async {
+        if await onRestore(entry) {
             await refresh()
         }
     }

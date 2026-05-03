@@ -37,7 +37,7 @@ final class WorkspaceModel {
     private var documentCache: [URL: Document] = [:]
     private var titleCache: [URL: CachedTitle] = [:]
     private var trashStore: TrashStore?
-    private var historyStore: HistoryStore?
+    private var recoveryStore: RecoveryStore?
 
     private struct CachedTitle {
         var title: String
@@ -68,7 +68,7 @@ final class WorkspaceModel {
 
     private func installRecoveryStores(for root: URL) {
         trashStore = TrashStore(workspaceRoot: root)
-        historyStore = HistoryStore(workspaceRoot: root)
+        recoveryStore = RecoveryStore(workspaceRoot: root)
     }
 
     func setWorkspaceFromKeyFile(_ url: URL) {
@@ -115,7 +115,7 @@ final class WorkspaceModel {
         documentCache = [:]
         titleCache = [:]
         trashStore = nil
-        historyStore = nil
+        recoveryStore = nil
         titleRefreshTask?.cancel()
         titleRefreshTask = nil
         path = []
@@ -362,7 +362,7 @@ final class WorkspaceModel {
             isSaving = true
             defer { isSaving = false }
             let resolver = saveTitleResolver()
-            try await saver.save(doc, resolvingSubpageTitle: resolver)
+            let priorText = try await saver.save(doc, resolvingSubpageTitle: resolver)
             if openDocument?.url == doc.url {
                 openDocument?.modificationDate = modificationDate(for: doc.url)
                 cacheOpenDocument()
@@ -371,19 +371,30 @@ final class WorkspaceModel {
                 }
             }
             isDirty = false
-            scheduleHistorySnapshot(for: doc, resolver: resolver)
+            if let priorText {
+                scheduleEditRecording(for: doc, priorText: priorText, resolver: resolver)
+            }
             rescan()
         } catch {
             self.error = "Save failed: \(error.localizedDescription)"
         }
     }
 
-    private func scheduleHistorySnapshot(for document: Document, resolver: @Sendable @escaping (String) -> String?) {
-        guard let historyStore, let workspaceURL else { return }
+    private func scheduleEditRecording(
+        for document: Document,
+        priorText: String,
+        resolver: @Sendable @escaping (String) -> String?
+    ) {
+        guard let recoveryStore, let workspaceURL else { return }
         let relPath = relativePath(of: document.url, under: workspaceURL)
-        let contents = BlockSerializer.serialize(document.blocks, resolvingSubpageTitle: resolver)
-        Task.detached { [historyStore] in
-            try? await historyStore.snapshotIfNeeded(relativePath: relPath, contents: contents)
+        let newText = BlockSerializer.serialize(document.blocks, resolvingSubpageTitle: resolver)
+        guard priorText != newText else { return }
+        Task.detached { [recoveryStore] in
+            try? await recoveryStore.recordEdits(
+                relativePath: relPath,
+                previousText: priorText,
+                newText: newText
+            )
         }
     }
 
@@ -677,20 +688,26 @@ final class WorkspaceModel {
         }
     }
 
-    // MARK: - Recovery (trash + history)
+    // MARK: - Recovery (trash + lost-block log)
 
     /// Fire-and-forget capture of a block-level deletion. Called from `EditorView`'s
-    /// delete paths before the document mutation so the block contents survive.
+    /// delete paths before the document mutation so the pre-deletion block list is
+    /// available for anchor calculation.
     func recordBlockDeletion(indices: [Int], blocks: [Block], actionName: String) {
-        guard let trashStore, let workspaceURL, let openDocument else { return }
+        _ = blocks  // (the editor passes the removed blocks; we recompute from `openDocument`)
+        _ = actionName
+        guard let recoveryStore, let workspaceURL, let openDocument else { return }
         let source = relativePath(of: openDocument.url, under: workspaceURL)
-        Task { [weak self, trashStore, source, indices, blocks, actionName] in
+        // Capture the pre-deletion block list — `recordBlockDeletion` is called
+        // before the mutation lands in `openDocument`, so this is still the
+        // pre-deletion state.
+        let previousBlocks = openDocument.blocks
+        Task { [weak self, recoveryStore, source, previousBlocks, indices] in
             do {
-                try await trashStore.recordBlockDeletion(
-                    source: source,
-                    indices: indices,
-                    blocks: blocks,
-                    actionName: actionName
+                try await recoveryStore.recordDeletion(
+                    relativePath: source,
+                    previousBlocks: previousBlocks,
+                    removedIndices: indices
                 )
             } catch {
                 await MainActor.run {
@@ -700,9 +717,33 @@ final class WorkspaceModel {
         }
     }
 
-    func listDeletedEntries() async -> [TrashEntry] {
-        guard let trashStore else { return [] }
-        return (try? await trashStore.listEntries()) ?? []
+    func listRecoverableEntries(filter: RecoveryListFilter = .all) async -> [RecoverableEntry] {
+        var out: [RecoverableEntry] = []
+        if let trashStore, case .all = filter {
+            let pages = (try? await trashStore.listEntries()) ?? []
+            out.append(contentsOf: pages.map { .deletedPage($0) })
+        }
+        if let recoveryStore {
+            let recovStoreFilter: RecoveryStore.ListFilter
+            switch filter {
+            case .all: recovStoreFilter = .all
+            case .page(let rel): recovStoreFilter = .page(relativePath: rel)
+            }
+            let lost = (try? await recoveryStore.list(filter: recovStoreFilter)) ?? []
+            out.append(contentsOf: lost.map { .lostBlock($0) })
+        }
+        out.sort { $0.timestamp > $1.timestamp }
+        return out
+    }
+
+    @discardableResult
+    func restoreRecoverable(_ entry: RecoverableEntry) async -> Bool {
+        switch entry {
+        case .deletedPage(let trashEntry):
+            return await restoreDeletedPage(trashEntry)
+        case .lostBlock(let lost):
+            return await restoreLostBlock(lost)
+        }
     }
 
     @discardableResult
@@ -719,109 +760,114 @@ final class WorkspaceModel {
     }
 
     @discardableResult
-    func restoreDeletedBlocks(_ entry: TrashEntry) async -> Bool {
-        guard let trashStore, let workspaceURL else { return false }
+    func restoreLostBlock(_ entry: LostBlock) async -> Bool {
+        guard let recoveryStore, let workspaceURL else { return false }
+        let target = workspaceURL.appendingPathComponent(entry.record.source).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: target.path) else {
+            self.error = "Original page no longer exists at \(entry.record.source)."
+            return false
+        }
+
         do {
-            let payload = try await trashStore.loadDeletedBlocks(entry)
-            let target = workspaceURL.appendingPathComponent(payload.source).standardizedFileURL
-            guard FileManager.default.fileExists(atPath: target.path) else {
-                self.error = "Original page no longer exists at \(payload.source)."
-                return false
+            // Parse the lost block markdown back into [Block]. Indents are normalised
+            // to start at 0 in storage; re-indent under the anchor's indent for a
+            // reasonable insertion when nested under different parents.
+            let parsed = BlockParser.parse(entry.record.markdown).map { $0.withFreshID() }
+            guard !parsed.isEmpty else { return false }
+
+            let useLiveDoc = (openDocument?.url == target)
+            var doc: Document
+            if useLiveDoc, let live = openDocument {
+                doc = live
+            } else {
+                doc = try store.loadDocument(at: target)
             }
-            var doc = try store.loadDocument(at: target)
-            // Insert in original order at recorded indices. The recorded index already
-            // reflects the position in the original (pre-deletion) array, so by the time
-            // we insert the i-th block, prior inserts have re-filled positions 0..i-1
-            // and the current insertion index equals the original index.
-            for (i, originalIndex) in payload.indices.enumerated() {
-                let insertAt = min(max(0, originalIndex), doc.blocks.count)
-                doc.blocks.insert(payload.blocks[i], at: insertAt)
+
+            let anchorIndent: Int
+            let insertIndex: Int
+            if let anchorFP = entry.record.anchorFingerprint,
+               let anchorIdx = doc.blocks.firstIndex(where: { BlockFingerprint.compute($0) == anchorFP }) {
+                anchorIndent = doc.blocks[anchorIdx].indent
+                insertIndex = anchorIdx + 1
+            } else if let original = entry.record.originalIndex {
+                anchorIndent = 0
+                insertIndex = min(max(0, original), doc.blocks.count)
+            } else {
+                anchorIndent = 0
+                insertIndex = doc.blocks.count
             }
+
+            let reindented = parsed.map { $0.withIndent($0.indent + anchorIndent) }
+            doc.blocks.insert(contentsOf: reindented, at: insertIndex)
             doc.title = Document.deriveTitle(from: doc.blocks, fallback: target.deletingPathExtension().lastPathComponent)
-            try store.save(doc, resolvingSubpageTitle: saveTitleResolver())
-            try? await trashStore.deleteRecord(entry)
 
-            doc.modificationDate = modificationDate(for: target)
-            documentCache[target] = doc
-            if openDocument?.url == target {
+            if useLiveDoc {
                 openDocument = doc
+                cacheOpenDocument()
+                markEdited()
+            } else {
+                try store.save(doc, resolvingSubpageTitle: saveTitleResolver())
+                doc.modificationDate = modificationDate(for: target)
+                documentCache[target] = doc
+                rescan()
             }
-            rescan()
+            try? await recoveryStore.purge(entry)
             return true
         } catch {
             self.error = "Restore failed: \(error.localizedDescription)"
             return false
         }
     }
+}
 
-    func listSnapshots(for relativePath: String) async -> [HistorySnapshot] {
-        guard let historyStore else { return [] }
-        return (try? await historyStore.listSnapshots(for: relativePath)) ?? []
-    }
+public enum RecoveryListFilter: Sendable, Hashable {
+    case all
+    case page(relativePath: String)
+}
 
-    func loadSnapshotContent(_ snapshot: HistorySnapshot) async -> String? {
-        guard let historyStore else { return nil }
-        return try? await historyStore.loadSnapshot(snapshot)
-    }
+public enum RecoverableEntry: Identifiable, Sendable, Hashable {
+    case deletedPage(TrashEntry)
+    case lostBlock(LostBlock)
 
-    /// Replace the currently open document's contents with the snapshot. Marks dirty
-    /// and schedules a save, which itself snapshots the just-replaced state — keeping
-    /// the operation reversible from history.
-    @discardableResult
-    func restoreSnapshot(_ snapshot: HistorySnapshot) async -> Bool {
-        guard let workspaceURL else { return false }
-        let target = workspaceURL.appendingPathComponent(snapshot.relativePath).standardizedFileURL
-        guard let content = await loadSnapshotContent(snapshot) else { return false }
-        let blocks = BlockParser.parse(content)
-        let title = Document.deriveTitle(from: blocks, fallback: target.deletingPathExtension().lastPathComponent)
-
-        // Force-snapshot the live pre-restore state so the restore itself is reversible
-        // even if the live edits are younger than the 5-minute debounce window.
-        await snapshotPreRestore(targetURL: target)
-
-        if openDocument?.url == target {
-            var doc = openDocument!
-            doc.blocks = blocks
-            doc.title = title
-            openDocument = doc
-            cacheOpenDocument()
-            markEdited()
-            return true
-        }
-        do {
-            var doc = try store.loadDocument(at: target)
-            doc.blocks = blocks
-            doc.title = title
-            try store.save(doc, resolvingSubpageTitle: saveTitleResolver())
-            documentCache[target] = doc
-            rescan()
-            return true
-        } catch {
-            self.error = "Restore failed: \(error.localizedDescription)"
-            return false
+    public var id: String {
+        switch self {
+        case .deletedPage(let e): return "page:\(e.id)"
+        case .lostBlock(let l): return "lost:\(l.id)"
         }
     }
 
-    private func snapshotPreRestore(targetURL: URL) async {
-        guard let historyStore, let workspaceURL else { return }
-        let relPath = relativePath(of: targetURL, under: workspaceURL)
-        let resolver = saveTitleResolver()
-        let currentBlocks: [Block]
-        if let openDocument, openDocument.url == targetURL {
-            currentBlocks = openDocument.blocks
-        } else if let cached = documentCache[targetURL] {
-            currentBlocks = cached.blocks
-        } else if let loaded = try? store.loadDocument(at: targetURL) {
-            currentBlocks = loaded.blocks
-        } else {
-            return
+    public var timestamp: Date {
+        switch self {
+        case .deletedPage(let e): return e.timestamp
+        case .lostBlock(let l): return l.record.recordedAt
         }
-        let serialized = BlockSerializer.serialize(currentBlocks, resolvingSubpageTitle: resolver)
-        try? await historyStore.snapshotIfNeeded(
-            relativePath: relPath,
-            contents: serialized,
-            minInterval: 0
-        )
+    }
+
+    public var sourcePath: String {
+        switch self {
+        case .deletedPage(let e): return e.sourcePath
+        case .lostBlock(let l): return l.record.source
+        }
+    }
+
+    public var displayTitle: String {
+        switch self {
+        case .deletedPage(let e): return e.displayTitle
+        case .lostBlock(let l): return RecoverableEntry.previewLine(from: l.record.markdown)
+        }
+    }
+
+    public var isPageEntry: Bool {
+        if case .deletedPage = self { return true }
+        return false
+    }
+
+    private static func previewLine(from body: String) -> String {
+        for line in body.split(separator: "\n", omittingEmptySubsequences: true) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { return String(trimmed.prefix(80)) }
+        }
+        return ""
     }
 }
 
@@ -852,8 +898,7 @@ struct ContentView: View {
     @State private var showingSwitchPicker = false
     #endif
     @State private var pageSearchText = ""
-    @State private var showingRecentlyDeleted = false
-    @State private var versionHistoryURL: URL?
+    @State private var recoveryFilter: RecoveryListFilter?
     @State private var showingPageList = false
 
     var body: some View {
@@ -877,12 +922,15 @@ struct ContentView: View {
                 .sheet(isPresented: $showingPageList) {
                     pageListSheet
                 }
-                .sheet(isPresented: $showingRecentlyDeleted) {
-                    RecentlyDeletedView(
-                        loadEntries: { await model.listDeletedEntries() },
-                        onRestorePage: { entry in await model.restoreDeletedPage(entry) },
-                        onRestoreBlocks: { entry in await model.restoreDeletedBlocks(entry) },
-                        onClose: { showingRecentlyDeleted = false }
+                .sheet(item: Binding(
+                    get: { recoveryFilter.map(RecoveryFilterBox.init) },
+                    set: { recoveryFilter = $0?.filter }
+                )) { box in
+                    RecoveryView(
+                        filter: box.filter,
+                        loadEntries: { filter in await model.listRecoverableEntries(filter: filter) },
+                        onRestore: { entry in await model.restoreRecoverable(entry) },
+                        onClose: { recoveryFilter = nil }
                     )
                     #if os(macOS)
                     .frame(minWidth: 480, minHeight: 480)
@@ -913,15 +961,9 @@ struct ContentView: View {
                     url: homeURL,
                     document: document,
                     model: model,
-                    versionHistoryURL: $versionHistoryURL,
+                    recoveryFilter: $recoveryFilter,
                     onShowPageList: { showingPageList = true }
                 )
-                .sheet(item: Binding(
-                    get: { versionHistoryURL.map(URLBox.init) },
-                    set: { versionHistoryURL = $0?.url }
-                )) { box in
-                    versionHistorySheet(for: box.url)
-                }
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -989,11 +1031,11 @@ struct ContentView: View {
                 Divider()
                 Button {
                     showingPageList = false
-                    showingRecentlyDeleted = true
+                    recoveryFilter = .all
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "trash")
-                        Text("Recently Deleted")
+                        Image(systemName: "clock.arrow.circlepath")
+                        Text("Recover")
                         Spacer()
                     }
                     .font(NotionStyle.body())
@@ -1041,11 +1083,11 @@ struct ContentView: View {
             )
             Divider()
             Button {
-                showingRecentlyDeleted = true
+                recoveryFilter = .all
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "trash")
-                    Text("Recently Deleted")
+                    Image(systemName: "clock.arrow.circlepath")
+                    Text("Recover")
                     Spacer()
                 }
                 .font(NotionStyle.body())
@@ -1088,37 +1130,14 @@ struct ContentView: View {
         #endif
     }
 
-    private struct URLBox: Identifiable, Hashable {
-        let url: URL
-        var id: URL { url }
-    }
-
-    @ViewBuilder
-    private func versionHistorySheet(for url: URL) -> some View {
-        let relPath = workspaceRelativePath(for: url)
-        let title = model.documentForPage(url: url)?.title
-            ?? url.deletingPathExtension().lastPathComponent
-        VersionHistoryView(
-            pageTitle: title,
-            relativePath: relPath,
-            loadSnapshots: { await model.listSnapshots(for: relPath) },
-            loadContent: { snapshot in await model.loadSnapshotContent(snapshot) },
-            onRestore: { snapshot in await model.restoreSnapshot(snapshot) },
-            onClose: { versionHistoryURL = nil }
-        )
-        #if os(macOS)
-        .frame(minWidth: 600, minHeight: 480)
-        #endif
-    }
-
-    private func workspaceRelativePath(for url: URL) -> String {
-        guard let root = model.workspaceURL else { return url.lastPathComponent }
-        let rootPath = root.standardizedFileURL.path
-        let filePath = url.standardizedFileURL.path
-        if filePath.hasPrefix(rootPath + "/") {
-            return String(filePath.dropFirst(rootPath.count + 1))
+    private struct RecoveryFilterBox: Identifiable, Hashable {
+        let filter: RecoveryListFilter
+        var id: String {
+            switch filter {
+            case .all: return "all"
+            case .page(let r): return "page:\(r)"
+            }
         }
-        return url.lastPathComponent
     }
 
     @ViewBuilder
@@ -1133,14 +1152,8 @@ struct ContentView: View {
                 url: url,
                 document: document,
                 model: model,
-                versionHistoryURL: $versionHistoryURL
+                recoveryFilter: $recoveryFilter
             )
-            .sheet(item: Binding(
-                get: { versionHistoryURL.map(URLBox.init) },
-                set: { versionHistoryURL = $0?.url }
-            )) { box in
-                versionHistorySheet(for: box.url)
-            }
         } else {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1156,13 +1169,14 @@ private struct EditorPage: View {
     let url: URL
     let document: Document
     @Bindable var model: WorkspaceModel
-    @Binding var versionHistoryURL: URL?
+    @Binding var recoveryFilter: RecoveryListFilter?
     /// Non-nil only for the home root: adds a toolbar button that surfaces
     /// the page-list sheet. Subpages get `nil` and don't show the icon.
     var onShowPageList: (() -> Void)? = nil
 
     @State private var editorState = EditorState()
     @Environment(\.scenePhase) private var scenePhase
+    @FocusedValue(\.documentUndoController) private var undoController
 
     var body: some View {
         EditorView(
@@ -1221,14 +1235,46 @@ private struct EditorPage: View {
                     .accessibilityLabel("Show Page List")
                 }
             }
+            #if os(iOS)
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    versionHistoryURL = url
+                    undoController?.undoManager.undo()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .accessibilityLabel("Undo")
+                .disabled(!(undoController?.undoManager.canUndo ?? false))
+                .contextMenu {
+                    Button {
+                        let relPath = workspaceRelativePath(for: url, root: model.workspaceURL)
+                        recoveryFilter = .page(relativePath: relPath)
+                    } label: {
+                        Label("Recover lost blocks…", systemImage: "clock.arrow.circlepath")
+                    }
+                }
+            }
+            if undoController?.undoManager.canRedo == true {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        undoController?.undoManager.redo()
+                    } label: {
+                        Image(systemName: "arrow.uturn.forward")
+                    }
+                    .accessibilityLabel("Redo")
+                }
+            }
+            #else
+            // macOS keeps the clock toolbar icon — there's no toolbar Undo to long-press.
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    let relPath = workspaceRelativePath(for: url, root: model.workspaceURL)
+                    recoveryFilter = .page(relativePath: relPath)
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
                 }
-                .accessibilityLabel("Version History")
+                .accessibilityLabel("Recover")
             }
+            #endif
             ToolbarItem(placement: .primaryAction) {
                 EditorRecordingButton(state: editorState)
             }
@@ -1254,6 +1300,16 @@ private struct EditorPage: View {
     private func forwardPendingVoiceRecording() {
         guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
         editorState.requestToggleVoiceRecording()
+    }
+
+    private func workspaceRelativePath(for url: URL, root: URL?) -> String {
+        guard let root else { return url.lastPathComponent }
+        let rootPath = root.standardizedFileURL.path
+        let filePath = url.standardizedFileURL.path
+        if filePath.hasPrefix(rootPath + "/") {
+            return String(filePath.dropFirst(rootPath.count + 1))
+        }
+        return url.lastPathComponent
     }
 }
 

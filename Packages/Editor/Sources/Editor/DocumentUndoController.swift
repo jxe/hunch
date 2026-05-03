@@ -13,7 +13,7 @@ extension EnvironmentValues {
     /// The shared document-level `UndoManager` for the current `EditorView`. Distinct from
     /// SwiftUI's built-in `\.undoManager` (which is read-only and tied to the responder
     /// chain) — this one we control and inject explicitly.
-    var documentUndoManager: UndoManager? {
+    public var documentUndoManager: UndoManager? {
         get { self[DocumentUndoManagerKey.self] }
         set { self[DocumentUndoManagerKey.self] = newValue }
     }

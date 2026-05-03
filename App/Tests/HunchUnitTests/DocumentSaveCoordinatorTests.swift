@@ -55,8 +55,8 @@ struct DocumentSaveCoordinatorTests {
         }
 
         let coord = DocumentSaveCoordinator()
-        async let a: Void = coord.save(makeDoc(url: urlA, body: "AAA"))
-        async let b: Void = coord.save(makeDoc(url: urlB, body: "BBB"))
+        async let a = coord.save(makeDoc(url: urlA, body: "AAA"))
+        async let b = coord.save(makeDoc(url: urlB, body: "BBB"))
         _ = try await (a, b)
         try await coord.flush(url: urlA)
         try await coord.flush(url: urlB)

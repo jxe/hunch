@@ -26,17 +26,26 @@ public actor DocumentSaveCoordinator {
         self.store = store
     }
 
+    /// Save the document and return the on-disk text *as it was before this save*.
+    /// Returns nil if the file didn't exist yet. Callers (notably the recovery
+    /// pipeline) need this to diff against the new content.
+    ///
+    /// When the same URL has an in-flight write, the new request becomes the
+    /// pending snapshot and this call returns nil — there's no meaningful
+    /// "previous text" to attribute to it because the in-flight write is mid-air.
+    /// The recovery pipeline is fire-and-forget, so dropping a sample is fine.
+    @discardableResult
     public func save(
         _ document: Document,
         resolvingSubpageTitle titleForPath: @Sendable @escaping (String) -> String? = { _ in nil }
-    ) async throws {
+    ) async throws -> String? {
         let request = SaveRequest(document: document, titleForPath: titleForPath)
         let url = request.document.url
         if states[url]?.inFlight != nil {
             states[url]?.pending = request
-            return
+            return nil
         }
-        try await runWriteLoop(initial: request)
+        return try await runWriteLoop(initial: request)
     }
 
     /// Awaits any in-flight + pending write for the URL. Useful in tests and
@@ -47,12 +56,16 @@ public actor DocumentSaveCoordinator {
         }
     }
 
-    private func runWriteLoop(initial: SaveRequest) async throws {
+    private func runWriteLoop(initial: SaveRequest) async throws -> String? {
         let url = initial.document.url
         var current = initial
         let store = self.store
+        var firstPriorText: String? = nil
+        var first = true
         while true {
             let snapshot = current
+            let priorText: String? = first ? (try? store.read(url)) : nil
+            if first { firstPriorText = priorText; first = false }
             let task = Task<Void, Error> { @Sendable [store] in
                 try store.save(snapshot.document, resolvingSubpageTitle: snapshot.titleForPath)
             }
@@ -64,7 +77,7 @@ public actor DocumentSaveCoordinator {
                 continue
             }
             states[url] = nil
-            return
+            return firstPriorText
         }
     }
 }
