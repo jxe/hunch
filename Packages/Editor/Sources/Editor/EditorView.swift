@@ -186,8 +186,7 @@ public struct EditorView: View {
                 }
                 .iosPageReorder(
                     isEnabled: !pinchGestureActive,
-                    rowFrames: rowFrames,
-                    snapshot: snapshot
+                    rowFrames: rowFrames
                 ) { blockID, location in
                     preliftReorder(blockID: blockID, snapshot: snapshot)
                     // Re-anchor immediately to the touch point so the lift sits under
@@ -224,8 +223,6 @@ public struct EditorView: View {
                     performPayloadDrop(payload, atY: y, snapshot: snapshot)
                 },
                 onCancel: {
-                    state.dropHoverIndex = nil
-                    state.dropOntoBlockID = nil
                     state.currentDropTarget = nil
                 }
             )
@@ -284,13 +281,7 @@ public struct EditorView: View {
             .onChange(of: state.dropHoverIndex) { _, newValue in
                 handleDropHoverChange(newValue)
             }
-            .onChange(of: state.selection) { _, _ in
-                actionSheet = nil
-            }
-            .onChange(of: state.cursor) { _, _ in
-                actionSheet = nil
-            }
-            .onChange(of: state.anchor) { _, _ in
+            .onChange(of: state.mode) { _, _ in
                 actionSheet = nil
             }
             .onChange(of: state.voiceRecordingToggleTicket) { _, _ in
@@ -408,8 +399,6 @@ public struct EditorView: View {
             // editor's own selection gestures aren't shadowed.
             .macRowReorder(
                 isEnabled: !isEditing,
-                block: block,
-                snapshot: snapshot,
                 onChanged: { value in
                     tickReorderLift(
                         blockID: block.id,
@@ -485,8 +474,6 @@ public struct EditorView: View {
                     // silently — no .onEnded fires, lift gets stuck.
                     .macRowReorder(
                         isEnabled: (showHandleOverlay(for: block.id) || isMacDraggingFromRow(block.id)) && !isEditing,
-                        block: block,
-                        snapshot: snapshot,
                         onChanged: { value in
                             tickReorderLift(
                                 blockID: block.id,
@@ -1675,16 +1662,6 @@ public struct EditorView: View {
         }
     }
 
-    /// Backspace fired at offset 0 of a *blank* row (only entry path: macOS
-    /// `keyDown` and the iOS hardware-keyboard `.onKeyPress(.delete)` gate on
-    /// the block being empty). Two-step:
-    ///
-    ///   1. If the row is anything other than `.paragraph` (heading, bullet,
-    ///      numbered, todo, quote, toggle), collapse it to an empty paragraph
-    ///      in place — same id, same editor focus, just the marker / sizing
-    ///      goes away.
-    ///   2. If the row is already an empty paragraph, remove it and move the
-    ///      cursor to the previous block.
     /// Handle backspace pressed with the cursor at offset 0 of a block. Three shapes:
     /// 1. Non-paragraph (bullet/numbered/todo/heading/quote/toggle) with any text →
     ///    convert to a paragraph at the same indent, preserving the text. Cursor

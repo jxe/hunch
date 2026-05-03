@@ -17,11 +17,11 @@ extension EditorView {
             return
         }
         if var existing = state.mentionMenu, existing.blockID == blockID {
-            // Query / range changed — keep the menu open, refresh state. Reset the
-            // selection if the new filter would put it out of bounds.
+            // Query / range changed — keep the menu open, refresh state. Clamp
+            // selectedIndex against the new query's match count before publishing
+            // so observers fire once instead of twice.
             existing.trigger = trigger
-            state.setMentionMenu(existing)
-            let count = mentionMatches.count
+            let count = suggestPages(trigger.query).prefix(8).count
             if count == 0 {
                 existing.selectedIndex = 0
             } else if existing.selectedIndex >= count {

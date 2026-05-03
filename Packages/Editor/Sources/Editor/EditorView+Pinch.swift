@@ -58,10 +58,17 @@ extension EditorView {
             }
         } else if state.pinchPreview != nil {
             state.setPinchPreview(nil)
-            pinchPendingInsertIndex = nil
-            pinchCrossedInsertThreshold = false
-            pinchCrossedFocusThreshold = false
+            clearPinchThresholds()
         }
+    }
+
+    /// Reset the pinch's per-gesture bookkeeping (insert-slot anchor + the
+    /// two threshold-crossed latches). The preview state itself is owned by
+    /// `EditorState.pinchPreview` and cleared separately.
+    private func clearPinchThresholds() {
+        pinchPendingInsertIndex = nil
+        pinchCrossedInsertThreshold = false
+        pinchCrossedFocusThreshold = false
     }
 
     func handlePinchCommit(_ value: PagePinchValue) {
@@ -93,9 +100,7 @@ extension EditorView {
                 state.setPinchPreview(nil)
             }
         }
-        pinchPendingInsertIndex = nil
-        pinchCrossedInsertThreshold = false
-        pinchCrossedFocusThreshold = false
+        clearPinchThresholds()
         pinchGestureActive = false
         stopPinchAutoScroll()
     }

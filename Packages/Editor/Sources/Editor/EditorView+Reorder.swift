@@ -85,24 +85,48 @@ extension EditorView {
     /// waiting for the first drag event. The next `tickReorderLift(at:)` call
     /// re-anchors `touchOffset` to the actual cursor location.
     func preliftReorder(blockID: BlockID, snapshot: [Block]) {
+        guard let lift = makeReorderLift(
+            blockID: blockID,
+            snapshot: snapshot,
+            touchOffset: nil,
+            location: nil,
+            pendingAnchor: true,
+            isCopy: false
+        ) else { return }
+        state.setReorderLift(lift)
+    }
+
+    /// Build a `ReorderLift` for `blockID` against `snapshot`. Returns nil if
+    /// the block, its row frame, or its document position is missing.
+    /// `touchOffset` / `location` default to the source row's center — used by
+    /// the iOS prelift, which mounts before a real cursor anchor is known.
+    private func makeReorderLift(
+        blockID: BlockID,
+        snapshot: [Block],
+        touchOffset: CGSize?,
+        location: CGPoint?,
+        pendingAnchor: Bool,
+        isCopy: Bool
+    ) -> ReorderLift? {
         guard let block = snapshot.first(where: { $0.id == blockID }),
               let sourceFrame = rowFrames[blockID],
               let sourceIndex = snapshot.firstIndex(where: { $0.id == blockID })
-        else { return }
+        else { return nil }
         let ids = dragIDs(for: blockID)
         let idSet = Set(ids)
         let sourceIndices = snapshot.enumerated()
             .compactMap { idSet.contains($0.element.id) ? $0.offset : nil }
-        state.setReorderLift(ReorderLift(
+        return ReorderLift(
             block: block,
             ids: ids,
             sourceFrame: sourceFrame,
             sourceIndex: sourceIndex,
             sourceEndIndex: sourceIndices.last ?? sourceIndex,
-            touchOffset: CGSize(width: sourceFrame.width / 2, height: sourceFrame.height / 2),
-            location: CGPoint(x: sourceFrame.midX, y: sourceFrame.midY),
-            pendingAnchor: true
-        ))
+            touchOffset: touchOffset ?? CGSize(width: sourceFrame.width / 2, height: sourceFrame.height / 2),
+            location: location ?? CGPoint(x: sourceFrame.midX, y: sourceFrame.midY),
+            pendingAnchor: pendingAnchor,
+            isCopy: isCopy
+        )
     }
 
     /// Per-event update: creates the lift if missing (macOS click-and-drag
@@ -124,28 +148,20 @@ extension EditorView {
     func tickReorderLift(blockID: BlockID, at location: CGPoint, anchorAt anchorPoint: CGPoint, snapshot: [Block]) {
         let isCopy = currentReorderCopyIntent()
         if state.reorderLift == nil {
-            guard let block = snapshot.first(where: { $0.id == blockID }),
-                  let sourceFrame = rowFrames[blockID],
-                  let sourceIndex = snapshot.firstIndex(where: { $0.id == blockID })
+            guard let sourceFrame = rowFrames[blockID],
+                  let lift = makeReorderLift(
+                      blockID: blockID,
+                      snapshot: snapshot,
+                      touchOffset: CGSize(
+                          width: anchorPoint.x - sourceFrame.minX,
+                          height: anchorPoint.y - sourceFrame.minY
+                      ),
+                      location: location,
+                      pendingAnchor: false,
+                      isCopy: isCopy
+                  )
             else { return }
-            let ids = dragIDs(for: blockID)
-            let idSet = Set(ids)
-            let sourceIndices = snapshot.enumerated()
-                .compactMap { idSet.contains($0.element.id) ? $0.offset : nil }
-            state.setReorderLift(ReorderLift(
-                block: block,
-                ids: ids,
-                sourceFrame: sourceFrame,
-                sourceIndex: sourceIndex,
-                sourceEndIndex: sourceIndices.last ?? sourceIndex,
-                touchOffset: CGSize(
-                    width: anchorPoint.x - sourceFrame.minX,
-                    height: anchorPoint.y - sourceFrame.minY
-                ),
-                location: location,
-                pendingAnchor: false,
-                isCopy: isCopy
-            ))
+            state.setReorderLift(lift)
         } else if var lift = state.reorderLift {
             if lift.pendingAnchor {
                 lift.touchOffset = CGSize(
@@ -188,8 +204,6 @@ extension EditorView {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            state.dropHoverIndex = nil
-            state.dropOntoBlockID = nil
             state.currentDropTarget = nil
             state.setReorderLift(nil)
             switch target {
@@ -218,8 +232,6 @@ extension EditorView {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            state.dropHoverIndex = nil
-            state.dropOntoBlockID = nil
             state.currentDropTarget = nil
             state.setReorderLift(nil)
         }
@@ -288,24 +300,12 @@ extension EditorView {
         reorderAutoScrollTask = nil
     }
 
-    /// Update `dropHoverIndex` / `dropOntoBlockID` based on the live drop point.
-    /// Source rows (the lift itself) are excluded from the drop-on hit-test so
-    /// you can't drop onto your own collapsed parent.
+    /// Update `currentDropTarget` based on the live drop point. Source rows
+    /// (the lift itself) are excluded from the drop-on hit-test so you can't
+    /// drop onto your own collapsed parent.
     func applyDropTarget(at y: CGFloat, snapshot: [Block]) {
         let hidden = hiddenBlockIDs(in: snapshot)
-        let target = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
-        state.currentDropTarget = target
-        switch target {
-        case .insertBefore(let index):
-            state.dropOntoBlockID = nil
-            state.dropHoverIndex = index
-        case .asLastChildOf(let id):
-            state.dropHoverIndex = nil
-            state.dropOntoBlockID = id
-        case .intoSubpage(let id, _):
-            state.dropHoverIndex = nil
-            state.dropOntoBlockID = id
-        }
+        state.currentDropTarget = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
     }
 
     fileprivate func resolveDropTarget(atY y: CGFloat, snapshot: [Block], hidden: Set<BlockID>) -> DropTarget {

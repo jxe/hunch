@@ -40,11 +40,9 @@ public final class EditorState {
     public internal(set) var hoveredHandle: BlockID? = nil
 
     // Drop target visualization. Updated during both in-app reorder and external
-    // file drops; the three fields track redundant views of one logical target
-    // (between-rows index, onto-row id, and the resolved DropTarget enum) and
-    // animate independently — kept split for that animation reason.
-    public internal(set) var dropHoverIndex: Int? = nil
-    public internal(set) var dropOntoBlockID: BlockID? = nil
+    // file drops. `currentDropTarget` is the source of truth; `dropHoverIndex`
+    // and `dropOntoBlockID` are computed views below for sites that only care
+    // about one shape of target.
     public internal(set) var currentDropTarget: DropTarget? = nil
 
     // Page-local view state — defaults to all closed every time the page opens.
@@ -243,6 +241,20 @@ public extension EditorState {
     var pinchPreview: PinchPreviewState? {
         if case .pinchOpening(let p) = gesture { return p }
         return nil
+    }
+    /// Insertion-slot view of `currentDropTarget` — non-nil only when the
+    /// resolved target is a between-rows drop.
+    var dropHoverIndex: Int? {
+        if case .insertBefore(let i) = currentDropTarget { return i }
+        return nil
+    }
+    /// Drop-on-row view of `currentDropTarget` — the row id we're hovering
+    /// onto (closed parent or subpage); nil for between-rows targets.
+    var dropOntoBlockID: BlockID? {
+        switch currentDropTarget {
+        case .asLastChildOf(let id), .intoSubpage(let id, _): return id
+        default: return nil
+        }
     }
 }
 

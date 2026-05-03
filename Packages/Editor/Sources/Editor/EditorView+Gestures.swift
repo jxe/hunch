@@ -51,8 +51,6 @@ extension View {
     @ViewBuilder
     func macRowReorder(
         isEnabled: Bool,
-        block: Block,
-        snapshot: [Block],
         onChanged: @escaping (DragGesture.Value) -> Void,
         onEnded: @escaping (DragGesture.Value) -> Void
     ) -> some View {
@@ -105,7 +103,6 @@ extension View {
     func iosPageReorder(
         isEnabled: Bool,
         rowFrames: [BlockID: CGRect],
-        snapshot: [Block],
         onBegin: @escaping (BlockID, CGPoint) -> Void,
         onChanged: @escaping (CGPoint) -> Void,
         onEnded: @escaping (CGPoint) -> Void,

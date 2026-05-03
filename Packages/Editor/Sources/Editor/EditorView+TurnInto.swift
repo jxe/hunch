@@ -549,10 +549,6 @@ extension EditorView {
         }
     }
 
-    func turnIntoTargets(for block: Block) -> [BlockTurnInto] {
-        turnIntoTargets(for: [block])
-    }
-
     fileprivate func indentActions(for indices: [Int]) -> [BlockIndentAction] {
         var actions: [BlockIndentAction] = []
         if canChangeIndent(at: indices, by: -1) {
