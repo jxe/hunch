@@ -79,12 +79,43 @@ public enum NotionStyle {
     #endif
 
     // MARK: Fonts
-    public static func body(size: CGFloat = 16) -> Font {
-        Font.custom("Inter", fixedSize: size)
+    /// Inter at the requested size and weight, built via a platform font descriptor
+    /// so SwiftUI never has to call `.weight()` on a `Font.custom(...)` — that path
+    /// emits "Unable to update Font Descriptor's weight" warnings on iOS for every
+    /// non-system font (Inter is registered as a single variable face). Same family
+    /// + weight resolution as `InlineMarksBridge.interFont`, just bridged into a
+    /// SwiftUI `Font`.
+    public static func body(size: CGFloat = 16, weight: Font.Weight = .regular) -> Font {
+        let platformWeight = platformFontWeight(for: weight)
+        let attributes: [PlatformFontDescriptor.AttributeName: Any] = [
+            .family: "Inter",
+            .traits: [PlatformFontDescriptor.TraitKey.weight: platformWeight.rawValue]
+        ]
+        let descriptor = PlatformFontDescriptor(fontAttributes: attributes)
+        #if os(macOS)
+        let font = NSFont(descriptor: descriptor, size: size)
+            ?? NSFont.systemFont(ofSize: size, weight: platformWeight)
+        return Font(font)
+        #else
+        let font = UIFont(descriptor: descriptor, size: size)
+        return Font(font)
+        #endif
     }
 
     public static func mono(size: CGFloat = 14) -> Font {
         Font.system(size: size, weight: .regular, design: .monospaced)
+    }
+
+    private static func platformFontWeight(for weight: Font.Weight) -> PlatformFontWeight {
+        if weight == .ultraLight { return .ultraLight }
+        if weight == .thin { return .thin }
+        if weight == .light { return .light }
+        if weight == .medium { return .medium }
+        if weight == .semibold { return .semibold }
+        if weight == .bold { return .bold }
+        if weight == .heavy { return .heavy }
+        if weight == .black { return .black }
+        return .regular
     }
 
     // MARK: Spacing

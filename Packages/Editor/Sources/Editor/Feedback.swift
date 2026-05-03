@@ -40,6 +40,7 @@ private enum ImpactStyle {
 }
 #endif
 
+@MainActor
 enum Haptics {
     static func light() {
         impact(.light)

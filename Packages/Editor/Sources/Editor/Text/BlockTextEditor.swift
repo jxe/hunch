@@ -310,6 +310,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
         InlineMarksBridge.interFont(size: size, bold: bold, italic: false)
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MacBlockTextEditor
         var lastFontSize: CGFloat?
@@ -346,13 +347,23 @@ struct MacBlockTextEditor: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             // Cursor moved without a text change — re-evaluate the mention trigger so
-            // arrow-keying out of the @-region dismisses the popover.
-            MainActor.assumeIsolated {
-                reportMentionTrigger(in: tv, composing: tv.hasMarkedText())
+            // arrow-keying out of the @-region dismisses the popover. Defer the
+            // SwiftUI state write: this delegate also fires synchronously from
+            // `updateNSView` paths that set `selectedRange`, which run inside
+            // SwiftUI's view-update pass.
+            let composing = tv.hasMarkedText()
+            let plain = tv.string
+            let cursor = tv.selectedRange().location
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if composing {
+                    self.parent.onMentionTriggerChange(nil)
+                } else {
+                    self.parent.onMentionTriggerChange(detectMentionTrigger(plain: plain, cursor: cursor))
+                }
             }
         }
 
-        @MainActor
         private func reportMentionTrigger(in tv: NSTextView, composing: Bool) {
             if composing {
                 parent.onMentionTriggerChange(nil)
@@ -365,14 +376,20 @@ struct MacBlockTextEditor: NSViewRepresentable {
 
         func textDidBeginEditing(_ notification: Notification) {
             // Break coalescing across edit-session boundaries — typing in block A then
-            // clicking into block B should not merge into one undo entry.
+            // clicking into block B should not merge into one undo entry. Defer the
+            // SwiftUI focus write: NSTextView fires this delegate synchronously from
+            // `makeFirstResponder` calls that may originate inside a view-update pass.
             parent.documentUndoController?.breakTextCoalescing()
-            parent.onFocusChange(true)
+            Task { @MainActor [weak self] in
+                self?.parent.onFocusChange(true)
+            }
         }
 
         func textDidEndEditing(_ notification: Notification) {
             parent.documentUndoController?.breakTextCoalescing()
-            parent.onFocusChange(false)
+            Task { @MainActor [weak self] in
+                self?.parent.onFocusChange(false)
+            }
         }
     }
 }
@@ -749,12 +766,19 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
 
         tv.wantsFocus = isFocused
         if isFocused, tv.window != nil, !tv.isFirstResponder {
-            // Already in the window hierarchy — grab focus synchronously so the
-            // keyboard transfer between rows doesn't dismiss/re-show. UIKit only
-            // keeps the keyboard alive when a new first responder takes over
-            // within the same runloop as the previous one resigning.
-            _ = tv.becomeFirstResponder()
-            tv.applyPendingCursorPositionOrSeekToEnd()
+            // Defer becomeFirstResponder out of `updateUIView` — calling it
+            // synchronously inside SwiftUI's view-update pass triggers
+            // "AttributeGraph: cycle detected" because UIKit's first-responder
+            // change cascades into delegate callbacks (selection / focus) that
+            // SwiftUI sees mid-render. Initial-mount focus is handled
+            // synchronously by `ContainedTextViewIOS.didMoveToWindow`, which
+            // runs after view installation rather than during view-update; the
+            // deferred path here only kicks in for the rarer re-grab case.
+            DispatchQueue.main.async { [weak tv] in
+                guard let tv, tv.window != nil, !tv.isFirstResponder else { return }
+                _ = tv.becomeFirstResponder()
+                tv.applyPendingCursorPositionOrSeekToEnd()
+            }
         }
     }
 
@@ -837,7 +861,22 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
-            reportMentionTrigger(in: textView, composing: textView.markedTextRange != nil)
+            // Defer the SwiftUI write — this delegate fires synchronously from
+            // both user interaction and `updateUIView`'s own
+            // `applyPendingCursorPositionOrSeekToEnd`. The latter runs inside a
+            // SwiftUI view-update pass; writing to `state.mentionMenu` there
+            // shows up as an AttributeGraph cycle.
+            let composing = (textView.markedTextRange != nil)
+            let plain = textView.text ?? ""
+            let cursor = textView.selectedRange.location
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if composing {
+                    self.parent.onMentionTriggerChange(nil)
+                } else {
+                    self.parent.onMentionTriggerChange(detectMentionTrigger(plain: plain, cursor: cursor))
+                }
+            }
         }
 
         private func reportMentionTrigger(in textView: UITextView, composing: Bool) {
@@ -852,12 +891,20 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
 
         func textViewDidBeginEditing(_ textView: UITextView) {
             parent.documentUndoController?.breakTextCoalescing()
-            parent.onFocusChange(true)
+            // Defer the @FocusState write — this delegate fires synchronously
+            // from `updateUIView`'s own `becomeFirstResponder`, which runs
+            // inside a SwiftUI view-update pass. A synchronous write triggers
+            // an AttributeGraph cycle.
+            Task { @MainActor [weak self] in
+                self?.parent.onFocusChange(true)
+            }
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
             parent.documentUndoController?.breakTextCoalescing()
-            parent.onFocusChange(false)
+            Task { @MainActor [weak self] in
+                self?.parent.onFocusChange(false)
+            }
         }
     }
 }
@@ -958,9 +1005,10 @@ final class ContainedTextViewIOS: UITextView {
             // Force layout: at didMoveToWindow / first updateUIView UITextView's
             // text container hasn't necessarily run layout, and `closestPosition`
             // returns the doc-end position when the layout is empty. Without this
-            // the caret silently snaps to end on every tap-to-edit.
+            // the caret silently snaps to end on every tap-to-edit. `layoutIfNeeded`
+            // alone is enough on TextKit 2 — touching `.layoutManager` here would
+            // silently downgrade the view to TextKit 1 compatibility mode.
             layoutIfNeeded()
-            layoutManager.ensureLayout(for: textContainer)
             if let position = closestPosition(to: point) {
                 let offset = self.offset(from: beginningOfDocument, to: position)
                 selectedRange = NSRange(location: offset, length: 0)

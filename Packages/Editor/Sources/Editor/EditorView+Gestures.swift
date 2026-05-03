@@ -786,7 +786,14 @@ struct IOSScrollMetricsReader: UIViewRepresentable {
                     }
                 }
             }
-            publish(scrollView)
+            // updateUIView / didMoveToWindow run inside SwiftUI's view-update pass —
+            // writing the binding synchronously here trips "Modifying state during
+            // view update" and a matching AttributeGraph cycle. Defer like the KVO
+            // observers do.
+            Task { @MainActor [weak self, weak scrollView] in
+                guard let self, let scrollView else { return }
+                self.publish(scrollView)
+            }
         }
 
         private func publish(_ scrollView: UIScrollView) {

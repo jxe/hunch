@@ -171,7 +171,7 @@ public struct BlockRow: View {
                           : level == 1 ? NotionStyle.h1Size
                           : level == 2 ? NotionStyle.h2Size
                                        : NotionStyle.h3Size
-        let font = NotionStyle.body(size: size).weight(NotionStyle.headingWeight)
+        let font = NotionStyle.body(size: size, weight: NotionStyle.headingWeight)
         return editableText(font: font, fontSize: size, bold: true, lineSpacing: NotionStyle.headingLineSpacing)
             .padding(.leading, NotionStyle.nonListLeading(indent: indent))
     }
@@ -352,7 +352,7 @@ public struct BlockRow: View {
                     dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                 }
             Text(title)
-                .font(NotionStyle.body().weight(.medium))
+                .font(NotionStyle.body(weight: .medium))
                 .foregroundStyle(NotionStyle.foreground)
                 .lineSpacing(NotionStyle.bodyLineSpacing)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -397,7 +397,12 @@ public struct BlockRow: View {
                         onClickAtPoint(value.location)
                     })
             } else {
-                Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: font, resolvingPageTitle: pageTitle))
+                Text(InlineRenderer.swiftUIAttributed(
+                    block.text,
+                    baseFont: font,
+                    boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
+                    resolvingPageTitle: pageTitle
+                ))
                     .font(font)
                     .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
                     .lineSpacing(lineSpacing)

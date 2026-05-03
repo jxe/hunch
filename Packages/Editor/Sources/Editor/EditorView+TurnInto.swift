@@ -415,7 +415,7 @@ extension EditorView {
                         .font(.system(size: 17, weight: .semibold))
                         .frame(height: 20)
                     Text(title)
-                        .font(NotionStyle.body(size: 11).weight(.medium))
+                        .font(NotionStyle.body(size: 11, weight: .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
                 }

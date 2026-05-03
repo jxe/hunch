@@ -888,7 +888,7 @@ struct ContentView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Pages")
-                .font(NotionStyle.body(size: 13).weight(.semibold))
+                .font(NotionStyle.body(size: 13, weight: .semibold))
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -1103,7 +1103,12 @@ private struct EditorPage: View {
             // flag before posting the notification — consume the flag too so a
             // later `.active` transition doesn't fire a second time.
             _ = VoiceRecordingLaunchRequest.consumePendingStart()
-            editorState.requestToggleVoiceRecording()
+            // Defer the state mutation off the publisher's synchronous delivery —
+            // if the notification posts during a SwiftUI render pass the inline
+            // assign trips "Modifying state during view update".
+            Task { @MainActor in
+                editorState.requestToggleVoiceRecording()
+            }
         }
     }
 
@@ -1124,7 +1129,7 @@ private struct WorkspacePickerView: View {
                 .font(.system(size: 64))
                 .foregroundStyle(NotionStyle.mutedForeground)
             Text("Choose a key file")
-                .font(NotionStyle.body(size: 18).weight(.semibold))
+                .font(NotionStyle.body(size: 18, weight: .semibold))
                 .foregroundStyle(NotionStyle.foreground)
             Text("Pick the .md file Hunch should open by default. Its folder becomes the workspace.")
                 .font(NotionStyle.body(size: 14))

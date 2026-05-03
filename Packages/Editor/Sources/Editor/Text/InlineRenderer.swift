@@ -6,6 +6,7 @@ public enum InlineRenderer {
     public static func swiftUIAttributed(
         _ source: AttributedString,
         baseFont: Font = NotionStyle.body(),
+        boldFont: Font = NotionStyle.body(weight: .semibold),
         resolvingPageTitle pageTitle: (String) -> String? = { _ in nil }
     ) -> AttributedString {
         var result = AttributedString()
@@ -28,12 +29,8 @@ public enum InlineRenderer {
                 attributed.foregroundColor = NotionStyle.codeForeground
                 attributed.backgroundColor = NotionStyle.codeBackground
             } else {
-                var font = baseFont
-                if bold && italic {
-                    font = font.weight(.semibold).italic()
-                } else if bold {
-                    font = font.weight(.semibold)
-                } else if italic {
+                var font = bold ? boldFont : baseFont
+                if italic {
                     font = font.italic()
                 }
                 attributed.font = font
