@@ -1499,6 +1499,21 @@ public struct EditorView: View {
             }
         }
 
+        // Empty list item + Enter exits the list: convert to paragraph in place.
+        // Reached only when the block has no indent-children (the branch above
+        // handles that case) and the row is fully empty.
+        if head.isEmpty && tail.isEmpty {
+            switch block {
+            case .bullet, .numbered, .todo:
+                mutate("Convert to Paragraph") {
+                    document.blocks[i] = .paragraph(id: block.id, text: AttributedString(), indent: block.indent)
+                }
+                return .handled
+            default:
+                break
+            }
+        }
+
         let updatedCurrent = block.withText(AttributedString(head))
         let newBlock = followUpBlock(after: block, withText: tail)
 
