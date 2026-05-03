@@ -259,6 +259,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
         context.coordinator.lastFontSize = fontSize
         context.coordinator.lastBold = bold
         context.coordinator.lastLineSpacing = lineSpacing
+        context.coordinator.lastKnownBindingPlain = String(text.characters)
         view.wantsFocus = isFocused
         view.pendingInitialCursor = consumeInitialCursor()
         return view
@@ -266,21 +267,23 @@ struct MacBlockTextEditor: NSViewRepresentable {
 
     func updateNSView(_ view: ContainedTextView, context: Context) {
         context.coordinator.parent = self
-        // Only re-sync textStorage from the binding when plain text drifted, or when the
-        // base font props changed (e.g. paragraph → heading). Attribute changes that
-        // originated inside this editor were already pushed back via textDidChange, so a
-        // gratuitous reload here would clobber the cursor *and* wipe per-range bold/italic
-        // (since toggleMark stores those as font symbolic traits).
-        let storedPlain = view.textStorage?.string ?? ""
+        // Reload from the binding only when (a) the binding actually changed since we
+        // last touched it (external mutation: undo, autotransform replacement, etc.) or
+        // (b) base font props changed (paragraph → heading). The "binding lagging
+        // because the user is typing" case — `tv.string` ahead of `text` — must NOT
+        // trigger a reload; commit-on-blur intentionally keeps the binding stale during
+        // the session, and reloading here would clobber the live text + cursor.
         let bindingPlain = String(text.characters)
+        let bindingChangedExternally = context.coordinator.lastKnownBindingPlain != bindingPlain
         let baseFontDrift = context.coordinator.lastFontSize != fontSize
             || context.coordinator.lastBold != bold
             || context.coordinator.lastLineSpacing != lineSpacing
-        if storedPlain != bindingPlain || baseFontDrift {
+        if bindingChangedExternally || baseFontDrift {
             loadAttributedString(into: view)
             context.coordinator.lastFontSize = fontSize
             context.coordinator.lastBold = bold
             context.coordinator.lastLineSpacing = lineSpacing
+            context.coordinator.lastKnownBindingPlain = bindingPlain
         }
         applyTypingAttributes(to: view)
         view.wantsFocus = isFocused
@@ -325,6 +328,13 @@ struct MacBlockTextEditor: NSViewRepresentable {
         var lastFontSize: CGFloat?
         var lastBold: Bool?
         var lastLineSpacing: CGFloat?
+        /// Plain text we last knew the binding to hold. Updated on commit and on
+        /// any external-mutation reload in `updateNSView`. While typing we don't
+        /// touch the binding, so this stays equal to the binding's `String(text)`
+        /// even though `tv.string` has drifted ahead. `updateNSView` uses this to
+        /// distinguish "binding lagging because user typed" (skip reload) from
+        /// "binding changed externally" (reload).
+        var lastKnownBindingPlain: String?
         init(_ parent: MacBlockTextEditor) { self.parent = parent }
 
         func textDidChange(_ notification: Notification) {
@@ -334,23 +344,43 @@ struct MacBlockTextEditor: NSViewRepresentable {
             if !isComposing {
                 let cursor = tv.selectedRange().location
                 if let result = detectPrefixAutotransform(text: AttributedString(plain), cursor: cursor) {
+                    // Autotransform replaces the block in `applyAutotransform` via
+                    // `mutate(...)`, which snapshots `document.blocks` for undo. We commit
+                    // live text first so that snapshot includes the user's typed prefix —
+                    // otherwise Cmd-Z'ing the autotransform would leave the user with the
+                    // pre-typing block, losing the prefix they typed.
+                    commitLiveText(tv)
                     parent.onAutotransform(result.transform, result.remainingText)
                     return
                 }
             }
-            // Register a text-change undo against the document-level manager BEFORE
-            // mutating the binding. `parent.text` is the previous text (the binding
-            // hasn't been updated yet for this keystroke). The controller's coalescing
-            // folds rapid consecutive keystrokes into a single ~1s "Type" entry, while
-            // the entry itself references only the model — no NSTextView in sight.
-            parent.documentUndoController?
-                .registerTextChange(blockID: parent.blockID, oldText: parent.text)
-            // Convert NSAttributedString → model AttributedString and push to binding.
-            // The BlockRow setter dedupes via `attributedStringMarksEqual` so we don't
-            // chunk autosave debounces on no-op keystrokes.
-            let nsAttr = tv.textStorage ?? NSTextStorage()
-            parent.text = InlineMarksBridge.toModel(nsAttr)
+            // Otherwise: live text stays in NSTextView's textStorage. We do NOT write the
+            // binding per keystroke — that would force a full `EditorView.body` re-eval per
+            // character. Commit happens on blur (`textDidEndEditing`) and just before any
+            // structural BlockKey emit (Enter, Backspace at start, Tab, etc.) in
+            // `ContainedTextView.keyDown`.
             reportMentionTrigger(in: tv, composing: isComposing)
+        }
+
+        /// Sync NSTextView's live attributed text into the document binding, registering
+        /// a coarse text-change undo entry if anything actually changed. Called from:
+        /// - `textDidChange` before autotransform fires (so the snapshot has live text).
+        /// - `textDidEndEditing` (blur — the normal commit point).
+        /// - Pre-structural-op key paths in `ContainedTextView.keyDown` (Enter, Backspace,
+        ///   Tab, Cmd-K, paste, etc.) so the model is current before `splitBlock` /
+        ///   `deleteEmptyBlock` / `changeIndent` / `mutate(...)` run.
+        func commitLiveText(_ tv: NSTextView) {
+            let nsAttr = tv.textStorage ?? NSTextStorage()
+            let newText = InlineMarksBridge.toModel(nsAttr)
+            let oldText = parent.text
+            let changed = String(oldText.characters) != String(newText.characters)
+                || !attributedStringMarksEqual(oldText, newText)
+            if changed {
+                parent.documentUndoController?
+                    .registerTextChange(blockID: parent.blockID, oldText: oldText)
+                parent.text = newText
+            }
+            lastKnownBindingPlain = String(newText.characters)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -395,6 +425,12 @@ struct MacBlockTextEditor: NSViewRepresentable {
         }
 
         func textDidEndEditing(_ notification: Notification) {
+            // Commit the in-flight text to the binding. During the session the live text
+            // lived in NSTextView; this is the single coarse write that hands ownership
+            // back to the model and registers the session as one undo entry.
+            if let tv = notification.object as? NSTextView {
+                commitLiveText(tv)
+            }
             parent.documentUndoController?.breakTextCoalescing()
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(false)
@@ -477,20 +513,30 @@ final class ContainedTextView: NSTextView {
             switch event.keyCode {
             case 36, 76: // Return, numpad Enter
                 let cursor = (selectedRange().location)
+                // Sync live text into the binding before split — splitBlock reads
+                // `document.blocks[i].text` to derive head/tail.
+                coordinator?.commitLiveText(self)
                 if onKey(.enter(cursorOffset: cursor)) == .handled { return }
             case 51: // Delete (backspace)
                 // Fire `.backspaceAtStart` whenever the cursor is at the very start
                 // of the row with no selection — the page handler decides what to do
                 // based on block type and whether the row is empty (unbullet, merge,
-                // delete-block).
+                // delete-block). deleteEmptyBlock reads `block.text` for merge / preserve,
+                // so the binding must be current.
                 let range = selectedRange()
                 if range.location == 0, range.length == 0 {
+                    coordinator?.commitLiveText(self)
                     if onKey(.backspaceAtStart) == .handled { return }
                 }
             case 48: // Tab
+                // Tab/Shift-Tab calls `mutate(...)` which snapshots `document.blocks` for
+                // undo. Stale text in the snapshot would leak into Cmd-Z behavior.
+                coordinator?.commitLiveText(self)
                 let shift = event.modifierFlags.contains(.shift)
                 if onKey(shift ? .shiftTab : .tab) == .handled { return }
             case 53: // Escape
+                // Esc triggers a blur via `cancelOperation`, which fires textDidEndEditing
+                // and commits there — no separate commit needed here.
                 if onKey(.escape) == .handled { return }
             case 40: // K
                 if event.modifierFlags.contains(.command) {
@@ -501,10 +547,14 @@ final class ContainedTextView: NSTextView {
                     } else {
                         selectedText = nil
                     }
+                    // Cmd-K converts the block to a subpage — mutates the model.
+                    coordinator?.commitLiveText(self)
                     if onKey(.cmdK(selectedText: selectedText)) == .handled { return }
                 }
             case 33: // [ — Cmd-[ → navigate back
                 if event.modifierFlags.contains(.command) {
+                    // Navigate-back leaves the page; commit so the outgoing doc is current.
+                    coordinator?.commitLiveText(self)
                     if onKey(.navigateBack) == .handled { return }
                 }
             case 11: // B — Cmd-B → bold
@@ -530,6 +580,7 @@ final class ContainedTextView: NSTextView {
             case 126: // Up arrow
                 if !event.modifierFlags.contains([.shift, .option]),
                    cursorIsOnFirstLine() {
+                    // Exits edit mode → blur → textDidEndEditing commits. No commit here.
                     if onKey(.exitEditUp) == .handled { return }
                 }
             case 125: // Down arrow
@@ -603,9 +654,16 @@ final class ContainedTextView: NSTextView {
     /// coalescing both stay correct.
     override func paste(_ sender: Any?) {
         if let onKey = coordinator?.parent.onKey,
-           let str = NSPasteboard.general.string(forType: .string),
-           onKey(.paste(str)) == .handled {
-            return
+           let str = NSPasteboard.general.string(forType: .string) {
+            // Multi-block paste calls `mutate(...)` which snapshots `document.blocks`. If
+            // the editing block's binding is stale, that snapshot loses the typed text.
+            // Single-paragraph paste returns `.ignored` and falls through to native paste,
+            // which inserts into NSTextView — fine, the binding stays stale until blur as
+            // usual.
+            coordinator?.commitLiveText(self)
+            if onKey(.paste(str)) == .handled {
+                return
+            }
         }
         super.paste(sender)
     }
@@ -740,6 +798,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         applyTypingAttributes(to: tv)
         tv.wantsFocus = isFocused
         tv.pendingInitialCursor = consumeInitialCursor()
+        context.coordinator.lastKnownBindingPlain = String(text.characters)
         bridge.textView = tv
         bridge.fontSize = fontSize
         bridge.bold = bold
@@ -774,13 +833,15 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
 
     func updateUIView(_ tv: ContainedTextViewIOS, context: Context) {
         context.coordinator.parent = self
-        // Only re-sync textStorage from the binding when its plain content has drifted
-        // out of sync — attribute changes that originated inside this editor were
-        // already pushed back via the delegate, so re-loading would clobber the cursor.
-        let storedPlain = tv.textStorage.string
+        // Reload only when the binding actually changed since we last touched it
+        // (external mutation: undo, autotransform, etc.). The "binding lagging because
+        // user is typing" case keeps `lastKnownBindingPlain == bindingPlain` while
+        // `tv.textStorage.string` runs ahead — must not reload, or commit-on-blur would
+        // clobber the live text.
         let bindingPlain = String(text.characters)
-        if storedPlain != bindingPlain {
+        if context.coordinator.lastKnownBindingPlain != bindingPlain {
             loadAttributedString(into: tv)
+            context.coordinator.lastKnownBindingPlain = bindingPlain
         }
         applyTypingAttributes(to: tv)
         bridge.textView = tv
@@ -812,8 +873,14 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
 
     private func makeAccessoryBar(for tv: ContainedTextViewIOS) -> KeyboardAccessoryBar {
         KeyboardAccessoryBar(
-            onShiftTab: { _ = onKey(.shiftTab) },
-            onTab: { _ = onKey(.tab) },
+            onShiftTab: {
+                tv.coordinator?.commitLiveText(tv)
+                _ = onKey(.shiftTab)
+            },
+            onTab: {
+                tv.coordinator?.commitLiveText(tv)
+                _ = onKey(.tab)
+            },
             onToggleMark: { mark in bridge.toggleMark(mark) },
             onCmdK: {
                 let range = tv.selectedRange
@@ -824,9 +891,11 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
                           range.location + range.length <= ns.length else { return nil }
                     return ns.substring(with: range)
                 }()
+                tv.coordinator?.commitLiveText(tv)
                 _ = onKey(.cmdK(selectedText: selected))
             },
             onDismiss: {
+                // resignFirstResponder fires textViewDidEndEditing → commitLiveText.
                 tv.resignFirstResponder()
                 _ = onKey(.escape)
             }
@@ -861,31 +930,49 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         /// hosting controller needs an owner with the right lifecycle —
         /// the Coordinator lives as long as the Representable does.
         var accessoryHost: UIHostingController<KeyboardAccessoryBar>?
+        /// See `MacBlockTextEditor.Coordinator.lastKnownBindingPlain` — same role on iOS.
+        var lastKnownBindingPlain: String?
 
         init(parent: IOSBlockTextEditorView) {
             self.parent = parent
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            // IME composition: skip autotransform but still push the binding so
-            // SwiftUI redraws the in-progress text.
+            // IME composition: skip autotransform. Live text remains in textStorage and
+            // is committed on blur or just before a structural op fires.
             let composing = (textView.markedTextRange != nil)
             let plain = textView.text ?? ""
 
             if !composing {
                 let cursor = textView.selectedRange.location
                 if let result = detectPrefixAutotransform(text: AttributedString(plain), cursor: cursor) {
+                    // Sync live text into the binding so the autotransform's `mutate(...)`
+                    // snapshot includes the typed prefix — Cmd-Z'ing the autotransform
+                    // restores the user's typed text rather than the pre-typing block.
+                    commitLiveText(textView)
                     parent.onAutotransform(result.transform, result.remainingText)
                     return
                 }
             }
-            // Register the BEFORE state with the document undo manager — same
-            // pattern as the macOS coordinator.
-            parent.documentUndoController?
-                .registerTextChange(blockID: parent.blockID, oldText: parent.text)
-            let model = InlineMarksBridge.toModel(textView.textStorage)
-            parent.text = model
             reportMentionTrigger(in: textView, composing: composing)
+        }
+
+        /// iOS twin of `MacBlockTextEditor.Coordinator.commitLiveText`. Sync live
+        /// attributed text into the binding and register a coarse undo entry if
+        /// anything changed. Called from `textViewDidEndEditing`, before autotransform
+        /// fires, and before structural BlockKeys (Enter/backspace-at-start/Tab/etc.)
+        /// in `ContainedTextViewIOS`.
+        func commitLiveText(_ textView: UITextView) {
+            let newText = InlineMarksBridge.toModel(textView.textStorage)
+            let oldText = parent.text
+            let changed = String(oldText.characters) != String(newText.characters)
+                || !attributedStringMarksEqual(oldText, newText)
+            if changed {
+                parent.documentUndoController?
+                    .registerTextChange(blockID: parent.blockID, oldText: oldText)
+                parent.text = newText
+            }
+            lastKnownBindingPlain = String(newText.characters)
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
@@ -929,6 +1016,8 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
+            // Single coarse commit on session end — see Mac twin for rationale.
+            commitLiveText(textView)
             parent.documentUndoController?.breakTextCoalescing()
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(false)
@@ -986,14 +1075,14 @@ final class ContainedTextViewIOS: UITextView {
 
     override func deleteBackward() {
         // Backspace at the very start of the row (cursor at offset 0, no selection)
-        // fires `.backspaceAtStart`. The page-level handler decides what to do based
-        // on block type and whether the row is empty — convert to paragraph (first
-        // press on a non-paragraph), merge with the previous block (paragraph + text),
-        // or delete (empty paragraph).
+        // fires `.backspaceAtStart`. The page-level handler reads `block.text` for
+        // merge / preserve, so commit live text into the binding first.
         if selectedRange.location == 0, selectedRange.length == 0,
-           let coordinator,
-           coordinator.parent.onKey(.backspaceAtStart) == .handled {
-            return
+           let coordinator {
+            coordinator.commitLiveText(self)
+            if coordinator.parent.onKey(.backspaceAtStart) == .handled {
+                return
+            }
         }
         super.deleteBackward()
     }
@@ -1005,9 +1094,14 @@ final class ContainedTextViewIOS: UITextView {
     /// native undo behavior stay correct.
     override func paste(_ sender: Any?) {
         if let coordinator,
-           let str = UIPasteboard.general.string,
-           coordinator.parent.onKey(.paste(str)) == .handled {
-            return
+           let str = UIPasteboard.general.string {
+            // Multi-block paste runs `mutate(...)` and snapshots `document.blocks`;
+            // commit so the snapshot has live text. Single-paragraph paste returns
+            // `.ignored` and falls through — the binding stays stale until blur.
+            coordinator.commitLiveText(self)
+            if coordinator.parent.onKey(.paste(str)) == .handled {
+                return
+            }
         }
         super.paste(sender)
     }
@@ -1021,8 +1115,10 @@ final class ContainedTextViewIOS: UITextView {
                coordinator.parent.onKey(.mentionCommit) == .handled {
                 return
             }
-            // Soft-keyboard return: split the block at the current cursor.
+            // Soft-keyboard return: split the block at the current cursor. splitBlock
+            // reads `block.text` to derive head/tail — commit live text first.
             let cursor = selectedRange.location
+            coordinator.commitLiveText(self)
             if coordinator.parent.onKey(.enter(cursorOffset: cursor)) == .handled {
                 return
             }

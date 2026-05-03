@@ -140,13 +140,21 @@ public struct EditorView: View {
             let numbering = NumberingContext.compute(document.blocks)
             let snapshot = document.blocks
             let hidden = hiddenBlockIDs(in: snapshot)
-            let visiblePairs = Array(snapshot.enumerated()).filter { !hidden.contains($0.element.id) }
+            // Single forward pass: build visible (originalIndex, block) pairs and a
+            // parallel prev-visible array where `prevVisibleBlocks[k]` is the visible
+            // block immediately preceding `visiblePairs[k]` (or nil). Replaces a per-row
+            // `firstIndex(where:)` lookup that was O(N²) in the row count for every body
+            // re-eval. ViewBuilder closures forbid `for` so the pass lives in a helper.
+            let layout = computeVisibleLayout(snapshot: snapshot, hidden: hidden)
+            let visiblePairs = layout.pairs
+            let prevVisibleBlocks = layout.prevVisible
             let horizontalPadding = NotionStyle.pageHorizontalPadding(for: geometry.size.width)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(visiblePairs, id: \.element.id) { (i, block) in
-                        let prev = previousVisibleBlock(before: block.id, in: snapshot, hidden: hidden)
+                    ForEach(Array(visiblePairs.enumerated()), id: \.element.1.id) { (k, pair) in
+                        let (i, block) = pair
+                        let prev = prevVisibleBlocks[k]
                         let gap = BlockSpacing.gap(before: block, after: prev)
                         let pinchExtraTopGap = pinchExtraGap(forIndex: i)
                         let reorderExtraTopGap = reorderDriftGap(for: i)
@@ -1081,14 +1089,26 @@ public struct EditorView: View {
         }
     }
 
-    private func previousVisibleBlock(before id: BlockID, in blocks: [Block], hidden: Set<BlockID>) -> Block? {
-        guard let idx = blocks.firstIndex(where: { $0.id == id }) else { return nil }
-        var j = idx - 1
-        while j >= 0 {
-            if !hidden.contains(blocks[j].id) { return blocks[j] }
-            j -= 1
+    /// One-pass visible-row layout precompute used by `body`. Returns the visible
+    /// `(originalIndex, block)` pairs (in document order) and a parallel array of the
+    /// block immediately preceding each pair in visible order. Lifts what would be a
+    /// per-row `firstIndex` walk over the snapshot out of the `ForEach`, so each body
+    /// re-eval is O(N) rather than O(N²) in the row count.
+    private func computeVisibleLayout(snapshot: [Block], hidden: Set<BlockID>)
+        -> (pairs: [(Int, Block)], prevVisible: [Block?])
+    {
+        var pairs: [(Int, Block)] = []
+        var prevVisible: [Block?] = []
+        pairs.reserveCapacity(snapshot.count)
+        prevVisible.reserveCapacity(snapshot.count)
+        var lastVisible: Block? = nil
+        for (i, block) in snapshot.enumerated() {
+            if hidden.contains(block.id) { continue }
+            pairs.append((i, block))
+            prevVisible.append(lastVisible)
+            lastVisible = block
         }
-        return nil
+        return (pairs, prevVisible)
     }
 
     /// Move the cursor by `delta` rows; collapse to a single-block selection at the new cursor.
