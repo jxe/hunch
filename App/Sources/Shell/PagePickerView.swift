@@ -6,23 +6,33 @@ import Editor
 /// expressed by the wrapper (NavigationStack title, sheet vs. inline) and
 /// by which optional callbacks are passed.
 ///
-/// `selection` is a single-item binding that drives `List`'s native highlight
-/// + keyboard nav. The sidebar binds it to the currently-open page; sheets
-/// bind to a transient `@State` and act on the write to navigate / dismiss.
+/// `selection` is a single-item binding driving `List`'s native highlight.
+/// Writes are pure storage — they don't activate the row. `onActivate` fires
+/// on commit (click or Return on the keyboard cursor).
+///
+/// Arrow keys move the cursor regardless of whether the search field has
+/// focus; Return commits. This works because `.onKeyPress` handlers attached
+/// here propagate up from the view's window when keys aren't already
+/// consumed by the focused control (TextFields don't consume up/down/return-
+/// when-empty in this configuration). Without this hook the sheet's search
+/// field would swallow focus and arrow keys would do nothing.
 struct PagePickerView: View {
     let items: [MentionItem]
     @Binding var selection: MentionItem.ID?
+    let onActivate: (MentionItem) -> Void
     let onSetHome: ((MentionItem) -> Void)?
     let onMoveToTrash: ((MentionItem) -> Void)?
 
     init(
         items: [MentionItem],
         selection: Binding<MentionItem.ID?>,
+        onActivate: @escaping (MentionItem) -> Void,
         onSetHome: ((MentionItem) -> Void)? = nil,
         onMoveToTrash: ((MentionItem) -> Void)? = nil
     ) {
         self.items = items
         self._selection = selection
+        self.onActivate = onActivate
         self.onSetHome = onSetHome
         self.onMoveToTrash = onMoveToTrash
     }
@@ -38,6 +48,7 @@ struct PagePickerView: View {
                 ForEach(items) { item in
                     MentionItemRow(item: item)
                         .tag(item.id)
+                        .onTapGesture { onActivate(item) }
                         .modifier(PageRowSwipeActions(
                             item: item,
                             onSetHome: onSetHome,
@@ -47,6 +58,24 @@ struct PagePickerView: View {
             }
         }
         .listStyle(.plain)
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            guard !items.isEmpty else { return .ignored }
+            let delta = press.key == .downArrow ? 1 : -1
+            let idx = selection.flatMap { id in items.firstIndex(where: { $0.id == id }) }
+            let next: Int
+            if let idx {
+                next = (idx + delta + items.count) % items.count
+            } else {
+                next = delta > 0 ? 0 : items.count - 1
+            }
+            selection = items[next].id
+            return .handled
+        }
+        .onKeyPress(.return) {
+            guard let id = selection, let item = items.first(where: { $0.id == id }) else { return .ignored }
+            onActivate(item)
+            return .handled
+        }
     }
 }
 

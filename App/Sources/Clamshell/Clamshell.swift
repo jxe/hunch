@@ -143,13 +143,28 @@ public final class Clamshell {
 
     // MARK: - Pages: create
 
-    /// Creates a new page at `url` with `# title` followed by the serialized
-    /// blocks (or just the title if `blocks` is nil). No-op if the file already
-    /// exists. Creates intermediate directories as needed.
-    nonisolated public func createPage(at url: URL, title: String, blocks: [Block]?) throws {
+    /// Creates a new page with `# title` followed by the serialized blocks
+    /// (or just the title if `blocks` is nil). Returns the workspace-relative
+    /// path of the created page.
+    ///
+    /// `requestedPath: nil` derives a slug from `title` and disambiguates with
+    /// `-2`, `-3`, etc. against existing files. A non-nil `requestedPath` is
+    /// honored as-is — used by the editor for deterministic-id cases (redo,
+    /// preserved-id mention create).
+    ///
+    /// No-op if the resolved file already exists. Intermediate directories
+    /// are created as needed.
+    @discardableResult
+    nonisolated public func createPage(
+        title: String,
+        requestedPath: String?,
+        blocks: [Block]?
+    ) throws -> String {
+        let path = requestedPath ?? availablePagePath(for: title)
+        let url = self.url(for: path)
         let parent = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        guard !FileManager.default.fileExists(atPath: url.path) else { return path }
         let body: String
         if let blocks {
             body = "# \(title)\n\n" + BlockSerializer.serialize(blocks)
@@ -157,11 +172,12 @@ public final class Clamshell {
             body = "# \(title)\n"
         }
         try body.write(to: url, atomically: true, encoding: .utf8)
+        return path
     }
 
-    /// A page-relative path under `root` for a new page titled `title`, suffixed
-    /// with `-2`, `-3`, etc. as needed to avoid collision with existing files.
-    nonisolated public func availablePagePath(for title: String) -> String {
+    /// Workspace-relative slug for a new page titled `title`, suffixed with
+    /// `-2`, `-3`, etc. to avoid collision with existing files.
+    nonisolated private func availablePagePath(for title: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         let chars = title.unicodeScalars.map { scalar -> Character in
             allowed.contains(scalar) ? Character(scalar) : "-"

@@ -272,15 +272,14 @@ final class WorkspaceModel {
 
     func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
         guard let clamshell else { return requestedPath }
-        let path = requestedPath ?? clamshell.availablePagePath(for: title)
-        let target = clamshell.url(for: path)
         do {
-            try clamshell.createPage(at: target, title: title, blocks: initialContent)
+            let path = try clamshell.createPage(title: title, requestedPath: requestedPath, blocks: initialContent)
+            let target = clamshell.url(for: path)
             titleCache[target] = CachedTitle(title: title, modificationDate: modificationDate(for: target))
             rescan()
             return path
         } catch {
-            self.error = "Failed to create \(path): \(error.localizedDescription)"
+            self.error = "Failed to create page: \(error.localizedDescription)"
             return requestedPath
         }
     }
@@ -848,6 +847,13 @@ struct ContentView: View {
     @State private var pageSearchText = ""
     @State private var recoveryFilter: RecoveryListFilter?
     @State private var showingPageList = false
+    /// Sidebar's keyboard cursor (visual highlight). Mirrors the currently-open
+    /// page when no arrow nav has happened; arrow keys move it independently
+    /// of `model.path`. Activation (click or Return) calls `model.open` and
+    /// the sidebar re-syncs on the next path change.
+    @State private var sidebarCursor: MentionItem.ID?
+    /// Same idea for the square.stack sheet.
+    @State private var pageListSheetCursor: MentionItem.ID?
 
     var body: some View {
         Group {
@@ -864,8 +870,14 @@ struct ContentView: View {
                 // the NavigationStack mounts with a non-empty path; without it
                 // `openDocument` would never load and `pageDetail` would render
                 // the ProgressView fallback forever.
-                .onChange(of: model.path, initial: true) { _, _ in
+                .onChange(of: model.path, initial: true) { _, newPath in
                     model.handlePathChange()
+                    // Keep the sidebar's keyboard cursor pinned to whatever's
+                    // currently navigated. Without this, arrow keys would resume
+                    // from a stale highlight after the user clicked a row.
+                    sidebarCursor = newPath.first.flatMap { url in
+                        model.entries.first(where: { $0.url == url })?.relativePath
+                    }
                 }
                 .sheet(isPresented: $showingPageList) {
                     pageListSheet
@@ -948,77 +960,52 @@ struct ContentView: View {
         )
     }
 
-    /// Sidebar's persistent selection — the relative-path of whatever page is
-    /// currently pushed onto the navstack (nil when at home). Writing routes
-    /// through `model.open`. Nil writes (auto-deselect on stack pop) are
-    /// ignored — NavigationStack owns path.
-    private var sidebarSelection: Binding<MentionItem.ID?> {
-        Binding(
-            get: { model.path.first.flatMap { url in model.entries.first(where: { $0.url == url })?.relativePath } },
-            set: { newID in
-                if let id = newID, let entry = model.entries.first(where: { $0.relativePath == id }) {
-                    model.open(entry)
-                }
-            }
-        )
+    /// Activate a row from any page-picker surface: navigate to the page and,
+    /// when called from a sheet (`dismissSheet: true`), close it.
+    private func activate(_ item: MentionItem, dismissSheet: Bool) {
+        guard let entry = model.entries.first(where: { $0.relativePath == item.id }) else { return }
+        model.open(entry)
+        if dismissSheet { showingPageList = false }
     }
 
-    /// Sheet selection: any pick navigates via `model.open` and dismisses.
-    private var sheetSelection: Binding<MentionItem.ID?> {
-        Binding(
-            get: { nil },
-            set: { newID in
-                guard let id = newID,
-                      let entry = model.entries.first(where: { $0.relativePath == id }) else { return }
-                model.open(entry)
-                showingPageList = false
-            }
-        )
+    private func setHome(_ item: MentionItem) {
+        if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
+            model.setHome(entry)
+        }
+    }
+
+    private func moveToTrash(_ item: MentionItem) {
+        if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
+            _ = model.moveToTrash(entry)
+        }
     }
 
     /// Page-list sheet shown from the home toolbar icon. Mirrors the sidebar's
     /// content (PagePickerView + Recently Deleted) but in a modal context.
     private var pageListSheet: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 0) {
-                PagePickerView(
-                    items: model.pages(matching: pageSearchText, excludingCurrent: false),
-                    selection: sheetSelection,
-                    onSetHome: { item in
-                        if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
-                            model.setHome(entry)
-                        }
-                    },
-                    onMoveToTrash: { item in
-                        if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
-                            _ = model.moveToTrash(entry)
-                        }
-                    }
-                )
-                Divider()
-                Button {
-                    showingPageList = false
-                    recoveryFilter = .all
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "clock.arrow.circlepath")
-                        Text("Recover")
-                        Spacer()
-                    }
-                    .font(NotionStyle.body())
-                    .foregroundStyle(NotionStyle.mutedForeground)
-                    .contentShape(Rectangle())
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                }
-                .buttonStyle(.plain)
-            }
+            PagePickerView(
+                items: model.pages(matching: pageSearchText, excludingCurrent: false),
+                selection: $pageListSheetCursor,
+                onActivate: { item in activate(item, dismissSheet: true) },
+                onSetHome: setHome,
+                onMoveToTrash: moveToTrash
+            )
             .navigationTitle("Pages")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .searchable(text: $pageSearchText, placement: .automatic, prompt: "Search pages")
             .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        showingPageList = false
+                        recoveryFilter = .all
+                    } label: {
+                        Label("Recover", systemImage: "clock.arrow.circlepath")
+                    }
+                    .help("Recently Deleted")
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { showingPageList = false }
                 }
@@ -1038,32 +1025,26 @@ struct ContentView: View {
                 .padding(.vertical, 8)
             PagePickerView(
                 items: model.pages(matching: pageSearchText, excludingCurrent: false),
-                selection: sidebarSelection,
-                onSetHome: { item in
-                    if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
-                        model.setHome(entry)
-                    }
-                },
-                onMoveToTrash: { item in
-                    if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
-                        _ = model.moveToTrash(entry)
-                    }
-                }
+                selection: $sidebarCursor,
+                onActivate: { item in activate(item, dismissSheet: false) },
+                onSetHome: setHome,
+                onMoveToTrash: moveToTrash
             )
             Divider()
             Button {
                 recoveryFilter = .all
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 11))
                     Text("Recover")
+                        .font(NotionStyle.body(size: 12))
                     Spacer()
                 }
-                .font(NotionStyle.body())
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .contentShape(Rectangle())
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
             }
             .buttonStyle(.plain)
         }
@@ -1338,24 +1319,25 @@ private struct PagePickerSheet: View {
     let onCancel: () -> Void
 
     @State private var query: String = ""
-    @State private var selection: MentionItem.ID?
+    @State private var cursor: MentionItem.ID?
+
+    private var items: [MentionItem] {
+        model.pages(matching: query, excludingCurrent: true)
+    }
 
     var body: some View {
         NavigationStack {
             PagePickerView(
-                items: model.pages(matching: query, excludingCurrent: true),
-                selection: Binding(
-                    get: { selection },
-                    set: { newID in
-                        selection = newID
-                        if let newID,
-                           let item = model.pages(matching: query, excludingCurrent: true)
-                            .first(where: { $0.id == newID }) {
-                            onPick(item)
-                        }
-                    }
-                )
+                items: items,
+                selection: $cursor,
+                onActivate: { item in onPick(item) }
             )
+            .onAppear {
+                if cursor == nil { cursor = items.first?.id }
+            }
+            .onChange(of: query) { _, _ in
+                cursor = items.first?.id
+            }
             .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

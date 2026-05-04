@@ -75,7 +75,7 @@ upgrade.
 | Path conversion | `relativePath(of:)`, `url(for:)` |
 | Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)` |
 | Write | `save(_:resolvingSubpageTitle:)` (async, coalesced), `writeImmediately(_:resolvingSubpageTitle:)` (sync), `flush(url:)` |
-| Create | `createPage(at:title:blocks:)`, `availablePagePath(for:)` |
+| Create | `createPage(title:requestedPath:blocks:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Lost-block log | `recordDeletion(at:previousBlocks:removedIndices:)`, `listLostBlocks(filter:)`, `purgeLostBlock(_:)` |
 | Metadata | `homeRelativePath` (read/write), `root` |
