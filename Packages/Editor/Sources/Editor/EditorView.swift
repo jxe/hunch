@@ -101,6 +101,16 @@ public struct EditorView: View {
     }
     @State var actionSheet: BlockActionSheet?
 
+    /// Drives the "Move to…" destination-picker sheet. Triggered from the block
+    /// action menu; carries the blocks the move should act on (a snapshot of
+    /// `menuTargetIDs(anchorID:)` at click time, so multi-selection survives the
+    /// popover dismiss → sheet present transition).
+    struct MovePickerSheet: Identifiable {
+        let id = UUID()
+        let blockIDs: [BlockID]
+    }
+    @State var movePicker: MovePickerSheet?
+
     public init(
         document: Binding<Document>,
         state: EditorState,
@@ -251,6 +261,16 @@ public struct EditorView: View {
                     .background(.regularMaterial, in: Capsule())
                     .padding(.bottom, 18)
                 }
+            }
+            .sheet(item: $movePicker) { sheet in
+                MoveDestinationPickerView(
+                    pages: suggestPages,
+                    onPick: { pageID in
+                        movePicker = nil
+                        moveBlocks(ids: sheet.blockIDs, intoSubpagePath: pageID)
+                    },
+                    onCancel: { movePicker = nil }
+                )
             }
             // Hand the shared UndoManager + controller down through the environment.
             // BlockTextEditor reads the controller to register a typing-session snapshot
@@ -652,7 +672,7 @@ public struct EditorView: View {
         insertParagraph(at: document.blocks.count)
     }
 
-    private func showActionToast(_ message: String) {
+    func showActionToast(_ message: String) {
         state.actionToast = message
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))

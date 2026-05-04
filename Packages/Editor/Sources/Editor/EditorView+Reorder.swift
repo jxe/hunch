@@ -550,12 +550,13 @@ extension EditorView {
         state.setNavSelection(blocks: Set(ids), anchor: first, cursor: last)
     }
 
-    /// Drop-on-subpage: append `ids` to the end of the child page's `.md` file
-    /// (cross-document write via `onAppendToSubpage`) and remove them from this
-    /// document. Indents are normalized so the topmost dragged block lands at 0
-    /// in the destination; relative nesting within the dragged set is preserved.
-    /// If the destination write fails, the source document is left untouched.
-    fileprivate func moveBlocks(ids: [BlockID], intoSubpagePath path: String) {
+    /// Drop-on-subpage / Move-to picker: append `ids` to the end of the destination
+    /// page's `.md` file (cross-document write via `onAppendToSubpage`) and remove
+    /// them from this document. Indents are normalized so the topmost moved block
+    /// lands at 0 in the destination; relative nesting within the moved set is
+    /// preserved. If the destination write fails, the source document is left
+    /// untouched.
+    func moveBlocks(ids: [BlockID], intoSubpagePath path: String) {
         let idSet = Set(ids)
         let sourceIndices = document.blocks.enumerated()
             .compactMap { (i, block) in idSet.contains(block.id) ? i : nil }
@@ -575,5 +576,6 @@ extension EditorView {
             }
             document.blocks = blocks
         }
+        showActionToast("Moved")
     }
 }

@@ -485,14 +485,20 @@ final class WorkspaceModel {
     }
 
     /// Translate a query into the editor's `MentionItem` list. Title-prefix beats
-    /// title-substring beats path-substring; recent files win ties. Capped at 8 to
-    /// match the popover's render budget.
+    /// title-substring beats path-substring; recent files win ties. The currently
+    /// open page is filtered out (you don't usually mention or move-to the page
+    /// you're on, and the move path would clobber unsaved edits if it loaded the
+    /// open file from disk). Returns the full ranked list — the @-mention popover
+    /// caps to 8 internally, while the "Move to" sheet shows everything.
     func mentionItems(matching query: String) -> [MentionItem] {
         let q = query.lowercased()
-        let pool = entries.sorted { $0.modificationDate > $1.modificationDate }
+        let currentURL = openDocument?.url
+        let pool = entries
+            .filter { $0.url != currentURL }
+            .sorted { $0.modificationDate > $1.modificationDate }
         let chosen: [WorkspaceEntry]
         if q.isEmpty {
-            chosen = Array(pool.prefix(8))
+            chosen = pool
         } else {
             let ranked = pool.compactMap { entry -> (WorkspaceEntry, Int)? in
                 let title = entry.title.lowercased()
@@ -501,7 +507,7 @@ final class WorkspaceModel {
                 if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
                 return nil
             }
-            chosen = ranked.sorted { $0.1 < $1.1 }.map(\.0).prefix(8).map { $0 }
+            chosen = ranked.sorted { $0.1 < $1.1 }.map(\.0)
         }
         return chosen.map { entry in
             let subtitle = entry.relativePath != entry.title + ".md" ? entry.relativePath : nil

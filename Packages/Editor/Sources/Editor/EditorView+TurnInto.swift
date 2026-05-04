@@ -400,6 +400,15 @@ extension EditorView {
                         ) {
                             _ = copyBlocksToPasteboard(ids: targetIDs)
                         }
+                        compactMenuButton(
+                            title: "Move to",
+                            systemImage: "arrow.right.doc.on.clipboard",
+                            keyboardShortcut: .return,
+                            keyboardShortcutModifiers: [.command, .shift],
+                            keyboardShortcutLabel: "⇧⌘↩"
+                        ) {
+                            movePicker = MovePickerSheet(blockIDs: targetIDs)
+                        }
                         ForEach(indentTargets, id: \.self) { action in
                             compactMenuButton(
                                 title: action.title,
