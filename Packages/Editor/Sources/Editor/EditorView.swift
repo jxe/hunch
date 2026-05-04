@@ -80,6 +80,12 @@ public struct EditorView: View {
     /// drag-drop) all register against. Recreated implicitly when EditorView's identity
     /// resets; explicitly cleared on document switch via `.onChange(of: document.id)`.
     @State var undoController = DocumentUndoController()
+    /// Receives menu-bar dispatches from the host (Bold, Block Action Menu, Move
+    /// Block to Page…, etc.) and routes them into the same internal handlers
+    /// the keyboard shortcuts trigger. Closures are populated in
+    /// `wireEditorCommands()` (called from `.onAppear`); the host binds to it
+    /// via `@FocusedValue(\.editorCommands)`.
+    @State var editorCommands = EditorCommands()
     @State var rowFrames: [BlockID: CGRect] = [:]
     @State var lastDropHapticIndex: Int?
     @State var pinchGestureActive = false
@@ -271,6 +277,7 @@ public struct EditorView: View {
             // holds AppKit-level focus, which SwiftUI's per-view focus tracking misses —
             // scene-level remains visible to the menu commands.
             .focusedSceneValue(\.documentUndoController, undoController)
+            .focusedSceneValue(\.editorCommands, editorCommands)
             .focusable()
             .focused($pageFocused)
             .onAppear {
@@ -279,6 +286,7 @@ public struct EditorView: View {
                 }
                 requestPageNavigationFocus()
                 installUndoApply()
+                wireEditorCommands()
             }
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
@@ -791,6 +799,70 @@ public struct EditorView: View {
     /// Install the closure that the undo controller calls on Cmd-Z (and on redo).
     /// Restores `document.blocks` and fixes up cursor/selection against the new
     /// block set. Re-registers the inverse so redo works.
+    /// Populate `editorCommands` closures so the host's menu bar can drive editor
+    /// actions. Closures capture only stable references (`state` + bindings); they
+    /// dispatch to the same internal handlers the keyboard shortcuts use.
+    private func wireEditorCommands() {
+        editorCommands.openBlockActionMenu = {
+            guard let id = topSelectedBlockID() else { return }
+            actionSheet = BlockActionSheet(id: id)
+        }
+        editorCommands.openMoveTo = {
+            guard let id = topSelectedBlockID() else { return }
+            let targetIDs = menuTargetIDs(anchorID: id)
+            onRequestMoveDestination(targetIDs) { picked in
+                guard let picked else { return }
+                moveBlocks(ids: targetIDs, intoSubpagePath: picked)
+            }
+        }
+        editorCommands.indent = {
+            #if os(macOS)
+            // In edit mode, the active text view's keyDown commits live text before
+            // calling the same `changeIndent` helper; the menu path skips keyDown,
+            // so do the commit ourselves before changing the model.
+            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
+               let bid = state.editingBlock {
+                view.coordinator?.commitLiveText(view)
+                _ = changeIndent(bid, by: +1)
+                return
+            }
+            #endif
+            indentSelection(by: 1)
+        }
+        editorCommands.outdent = {
+            #if os(macOS)
+            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
+               let bid = state.editingBlock {
+                view.coordinator?.commitLiveText(view)
+                _ = changeIndent(bid, by: -1)
+                return
+            }
+            #endif
+            indentSelection(by: -1)
+        }
+        editorCommands.toggleLinkOrSubpage = {
+            guard let id = state.cursor, state.selection.count == 1 else { return }
+            _ = convertBlockToSubpage(blockID: id, preferredTitle: nil)
+        }
+        editorCommands.toggleInlineMark = { mark in
+            #if os(macOS)
+            // In edit mode the active block's NSTextView owns first-responder. Route
+            // straight to its `toggleInlineMark` so the bridge sees the selection
+            // the same way Cmd-B/I/E/Shift-S would.
+            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView {
+                view.toggleInlineMark(mark)
+                return
+            }
+            #endif
+            switch mark {
+            case .bold: _ = toggleBoldOnSelection()
+            case .italic: _ = toggleItalicOnSelection()
+            case .strikethrough: _ = toggleStrikethroughOnSelection()
+            case .code: break
+            }
+        }
+    }
+
     private func installUndoApply() {
         undoController.apply = { newBlocks in
             let beforeRedo = document.blocks

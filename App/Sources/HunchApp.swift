@@ -34,11 +34,34 @@ struct HunchApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
 
+                Divider()
+
                 Button("Jump to Page…") {
                     model.showJumpTo = true
                 }
                 .keyboardShortcut("p", modifiers: [.command])
                 .disabled(model.workspaceURL == nil)
+
+                Button("Show Page List…") {
+                    model.showPageList = true
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(model.workspaceURL == nil)
+
+                Divider()
+
+                Button("Recently Deleted…") {
+                    model.recoveryFilter = .all
+                }
+                .keyboardShortcut("\\", modifiers: [.command, .shift])
+                .disabled(model.workspaceURL == nil)
+
+                Button("Recover Lost Blocks on This Page…") {
+                    if let rel = model.currentPageRelativePath {
+                        model.recoveryFilter = .page(relativePath: rel)
+                    }
+                }
+                .disabled(model.currentPageRelativePath == nil)
             }
             CommandGroup(after: .sidebar) {
                 Button("Back") {
@@ -53,6 +76,15 @@ struct HunchApp: App {
             // which we've disabled, so Cmd-Z would just beep.
             CommandGroup(replacing: .undoRedo) {
                 UndoRedoMenuItems()
+            }
+            // Block-level actions live in Edit (after Cut/Copy/Paste) — they
+            // operate on the current selection, like the system pasteboard ops.
+            CommandGroup(after: .pasteboard) {
+                Divider()
+                EditorBlockMenuItems()
+            }
+            CommandMenu("Format") {
+                EditorFormatMenuItems()
             }
         }
         #endif
@@ -93,6 +125,80 @@ private struct UndoRedoMenuItems: View {
         }
         .keyboardShortcut("z", modifiers: [.command, .shift])
         .disabled(undoController == nil)
+    }
+}
+
+private struct EditorBlockMenuItems: View {
+    @FocusedValue(\.editorCommands) private var commands
+
+    var body: some View {
+        Button("Turn Into…") {
+            commands?.openBlockActionMenu()
+        }
+        .keyboardShortcut("/", modifiers: .command)
+        .disabled(commands == nil)
+
+        Button("Make Subpage / Link…") {
+            commands?.toggleLinkOrSubpage()
+        }
+        .keyboardShortcut("k", modifiers: .command)
+        .disabled(commands == nil)
+
+        Button("Move Block to Page…") {
+            commands?.openMoveTo()
+        }
+        .keyboardShortcut(.return, modifiers: [.command, .shift])
+        .disabled(commands == nil)
+
+        Divider()
+
+        // Tab / Shift+Tab are the editor's real indent shortcuts. Registered as
+        // menu equivalents so they appear in the menu the way users expect.
+        // `.disabled(commands == nil)` means the menu does NOT swallow Tab when
+        // no editor is focused (a disabled menu item with a key equivalent
+        // doesn't intercept the key on macOS), so Tab keeps its normal focus-
+        // traversal behavior in sheets and other UI.
+        Button("Indent") {
+            commands?.indent()
+        }
+        .keyboardShortcut(.tab, modifiers: [])
+        .disabled(commands == nil)
+
+        Button("Outdent") {
+            commands?.outdent()
+        }
+        .keyboardShortcut(.tab, modifiers: .shift)
+        .disabled(commands == nil)
+    }
+}
+
+private struct EditorFormatMenuItems: View {
+    @FocusedValue(\.editorCommands) private var commands
+
+    var body: some View {
+        Button("Bold") {
+            commands?.toggleInlineMark(.bold)
+        }
+        .keyboardShortcut("b", modifiers: .command)
+        .disabled(commands == nil)
+
+        Button("Italic") {
+            commands?.toggleInlineMark(.italic)
+        }
+        .keyboardShortcut("i", modifiers: .command)
+        .disabled(commands == nil)
+
+        Button("Inline Code") {
+            commands?.toggleInlineMark(.code)
+        }
+        .keyboardShortcut("e", modifiers: .command)
+        .disabled(commands == nil)
+
+        Button("Strikethrough") {
+            commands?.toggleInlineMark(.strikethrough)
+        }
+        .keyboardShortcut("s", modifiers: [.command, .shift])
+        .disabled(commands == nil)
     }
 }
 #endif

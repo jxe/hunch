@@ -26,6 +26,11 @@ final class WorkspaceModel {
 
     /// Drives the ⌘P "Jump to Page…" sheet.
     var showJumpTo: Bool = false
+    /// Drives the ⌘⇧P / square.stack "Pages" sheet.
+    var showPageList: Bool = false
+    /// Drives the recovery sheet (`.all` for the workspace, `.page(rel)` for a
+    /// single source page). Setting this presents the sheet; clearing dismisses.
+    var recoveryFilter: RecoveryListFilter?
 
     struct MoveRequest: Identifiable {
         let id = UUID()
@@ -57,6 +62,19 @@ final class WorkspaceModel {
     var homeURL: URL? {
         guard let homeRelativePath else { return nil }
         return entries.first { $0.relativePath == homeRelativePath }?.url
+    }
+
+    /// Workspace-relative path of the currently-open document, or nil if no
+    /// page is loaded. Used by menu commands that act on "this page" — most
+    /// notably "Recover Lost Blocks for Current Page".
+    var currentPageRelativePath: String? {
+        guard let url = openDocument?.url, let root = workspaceURL else { return nil }
+        let rootPath = root.standardizedFileURL.path
+        let filePath = url.standardizedFileURL.path
+        if filePath.hasPrefix(rootPath + "/") {
+            return String(filePath.dropFirst(rootPath.count + 1))
+        }
+        return url.lastPathComponent
     }
 
     private var clamshell: Clamshell?
@@ -845,8 +863,6 @@ struct ContentView: View {
     @State private var showingSwitchPicker = false
     #endif
     @State private var pageSearchText = ""
-    @State private var recoveryFilter: RecoveryListFilter?
-    @State private var showingPageList = false
     /// Sidebar's keyboard cursor (visual highlight). Mirrors the currently-open
     /// page when no arrow nav has happened; arrow keys move it independently
     /// of `model.path`. Activation (click or Return) calls `model.open` and
@@ -879,7 +895,7 @@ struct ContentView: View {
                         model.entries.first(where: { $0.url == url })?.relativePath
                     }
                 }
-                .sheet(isPresented: $showingPageList) {
+                .sheet(isPresented: $model.showPageList) {
                     pageListSheet
                 }
                 .sheet(item: $model.moveRequest) { _ in
@@ -902,14 +918,14 @@ struct ContentView: View {
                     )
                 }
                 .sheet(item: Binding(
-                    get: { recoveryFilter.map(RecoveryFilterBox.init) },
-                    set: { recoveryFilter = $0?.filter }
+                    get: { model.recoveryFilter.map(RecoveryFilterBox.init) },
+                    set: { model.recoveryFilter = $0?.filter }
                 )) { box in
                     RecoveryView(
                         filter: box.filter,
                         loadEntries: { filter in await model.listRecoverableEntries(filter: filter) },
                         onRestore: { entry in await model.restoreRecoverable(entry) },
-                        onClose: { recoveryFilter = nil }
+                        onClose: { model.recoveryFilter = nil }
                     )
                     #if os(macOS)
                     .frame(minWidth: 480, minHeight: 480)
@@ -940,8 +956,7 @@ struct ContentView: View {
                     url: homeURL,
                     document: document,
                     model: model,
-                    recoveryFilter: $recoveryFilter,
-                    onShowPageList: { showingPageList = true }
+                    onShowPageList: { model.showPageList = true }
                 )
             } else {
                 ProgressView()
@@ -965,7 +980,7 @@ struct ContentView: View {
     private func activate(_ item: MentionItem, dismissSheet: Bool) {
         guard let entry = model.entries.first(where: { $0.relativePath == item.id }) else { return }
         model.open(entry)
-        if dismissSheet { showingPageList = false }
+        if dismissSheet { model.showPageList = false }
     }
 
     private func setHome(_ item: MentionItem) {
@@ -999,15 +1014,15 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .navigation) {
                     Button {
-                        showingPageList = false
-                        recoveryFilter = .all
+                        model.showPageList = false
+                        model.recoveryFilter = .all
                     } label: {
                         Label("Recover", systemImage: "clock.arrow.circlepath")
                     }
                     .help("Recently Deleted")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { showingPageList = false }
+                    Button("Done") { model.showPageList = false }
                 }
             }
         }
@@ -1032,7 +1047,7 @@ struct ContentView: View {
             )
             Divider()
             Button {
-                recoveryFilter = .all
+                model.recoveryFilter = .all
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "clock.arrow.circlepath")
@@ -1101,8 +1116,7 @@ struct ContentView: View {
             EditorPage(
                 url: url,
                 document: document,
-                model: model,
-                recoveryFilter: $recoveryFilter
+                model: model
             )
         } else {
             ProgressView()
@@ -1119,7 +1133,6 @@ private struct EditorPage: View {
     let url: URL
     let document: Document
     @Bindable var model: WorkspaceModel
-    @Binding var recoveryFilter: RecoveryListFilter?
     /// Non-nil only for the home root: adds a toolbar button that surfaces
     /// the page-list sheet. Subpages get `nil` and don't show the icon.
     var onShowPageList: (() -> Void)? = nil
@@ -1200,7 +1213,7 @@ private struct EditorPage: View {
                 .contextMenu {
                     Button {
                         let relPath = workspaceRelativePath(for: url, root: model.workspaceURL)
-                        recoveryFilter = .page(relativePath: relPath)
+                        model.recoveryFilter = .page(relativePath: relPath)
                     } label: {
                         Label("Recover lost blocks…", systemImage: "clock.arrow.circlepath")
                     }
@@ -1221,7 +1234,7 @@ private struct EditorPage: View {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     let relPath = workspaceRelativePath(for: url, root: model.workspaceURL)
-                    recoveryFilter = .page(relativePath: relPath)
+                    model.recoveryFilter = .page(relativePath: relPath)
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
                 }

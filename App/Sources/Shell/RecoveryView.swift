@@ -16,6 +16,8 @@ public struct RecoveryView: View {
     @State private var entries: [RecoverableEntry] = []
     @State private var loadState: LoadState = .loading
     @State private var pendingRestore: RecoverableEntry?
+    @State private var selection: RecoverableEntry.ID?
+    @FocusState private var listFocused: Bool
 
     enum LoadState { case loading, loaded, empty }
 
@@ -87,10 +89,12 @@ public struct RecoveryView: View {
     }
 
     private var list: some View {
-        List {
+        List(selection: $selection) {
             ForEach(entries) { entry in
                 row(for: entry)
+                    .tag(entry.id)
                     .contentShape(Rectangle())
+                    .onTapGesture { pendingRestore = entry }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button {
                             pendingRestore = entry
@@ -109,6 +113,36 @@ public struct RecoveryView: View {
             }
         }
         .listStyle(.plain)
+        // Without this the picker has no focused descendant so .onKeyPress
+        // below never fires (cf. PagePickerView, where .searchable's text field
+        // owns focus and arrow keys bubble up). Auto-focus the list when it
+        // appears and seed the cursor on the first row so Return is meaningful
+        // immediately.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($listFocused)
+        .onAppear {
+            listFocused = true
+            if selection == nil { selection = entries.first?.id }
+        }
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            guard !entries.isEmpty else { return .ignored }
+            let delta = press.key == .downArrow ? 1 : -1
+            let idx = selection.flatMap { id in entries.firstIndex(where: { $0.id == id }) }
+            let next: Int
+            if let idx {
+                next = (idx + delta + entries.count) % entries.count
+            } else {
+                next = delta > 0 ? 0 : entries.count - 1
+            }
+            selection = entries[next].id
+            return .handled
+        }
+        .onKeyPress(.return) {
+            guard let id = selection, let entry = entries.first(where: { $0.id == id }) else { return .ignored }
+            pendingRestore = entry
+            return .handled
+        }
     }
 
     private func row(for entry: RecoverableEntry) -> some View {

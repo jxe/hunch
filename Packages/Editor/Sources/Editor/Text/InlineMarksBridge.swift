@@ -42,7 +42,7 @@ extension PlatformFontDescriptor.SymbolicTraits {
     }
 }
 
-enum InlineMark {
+public enum InlineMark: Sendable {
     case bold
     case italic
     case code
