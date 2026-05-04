@@ -180,6 +180,48 @@ public final class Clamshell {
         return candidate
     }
 
+    // MARK: - Pages: search
+
+    /// Filter + rank `entries` for any page-picker surface (sidebar,
+    /// square.stack sheet, @-mention popover, move-to, jump-to).
+    /// Title-prefix beats title-substring beats path-substring; mtime breaks ties.
+    /// Empty query returns the full pool in mtime-descending order.
+    /// `excluding` omits a specific URL — typically the currently-open document
+    /// (move-to / mention / jump-to). Pass nil to include it (sidebar / sheet).
+    public func searchPages(
+        in entries: [WorkspaceEntry],
+        query: String,
+        excluding: URL? = nil
+    ) -> [MentionItem] {
+        let q = query.lowercased()
+        let pool = entries
+            .filter { $0.url != excluding }
+            .sorted { $0.modificationDate > $1.modificationDate }
+        let chosen: [WorkspaceEntry]
+        if q.isEmpty {
+            chosen = pool
+        } else {
+            let ranked = pool.compactMap { entry -> (WorkspaceEntry, Int)? in
+                let title = entry.title.lowercased()
+                if title.hasPrefix(q) { return (entry, 0) }
+                if title.contains(q) { return (entry, 1) }
+                if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
+                return nil
+            }
+            chosen = ranked.sorted { $0.1 < $1.1 }.map(\.0)
+        }
+        let home = homeRelativePath
+        return chosen.map { entry in
+            let subtitle = entry.relativePath != entry.title + ".md" ? entry.relativePath : nil
+            return MentionItem(
+                id: entry.relativePath,
+                title: entry.title,
+                subtitle: subtitle,
+                isHome: entry.relativePath == home
+            )
+        }
+    }
+
     // MARK: - Trash (soft-deleted pages)
 
     /// Move a page to `Trash/`. If the page is the current home page, also clears

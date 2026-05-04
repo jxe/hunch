@@ -33,6 +33,12 @@ struct HunchApp: App {
                     model.switchWorkspace()
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
+
+                Button("Jump to Page…") {
+                    model.showJumpTo = true
+                }
+                .keyboardShortcut("p", modifiers: [.command])
+                .disabled(model.workspaceURL == nil)
             }
             CommandGroup(after: .sidebar) {
                 Button("Back") {

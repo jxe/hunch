@@ -46,6 +46,11 @@ public struct EditorView: View {
     /// Append blocks to the end of the page at `pageID`. Returns `true` on success.
     /// Used by drop-on-subpage to move dragged blocks into a child page.
     public let onAppendToSubpage: (_ pageID: String, _ blocks: [Block]) -> Bool
+    /// Ask the host to present its page picker for a "Move to" action. The host
+    /// shows whatever picker UI it owns (sheet, popover, etc.) and calls back
+    /// with the chosen `pageID` (relative path) — or nil if the user cancelled.
+    /// The editor then performs the move.
+    public let onRequestMoveDestination: (_ blockIDs: [BlockID], _ pick: @escaping (String?) -> Void) -> Void
     public let onNavigateBack: () -> Void
     public let onEdited: () -> Void
     public let onBlur: () -> Void
@@ -101,16 +106,6 @@ public struct EditorView: View {
     }
     @State var actionSheet: BlockActionSheet?
 
-    /// Drives the "Move to…" destination-picker sheet. Triggered from the block
-    /// action menu; carries the blocks the move should act on (a snapshot of
-    /// `menuTargetIDs(anchorID:)` at click time, so multi-selection survives the
-    /// popover dismiss → sheet present transition).
-    struct MovePickerSheet: Identifiable {
-        let id = UUID()
-        let blockIDs: [BlockID]
-    }
-    @State var movePicker: MovePickerSheet?
-
     public init(
         document: Binding<Document>,
         state: EditorState,
@@ -121,6 +116,7 @@ public struct EditorView: View {
         onLoadSubpage: @escaping (_ pageID: String) -> [Block]? = { _ in nil },
         onAbsorbSubpage: @escaping (_ pageID: String) -> Bool = { _ in true },
         onAppendToSubpage: @escaping (_ pageID: String, _ blocks: [Block]) -> Bool = { _, _ in false },
+        onRequestMoveDestination: @escaping (_ blockIDs: [BlockID], _ pick: @escaping (String?) -> Void) -> Void = { _, pick in pick(nil) },
         onNavigateBack: @escaping () -> Void = {},
         onEdited: @escaping () -> Void = {},
         onBlur: @escaping () -> Void = {},
@@ -137,6 +133,7 @@ public struct EditorView: View {
         self.onLoadSubpage = onLoadSubpage
         self.onAbsorbSubpage = onAbsorbSubpage
         self.onAppendToSubpage = onAppendToSubpage
+        self.onRequestMoveDestination = onRequestMoveDestination
         self.onNavigateBack = onNavigateBack
         self.onEdited = onEdited
         self.onBlur = onBlur
@@ -261,16 +258,6 @@ public struct EditorView: View {
                     .background(.regularMaterial, in: Capsule())
                     .padding(.bottom, 18)
                 }
-            }
-            .sheet(item: $movePicker) { sheet in
-                MoveDestinationPickerView(
-                    pages: suggestPages,
-                    onPick: { pageID in
-                        movePicker = nil
-                        moveBlocks(ids: sheet.blockIDs, intoSubpagePath: pageID)
-                    },
-                    onCancel: { movePicker = nil }
-                )
             }
             // Hand the shared UndoManager + controller down through the environment.
             // BlockTextEditor reads the controller to register a typing-session snapshot

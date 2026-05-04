@@ -407,7 +407,10 @@ extension EditorView {
                             keyboardShortcutModifiers: [.command, .shift],
                             keyboardShortcutLabel: "⇧⌘↩"
                         ) {
-                            movePicker = MovePickerSheet(blockIDs: targetIDs)
+                            onRequestMoveDestination(targetIDs) { pickedPageID in
+                                guard let pickedPageID else { return }
+                                moveBlocks(ids: targetIDs, intoSubpagePath: pickedPageID)
+                            }
                         }
                         ForEach(indentTargets, id: \.self) { action in
                             compactMenuButton(

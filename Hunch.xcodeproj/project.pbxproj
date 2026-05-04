@@ -15,7 +15,6 @@
 		382589D6413C8E77B08C0CED /* Serializer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B01FEB44AC8069CCFC592AA /* Serializer.swift */; };
 		3AEFF62B4A43227F6DC54959 /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 183298CC2343E1CDBC8E27A9 /* Workspace.swift */; };
 		3EEA45994B20513A94C2EF04 /* FontRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F377A4E9DAA12643BB2666D /* FontRegistration.swift */; };
-		44D996E17F78C075A99DC5E8 /* PageListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3379F143F549730954C4ADC0 /* PageListView.swift */; };
 		5A4E6525FE966AF1BF39307A /* RecoveryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF336028D883858D9565D98D /* RecoveryStore.swift */; };
 		7047AECA135A40E7543D2CAC /* HunchDragAndDropUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9221CD2529F8914B14AA5D9E /* HunchDragAndDropUITests.swift */; };
 		71C3633279FDAFCA2127A43A /* BlockFingerprintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBE1F6088D2A2F400DBB4939 /* BlockFingerprintTests.swift */; };
@@ -28,6 +27,7 @@
 		A209C9DB2C9E2206FB82F4A8 /* RecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C71A9C43C1D37F3712FE704 /* RecoveryView.swift */; };
 		ABB5134C045387553C506B47 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 5ECE6A64919F54162EC5473A /* README.md */; };
 		AE65622E1CBA27C794241343 /* LostBlockRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47F3BA097999603B790900D7 /* LostBlockRecord.swift */; };
+		B155E1F04AA089441F43D8EA /* PagePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3403F91704D1B3970E4EB908 /* PagePickerView.swift */; };
 		B1A49CF69A67B14CF5E4F626 /* RecoveryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2547E4BEE1F99FB5B4C5B7A3 /* RecoveryStoreTests.swift */; };
 		B707766C87877E8831F13530 /* Editor in Frameworks */ = {isa = PBXBuildFile; productRef = A20B9674903EEF8DEF6BB8DB /* Editor */; };
 		BF5E458EBAE96BAD9EA9B1D9 /* Clamshell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6089D3744533A5D4FAF49690 /* Clamshell.swift */; };
@@ -68,7 +68,7 @@
 		2547E4BEE1F99FB5B4C5B7A3 /* RecoveryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryStoreTests.swift; sourceTree = "<group>"; };
 		2B01FEB44AC8069CCFC592AA /* Serializer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Serializer.swift; sourceTree = "<group>"; };
 		3231E2F91BA71E5463D5113B /* DocumentSaveCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSaveCoordinatorTests.swift; sourceTree = "<group>"; };
-		3379F143F549730954C4ADC0 /* PageListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageListView.swift; sourceTree = "<group>"; };
+		3403F91704D1B3970E4EB908 /* PagePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PagePickerView.swift; sourceTree = "<group>"; };
 		3D433D497F5377461A70E47E /* TrashStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashStoreTests.swift; sourceTree = "<group>"; };
 		47F3BA097999603B790900D7 /* LostBlockRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LostBlockRecord.swift; sourceTree = "<group>"; };
 		4EDE9175735C2BEE33F669B6 /* HunchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HunchApp.swift; sourceTree = "<group>"; };
@@ -147,7 +147,7 @@
 		573EDB9EE7E75299C1A6A1A7 /* Shell */ = {
 			isa = PBXGroup;
 			children = (
-				3379F143F549730954C4ADC0 /* PageListView.swift */,
+				3403F91704D1B3970E4EB908 /* PagePickerView.swift */,
 				8C71A9C43C1D37F3712FE704 /* RecoveryView.swift */,
 			);
 			path = Shell;
@@ -405,7 +405,7 @@
 				3EEA45994B20513A94C2EF04 /* FontRegistration.swift in Sources */,
 				262D29CF7CAA3118EBB12F92 /* HunchApp.swift in Sources */,
 				AE65622E1CBA27C794241343 /* LostBlockRecord.swift in Sources */,
-				44D996E17F78C075A99DC5E8 /* PageListView.swift in Sources */,
+				B155E1F04AA089441F43D8EA /* PagePickerView.swift in Sources */,
 				C1FCDFD59E1F87957A2AF622 /* Parser.swift in Sources */,
 				5A4E6525FE966AF1BF39307A /* RecoveryStore.swift in Sources */,
 				A209C9DB2C9E2206FB82F4A8 /* RecoveryView.swift in Sources */,

@@ -19,6 +19,40 @@ final class WorkspaceModel {
     var path: [URL] = []
     var canGoBack: Bool { !path.isEmpty }
 
+    /// Pending "Move to" picker request from the editor. Non-nil presents the
+    /// host's page-picker sheet; resolving it (pick or cancel) fires the
+    /// editor's completion and clears the request.
+    var moveRequest: MoveRequest?
+
+    /// Drives the ⌘P "Jump to Page…" sheet.
+    var showJumpTo: Bool = false
+
+    struct MoveRequest: Identifiable {
+        let id = UUID()
+        let blockIDs: [BlockID]
+        let completion: (String?) -> Void
+    }
+
+    func requestMoveDestination(blockIDs: [BlockID], completion: @escaping (String?) -> Void) {
+        moveRequest = MoveRequest(blockIDs: blockIDs, completion: completion)
+    }
+
+    func resolveMoveRequest(with pageID: String?) {
+        guard let req = moveRequest else { return }
+        moveRequest = nil
+        req.completion(pageID)
+    }
+
+    /// Push the page at `relativePath` onto the navstack — distinct from
+    /// `open(_:)` which resets to a single entry above home. Used by the ⌘P
+    /// jump-to picker so jumping mid-stack preserves the trail.
+    func jumpTo(_ relativePath: String) {
+        guard let url = entries.first(where: { $0.relativePath == relativePath })?.url else { return }
+        if path.last == url { return }
+        cacheOpenDocument()
+        path.append(url)
+    }
+
     /// URL of the designated home page, if one is set and resolves to a known entry.
     var homeURL: URL? {
         guard let homeRelativePath else { return nil }
@@ -435,35 +469,15 @@ final class WorkspaceModel {
         return nil
     }
 
-    /// Translate a query into the editor's `MentionItem` list. Title-prefix beats
-    /// title-substring beats path-substring; recent files win ties. The currently
-    /// open page is filtered out (you don't usually mention or move-to the page
-    /// you're on, and the move path would clobber unsaved edits if it loaded the
-    /// open file from disk). Returns the full ranked list — the @-mention popover
-    /// caps to 8 internally, while the "Move to" sheet shows everything.
-    func mentionItems(matching query: String) -> [MentionItem] {
-        let q = query.lowercased()
-        let currentURL = openDocument?.url
-        let pool = entries
-            .filter { $0.url != currentURL }
-            .sorted { $0.modificationDate > $1.modificationDate }
-        let chosen: [WorkspaceEntry]
-        if q.isEmpty {
-            chosen = pool
-        } else {
-            let ranked = pool.compactMap { entry -> (WorkspaceEntry, Int)? in
-                let title = entry.title.lowercased()
-                if title.hasPrefix(q) { return (entry, 0) }
-                if title.contains(q) { return (entry, 1) }
-                if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
-                return nil
-            }
-            chosen = ranked.sorted { $0.1 < $1.1 }.map(\.0)
-        }
-        return chosen.map { entry in
-            let subtitle = entry.relativePath != entry.title + ".md" ? entry.relativePath : nil
-            return MentionItem(id: entry.relativePath, title: entry.title, subtitle: subtitle)
-        }
+    /// Filter + rank the workspace's pages for any picker surface (sidebar,
+    /// square.stack sheet, @-mention popover, move-to, jump-to). Implementation
+    /// lives in `Clamshell.searchPages`; this is just the wrapper that supplies
+    /// the cached entry list and resolves `excludingCurrent` against the
+    /// currently-open document.
+    func pages(matching query: String, excludingCurrent: Bool) -> [MentionItem] {
+        guard let clamshell else { return [] }
+        let excluding = excludingCurrent ? openDocument?.url : nil
+        return clamshell.searchPages(in: entries, query: query, excluding: excluding)
     }
 
     private func cachedTitle(for entry: WorkspaceEntry, fallback: String) -> String {
@@ -856,6 +870,25 @@ struct ContentView: View {
                 .sheet(isPresented: $showingPageList) {
                     pageListSheet
                 }
+                .sheet(item: $model.moveRequest) { _ in
+                    PagePickerSheet(
+                        title: "Move to…",
+                        model: model,
+                        onPick: { item in model.resolveMoveRequest(with: item.id) },
+                        onCancel: { model.resolveMoveRequest(with: nil) }
+                    )
+                }
+                .sheet(isPresented: $model.showJumpTo) {
+                    PagePickerSheet(
+                        title: "Jump to Page…",
+                        model: model,
+                        onPick: { item in
+                            model.jumpTo(item.id)
+                            model.showJumpTo = false
+                        },
+                        onCancel: { model.showJumpTo = false }
+                    )
+                }
                 .sheet(item: Binding(
                     get: { recoveryFilter.map(RecoveryFilterBox.init) },
                     set: { recoveryFilter = $0?.filter }
@@ -915,30 +948,28 @@ struct ContentView: View {
         )
     }
 
-    /// Drives the fallback `sidebar` (only visible when no home is set, as the
-    /// NavigationStack root). The highlight reflects the pushed doc and
-    /// tapping a row pushes onto the stack via `model.open`. Nil writes
-    /// (auto-deselect on stack pop) are ignored — NavigationStack owns path.
-    private var pageSelection: Binding<WorkspaceEntry.ID?> {
+    /// Sidebar's persistent selection — the relative-path of whatever page is
+    /// currently pushed onto the navstack (nil when at home). Writing routes
+    /// through `model.open`. Nil writes (auto-deselect on stack pop) are
+    /// ignored — NavigationStack owns path.
+    private var sidebarSelection: Binding<MentionItem.ID?> {
         Binding(
-            get: { model.path.first },
+            get: { model.path.first.flatMap { url in model.entries.first(where: { $0.url == url })?.relativePath } },
             set: { newID in
-                if let id = newID, let entry = model.entries.first(where: { $0.id == id }) {
+                if let id = newID, let entry = model.entries.first(where: { $0.relativePath == id }) {
                     model.open(entry)
                 }
             }
         )
     }
 
-    /// Sheet selection: opening any entry from the page-list sheet routes
-    /// through `model.open` (which decides whether to drain the path back to
-    /// home or push the entry on top) and dismisses the sheet.
-    private var pageSheetSelection: Binding<WorkspaceEntry.ID?> {
+    /// Sheet selection: any pick navigates via `model.open` and dismisses.
+    private var sheetSelection: Binding<MentionItem.ID?> {
         Binding(
             get: { nil },
             set: { newID in
                 guard let id = newID,
-                      let entry = model.entries.first(where: { $0.id == id }) else { return }
+                      let entry = model.entries.first(where: { $0.relativePath == id }) else { return }
                 model.open(entry)
                 showingPageList = false
             }
@@ -946,20 +977,22 @@ struct ContentView: View {
     }
 
     /// Page-list sheet shown from the home toolbar icon. Mirrors the sidebar's
-    /// content (PageListView + Recently Deleted) but in a modal context.
+    /// content (PagePickerView + Recently Deleted) but in a modal context.
     private var pageListSheet: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 0) {
-                PageListView(
-                    entries: model.entries,
-                    homeRelativePath: model.homeRelativePath,
-                    selection: pageSheetSelection,
-                    searchText: $pageSearchText,
-                    onSetHome: { entry in
-                        model.setHome(entry)
+                PagePickerView(
+                    items: model.pages(matching: pageSearchText, excludingCurrent: false),
+                    selection: sheetSelection,
+                    onSetHome: { item in
+                        if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
+                            model.setHome(entry)
+                        }
                     },
-                    onMoveToTrash: { entry in
-                        _ = model.moveToTrash(entry)
+                    onMoveToTrash: { item in
+                        if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
+                            _ = model.moveToTrash(entry)
+                        }
                     }
                 )
                 Divider()
@@ -1003,16 +1036,18 @@ struct ContentView: View {
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-            PageListView(
-                entries: model.entries,
-                homeRelativePath: model.homeRelativePath,
-                selection: pageSelection,
-                searchText: $pageSearchText,
-                onSetHome: { entry in
-                    model.setHome(entry)
+            PagePickerView(
+                items: model.pages(matching: pageSearchText, excludingCurrent: false),
+                selection: sidebarSelection,
+                onSetHome: { item in
+                    if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
+                        model.setHome(entry)
+                    }
                 },
-                onMoveToTrash: { entry in
-                    _ = model.moveToTrash(entry)
+                onMoveToTrash: { item in
+                    if let entry = model.entries.first(where: { $0.relativePath == item.id }) {
+                        _ = model.moveToTrash(entry)
+                    }
                 }
             )
             Divider()
@@ -1120,7 +1155,7 @@ private struct EditorPage: View {
             ),
             state: editorState,
             suggestPages: { query in
-                model.mentionItems(matching: query)
+                model.pages(matching: query, excludingCurrent: true)
             },
             onSubpageTap: { pageID in
                 model.openSubpage(relativePath: pageID)
@@ -1139,6 +1174,9 @@ private struct EditorPage: View {
             },
             onAppendToSubpage: { pageID, blocks in
                 model.appendToSubpage(relativePath: pageID, blocks: blocks)
+            },
+            onRequestMoveDestination: { blockIDs, completion in
+                model.requestMoveDestination(blockIDs: blockIDs, completion: completion)
             },
             onNavigateBack: {
                 model.goBack()
@@ -1287,5 +1325,50 @@ private struct WorkspacePickerView: View {
                 model.error = error.localizedDescription
             }
         }
+    }
+}
+
+/// Sheet shell shared by the move-to and jump-to flows. Owns its own search
+/// query so each presentation starts fresh. The currently-open document is
+/// always excluded — both flows are about navigating somewhere else.
+private struct PagePickerSheet: View {
+    let title: String
+    let model: WorkspaceModel
+    let onPick: (MentionItem) -> Void
+    let onCancel: () -> Void
+
+    @State private var query: String = ""
+    @State private var selection: MentionItem.ID?
+
+    var body: some View {
+        NavigationStack {
+            PagePickerView(
+                items: model.pages(matching: query, excludingCurrent: true),
+                selection: Binding(
+                    get: { selection },
+                    set: { newID in
+                        selection = newID
+                        if let newID,
+                           let item = model.pages(matching: query, excludingCurrent: true)
+                            .first(where: { $0.id == newID }) {
+                            onPick(item)
+                        }
+                    }
+                )
+            )
+            .navigationTitle(title)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .searchable(text: $query, placement: .automatic, prompt: "Search pages")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 360, minHeight: 480)
+        #endif
     }
 }

@@ -138,7 +138,7 @@ extension EditorView {
                     .padding(.vertical, 10)
             } else {
                 ForEach(Array(matches.enumerated()), id: \.element.id) { index, item in
-                    mentionRow(item: item, isSelected: state.mentionMenu?.selectedIndex == index)
+                    MentionItemRow(item: item, isHighlighted: state.mentionMenu?.selectedIndex == index)
                         .onTapGesture {
                             guard let menu = state.mentionMenu else { return }
                             commitMention(item, menu: menu)
@@ -156,33 +156,5 @@ extension EditorView {
         }
         .padding(.vertical, 4)
         .frame(width: 240, alignment: .leading)
-    }
-
-    @ViewBuilder
-    fileprivate func mentionRow(item: MentionItem, isSelected: Bool) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "doc")
-                .font(.system(size: 13))
-                .foregroundStyle(NotionStyle.mutedForeground)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.title)
-                    .font(NotionStyle.body(size: 13))
-                    .foregroundStyle(NotionStyle.foreground)
-                    .lineLimit(1)
-                if let subtitle = item.subtitle {
-                    Text(subtitle)
-                        .font(NotionStyle.body(size: 10))
-                        .foregroundStyle(NotionStyle.mutedForeground)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? NotionStyle.linkForeground.opacity(0.18) : Color.clear)
-        .contentShape(Rectangle())
     }
 }
