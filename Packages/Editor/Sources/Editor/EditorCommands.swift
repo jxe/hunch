@@ -11,22 +11,11 @@ import SwiftUI
 /// per-window references everywhere.
 @MainActor
 public final class EditorCommands {
-    /// Toggle an inline mark (bold/italic/code/strike) on the active selection.
-    /// Routes to the active block's text view in edit mode, or to the nav-mode
-    /// block-level toggle when not actively editing.
     public var toggleInlineMark: (InlineMark) -> Void = { _ in }
-    /// Convert the focused single-selected block into a subpage link, optionally
-    /// using the current text selection as the new page title (Cmd-K).
     public var toggleLinkOrSubpage: () -> Void = {}
-    /// Open the per-block action menu (turn-into / move / copy / etc) for the
-    /// current selection (Cmd-/).
     public var openBlockActionMenu: () -> Void = {}
-    /// Show the destination picker for moving the current block selection to
-    /// another page (Cmd-Shift-Return).
     public var openMoveTo: () -> Void = {}
-    /// Indent the current block selection one level (Tab).
     public var indent: () -> Void = {}
-    /// Outdent the current block selection one level (Shift+Tab).
     public var outdent: () -> Void = {}
 
     public init() {}

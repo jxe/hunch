@@ -612,9 +612,7 @@ final class ContainedTextView: NSTextView {
     }
 
     /// Toggles an inline mark on the current selection. No-op if the selection is empty —
-    /// pre-typing toggles via `typingAttributes` aren't wired yet (M6 follow-up). Internal
-    /// (not private) so the host menu's Format commands can dispatch through
-    /// `EditorCommands.toggleInlineMark`, which finds the current first responder.
+    /// pre-typing toggles via `typingAttributes` aren't wired yet (M6 follow-up).
     func toggleInlineMark(_ mark: InlineMark) {
         guard let storage = textStorage,
               let parent = coordinator?.parent else { return }

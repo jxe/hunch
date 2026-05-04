@@ -64,17 +64,13 @@ final class WorkspaceModel {
         return entries.first { $0.relativePath == homeRelativePath }?.url
     }
 
-    /// Workspace-relative path of the currently-open document, or nil if no
-    /// page is loaded. Used by menu commands that act on "this page" — most
-    /// notably "Recover Lost Blocks for Current Page".
     var currentPageRelativePath: String? {
-        guard let url = openDocument?.url, let root = workspaceURL else { return nil }
-        let rootPath = root.standardizedFileURL.path
-        let filePath = url.standardizedFileURL.path
-        if filePath.hasPrefix(rootPath + "/") {
-            return String(filePath.dropFirst(rootPath.count + 1))
-        }
-        return url.lastPathComponent
+        guard let url = openDocument?.url else { return nil }
+        return clamshell?.relativePath(of: url)
+    }
+
+    func relativePath(of url: URL) -> String {
+        clamshell?.relativePath(of: url) ?? url.lastPathComponent
     }
 
     private var clamshell: Clamshell?
@@ -785,9 +781,11 @@ final class WorkspaceModel {
     }
 }
 
-public enum RecoveryListFilter: Sendable, Hashable {
+public enum RecoveryListFilter: Sendable, Hashable, Identifiable {
     case all
     case page(relativePath: String)
+
+    public var id: Self { self }
 }
 
 public enum RecoverableEntry: Identifiable, Sendable, Hashable {
@@ -917,12 +915,9 @@ struct ContentView: View {
                         onCancel: { model.showJumpTo = false }
                     )
                 }
-                .sheet(item: Binding(
-                    get: { model.recoveryFilter.map(RecoveryFilterBox.init) },
-                    set: { model.recoveryFilter = $0?.filter }
-                )) { box in
+                .sheet(item: $model.recoveryFilter) { filter in
                     RecoveryView(
-                        filter: box.filter,
+                        filter: filter,
                         loadEntries: { filter in await model.listRecoverableEntries(filter: filter) },
                         onRestore: { entry in await model.restoreRecoverable(entry) },
                         onClose: { model.recoveryFilter = nil }
@@ -1095,16 +1090,6 @@ struct ContentView: View {
         #endif
     }
 
-    private struct RecoveryFilterBox: Identifiable, Hashable {
-        let filter: RecoveryListFilter
-        var id: String {
-            switch filter {
-            case .all: return "all"
-            case .page(let r): return "page:\(r)"
-            }
-        }
-    }
-
     @ViewBuilder
     private func pageDetail(for url: URL) -> some View {
         if let document = model.documentForPage(url: url) {
@@ -1212,8 +1197,7 @@ private struct EditorPage: View {
                 .disabled(!(undoController?.undoManager.canUndo ?? false))
                 .contextMenu {
                     Button {
-                        let relPath = workspaceRelativePath(for: url, root: model.workspaceURL)
-                        model.recoveryFilter = .page(relativePath: relPath)
+                        model.recoveryFilter = .page(relativePath: model.relativePath(of: url))
                     } label: {
                         Label("Recover lost blocks…", systemImage: "clock.arrow.circlepath")
                     }
@@ -1233,8 +1217,7 @@ private struct EditorPage: View {
             // macOS keeps the clock toolbar icon — there's no toolbar Undo to long-press.
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    let relPath = workspaceRelativePath(for: url, root: model.workspaceURL)
-                    model.recoveryFilter = .page(relativePath: relPath)
+                    model.recoveryFilter = .page(relativePath: model.relativePath(of: url))
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
                 }
@@ -1266,16 +1249,6 @@ private struct EditorPage: View {
     private func forwardPendingVoiceRecording() {
         guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
         editorState.requestToggleVoiceRecording()
-    }
-
-    private func workspaceRelativePath(for url: URL, root: URL?) -> String {
-        guard let root else { return url.lastPathComponent }
-        let rootPath = root.standardizedFileURL.path
-        let filePath = url.standardizedFileURL.path
-        if filePath.hasPrefix(rootPath + "/") {
-            return String(filePath.dropFirst(rootPath.count + 1))
-        }
-        return url.lastPathComponent
     }
 }
 

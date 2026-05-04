@@ -80,11 +80,6 @@ public struct EditorView: View {
     /// drag-drop) all register against. Recreated implicitly when EditorView's identity
     /// resets; explicitly cleared on document switch via `.onChange(of: document.id)`.
     @State var undoController = DocumentUndoController()
-    /// Receives menu-bar dispatches from the host (Bold, Block Action Menu, Move
-    /// Block to Page…, etc.) and routes them into the same internal handlers
-    /// the keyboard shortcuts trigger. Closures are populated in
-    /// `wireEditorCommands()` (called from `.onAppear`); the host binds to it
-    /// via `@FocusedValue(\.editorCommands)`.
     @State var editorCommands = EditorCommands()
     @State var rowFrames: [BlockID: CGRect] = [:]
     @State var lastDropHapticIndex: Int?
@@ -796,12 +791,6 @@ public struct EditorView: View {
         onEdited()
     }
 
-    /// Install the closure that the undo controller calls on Cmd-Z (and on redo).
-    /// Restores `document.blocks` and fixes up cursor/selection against the new
-    /// block set. Re-registers the inverse so redo works.
-    /// Populate `editorCommands` closures so the host's menu bar can drive editor
-    /// actions. Closures capture only stable references (`state` + bindings); they
-    /// dispatch to the same internal handlers the keyboard shortcuts use.
     private func wireEditorCommands() {
         editorCommands.openBlockActionMenu = {
             guard let id = topSelectedBlockID() else { return }
@@ -846,9 +835,6 @@ public struct EditorView: View {
         }
         editorCommands.toggleInlineMark = { mark in
             #if os(macOS)
-            // In edit mode the active block's NSTextView owns first-responder. Route
-            // straight to its `toggleInlineMark` so the bridge sees the selection
-            // the same way Cmd-B/I/E/Shift-S would.
             if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView {
                 view.toggleInlineMark(mark)
                 return
@@ -863,6 +849,9 @@ public struct EditorView: View {
         }
     }
 
+    /// Install the closure that the undo controller calls on Cmd-Z (and on redo).
+    /// Restores `document.blocks` and fixes up cursor/selection against the new
+    /// block set. Re-registers the inverse so redo works.
     private func installUndoApply() {
         undoController.apply = { newBlocks in
             let beforeRedo = document.blocks

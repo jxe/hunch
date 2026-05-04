@@ -128,77 +128,40 @@ private struct UndoRedoMenuItems: View {
     }
 }
 
-private struct EditorBlockMenuItems: View {
+private struct EditorCommandButton: View {
+    let title: LocalizedStringKey
+    let key: KeyEquivalent
+    var modifiers: EventModifiers = .command
+    let action: (EditorCommands) -> Void
     @FocusedValue(\.editorCommands) private var commands
 
     var body: some View {
-        Button("Turn Into…") {
-            commands?.openBlockActionMenu()
-        }
-        .keyboardShortcut("/", modifiers: .command)
-        .disabled(commands == nil)
+        Button(title) { commands.map(action) }
+            .keyboardShortcut(key, modifiers: modifiers)
+            .disabled(commands == nil)
+    }
+}
 
-        Button("Make Subpage / Link…") {
-            commands?.toggleLinkOrSubpage()
-        }
-        .keyboardShortcut("k", modifiers: .command)
-        .disabled(commands == nil)
-
-        Button("Move Block to Page…") {
-            commands?.openMoveTo()
-        }
-        .keyboardShortcut(.return, modifiers: [.command, .shift])
-        .disabled(commands == nil)
-
+private struct EditorBlockMenuItems: View {
+    var body: some View {
+        EditorCommandButton(title: "Turn Into…", key: "/") { $0.openBlockActionMenu() }
+        EditorCommandButton(title: "Make Subpage / Link…", key: "k") { $0.toggleLinkOrSubpage() }
+        EditorCommandButton(title: "Move Block to Page…", key: .return, modifiers: [.command, .shift]) { $0.openMoveTo() }
         Divider()
-
-        // Tab / Shift+Tab are the editor's real indent shortcuts. Registered as
-        // menu equivalents so they appear in the menu the way users expect.
-        // `.disabled(commands == nil)` means the menu does NOT swallow Tab when
-        // no editor is focused (a disabled menu item with a key equivalent
-        // doesn't intercept the key on macOS), so Tab keeps its normal focus-
-        // traversal behavior in sheets and other UI.
-        Button("Indent") {
-            commands?.indent()
-        }
-        .keyboardShortcut(.tab, modifiers: [])
-        .disabled(commands == nil)
-
-        Button("Outdent") {
-            commands?.outdent()
-        }
-        .keyboardShortcut(.tab, modifiers: .shift)
-        .disabled(commands == nil)
+        // Tab / Shift+Tab are the editor's real indent shortcuts; registering them
+        // here surfaces them in the menu without intercepting Tab elsewhere — a
+        // disabled menu item with a key equivalent doesn't consume the key on macOS.
+        EditorCommandButton(title: "Indent", key: .tab, modifiers: []) { $0.indent() }
+        EditorCommandButton(title: "Outdent", key: .tab, modifiers: .shift) { $0.outdent() }
     }
 }
 
 private struct EditorFormatMenuItems: View {
-    @FocusedValue(\.editorCommands) private var commands
-
     var body: some View {
-        Button("Bold") {
-            commands?.toggleInlineMark(.bold)
-        }
-        .keyboardShortcut("b", modifiers: .command)
-        .disabled(commands == nil)
-
-        Button("Italic") {
-            commands?.toggleInlineMark(.italic)
-        }
-        .keyboardShortcut("i", modifiers: .command)
-        .disabled(commands == nil)
-
-        Button("Inline Code") {
-            commands?.toggleInlineMark(.code)
-        }
-        .keyboardShortcut("e", modifiers: .command)
-        .disabled(commands == nil)
-
-        Button("Strikethrough") {
-            commands?.toggleInlineMark(.strikethrough)
-        }
-        .keyboardShortcut("s", modifiers: [.command, .shift])
-        .disabled(commands == nil)
+        EditorCommandButton(title: "Bold", key: "b") { $0.toggleInlineMark(.bold) }
+        EditorCommandButton(title: "Italic", key: "i") { $0.toggleInlineMark(.italic) }
+        EditorCommandButton(title: "Inline Code", key: "e") { $0.toggleInlineMark(.code) }
+        EditorCommandButton(title: "Strikethrough", key: "s", modifiers: [.command, .shift]) { $0.toggleInlineMark(.strikethrough) }
     }
 }
 #endif
