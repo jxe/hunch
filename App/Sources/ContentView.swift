@@ -25,8 +25,7 @@ final class WorkspaceModel {
         return entries.first { $0.relativePath == homeRelativePath }?.url
     }
 
-    private let store = FileStore()
-    private let saver = DocumentSaveCoordinator()
+    private var clamshell: Clamshell?
     private var debounceTask: Task<Void, Never>?
     private var backstopTask: Task<Void, Never>?
     private var titleRefreshTask: Task<Void, Never>?
@@ -36,8 +35,6 @@ final class WorkspaceModel {
     private var isSaving = false
     private var documentCache: [URL: Document] = [:]
     private var titleCache: [URL: CachedTitle] = [:]
-    private var trashStore: TrashStore?
-    private var recoveryStore: RecoveryStore?
 
     private struct CachedTitle {
         var title: String
@@ -53,11 +50,12 @@ final class WorkspaceModel {
             installTallDocUITestWorkspace()
             return
         }
-        if let persisted = WorkspaceBookmark.resolve() {
-            accessedWorkspaceURL = persisted.url
-            workspaceURL = persisted.url
-            homeRelativePath = persisted.homeRelativePath
-            installRecoveryStores(for: persisted.url)
+        if let url = WorkspaceBookmark.resolve() {
+            accessedWorkspaceURL = url
+            workspaceURL = url
+            let clamshell = Clamshell(root: url)
+            self.clamshell = clamshell
+            homeRelativePath = clamshell.homeRelativePath
             rescan()
             if let homeRelativePath,
                let entry = entries.first(where: { $0.relativePath == homeRelativePath }) {
@@ -66,20 +64,17 @@ final class WorkspaceModel {
         }
     }
 
-    private func installRecoveryStores(for root: URL) {
-        trashStore = TrashStore(workspaceRoot: root)
-        recoveryStore = RecoveryStore(workspaceRoot: root)
-    }
-
     func setWorkspaceFromKeyFile(_ url: URL) {
         let root = url.deletingLastPathComponent()
         let homePath = url.lastPathComponent
         do {
-            try WorkspaceBookmark.save(url: root, homeRelativePath: homePath)
+            try WorkspaceBookmark.save(url: root)
             activateWorkspaceAccess(for: root)
             workspaceURL = root
+            let clamshell = Clamshell(root: root)
+            clamshell.homeRelativePath = homePath
+            self.clamshell = clamshell
             homeRelativePath = homePath
-            installRecoveryStores(for: root)
             rescan()
             if let entry = entries.first(where: { $0.relativePath == homePath }) {
                 open(entry)
@@ -91,11 +86,12 @@ final class WorkspaceModel {
 
     func setWorkspace(_ url: URL) {
         do {
-            try WorkspaceBookmark.save(url: url, homeRelativePath: nil)
+            try WorkspaceBookmark.save(url: url)
             activateWorkspaceAccess(for: url)
             workspaceURL = url
-            homeRelativePath = nil
-            installRecoveryStores(for: url)
+            let clamshell = Clamshell(root: url)
+            self.clamshell = clamshell
+            homeRelativePath = clamshell.homeRelativePath
             rescan()
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
@@ -114,17 +110,16 @@ final class WorkspaceModel {
         openDocument = nil
         documentCache = [:]
         titleCache = [:]
-        trashStore = nil
-        recoveryStore = nil
+        clamshell = nil
         titleRefreshTask?.cancel()
         titleRefreshTask = nil
         path = []
     }
 
     func rescan() {
-        guard let workspaceURL else { return }
+        guard let workspaceURL, let clamshell else { return }
         do {
-            let scanned = try store.scan(workspaceRoot: workspaceURL)
+            let scanned = try clamshell.scan()
             entries = scanned.map { entry in
                 WorkspaceEntry(
                     url: entry.url,
@@ -160,7 +155,8 @@ final class WorkspaceModel {
 
     /// Subpage / inline link: push deeper.
     func openSubpage(relativePath: String) {
-        guard let target = urlForRelativePath(relativePath) else { return }
+        guard let clamshell else { return }
+        let target = clamshell.url(for: relativePath)
         if path.last == target { return }
         cacheOpenDocument()
         path.append(target)
@@ -168,16 +164,16 @@ final class WorkspaceModel {
 
     func setHome(_ entry: WorkspaceEntry) {
         homeRelativePath = entry.relativePath
-        WorkspaceBookmark.setHomeRelativePath(entry.relativePath)
+        clamshell?.homeRelativePath = entry.relativePath
     }
 
     @discardableResult
     func moveToTrash(_ entry: WorkspaceEntry) -> Bool {
-        guard let workspaceURL else { return false }
+        guard let clamshell else { return false }
         if openDocument?.url == entry.url {
             if isDirty, let openDocument {
                 do {
-                    try store.save(openDocument, resolvingSubpageTitle: saveTitleResolver())
+                    try clamshell.writeImmediately(openDocument, resolvingSubpageTitle: saveTitleResolver())
                     isDirty = false
                 } catch {
                     self.error = "Save failed: \(error.localizedDescription)"
@@ -191,11 +187,8 @@ final class WorkspaceModel {
         titleCache.removeValue(forKey: entry.url)
         path.removeAll { $0 == entry.url }
         do {
-            _ = try store.moveToTrash(relativePath: entry.relativePath, workspaceRoot: workspaceURL)
-            if homeRelativePath == entry.relativePath {
-                homeRelativePath = nil
-                WorkspaceBookmark.setHomeRelativePath(nil)
-            }
+            _ = try clamshell.moveToTrash(at: entry.url)
+            homeRelativePath = clamshell.homeRelativePath
             rescan()
             return true
         } catch {
@@ -233,7 +226,7 @@ final class WorkspaceModel {
             return
         }
         do {
-            openDocument = try store.loadDocument(at: url)
+            openDocument = try clamshell?.loadDocument(at: url)
             cacheOpenDocument()
             isDirty = false
             installFilePresenter(for: url)
@@ -244,21 +237,11 @@ final class WorkspaceModel {
     }
 
     func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
-        guard let workspaceURL else { return requestedPath }
-        let path = requestedPath ?? availableSubpagePath(for: title)
-        let target = workspaceURL.appendingPathComponent(path)
+        guard let clamshell else { return requestedPath }
+        let path = requestedPath ?? clamshell.availablePagePath(for: title)
+        let target = clamshell.url(for: path)
         do {
-            let parent = target.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-            if !FileManager.default.fileExists(atPath: target.path) {
-                let body: String
-                if let initialContent {
-                    body = "# \(title)\n\n" + BlockSerializer.serialize(initialContent)
-                } else {
-                    body = "# \(title)\n"
-                }
-                try body.write(to: target, atomically: true, encoding: .utf8)
-            }
+            try clamshell.createPage(at: target, title: title, blocks: initialContent)
             titleCache[target] = CachedTitle(title: title, modificationDate: modificationDate(for: target))
             rescan()
             return path
@@ -269,20 +252,21 @@ final class WorkspaceModel {
     }
 
     func loadSubpage(relativePath: String) -> [Block]? {
-        guard let workspaceURL else { return nil }
-        let target = workspaceURL.appendingPathComponent(relativePath)
-        guard let doc = try? store.loadDocument(at: target) else { return nil }
+        guard let clamshell else { return nil }
+        let target = clamshell.url(for: relativePath)
+        guard let doc = try? clamshell.loadDocument(at: target) else { return nil }
         return doc.blocks
     }
 
     @discardableResult
     func appendToSubpage(relativePath: String, blocks: [Block]) -> Bool {
-        guard !blocks.isEmpty, let target = urlForRelativePath(relativePath) else { return false }
+        guard !blocks.isEmpty, let clamshell else { return false }
+        let target = clamshell.url(for: relativePath)
         do {
-            var doc = try store.loadDocument(at: target)
+            var doc = try clamshell.loadDocument(at: target)
             doc.blocks.append(contentsOf: blocks)
             doc.title = Document.deriveTitle(from: doc.blocks, fallback: target.deletingPathExtension().lastPathComponent)
-            try store.save(doc, resolvingSubpageTitle: saveTitleResolver())
+            try clamshell.writeImmediately(doc, resolvingSubpageTitle: saveTitleResolver())
             doc.modificationDate = modificationDate(for: target)
             documentCache[target] = doc
             let titleChanged = refreshTitleCache(from: doc)
@@ -301,16 +285,13 @@ final class WorkspaceModel {
 
     @discardableResult
     func moveSubpageToTrash(relativePath: String) -> Bool {
-        guard let workspaceURL else { return false }
-        let target = workspaceURL.appendingPathComponent(relativePath)
+        guard let clamshell else { return false }
+        let target = clamshell.url(for: relativePath)
         documentCache.removeValue(forKey: target)
         titleCache.removeValue(forKey: target)
         do {
-            _ = try store.moveToTrash(relativePath: relativePath, workspaceRoot: workspaceURL)
-            if homeRelativePath == relativePath {
-                homeRelativePath = nil
-                WorkspaceBookmark.setHomeRelativePath(nil)
-            }
+            _ = try clamshell.moveToTrash(at: target)
+            homeRelativePath = clamshell.homeRelativePath
             rescan()
             return true
         } catch {
@@ -357,12 +338,11 @@ final class WorkspaceModel {
     func saveNow() async {
         debounceTask?.cancel()
         debounceTask = nil
-        guard isDirty, let doc = openDocument else { return }
+        guard isDirty, let doc = openDocument, let clamshell else { return }
         do {
             isSaving = true
             defer { isSaving = false }
-            let resolver = saveTitleResolver()
-            let priorText = try await saver.save(doc, resolvingSubpageTitle: resolver)
+            try await clamshell.save(doc, resolvingSubpageTitle: saveTitleResolver())
             if openDocument?.url == doc.url {
                 openDocument?.modificationDate = modificationDate(for: doc.url)
                 cacheOpenDocument()
@@ -371,40 +351,10 @@ final class WorkspaceModel {
                 }
             }
             isDirty = false
-            if let priorText {
-                scheduleEditRecording(for: doc, priorText: priorText, resolver: resolver)
-            }
             rescan()
         } catch {
             self.error = "Save failed: \(error.localizedDescription)"
         }
-    }
-
-    private func scheduleEditRecording(
-        for document: Document,
-        priorText: String,
-        resolver: @Sendable @escaping (String) -> String?
-    ) {
-        guard let recoveryStore, let workspaceURL else { return }
-        let relPath = relativePath(of: document.url, under: workspaceURL)
-        let newText = BlockSerializer.serialize(document.blocks, resolvingSubpageTitle: resolver)
-        guard priorText != newText else { return }
-        Task.detached { [recoveryStore] in
-            try? await recoveryStore.recordEdits(
-                relativePath: relPath,
-                previousText: priorText,
-                newText: newText
-            )
-        }
-    }
-
-    private func relativePath(of url: URL, under root: URL) -> String {
-        let rootPath = root.standardizedFileURL.path
-        let filePath = url.standardizedFileURL.path
-        if filePath.hasPrefix(rootPath + "/") {
-            return String(filePath.dropFirst(rootPath.count + 1))
-        }
-        return url.lastPathComponent
     }
 
     func flushAndClose() {
@@ -413,9 +363,9 @@ final class WorkspaceModel {
         backstopTask?.cancel()
         backstopTask = nil
         removeFilePresenter()
-        guard let doc = openDocument else { return }
-        Task { [saver, doc] in
-            try? await saver.flush(url: doc.url)
+        guard let doc = openDocument, let clamshell else { return }
+        Task { [clamshell, doc] in
+            try? await clamshell.flush(url: doc.url)
         }
     }
 
@@ -449,7 +399,7 @@ final class WorkspaceModel {
         }
 
         do {
-            openDocument = try store.loadDocument(at: doc.url)
+            openDocument = try clamshell?.loadDocument(at: doc.url)
             cacheOpenDocument()
             if let openDocument {
                 refreshTitleCache(from: openDocument)
@@ -472,7 +422,8 @@ final class WorkspaceModel {
 
     func pageTitle(for relativePath: String) -> String? {
         guard relativePath.hasSuffix(".md") else { return nil }
-        guard let url = urlForRelativePath(relativePath) else { return nil }
+        guard let clamshell else { return nil }
+        let url = clamshell.url(for: relativePath)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         if let openDocument, openDocument.url == url {
             return openDocument.title
@@ -531,15 +482,14 @@ final class WorkspaceModel {
         let stale = scanned.filter { entry in
             currentTitleIfCached(for: entry.url, modificationDate: entry.modificationDate) == nil
         }
-        guard !stale.isEmpty else { return }
+        guard !stale.isEmpty, let clamshell else { return }
 
         titleRefreshTask?.cancel()
-        let store = self.store
-        titleRefreshTask = Task.detached(priority: .utility) { [weak self, store, stale, workspaceURL] in
+        titleRefreshTask = Task.detached(priority: .utility) { [weak self, clamshell, stale, workspaceURL] in
             var refreshed: [URL: CachedTitle] = [:]
             for entry in stale {
                 guard !Task.isCancelled else { return }
-                if let title = try? store.loadDocumentTitle(at: entry.url) {
+                if let title = try? clamshell.loadDocumentTitle(at: entry.url) {
                     refreshed[entry.url] = CachedTitle(title: title, modificationDate: entry.modificationDate)
                 }
             }
@@ -589,31 +539,6 @@ final class WorkspaceModel {
         }
     }
 
-    private func urlForRelativePath(_ relativePath: String) -> URL? {
-        guard let workspaceURL else { return nil }
-        return workspaceURL.appendingPathComponent(relativePath).standardizedFileURL
-    }
-
-    private func availableSubpagePath(for title: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let chars = title.unicodeScalars.map { scalar -> Character in
-            allowed.contains(scalar) ? Character(scalar) : "-"
-        }
-        let collapsed = String(chars)
-            .split(separator: "-", omittingEmptySubsequences: true)
-            .joined(separator: "-")
-        let stem = collapsed.isEmpty ? "Untitled" : collapsed
-
-        var candidate = stem + ".md"
-        var suffix = 2
-        while let workspaceURL,
-              FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent(candidate).path) {
-            candidate = "\(stem)-\(suffix).md"
-            suffix += 1
-        }
-        return candidate
-    }
-
     private func startBackstop() {
         backstopTask?.cancel()
         backstopTask = Task { [weak self] in
@@ -661,7 +586,9 @@ final class WorkspaceModel {
             """
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
             workspaceURL = root
-            entries = try store.scan(workspaceRoot: root)
+            let clamshell = Clamshell(root: root)
+            self.clamshell = clamshell
+            entries = try clamshell.scan()
             if let entry = entries.first(where: { $0.relativePath == "everything.md" }) {
                 open(entry)
             }
@@ -685,7 +612,9 @@ final class WorkspaceModel {
             let source = lines.joined(separator: "\n\n")
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
             workspaceURL = root
-            entries = try store.scan(workspaceRoot: root)
+            let clamshell = Clamshell(root: root)
+            self.clamshell = clamshell
+            entries = try clamshell.scan()
             if let entry = entries.first(where: { $0.relativePath == "everything.md" }) {
                 open(entry)
             }
@@ -702,16 +631,16 @@ final class WorkspaceModel {
     func recordBlockDeletion(indices: [Int], blocks: [Block], actionName: String) {
         _ = blocks  // (the editor passes the removed blocks; we recompute from `openDocument`)
         _ = actionName
-        guard let recoveryStore, let workspaceURL, let openDocument else { return }
-        let source = relativePath(of: openDocument.url, under: workspaceURL)
+        guard let clamshell, let openDocument else { return }
+        let sourceURL = openDocument.url
         // Capture the pre-deletion block list — `recordBlockDeletion` is called
         // before the mutation lands in `openDocument`, so this is still the
         // pre-deletion state.
         let previousBlocks = openDocument.blocks
-        Task { [weak self, recoveryStore, source, previousBlocks, indices] in
+        Task { [weak self, clamshell, sourceURL, previousBlocks, indices] in
             do {
-                try await recoveryStore.recordDeletion(
-                    relativePath: source,
+                try await clamshell.recordDeletion(
+                    at: sourceURL,
                     previousBlocks: previousBlocks,
                     removedIndices: indices
                 )
@@ -725,19 +654,18 @@ final class WorkspaceModel {
 
     func listRecoverableEntries(filter: RecoveryListFilter = .all) async -> [RecoverableEntry] {
         var out: [RecoverableEntry] = []
-        if let trashStore, case .all = filter {
-            let pages = (try? await trashStore.listEntries()) ?? []
+        guard let clamshell else { return out }
+        if case .all = filter {
+            let pages = (try? await clamshell.listTrashedPages()) ?? []
             out.append(contentsOf: pages.map { .deletedPage($0) })
         }
-        if let recoveryStore {
-            let recovStoreFilter: RecoveryStore.ListFilter
-            switch filter {
-            case .all: recovStoreFilter = .all
-            case .page(let rel): recovStoreFilter = .page(relativePath: rel)
-            }
-            let lost = (try? await recoveryStore.list(filter: recovStoreFilter)) ?? []
-            out.append(contentsOf: lost.map { .lostBlock($0) })
+        let lostFilter: Clamshell.LostBlocksFilter
+        switch filter {
+        case .all: lostFilter = .all
+        case .page(let rel): lostFilter = .page(relativePath: rel)
         }
+        let lost = (try? await clamshell.listLostBlocks(filter: lostFilter)) ?? []
+        out.append(contentsOf: lost.map { .lostBlock($0) })
         out.sort { $0.timestamp > $1.timestamp }
         return out
     }
@@ -754,9 +682,9 @@ final class WorkspaceModel {
 
     @discardableResult
     func restoreDeletedPage(_ entry: TrashEntry) async -> Bool {
-        guard let trashStore else { return false }
+        guard let clamshell else { return false }
         do {
-            _ = try await trashStore.restorePage(entry)
+            _ = try await clamshell.restorePage(entry)
             rescan()
             return true
         } catch {
@@ -767,7 +695,7 @@ final class WorkspaceModel {
 
     @discardableResult
     func restoreLostBlock(_ entry: LostBlock) async -> Bool {
-        guard let recoveryStore, let workspaceURL else { return false }
+        guard let clamshell, let workspaceURL else { return false }
         let target = workspaceURL.appendingPathComponent(entry.record.source).standardizedFileURL
         guard FileManager.default.fileExists(atPath: target.path) else {
             self.error = "Original page no longer exists at \(entry.record.source)."
@@ -786,7 +714,7 @@ final class WorkspaceModel {
             if useLiveDoc, let live = openDocument {
                 doc = live
             } else {
-                doc = try store.loadDocument(at: target)
+                doc = try clamshell.loadDocument(at: target)
             }
 
             let anchorIndent: Int
@@ -812,12 +740,12 @@ final class WorkspaceModel {
                 cacheOpenDocument()
                 markEdited()
             } else {
-                try store.save(doc, resolvingSubpageTitle: saveTitleResolver())
+                try clamshell.writeImmediately(doc, resolvingSubpageTitle: saveTitleResolver())
                 doc.modificationDate = modificationDate(for: target)
                 documentCache[target] = doc
                 rescan()
             }
-            try? await recoveryStore.purge(entry)
+            try? await clamshell.purgeLostBlock(entry)
             return true
         } catch {
             self.error = "Restore failed: \(error.localizedDescription)"
