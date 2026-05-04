@@ -38,6 +38,7 @@
 		D474865E25285B0A3054E20C /* Editor in Frameworks */ = {isa = PBXBuildFile; productRef = 958167F9196AF3C05B22D091 /* Editor */; };
 		E435BE3FEC464693DD180764 /* WorkspaceBookmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95705379B9963C729E4484B1 /* WorkspaceBookmark.swift */; };
 		EA7FB89847BE5FAA565621E8 /* BlockFingerprint.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA7247FD43CDAAE1290007 /* BlockFingerprint.swift */; };
+		F0EBD1DFC3F2FD8D6D676A43 /* WorkspaceWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40BF2D87C103EC5F23D76AE /* WorkspaceWindow.swift */; };
 		F70ABF6CF6A83F55B5C10876 /* FileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C40C5869BF914FA61B2FEC5D /* FileStore.swift */; };
 		FC2E031962A8B9A4060D90EA /* HunchEditScrollUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF8364C13DB45F36866FE4A /* HunchEditScrollUITests.swift */; };
 /* End PBXBuildFile section */
@@ -94,6 +95,7 @@
 		DBE1F6088D2A2F400DBB4939 /* BlockFingerprintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockFingerprintTests.swift; sourceTree = "<group>"; };
 		E0D5BC6AC3A24FE2C74A0EC1 /* WorkspaceBookmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceBookmarkTests.swift; sourceTree = "<group>"; };
 		F152EE3E8A4F7205FF247D87 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F40BF2D87C103EC5F23D76AE /* WorkspaceWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -241,6 +243,7 @@
 				944CFC55C63C67A7EC1BBC58 /* VoiceRecordingIntents.swift */,
 				73FA877A12A327BB5FA77D83 /* VoiceRecordingLaunchRequest.swift */,
 				183298CC2343E1CDBC8E27A9 /* Workspace.swift */,
+				F40BF2D87C103EC5F23D76AE /* WorkspaceWindow.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -415,6 +418,7 @@
 				28B96A7AB8E61A25A5E9E91D /* VoiceRecordingLaunchRequest.swift in Sources */,
 				3AEFF62B4A43227F6DC54959 /* Workspace.swift in Sources */,
 				E435BE3FEC464693DD180764 /* WorkspaceBookmark.swift in Sources */,
+				F0EBD1DFC3F2FD8D6D676A43 /* WorkspaceWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

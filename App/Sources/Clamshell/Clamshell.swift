@@ -87,6 +87,25 @@ public final class Clamshell {
         try files.loadDocument(at: url)
     }
 
+    /// Load + return the raw bytes that produced the document. The raw text is
+    /// needed by the host to seed `Workspace.diskHistory`, which protects
+    /// in-memory edits from iCloud-Drive stomps (an external write reverting
+    /// the file to a previously-seen disk state triggers a defender re-save).
+    nonisolated public func loadDocumentAndRawText(at url: URL) throws -> (Document, String) {
+        let raw = try files.read(url)
+        let blocks = BlockParser.parse(raw)
+        let fallbackTitle = url.deletingPathExtension().lastPathComponent
+        let title = Document.deriveTitle(from: blocks, fallback: fallbackTitle)
+        let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        return (Document(url: url, title: title, blocks: blocks, modificationDate: mtime), raw)
+    }
+
+    /// Read the raw bytes on disk without parsing — used for hashing into
+    /// `diskHistory` when only the bytes are needed (e.g. on a presenter event).
+    nonisolated public func readRawText(at url: URL) throws -> String {
+        try files.read(url)
+    }
+
     nonisolated public func loadDocumentTitle(at url: URL) throws -> String {
         try files.loadDocumentTitle(at: url)
     }

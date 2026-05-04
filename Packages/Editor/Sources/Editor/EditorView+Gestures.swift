@@ -76,11 +76,10 @@ extension View {
         onShowMenu: @escaping () -> Void
     ) -> some View {
         #if os(iOS)
-        if isEnabled {
-            self.modifier(IOSRowSwipeActions(onDelete: onDelete, onShowMenu: onShowMenu))
-        } else {
-            self
-        }
+        // Apply unconditionally; gate the gesture via isEnabled so the row's
+        // view tree (and its layout) stays stable across pinch / edit mode
+        // toggles. Swapping the modifier in/out caused per-row layout churn.
+        self.modifier(IOSRowSwipeActions(isEnabled: isEnabled, onDelete: onDelete, onShowMenu: onShowMenu))
         #else
         self
         #endif
@@ -109,19 +108,19 @@ extension View {
         onCancelled: @escaping () -> Void
     ) -> some View {
         #if os(iOS)
-        if isEnabled {
-            self.background(
-                IOSPageReorderGestureBridge(
-                    rowFrames: rowFrames,
-                    onBegin: onBegin,
-                    onChanged: onChanged,
-                    onEnded: onEnded,
-                    onCancelled: onCancelled
-                )
+        // Apply unconditionally; gate the recognizer via isEnabled. Avoids
+        // ViewBuilder branch flips on every pinch — same pattern as
+        // iosBlockTouchActions / iosPagePinch.
+        self.background(
+            IOSPageReorderGestureBridge(
+                isEnabled: isEnabled,
+                rowFrames: rowFrames,
+                onBegin: onBegin,
+                onChanged: onChanged,
+                onEnded: onEnded,
+                onCancelled: onCancelled
             )
-        } else {
-            self
-        }
+        )
         #else
         self
         #endif
@@ -337,6 +336,7 @@ struct IOSNavigationBackGestureGate: UIViewControllerRepresentable {
 /// at the SwiftUI layer and blocks the scroll view's pan even when our
 /// handler ignores the events.
 struct IOSPageReorderGestureBridge: UIViewRepresentable {
+    var isEnabled: Bool
     var rowFrames: [BlockID: CGRect]
     var onBegin: (BlockID, CGPoint) -> Void
     var onChanged: (CGPoint) -> Void
@@ -353,6 +353,7 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
 
     func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.recognizer?.isEnabled = isEnabled
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -392,6 +393,7 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
                     lp.allowableMovement = 8
                     lp.cancelsTouchesInView = false
                     lp.delegate = self
+                    lp.isEnabled = parent.isEnabled
                     scroll.addGestureRecognizer(lp)
                     scroll.panGestureRecognizer.require(toFail: lp)
                     self.recognizer = lp
@@ -824,6 +826,7 @@ struct IOSScrollMetricsReader: UIViewRepresentable {
 /// fails it at `gestureRecognizerShouldBegin` time when initial motion is
 /// vertical-dominant — releasing the touch back to the scroll view's pan.
 struct IOSRowSwipeActions: ViewModifier {
+    let isEnabled: Bool
     let onDelete: () -> Void
     let onShowMenu: () -> Void
 
@@ -844,89 +847,96 @@ struct IOSRowSwipeActions: ViewModifier {
 
         let isSwiping = revealProgress > 0
 
-        ZStack {
-            // Right-swipe affordance: icon sits at the leading edge, hidden
-            // behind the row's bg at rest, revealed as the row slides right.
-            HStack(spacing: 0) {
-                ZStack {
-                    Capsule()
-                        .fill(Color.blue.opacity(0.18))
-                        .frame(width: 44, height: 34)
-                        .opacity(crossed ? 1 : 0)
-                        .scaleEffect(crossed ? 1 : 0.6)
+        // Layout intent: row size is determined by typography (BlockSpacing /
+        // BlockRow's intrinsic padding), NOT by these affordances. Icon goes
+        // BEHIND content via .background so its 34pt capsule doesn't propagate
+        // upward — overflowing visually if the row is shorter is fine and only
+        // happens transiently during a swipe. Pencil line goes ON TOP via
+        // .overlay, sized to content.
+        content
+            .background(isSwiping ? NotionStyle.background : Color.clear)
+            .background(alignment: .leading) {
+                if isSwiping {
+                    ZStack {
+                        Capsule()
+                            .fill(Color.blue.opacity(0.18))
+                            .frame(width: 44, height: 34)
+                            .opacity(crossed ? 1 : 0)
+                            .scaleEffect(crossed ? 1 : 0.6)
 
-                    Image(systemName: "ellipsis")
-                        .foregroundStyle(crossed ? Color.blue : Color.blue.opacity(0.65))
-                        .font(.system(size: iconSize, weight: .semibold))
+                        Image(systemName: "ellipsis")
+                            .foregroundStyle(crossed ? Color.blue : Color.blue.opacity(0.65))
+                            .font(.system(size: iconSize, weight: .semibold))
+                    }
+                    .padding(.leading, 4)
+                    .animation(.spring(response: 0.25, dampingFraction: 0.7), value: crossed)
+                    .allowsHitTesting(false)
                 }
-                .padding(.leading, 4)
-                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: crossed)
-
-                Spacer(minLength: 0)
             }
-            .opacity(isSwiping ? 1 : 0)
-            .allowsHitTesting(false)
-
-            // Background appears the moment a swipe starts so the row's
-            // trailing edge cleanly reveals the icon as it slides right.
-            content
-                .background(isSwiping ? NotionStyle.background : Color.clear)
-                .offset(x: rightOffset)
-
-            // Left-swipe: a graphite "pencil line" emerges from the trailing
-            // edge and crosses the row as the user drags left. Scaled so
-            // reaching the commit threshold = a complete cross-out. At commit
-            // the stroke thickens and darkens — like the pencil pressed harder.
-            GeometryReader { geo in
-                pencilLine(
-                    rowWidth: geo.size.width,
-                    lineLength: geo.size.width * deleteProgress
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .offset(x: rightOffset)
+            .overlay {
+                GeometryReader { geo in
+                    pencilLine(
+                        rowWidth: geo.size.width,
+                        lineLength: geo.size.width * deleteProgress
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
+                .allowsHitTesting(false)
             }
-            .allowsHitTesting(false)
-        }
-        .background {
-            IOSRowSwipeGestureBridge(
-                onChanged: { h in
-                    guard !triggered else { return }
-                    dragOffset = h
-                    // The menu opens on threshold-crossed mid-gesture so the
-                    // user can swipe-and-hold to peek the menu. Delete is
-                    // destructive — only commits on release, but fire a haptic
-                    // when the strike-through completes so the user knows
-                    // releasing now will commit.
-                    if h >= trigger {
-                        fire(onShowMenu)
-                    } else if h <= -trigger {
-                        if !crossedDeleteThreshold {
-                            crossedDeleteThreshold = true
-                            Haptics.medium()
+            .background {
+                IOSRowSwipeGestureBridge(
+                    isEnabled: isEnabled,
+                    onChanged: { h in
+                        guard !triggered else { return }
+                        dragOffset = h
+                        // The menu opens on threshold-crossed mid-gesture so the
+                        // user can swipe-and-hold to peek the menu. Delete is
+                        // destructive — only commits on release, but fire a haptic
+                        // when the strike-through completes so the user knows
+                        // releasing now will commit.
+                        if h >= trigger {
+                            fire(onShowMenu)
+                        } else if h <= -trigger {
+                            if !crossedDeleteThreshold {
+                                crossedDeleteThreshold = true
+                                Haptics.medium()
+                            }
+                        } else {
+                            crossedDeleteThreshold = false
                         }
-                    } else {
+                    },
+                    onEnded: { h in
+                        if !triggered, h <= -trigger {
+                            onDelete()
+                            SoundFX.play(.delete)
+                        }
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                            dragOffset = 0
+                        }
+                        triggered = false
+                        crossedDeleteThreshold = false
+                    },
+                    onCancelled: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                            dragOffset = 0
+                        }
+                        triggered = false
                         crossedDeleteThreshold = false
                     }
-                },
-                onEnded: { h in
-                    if !triggered, h <= -trigger {
-                        onDelete()
-                        SoundFX.play(.delete)
-                    }
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
-                        dragOffset = 0
-                    }
-                    triggered = false
-                    crossedDeleteThreshold = false
-                },
-                onCancelled: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
-                        dragOffset = 0
-                    }
-                    triggered = false
-                    crossedDeleteThreshold = false
+                )
+            }
+            // Disabling the gesture mid-swipe (e.g. when a pinch starts) needs
+            // to also reset the visual swipe state — otherwise a partially-
+            // offset row stays offset until the user touches it again.
+            .onChange(of: isEnabled) { _, newValue in
+                guard !newValue else { return }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                    dragOffset = 0
                 }
-            )
-        }
+                triggered = false
+                crossedDeleteThreshold = false
+            }
     }
 
     private func fire(_ action: () -> Void) {
@@ -999,6 +1009,7 @@ struct IOSRowSwipeActions: ViewModifier {
 /// being horizontal-dominant. A vertical-dominant touch fails the recognizer,
 /// releasing the touch to the scroll view's pan so the page can scroll.
 struct IOSRowSwipeGestureBridge: UIViewRepresentable {
+    var isEnabled: Bool
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat) -> Void
     var onCancelled: () -> Void
@@ -1013,6 +1024,7 @@ struct IOSRowSwipeGestureBridge: UIViewRepresentable {
 
     func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.recognizer?.isEnabled = isEnabled
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -1052,6 +1064,7 @@ struct IOSRowSwipeGestureBridge: UIViewRepresentable {
                     pan.cancelsTouchesInView = false
                     pan.maximumNumberOfTouches = 1
                     pan.delegate = self
+                    pan.isEnabled = parent.isEnabled
                     scroll.addGestureRecognizer(pan)
                     self.recognizer = pan
                     self.scrollView = scroll

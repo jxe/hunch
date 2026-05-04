@@ -153,13 +153,14 @@ stores (`FileStore` is Sendable, the rest are actors) handle isolation.
   all live in [`App/Sources/Shell/`](../Shell/) and
   [`ContentView.swift`](../ContentView.swift).
 - **No observation.** Clamshell is not `@Observable`. SwiftUI re-render
-  plumbing is the host's job — Hunch's `WorkspaceModel` mirrors
+  plumbing is the host's job — Hunch's shared `Workspace` mirrors
   `homeRelativePath` for SwiftUI.
 - **No multi-page coordination.** "Which page is open?", "what's dirty?",
-  "the navigation stack" — all `WorkspaceModel`. Clamshell handles one
-  persistent format; the model handles the editing session.
+  "the navigation stack" — all on per-window `WorkspaceWindow`. Clamshell
+  handles one persistent format; the host splits workspace-wide vs.
+  per-window state across `Workspace` and `WorkspaceWindow`.
 - **No restore-of-lost-block logic.** `purgeLostBlock(_:)` removes a
   record from the log, but parsing the recorded markdown, finding an
   anchor in the live document, and splicing the blocks back in lives in
-  the host (`WorkspaceModel.restoreLostBlock`) — the operation is
+  the host (`WorkspaceWindow.restoreLostBlock`) — the operation is
   document-shape-aware in a way that's outside Clamshell's remit.

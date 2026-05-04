@@ -5,6 +5,15 @@ import SwiftUI
 extension EditorView {
     static var pinchInsertCommitGap: CGFloat { 40 }
     static var pinchInsertFocusGap: CGFloat { 110 }
+    /// Spread distance the user must cross before any gap or insertion-anchor
+    /// commitment happens. Two reasons: (1) UIPinchGestureRecognizer.began
+    /// fires only after its internal threshold is crossed, so the first
+    /// `.changed` already arrives with `spreadDelta` in the 5–15 px range —
+    /// without a deadzone the gap pops open visibly instead of growing from 0.
+    /// (2) Fingers naturally drift while spreading (typically downward), so
+    /// reading the midpoint at gesture start picks the wrong row; waiting
+    /// until the gesture is clearly committed lets us read a settled location.
+    static var pinchOpenDeadzone: CGFloat { 12 }
 
     /// Extra top-padding to reveal an opening pinch-gap above the row at
     /// `index`. Zero unless the active pinch preview is targeting that slot.
@@ -22,26 +31,46 @@ extension EditorView {
         return soft + range * (1 - 1 / (1 + over / range))
     }
 
-    /// Track the live finger spread: above the starting distance, open an inline
-    /// gap at the row pair under the current midpoint; below the starting
-    /// distance, no insert preview (pinch-close commits on release).
+    /// Track the live finger spread: once the spread crosses `pinchOpenDeadzone`,
+    /// open an inline gap at the row pair under the current midpoint; below
+    /// that threshold the gesture is treated as not-yet-committed, so no
+    /// preview opens and other gestures stay armed. Once the deadzone has
+    /// been crossed at any point in the session, `pinchGestureActive` stays
+    /// latched until `handlePinchCommit` clears it (so a brief pinch-back
+    /// doesn't re-enable reorder/swipe mid-gesture). Pinch-close commits on
+    /// release.
     func handlePinchUpdate(_ value: PagePinchValue) {
-        pinchGestureActive = true
         guard state.editingBlock == nil else {
             if state.pinchPreview != nil { state.setPinchPreview(nil) }
             pinchPendingInsertIndex = nil
             stopPinchAutoScroll()
             return
         }
-        updatePinchAutoScroll(for: value.location)
-        if value.spreadDelta > 0 {
-            let gapHeight = pinchRubberBand(value.spreadDelta)
-            // Compute the insert index lazily on the first spread-positive update,
-            // before the gap opens and starts shifting rowFrames. After that, hold
-            // it fixed so the gap stays anchored where the user started pinching.
-            let insertIndex = pinchPendingInsertIndex ?? pinchInsertIndex(for: value.startLocation)
+        if value.spreadDelta >= Self.pinchOpenDeadzone {
+            pinchGestureActive = true
+            updatePinchAutoScroll(for: value.location)
+            // Subtract the deadzone so the gap opens at exactly 0 px when the
+            // user first crosses the threshold and grows smoothly from there.
+            let gapHeight = pinchRubberBand(value.spreadDelta - Self.pinchOpenDeadzone)
+            // Compute insertIndex once at deadzone-crossing, from the CURRENT
+            // midpoint (not value.startLocation). At this moment the gap hasn't
+            // opened so rowFrames are still pre-shift, AND the user's fingers
+            // have settled past whatever drift happened during recognizer
+            // ramp-up. Anchor it for the rest of the gesture so the gap stays
+            // put even as more layout shifts happen.
+            let insertIndex = pinchPendingInsertIndex ?? pinchInsertIndex(for: value.location)
+            let isFirstOpen = state.pinchPreview == nil
             pinchPendingInsertIndex = insertIndex
-            state.setPinchPreview(PinchPreviewState(insertIndex: insertIndex, gapHeight: gapHeight))
+            let preview = PinchPreviewState(insertIndex: insertIndex, gapHeight: gapHeight)
+            if isFirstOpen {
+                // Smooth the nil → open transition. Subsequent updates stay
+                // unanimated so the gap tracks fingers in real time.
+                withAnimation(.spring(response: 0.18, dampingFraction: 0.85)) {
+                    state.setPinchPreview(preview)
+                }
+            } else {
+                state.setPinchPreview(preview)
+            }
             if gapHeight >= Self.pinchInsertCommitGap, !pinchCrossedInsertThreshold {
                 pinchCrossedInsertThreshold = true
                 Haptics.medium()
@@ -57,7 +86,12 @@ extension EditorView {
                 pinchCrossedFocusThreshold = false
             }
         } else if state.pinchPreview != nil {
-            state.setPinchPreview(nil)
+            // Pinched back below deadzone after opening — close the preview
+            // visually but keep `pinchGestureActive` latched so a re-open
+            // doesn't ping-pong the swipe/reorder gates.
+            withAnimation(.spring(response: 0.22, dampingFraction: 0.82)) {
+                state.setPinchPreview(nil)
+            }
             clearPinchThresholds()
         }
     }

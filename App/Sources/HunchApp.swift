@@ -6,7 +6,7 @@ import AppKit
 
 @main
 struct HunchApp: App {
-    @State private var model = WorkspaceModel()
+    @State private var workspace = Workspace()
 
     init() {
         FontRegistration.registerInter()
@@ -17,7 +17,7 @@ struct HunchApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model)
+            ContentView(workspace: workspace)
         }
         #if os(macOS)
         .windowStyle(.titleBar)
@@ -25,53 +25,34 @@ struct HunchApp: App {
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Reload Pages") {
-                    model.rescan()
+                    workspace.rescan()
                 }
                 .keyboardShortcut("r", modifiers: [.command])
 
-                Button("Switch Workspace…") {
-                    model.switchWorkspace()
-                }
-                .keyboardShortcut("o", modifiers: [.command, .shift])
+                SwitchWorkspaceMenuButton(workspace: workspace)
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
 
                 Divider()
 
-                Button("Jump to Page…") {
-                    model.showJumpTo = true
-                }
-                .keyboardShortcut("p", modifiers: [.command])
-                .disabled(model.workspaceURL == nil)
-                .modifierKeyAlternate(.option) {
-                    Button("Show All Pages…") {
-                        model.showPageList = true
+                JumpToPageMenuButton(workspaceURL: workspace.workspaceURL)
+                    .keyboardShortcut("p", modifiers: [.command])
+                    .modifierKeyAlternate(.option) {
+                        ShowAllPagesMenuButton(workspaceURL: workspace.workspaceURL)
+                            .keyboardShortcut("p", modifiers: [.command, .option])
                     }
-                    .keyboardShortcut("p", modifiers: [.command, .option])
-                    .disabled(model.workspaceURL == nil)
-                }
 
                 Divider()
 
-                Button("Recently Deleted…") {
-                    model.recoveryFilter = .all
-                }
-                .keyboardShortcut("\\", modifiers: [.command, .shift])
-                .disabled(model.workspaceURL == nil)
-                .modifierKeyAlternate(.option) {
-                    Button("Recently Deleted on This Page…") {
-                        if let rel = model.currentPageRelativePath {
-                            model.recoveryFilter = .page(relativePath: rel)
-                        }
+                RecentlyDeletedMenuButton(workspaceURL: workspace.workspaceURL)
+                    .keyboardShortcut("\\", modifiers: [.command, .shift])
+                    .modifierKeyAlternate(.option) {
+                        RecentlyDeletedOnPageMenuButton()
+                            .keyboardShortcut("\\", modifiers: [.command, .shift, .option])
                     }
-                    .keyboardShortcut("\\", modifiers: [.command, .shift, .option])
-                    .disabled(model.currentPageRelativePath == nil)
-                }
             }
             CommandGroup(after: .sidebar) {
-                Button("Back") {
-                    model.goBack()
-                }
-                .keyboardShortcut("[", modifiers: [.command])
-                .disabled(!model.canGoBack)
+                BackMenuButton()
+                    .keyboardShortcut("[", modifiers: [.command])
             }
             // Replace the system Edit > Undo / Redo with bindings that route through the
             // currently-focused EditorView's `DocumentUndoController`. Without this the
@@ -165,6 +146,80 @@ private struct EditorFormatMenuItems: View {
         EditorCommandButton(title: "Italic", key: "i") { $0.toggleInlineMark(.italic) }
         EditorCommandButton(title: "Inline Code", key: "e") { $0.toggleInlineMark(.code) }
         EditorCommandButton(title: "Strikethrough", key: "s", modifiers: [.command, .shift]) { $0.toggleInlineMark(.strikethrough) }
+    }
+}
+
+// MARK: - Per-window menu buttons (route to focused window via FocusedValue)
+
+private struct SwitchWorkspaceMenuButton: View {
+    let workspace: Workspace
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Switch Workspace…") {
+            window?.flushAndClose()
+            workspace.switchWorkspace()
+        }
+    }
+}
+
+private struct JumpToPageMenuButton: View {
+    let workspaceURL: URL?
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Jump to Page…") {
+            window?.showJumpTo = true
+        }
+        .disabled(workspaceURL == nil || window == nil)
+    }
+}
+
+private struct ShowAllPagesMenuButton: View {
+    let workspaceURL: URL?
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Show All Pages…") {
+            window?.showPageList = true
+        }
+        .disabled(workspaceURL == nil || window == nil)
+    }
+}
+
+private struct RecentlyDeletedMenuButton: View {
+    let workspaceURL: URL?
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Recently Deleted…") {
+            window?.recoveryFilter = .all
+        }
+        .disabled(workspaceURL == nil || window == nil)
+    }
+}
+
+private struct RecentlyDeletedOnPageMenuButton: View {
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Recently Deleted on This Page…") {
+            if let rel = window?.currentPageRelativePath {
+                window?.recoveryFilter = .page(relativePath: rel)
+            }
+        }
+        .disabled(window?.currentPageRelativePath == nil)
+    }
+}
+
+private struct BackMenuButton: View {
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Back") {
+            window?.goBack()
+        }
+        .disabled(window?.canGoBack != true)
     }
 }
 #endif
