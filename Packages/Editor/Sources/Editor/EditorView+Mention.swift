@@ -66,6 +66,12 @@ extension EditorView {
     /// preserved as adjacent paragraphs.
     fileprivate func commitMention(_ item: MentionItem, menu: MentionMenuState) {
         defer { state.closeMentionMenu() }
+        // The popover detects from the live text storage, but `block.text` is the
+        // binding state — only flushed by `commitLiveText` on blur / structural
+        // keys. The mention-commit keyboard branches and the popover tap path
+        // don't run that flush, so without this we'd read stale (possibly empty)
+        // text and the trigger-range guard below would silently bail.
+        undoController.commitActiveEditor?()
         guard let blockIndex = document.index(of: menu.blockID) else { return }
         let block = document.blocks[blockIndex]
         let plain = String(block.text.characters) as NSString
