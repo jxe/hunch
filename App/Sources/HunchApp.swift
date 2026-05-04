@@ -41,12 +41,13 @@ struct HunchApp: App {
                 }
                 .keyboardShortcut("p", modifiers: [.command])
                 .disabled(model.workspaceURL == nil)
-
-                Button("Show Page List…") {
-                    model.showPageList = true
+                .modifierKeyAlternate(.option) {
+                    Button("Show All Pages…") {
+                        model.showPageList = true
+                    }
+                    .keyboardShortcut("p", modifiers: [.command, .option])
+                    .disabled(model.workspaceURL == nil)
                 }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
-                .disabled(model.workspaceURL == nil)
 
                 Divider()
 
@@ -55,13 +56,15 @@ struct HunchApp: App {
                 }
                 .keyboardShortcut("\\", modifiers: [.command, .shift])
                 .disabled(model.workspaceURL == nil)
-
-                Button("Recover Lost Blocks on This Page…") {
-                    if let rel = model.currentPageRelativePath {
-                        model.recoveryFilter = .page(relativePath: rel)
+                .modifierKeyAlternate(.option) {
+                    Button("Recently Deleted on This Page…") {
+                        if let rel = model.currentPageRelativePath {
+                            model.recoveryFilter = .page(relativePath: rel)
+                        }
                     }
+                    .keyboardShortcut("\\", modifiers: [.command, .shift, .option])
+                    .disabled(model.currentPageRelativePath == nil)
                 }
-                .disabled(model.currentPageRelativePath == nil)
             }
             CommandGroup(after: .sidebar) {
                 Button("Back") {
