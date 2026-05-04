@@ -74,7 +74,7 @@ public struct EditorView: View {
     /// typing-undo and structural ops (split/merge/indent/slide/delete/autotransform/
     /// drag-drop) all register against. Recreated implicitly when EditorView's identity
     /// resets; explicitly cleared on document switch via `.onChange(of: document.id)`.
-    @State private var undoController = DocumentUndoController()
+    @State var undoController = DocumentUndoController()
     @State var rowFrames: [BlockID: CGRect] = [:]
     @State var lastDropHapticIndex: Int?
     @State var pinchGestureActive = false

@@ -23,13 +23,27 @@ user-picked workspace folder.
   `WorkspaceModel` bridging the editor's id-based callbacks to filesystem
   paths, and a small `EditorPage` wrapper that owns one `EditorState` per
   navigation destination), Inter font registration, plus:
-  - `App/Sources/Markdown/` — `BlockParser` and `BlockSerializer`
-    (swift-markdown lives here, not in the Editor).
-  - `App/Sources/Storage/` — `FileStore`, `DocumentSaveCoordinator`
-    (per-URL serial, snapshot-coalescing actor), `HistoryStore`,
-    `TrashStore`, `WorkspaceBookmark`.
-  - `App/Sources/Shell/` — `PageListView` (sidebar), `VersionHistoryView`,
-    `RecentlyDeletedView`.
+  - `App/Sources/Clamshell/` — **Clamshell** is Hunch's persistent
+    markdown format and its API. On disk a Clamshell is a folder of
+    `*.md` plus `Trash/` (soft-deleted pages), `.history/<rel>.md.jsonl`
+    (append-only log of lost / edited blocks), and `.clamshell.json`
+    (format metadata — currently just the home page pointer).
+    `Clamshell` is the umbrella type — one per open directory, never
+    reconfigured. Composes `FileStore`, `DocumentSaveCoordinator` (per-URL
+    serial, snapshot-coalescing actor), `RecoveryStore` (the `.history/`
+    log), and `TrashStore` privately and exposes a single API:
+    `scan / loadDocument / save / writeImmediately / flush / createPage /
+    moveToTrash / listTrashedPages / restorePage / recordDeletion /
+    listLostBlocks / purgeLostBlock`, plus `relativePath(of:)` and
+    `url(for:)` for path conversion. The format takes care of itself
+    where it can — every `save`/`writeImmediately` fires fire-and-forget
+    `recordEdits` against the lost-block log, and `moveToTrash` clears
+    `homeRelativePath` if it matched. Also where the markdown layer
+    lives: `BlockParser`, `BlockSerializer` (swift-markdown lives here,
+    not in the Editor), and `BlockFingerprint`. `WorkspaceBookmark`
+    persists the security-scoped URL of the user's chosen Clamshell.
+  - `App/Sources/Shell/` — `PageListView` (sidebar) and `RecoveryView`
+    (unified "Recover" sheet over trash + lost blocks).
   - `App/Sources/Workspace.swift` — `WorkspaceEntry` (filesystem-flavoured
     page reference, host-side only — translated into `MentionItem` at the
     editor boundary).

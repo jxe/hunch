@@ -303,12 +303,13 @@ so partially-wired hosts compile.
 
 ## What the editor doesn't do
 
-- **No file I/O.** The host owns disk reads/writes. Hunch implements this
-  via `FileStore` + `DocumentSaveCoordinator` in
-  [`App/Sources/Storage/`](../../App/Sources/Storage/).
-- **No markdown parsing/serialization.** The host owns wire formats. Hunch
-  uses [swift-markdown](https://github.com/swiftlang/swift-markdown) wired
-  through [`App/Sources/Markdown/`](../../App/Sources/Markdown/).
+- **No file I/O, no markdown parsing/serialization, no recovery/trash.**
+  All the persistence machinery lives in Hunch's
+  [`App/Sources/Clamshell/`](../../App/Sources/Clamshell/) — `FileStore`
+  + `DocumentSaveCoordinator` for I/O, `BlockParser` / `BlockSerializer`
+  (built on [swift-markdown](https://github.com/swiftlang/swift-markdown))
+  for wire format, `RecoveryStore` / `TrashStore` for soft-delete and
+  the lost-block log.
 - **No multi-page navigation.** The editor is single-page; the host
   manages the navigation stack and pushes/pops in response to
   `onSubpageTap` / `onNavigateBack`. Hunch uses
