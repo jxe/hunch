@@ -1612,8 +1612,8 @@ public struct EditorView: View {
         case .escape:
             transferFocus(to: .nav(cursor: state.editingBlock))
             return .handled
-        case .cmdK(let selectedText):
-            return convertBlockToSubpage(blockID: blockID, preferredTitle: selectedText)
+        case .cmdK(let preferredTitle):
+            return convertBlockToSubpage(blockID: blockID, preferredTitle: preferredTitle)
         case .navigateBack:
             onNavigateBack()
             return .handled

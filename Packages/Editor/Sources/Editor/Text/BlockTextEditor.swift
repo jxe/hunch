@@ -67,7 +67,7 @@ public enum BlockKey: Sendable, Equatable {
     case tab
     case shiftTab
     case escape
-    case cmdK(selectedText: String?)
+    case cmdK(preferredTitle: String?)
     case navigateBack
     /// Up arrow pressed while the cursor is on the editor's first line. EditorView
     /// treats this as Esc + up: exit edit mode and select the previous block.
@@ -638,16 +638,21 @@ final class ContainedTextView: NSTextView {
                 if onKey(.escape) == .handled { return }
             case 40: // K
                 if event.modifierFlags.contains(.command) {
-                    let selectedText: String?
+                    // Carry the live text through the BlockKey: when the user typed
+                    // into a freshly created row and presses Cmd-K, EditorView's
+                    // `@Binding<Document>` snapshot is stale within this event handler
+                    // (same pattern as the cmd-enter fix), so `convertBlockToSubpage`
+                    // can't recover the typed text from `document.blocks[i]`.
+                    let preferred: String?
                     let range = selectedRange()
                     if range.length > 0, let textRange = Range(range, in: string) {
-                        selectedText = String(string[textRange])
+                        preferred = String(string[textRange])
                     } else {
-                        selectedText = nil
+                        preferred = string.isEmpty ? nil : string
                     }
                     // Cmd-K converts the block to a subpage — mutates the model.
                     coordinator?.commitLiveText(self)
-                    if onKey(.cmdK(selectedText: selectedText)) == .handled { return }
+                    if onKey(.cmdK(preferredTitle: preferred)) == .handled { return }
                 }
             case 33: // [ — Cmd-[ → navigate back
                 if event.modifierFlags.contains(.command) {
@@ -994,15 +999,18 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             onToggleMark: { mark in bridge.toggleMark(mark) },
             onCmdK: {
                 let range = tv.selectedRange
-                let selected: String? = {
-                    guard range.length > 0 else { return nil }
+                let preferred: String? = {
                     let ns = tv.textStorage.string as NSString
-                    guard range.location >= 0,
-                          range.location + range.length <= ns.length else { return nil }
-                    return ns.substring(with: range)
+                    if range.length > 0,
+                       range.location >= 0,
+                       range.location + range.length <= ns.length {
+                        return ns.substring(with: range)
+                    }
+                    let full = ns as String
+                    return full.isEmpty ? nil : full
                 }()
                 tv.coordinator?.commitLiveText(tv)
-                _ = onKey(.cmdK(selectedText: selected))
+                _ = onKey(.cmdK(preferredTitle: preferred))
             },
             onDismiss: {
                 // Commit synchronously before the state-mutating onKey(.escape) so the
