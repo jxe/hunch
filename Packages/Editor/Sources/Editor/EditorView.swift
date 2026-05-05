@@ -947,20 +947,30 @@ public struct EditorView: View {
 
         switch target {
         case .editor(let id, let initialCursor):
-            guard let block = document.blocks.first(where: { $0.id == id }) else { return }
-            switch block {
-            case .code, .divider, .subpage:
-                // Non-editable blocks: land in nav with this block selected.
-                transferFocus(to: .nav(cursor: id))
-                return
-            default:
-                break
+            // Soft lookup: only redirect to nav on POSITIVE confirmation that the
+            // block is non-editable. On absence we assume editable and proceed.
+            // SwiftUI snapshots `@Binding<Document>` at last view-render time and
+            // doesn't re-call the host's `get` within the same event handler, so
+            // a block that was just inserted via `mutate(...)` won't appear in
+            // `document.blocks` until SwiftUI re-renders. A hard guard here would
+            // silently bail for that exact (common) case — Cmd+Return creating a
+            // new row was the canonical bug.
+            if let block = document.blocks.first(where: { $0.id == id }) {
+                switch block {
+                case .code, .divider, .subpage:
+                    transferFocus(to: .nav(cursor: id))
+                    return
+                default:
+                    break
+                }
             }
             state.enterEditMode(on: id, initialCursor: initialCursor)
 
         case .nav(let cursor):
             state.exitEditModeWithoutCursor()
-            if let cursor, document.blocks.contains(where: { $0.id == cursor }) {
+            // Same soft-lookup tolerance: trust the caller. `state.revalidate` cleans
+            // up dangling cursor IDs against the current block set on undo/redo.
+            if let cursor {
                 state.setCursor(cursor)
             }
         }
@@ -1780,8 +1790,16 @@ public struct EditorView: View {
         let newBlock = followUpBlock(after: source, withText: "")
         let insertAt = document.sectionRange(of: id)?.upperBound ?? (i + 1)
 
+        // Explicit snapshot-then-assign pattern (matches splitBlock and the other
+        // mutate callers). `transferFocus` won't see the new block in `document.blocks`
+        // when it runs — SwiftUI snapshots @Binding<Document> at the previous render
+        // and doesn't re-call the host's get within the same event handler — but its
+        // editor-block lookup is soft (assumes editable on absence), so we proceed
+        // and let SwiftUI re-render with the new block + the new mode.
         mutate("New Block") {
-            document.blocks.insert(newBlock, at: insertAt)
+            var blocks = document.blocks
+            blocks.insert(newBlock, at: insertAt)
+            document.blocks = blocks
         }
         transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
         return true
