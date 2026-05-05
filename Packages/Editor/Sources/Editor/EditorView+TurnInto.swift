@@ -403,9 +403,9 @@ extension EditorView {
                         compactMenuButton(
                             title: "Move to",
                             systemImage: "arrow.right.doc.on.clipboard",
-                            keyboardShortcut: .return,
-                            keyboardShortcutModifiers: [.command, .shift],
-                            keyboardShortcutLabel: "⇧⌘↩"
+                            keyboardShortcut: "m",
+                            keyboardShortcutModifiers: [.command],
+                            keyboardShortcutLabel: "⌘M"
                         ) {
                             onRequestMoveDestination(targetIDs) { pickedPageID in
                                 guard let pickedPageID else { return }

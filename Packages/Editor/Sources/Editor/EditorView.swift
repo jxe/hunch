@@ -1312,6 +1312,14 @@ public struct EditorView: View {
         // .editing(id, overlay: nil) — also drops any stale mention overlay attached
         // to a different row, since the new mode replaces the old one wholesale.
         state.enterEditMode(on: id, initialCursor: initialCursor)
+        // Release the page VStack's SwiftUI focus before the new BlockTextEditor's
+        // NSTextView grabs first responder. Without this, `.focused($pageFocused)` keeps
+        // re-asserting page focus during the row insert / mount and races the
+        // NSTextView's async `makeFirstResponder`, leaving the new editor focus-less —
+        // visually identical to nav mode. Programmatic enterEditMode from nav (Cmd+Return,
+        // nav-Return on an empty row, etc.) needs this explicit release; clicks transferred
+        // focus via the click event itself and so worked without it.
+        pageFocused = false
         editorFocused = id
     }
 

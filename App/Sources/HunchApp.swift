@@ -130,7 +130,7 @@ private struct EditorBlockMenuItems: View {
     var body: some View {
         EditorCommandButton(title: "Turn Into…", key: "/") { $0.openBlockActionMenu() }
         EditorCommandButton(title: "Make Subpage / Link…", key: "k") { $0.toggleLinkOrSubpage() }
-        EditorCommandButton(title: "Move Block to Page…", key: .return, modifiers: [.command, .shift]) { $0.openMoveTo() }
+        EditorCommandButton(title: "Move Block to Page…", key: "m", modifiers: [.command]) { $0.openMoveTo() }
         Divider()
         // Tab / Shift+Tab are the editor's real indent shortcuts; registering them
         // here surfaces them in the menu without intercepting Tab elsewhere — a

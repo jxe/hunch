@@ -1,15 +1,18 @@
 # Now
 
-- maybe the history of edits stuff should actually be when a block enters a page rather than when it is modified or deleted?
 - refresh Notion typology
+- there may be some cases where formatting is getting lost
+
+# Soon
+
+- Maybe the history of edits stuff should actually be when a block enters a page rather than when it is modified or deleted?
 - inline styling (see tasks/)
 - inline clicks (see tasks/)
 - hunch-unit-tests-signing error
 
-# Later
+# Soon
 
 - link previews and mentions when a row is in 'edit' mode
-- there may be some cases where formatting is getting lost
 - drop indendenting could be more intelligent
 - round the `style` tags corners
 - color, especially color for `style` tags in a clever way
