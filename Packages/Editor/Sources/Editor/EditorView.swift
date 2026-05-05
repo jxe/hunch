@@ -730,6 +730,10 @@ public struct EditorView: View {
             return .handled
         }
 
+        if press.key == .return, modifiers.contains(.command) {
+            return createEmptySiblingAndEdit() ? .handled : .ignored
+        }
+
         if press.key == .delete || press.key == KeyEquivalent("\u{8}") || press.key == KeyEquivalent("\u{7F}") {
             deleteSelection()
             return .handled
@@ -1714,6 +1718,24 @@ public struct EditorView: View {
                 enterEditMode(on: focusTarget.id)
             }
         }
+    }
+
+    /// Nav-mode Cmd+Return: create an empty sibling of the same kind directly
+    /// after the selected block (or after its whole indent-section, so the new
+    /// row doesn't get wedged between a parent and its children) and enter
+    /// edit mode on it.
+    private func createEmptySiblingAndEdit() -> Bool {
+        guard let id = state.cursor, state.selection.count == 1 else { return false }
+        guard let i = document.index(of: id) else { return false }
+        let source = document.blocks[i]
+        let newBlock = followUpBlock(after: source, withText: "")
+        let insertAt = document.sectionRange(of: id)?.upperBound ?? (i + 1)
+
+        mutate("New Block") {
+            document.blocks.insert(newBlock, at: insertAt)
+        }
+        enterEditMode(on: newBlock.id, initialCursor: .offset(0))
+        return true
     }
 
     private func followUpBlock(after block: Block, withText text: String) -> Block {

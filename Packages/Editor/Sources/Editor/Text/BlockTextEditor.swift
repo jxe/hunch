@@ -373,14 +373,25 @@ struct MacBlockTextEditor: NSViewRepresentable {
             let nsAttr = tv.textStorage ?? NSTextStorage()
             let newText = InlineMarksBridge.toModel(nsAttr)
             let oldText = parent.text
-            let changed = String(oldText.characters) != String(newText.characters)
-                || !attributedStringMarksEqual(oldText, newText)
+            let oldPlain = String(oldText.characters)
+            // If the binding moved out from under us since our last sync, a structural
+            // op (splitBlock, autotransform, Cmd-K, etc.) has already mutated the model
+            // for this block. Our NSTextStorage still holds pre-op text and writing it
+            // would clobber the new model state — the canonical case is split duplicating
+            // the tail back into the head's row on the unmount-driven textDidEndEditing.
+            // Reconcile our snapshot to what the model now holds and bail.
+            if let last = lastKnownBindingPlain, oldPlain != last {
+                lastKnownBindingPlain = oldPlain
+                return
+            }
+            let newPlain = String(newText.characters)
+            let changed = oldPlain != newPlain || !attributedStringMarksEqual(oldText, newText)
             if changed {
                 parent.documentUndoController?
                     .registerTextChange(blockID: parent.blockID, oldText: oldText)
                 parent.text = newText
             }
-            lastKnownBindingPlain = String(newText.characters)
+            lastKnownBindingPlain = newPlain
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -989,14 +1000,23 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         func commitLiveText(_ textView: UITextView) {
             let newText = InlineMarksBridge.toModel(textView.textStorage)
             let oldText = parent.text
-            let changed = String(oldText.characters) != String(newText.characters)
-                || !attributedStringMarksEqual(oldText, newText)
+            let oldPlain = String(oldText.characters)
+            // See MacBlockTextEditor.Coordinator.commitLiveText — same teardown race:
+            // a structural op (split / autotransform / Cmd-K) mutates the model after we
+            // synced live text, then the unmount fires a second commit whose stale
+            // textStorage would clobber the new model state.
+            if let last = lastKnownBindingPlain, oldPlain != last {
+                lastKnownBindingPlain = oldPlain
+                return
+            }
+            let newPlain = String(newText.characters)
+            let changed = oldPlain != newPlain || !attributedStringMarksEqual(oldText, newText)
             if changed {
                 parent.documentUndoController?
                     .registerTextChange(blockID: parent.blockID, oldText: oldText)
                 parent.text = newText
             }
-            lastKnownBindingPlain = String(newText.characters)
+            lastKnownBindingPlain = newPlain
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
