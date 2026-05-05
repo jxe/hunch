@@ -39,7 +39,7 @@ extension EditorView {
 
         if state.editingBlock != nil,
            sendInsertActionToFirstResponder(trimmed) {
-            exitEditMode()
+            transferFocus(to: .nav(cursor: state.editingBlock))
             return
         }
 
@@ -47,7 +47,7 @@ extension EditorView {
         mutate("Insert Transcript") {
             document.blocks.append(newBlock)
         }
-        focusPageNavigation(on: newBlock.id)
+        transferFocus(to: .nav(cursor: newBlock.id))
     }
 
     fileprivate func sendInsertActionToFirstResponder(_ text: String) -> Bool {

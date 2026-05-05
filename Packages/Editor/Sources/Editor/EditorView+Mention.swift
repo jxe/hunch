@@ -108,7 +108,7 @@ extension EditorView {
         }
 
         DispatchQueue.main.async {
-            focusPageNavigation(on: subpageID)
+            transferFocus(to: .nav(cursor: subpageID))
         }
     }
 

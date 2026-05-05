@@ -15,6 +15,51 @@ public enum InitialCursorTarget: Sendable, Equatable {
     case offset(Int)
 }
 
+#if os(macOS)
+/// Single-slot weak handle to the currently-mounted `ContainedTextView`. Only one
+/// editor mounts at a time (EditorView gates `BlockTextEditor` on `isEditing`), so
+/// EditorView never needs to look up by BlockID — it just asks "is the active editor
+/// for this block?" and either grabs first responder synchronously or falls through
+/// to the `wantsFocus` async path on next mount.
+///
+/// Each EditorView owns its own holder via `@State` and publishes it through
+/// `.environment(\.macActiveTextView, ...)`. ContainedTextView assigns/clears its
+/// `view` slot from `viewDidMoveToWindow` / `viewWillMove(toWindow: nil)`.
+@MainActor
+public final class MacActiveTextView {
+    weak var view: ContainedTextView?
+
+    public init() {}
+
+    /// Synchronously grab AppKit first responder for `id` if the active NSTextView
+    /// is already mounted for that block. Returns true on success; false if the row
+    /// hasn't mounted yet — caller relies on the NSTextView's `wantsFocus` async
+    /// self-grab in `viewDidMoveToWindow` to handle the new-mount case.
+    @discardableResult
+    func makeFirstResponder(for id: BlockID) -> Bool {
+        guard let view, view.blockID == id, let window = view.window else { return false }
+        if window.firstResponder !== view {
+            window.makeFirstResponder(view)
+        }
+        view.applyPendingCursorPositionOrSeekToEnd()
+        return true
+    }
+}
+
+private struct MacActiveTextViewKey: EnvironmentKey {
+    static let defaultValue: MacActiveTextView? = nil
+}
+
+extension EnvironmentValues {
+    /// Editor-scoped active-NSTextView handle. Set by EditorView; nil when reading
+    /// outside an editor.
+    public var macActiveTextView: MacActiveTextView? {
+        get { self[MacActiveTextViewKey.self] }
+        set { self[MacActiveTextViewKey.self] = newValue }
+    }
+}
+#endif
+
 /// Block-level keyboard events the page-level handler reacts to.
 public enum BlockKey: Sendable, Equatable {
     case enter(cursorOffset: Int)
@@ -93,6 +138,12 @@ public struct BlockTextEditor: View {
     /// manager — that's how typing survives editor unmount without keeping dangling
     /// pointers to a deallocated NSTextView.
     @Environment(\.documentUndoController) private var documentUndoController
+    #if os(macOS)
+    /// Single-slot handle to the active NSTextView. ContainedTextView assigns itself
+    /// when mounted and clears on unmount, so EditorView.transferFocus can grab
+    /// first-responder synchronously instead of via the async self-grab dance.
+    @Environment(\.macActiveTextView) private var macActiveTextView
+    #endif
 
     public init(
         text: Binding<AttributedString>,
@@ -148,7 +199,8 @@ public struct BlockTextEditor: View {
             mentionActive: mentionActive,
             consumeInitialCursor: consumeInitialCursor,
             blockID: blockID,
-            documentUndoController: documentUndoController
+            documentUndoController: documentUndoController,
+            activeView: macActiveTextView
         )
         .alignmentGuide(.firstTextBaseline) { _ in
             // NSTextView with textContainerInset=.zero, lineFragmentPadding=0 puts its first
@@ -230,6 +282,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let consumeInitialCursor: () -> InitialCursorTarget?
     let blockID: BlockID
     let documentUndoController: DocumentUndoController?
+    let activeView: MacActiveTextView?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -239,6 +292,8 @@ struct MacBlockTextEditor: NSViewRepresentable {
         let view = ContainedTextView()
         view.coordinator = context.coordinator
         view.delegate = context.coordinator
+        view.activeView = activeView
+        view.blockID = blockID
         view.isRichText = true
         // NSTextView's native typing-undo registers actions that hold strong refs to the
         // NSTextView itself; SwiftUI's view lifecycle (one-editor-at-a-time, unmount on
@@ -465,6 +520,14 @@ struct MacBlockTextEditor: NSViewRepresentable {
 /// keys our coordinator wants to consume.
 final class ContainedTextView: NSTextView {
     weak var coordinator: MacBlockTextEditor.Coordinator?
+    /// Single-slot active-NSTextView handle on the owning EditorView. We assign
+    /// `activeView.view = self` in `viewDidMoveToWindow` and clear it on tear-down so
+    /// EditorView.transferFocus can grab us synchronously.
+    weak var activeView: MacActiveTextView?
+    /// Set in `makeNSView`; never changes during a view's lifetime (one editor mount
+    /// per (BlockID, edit-session)). Used to verify "is this view for the BlockID
+    /// transferFocus wants?".
+    var blockID: BlockID?
     /// Set by `updateNSView` whenever the SwiftUI focus state targets this block. Picked up
     /// in `viewDidMoveToWindow` so the second-chance focus grab works on initial mount.
     var wantsFocus: Bool = false
@@ -479,8 +542,22 @@ final class ContainedTextView: NSTextView {
     /// and overwrites the just-set cursor position.
     private var didApplyInitialCursor = false
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        // Tear-down: about to detach from the window. Drop the active-view slot so
+        // a late transferFocus(to: .editor(id)) can't grab a doomed view. Only clear
+        // if we still hold the slot — a remount of a different block may have
+        // already overwritten it.
+        if newWindow == nil, let activeView, activeView.view === self {
+            activeView.view = nil
+        }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window != nil {
+            activeView?.view = self
+        }
         if wantsFocus, let window = window, window.firstResponder !== self {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }

@@ -141,7 +141,7 @@ extension EditorView {
             ])
         }
         DispatchQueue.main.async {
-            focusPageNavigation(on: blockID)
+            transferFocus(to: .nav(cursor: blockID))
         }
         return .handled
     }

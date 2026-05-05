@@ -76,10 +76,21 @@ public struct EditorView: View {
     // is a layout output; gesture-internal flags are bookkeeping for UIKit
     // bridges; Environment must be read inside View.body).
 
-    /// Drives the active editor's `.focused()` (iOS path; macOS uses NSResponder directly).
+    /// Drives the active editor's `.focused()` on iOS (UITextView). On macOS this is
+    /// written but never read as a focus source — the NSTextView grabs first responder
+    /// directly via `MacBlockTextViewRegistry.makeFirstResponder`. Both writes are
+    /// driven from `.onChange(of: state.mode)` rather than scattered call sites.
     @FocusState var editorFocused: BlockID?
-    /// Drives the page container's focusability for nav-mode key handling.
+    /// Drives the page container's focusability for nav-mode key handling. Written only
+    /// from `.onChange(of: state.mode)` (and once on first appear).
     @FocusState var pageFocused: Bool
+    #if os(macOS)
+    /// Single-slot weak handle to the currently-mounted NSTextView. Only one editor
+    /// mounts at a time (gated by `isEditing`), so `transferFocus(to: .editor(id))`
+    /// can ask "is the active editor for this block?" and call `makeFirstResponder`
+    /// synchronously instead of waiting for the NSTextView's own async self-grab.
+    @State var macActiveTextView = MacActiveTextView()
+    #endif
     /// Document-level undo coordinator. Owns the shared `UndoManager` that NSTextView
     /// typing-undo and structural ops (split/merge/indent/slide/delete/autotransform/
     /// drag-drop) all register against. Recreated implicitly when EditorView's identity
@@ -274,6 +285,9 @@ public struct EditorView: View {
             .environment(\.documentUndoManager, undoController.undoManager)
             .environment(\.documentUndoController, undoController)
             .environment(\.linkPreviewProvider, linkPreviewProvider)
+            #if os(macOS)
+            .environment(\.macActiveTextView, macActiveTextView)
+            #endif
             // Publish for App-level CommandGroup so Cmd-Z routes through this EditorView's
             // undo manager regardless of where focus actually lives. Uses scene-level
             // exposure (rather than `.focusedValue`) because in edit mode the NSTextView
@@ -287,21 +301,29 @@ public struct EditorView: View {
                 if state.cursor == nil, let first = document.blocks.first {
                     state.setCursor(first.id)
                 }
-                requestPageNavigationFocus()
+                forcePageFocusGrab()
                 installUndoApply()
                 wireEditorCommands()
             }
+            .onChange(of: state.dropHoverIndex) { _, newValue in
+                handleDropHoverChange(newValue)
+            }
+            .onChange(of: state.mode) { oldMode, newMode in
+                actionSheet = nil
+                handleModeChange(from: oldMode, to: newMode)
+            }
+            #if os(iOS)
+            // On iOS the user can lose editor focus without touching `state.mode`
+            // (tap outside the editor, keyboard dismiss). `editorFocused` going nil is
+            // the only real-time signal — fire onBlur so the host saves. macOS doesn't
+            // need this: every focus loss there flows through `transferFocus(to: .nav)`,
+            // which `handleModeChange` already wires to onBlur.
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
                     onBlur()
                 }
             }
-            .onChange(of: state.dropHoverIndex) { _, newValue in
-                handleDropHoverChange(newValue)
-            }
-            .onChange(of: state.mode) { _, _ in
-                actionSheet = nil
-            }
+            #endif
             .onChange(of: state.voiceRecordingToggleTicket) { _, _ in
                 Task { await handleVoiceRecordingToggle() }
             }
@@ -339,7 +361,7 @@ public struct EditorView: View {
             return
         }
         if state.editingBlock != nil {
-            exitEditMode()
+            transferFocus(to: .nav(cursor: state.editingBlock))
             return
         }
         clearCursor()
@@ -389,7 +411,7 @@ public struct EditorView: View {
             },
             mentionActive: state.mentionMenu?.blockID == block.id,
             onClickAtPoint: { point in
-                enterEditMode(on: block.id, initialCursor: .point(point))
+                transferFocus(to: .editor(block.id, initialCursor: .point(point)))
             },
             onToggleExpansion: {
                 if case .templateButton = block {
@@ -461,13 +483,13 @@ public struct EditorView: View {
             .accessibilityValue(state.reorderLift?.ids.contains(block.id) == true ? "reorder-source" : "")
             .onTapGesture {
                 if case .subpage(_, _, let path, _) = block {
-                    focusPageNavigation(on: block.id)
+                    transferFocus(to: .nav(cursor: block.id))
                     onSubpageTap(path)
                     return
                 }
                 // Clicks outside the editable text region (markers, paddings) — no
                 // position info, cursor lands at end via the editor's default behavior.
-                enterEditMode(on: block.id)
+                transferFocus(to: .editor(block.id, initialCursor: nil))
             }
             .overlay(alignment: .topLeading) {
                 DragHandle()
@@ -602,7 +624,7 @@ public struct EditorView: View {
             document.blocks.insert(newBlock, at: insertionIndex)
         }
         if focus {
-            enterEditMode(on: newBlock.id)
+            transferFocus(to: .editor(newBlock.id, initialCursor: nil))
         }
     }
 
@@ -655,7 +677,7 @@ public struct EditorView: View {
             document.blocks.insert(contentsOf: copies, at: range.upperBound)
         }
         if let first = copies.first {
-            focusPageNavigation(on: first.id)
+            transferFocus(to: .nav(cursor: first.id))
         }
     }
 
@@ -776,7 +798,7 @@ public struct EditorView: View {
                 if navigateIntoSubpage(id) {
                     return .handled
                 }
-                enterEditMode(on: id)
+                transferFocus(to: .editor(id, initialCursor: nil))
             }
             return .handled
         case .escape:
@@ -871,12 +893,10 @@ public struct EditorView: View {
 
             // Validate cursor/selection/edit-mode against the new block set in one
             // sweep — drops invalid IDs from the navigating selection, falls back
-            // to nav mode if the editing block disappeared.
+            // to nav mode if the editing block disappeared. Any resulting mode
+            // change drives focus updates via `.onChange(of: state.mode)`.
             let validIDs = Set(newBlocks.map { $0.id })
             state.revalidate(against: validIDs, fallbackCursor: newBlocks.first?.id)
-            if state.editingBlock == nil {
-                editorFocused = nil
-            }
 
             // Re-register inverse — when this runs during isUndoing, UndoManager pushes
             // it to the redo stack; during isRedoing, it goes back on the undo stack.
@@ -903,20 +923,85 @@ public struct EditorView: View {
         state.clearCursor()
     }
 
-    func focusPageNavigation(on id: BlockID? = nil) {
-        // Commit any in-flight editor text into the model before tearing down the
-        // active editor. The same teardown-pass binding-write race applies here as in
-        // `enterEditMode` — see the rationale on `commitActiveEditor`.
-        undoController.commitActiveEditor?()
-        state.exitEditModeWithoutCursor()
-        editorFocused = nil
-        if let id, document.blocks.contains(where: { $0.id == id }) {
-            state.setCursor(id)
-        }
-        requestPageNavigationFocus()
+    /// Where focus should land. Both cases are model-shaped — they describe what the
+    /// next `state.mode` should be. The actual SwiftUI focus state (`pageFocused`,
+    /// `editorFocused`) and AppKit first-responder updates are derived from the
+    /// resulting mode change in `handleModeChange`, so callers never write focus
+    /// state directly.
+    enum FocusTarget {
+        case editor(BlockID, initialCursor: InitialCursorTarget?)
+        case nav(cursor: BlockID?)
     }
 
-    private func requestPageNavigationFocus() {
+    /// Single named operation for any focus hand-off between nav mode and an editor
+    /// (or vice versa). The canonical primitive — call sites name a target and let
+    /// the helper handle the order of operations. Synchronously commits any active
+    /// editor's live text, mutates `state.mode`, and lets `.onChange(of: state.mode)`
+    /// (→ `handleModeChange`) derive the SwiftUI/AppKit focus update.
+    func transferFocus(to target: FocusTarget) {
+        // Commit in-flight editor text into the model before mutating mode. The state
+        // change unmounts the active BlockTextEditor; a binding write during teardown
+        // doesn't reliably reach the freshly-rendered read-only Text — see
+        // `commitActiveEditor`.
+        undoController.commitActiveEditor?()
+
+        switch target {
+        case .editor(let id, let initialCursor):
+            guard let block = document.blocks.first(where: { $0.id == id }) else { return }
+            switch block {
+            case .code, .divider, .subpage:
+                // Non-editable blocks: land in nav with this block selected.
+                transferFocus(to: .nav(cursor: id))
+                return
+            default:
+                break
+            }
+            state.enterEditMode(on: id, initialCursor: initialCursor)
+
+        case .nav(let cursor):
+            state.exitEditModeWithoutCursor()
+            if let cursor, document.blocks.contains(where: { $0.id == cursor }) {
+                state.setCursor(cursor)
+            }
+        }
+    }
+
+    /// Single source of truth for keeping SwiftUI focus, AppKit first responder, and
+    /// the host's `onBlur` callback in sync with `state.mode`. Driven from
+    /// `.onChange(of: state.mode)` so any path that mutates mode (clicks, key
+    /// handlers, undo/redo, …) gets focus right automatically — no caller has to
+    /// remember to flip `pageFocused`.
+    func handleModeChange(from oldMode: Mode, to newMode: Mode) {
+        let wasEditing: Bool = { if case .editing = oldMode { return true } else { return false } }()
+
+        switch newMode {
+        case .editing(let id, _):
+            editorFocused = id
+            pageFocused = false
+            #if os(macOS)
+            // Synchronous AppKit grab if the NSTextView is already mounted (e.g. when
+            // re-focusing via Esc → click; or transferring between editors). When the
+            // row hasn't mounted yet (new-block insertion), this is a no-op and the
+            // NSTextView's `viewDidMoveToWindow` `wantsFocus` async path takes over.
+            macActiveTextView.makeFirstResponder(for: id)
+            #endif
+        case .navigating:
+            editorFocused = nil
+            // Only re-grab page focus on real edit→nav transitions. .onChange fires on
+            // intra-nav selection changes too (cursor moves, selection extends);
+            // re-grabbing every time would steal focus from menus and sheets.
+            if wasEditing {
+                forcePageFocusGrab()
+                onBlur()
+            }
+        }
+    }
+
+    /// Force SwiftUI to re-assert focus on the page VStack via a `false → true` flip
+    /// on the next runloop. A same-value setter is a no-op in SwiftUI focus state, so
+    /// this is the only way to reliably re-grab page focus after edit mode releases it
+    /// (or on first appear).
+    private func forcePageFocusGrab() {
         DispatchQueue.main.async {
             pageFocused = false
             DispatchQueue.main.async {
@@ -1287,51 +1372,6 @@ public struct EditorView: View {
         effectiveSelectedIndices().map { document.blocks[$0].id }
     }
 
-    // MARK: - Edit-mode transitions
-
-    /// Enter edit mode on a block. Pass `initialCursor` when there's a specific
-    /// position the cursor should land on (click point, start of split tail, merge
-    /// join point); leave it nil to seek to end. Routes through `EditorState`,
-    /// which owns the pending-cursor channel and clears it on session boundaries.
-    private func enterEditMode(on id: BlockID, initialCursor: InitialCursorTarget? = nil) {
-        guard let block = document.blocks.first(where: { $0.id == id }) else { return }
-        switch block {
-        case .code, .divider, .subpage:
-            focusPageNavigation(on: id)
-            return
-        default:
-            break
-        }
-        // If a different block is currently being edited, sync its live text into the
-        // model BEFORE we mutate state.editingBlock. The state change unmounts the old
-        // BlockTextEditor; a binding write during that teardown pass doesn't reliably
-        // reach the freshly-rendered read-only Text. Explicit commit fixes this.
-        if let currentEditing = state.editingBlock, currentEditing != id {
-            undoController.commitActiveEditor?()
-        }
-        // .editing(id, overlay: nil) — also drops any stale mention overlay attached
-        // to a different row, since the new mode replaces the old one wholesale.
-        state.enterEditMode(on: id, initialCursor: initialCursor)
-        // Release the page VStack's SwiftUI focus before the new BlockTextEditor's
-        // NSTextView grabs first responder. Without this, `.focused($pageFocused)` keeps
-        // re-asserting page focus during the row insert / mount and races the
-        // NSTextView's async `makeFirstResponder`, leaving the new editor focus-less —
-        // visually identical to nav mode. Programmatic enterEditMode from nav (Cmd+Return,
-        // nav-Return on an empty row, etc.) needs this explicit release; clicks transferred
-        // focus via the click event itself and so worked without it.
-        pageFocused = false
-        editorFocused = id
-    }
-
-    func exitEditMode() {
-        let was = state.editingBlock
-        // Mode → .navigating(...) drops any active mention overlay along with it,
-        // since the popover is anchored to the editing row and would otherwise
-        // attach to a read-only Text that can no longer drive the input.
-        focusPageNavigation(on: was)
-        onBlur()
-    }
-
     // MARK: - Selection-wide operations
 
     /// Move the contiguous selection up or down across outline siblings. Selected
@@ -1510,7 +1550,7 @@ public struct EditorView: View {
 
         if let last = reindented.last {
             if focusLast {
-                DispatchQueue.main.async { self.enterEditMode(on: last.id) }
+                DispatchQueue.main.async { self.transferFocus(to: .editor(last.id, initialCursor: nil)) }
             } else {
                 setCursor(last.id)
             }
@@ -1560,7 +1600,7 @@ public struct EditorView: View {
         case .shiftTab:
             return changeIndent(blockID, by: -1)
         case .escape:
-            exitEditMode()
+            transferFocus(to: .nav(cursor: state.editingBlock))
             return .handled
         case .cmdK(let selectedText):
             return convertBlockToSubpage(blockID: blockID, preferredTitle: selectedText)
@@ -1568,11 +1608,11 @@ public struct EditorView: View {
             onNavigateBack()
             return .handled
         case .exitEditUp:
-            exitEditMode()
+            transferFocus(to: .nav(cursor: state.editingBlock))
             DispatchQueue.main.async { moveCursor(by: -1) }
             return .handled
         case .exitEditDown:
-            exitEditMode()
+            transferFocus(to: .nav(cursor: state.editingBlock))
             DispatchQueue.main.async { moveCursor(by: +1) }
             return .handled
         case .mentionUp:
@@ -1645,7 +1685,7 @@ public struct EditorView: View {
                 mutate("Split Block") {
                     document.blocks.insert(newBlock, at: endOfSection)
                 }
-                enterEditMode(on: newBlock.id, initialCursor: .offset(0))
+                transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
                 return .handled
             } else {
                 let firstChild = document.blocks[firstChildIdx]
@@ -1653,7 +1693,7 @@ public struct EditorView: View {
                 mutate("Split Block") {
                     document.blocks.insert(newBlock, at: firstChildIdx)
                 }
-                enterEditMode(on: newBlock.id, initialCursor: .offset(0))
+                transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
                 return .handled
             }
         }
@@ -1682,7 +1722,7 @@ public struct EditorView: View {
             blocks.insert(newBlock, at: i + 1)
             document.blocks = blocks
         }
-        enterEditMode(on: newBlock.id, initialCursor: .offset(0))
+        transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
         return .handled
     }
 
@@ -1691,7 +1731,7 @@ public struct EditorView: View {
               case .subpage(_, _, let path, _) = block else {
             return false
         }
-        focusPageNavigation(on: blockID)
+        transferFocus(to: .nav(cursor: blockID))
         onSubpageTap(path)
         return true
     }
@@ -1717,13 +1757,14 @@ public struct EditorView: View {
         }
         let focusTarget = replacements[transform.focusReplacementIndex]
         DispatchQueue.main.async {
-            // Code/divider rows aren't editable in M3 (`enterEditMode` skips them); for
-            // those transforms the focus target is the empty paragraph, which is editable.
+            // Code/divider rows aren't editable in M3 (`transferFocus(to: .editor)`
+            // routes them to nav); for those transforms the focus target is the empty
+            // paragraph, which is editable.
             switch focusTarget {
             case .code, .divider, .subpage:
-                focusPageNavigation(on: focusTarget.id)
+                transferFocus(to: .nav(cursor: focusTarget.id))
             default:
-                enterEditMode(on: focusTarget.id)
+                transferFocus(to: .editor(focusTarget.id, initialCursor: nil))
             }
         }
     }
@@ -1742,7 +1783,7 @@ public struct EditorView: View {
         mutate("New Block") {
             document.blocks.insert(newBlock, at: insertAt)
         }
-        enterEditMode(on: newBlock.id, initialCursor: .offset(0))
+        transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
         return true
     }
 
@@ -1814,7 +1855,7 @@ public struct EditorView: View {
                 document.blocks.remove(at: i)
             }
             if let previous {
-                enterEditMode(on: previous)
+                transferFocus(to: .editor(previous, initialCursor: nil))
             }
             return .handled
         }
@@ -1840,7 +1881,7 @@ public struct EditorView: View {
             blocks.remove(at: i)
             document.blocks = blocks
         }
-        enterEditMode(on: previousID, initialCursor: .offset(previousLen))
+        transferFocus(to: .editor(previousID, initialCursor: .offset(previousLen)))
         return .handled
     }
 
