@@ -1430,7 +1430,10 @@ public struct EditorView: View {
         mutate("Move Block") {
             document.blocks = moved.blocks
         }
-        revealHiddenBlocks(Set(ids))
+        // Only reveal the user-selected (top-level) blocks — passing the
+        // section-expanded set would pop open a moved closed toggle, since its
+        // own hidden children look like "hidden selected blocks" needing reveal.
+        revealHiddenBlocks(state.selection)
     }
 
     /// Delete every block in the current selection. Selection collapses to the block just
@@ -1487,7 +1490,6 @@ public struct EditorView: View {
     private func indentByOne(blockID: BlockID) {
         let indices = document.indicesIncludingSections(of: [blockID])
         guard canChangeIndent(at: indices, by: 1) else { return }
-        let movedIDs = indices.map { document.blocks[$0].id }
         mutate("Indent") {
             var blocks = document.blocks
             for i in indices {
@@ -1495,7 +1497,7 @@ public struct EditorView: View {
             }
             document.blocks = blocks
         }
-        revealHiddenBlocks(Set(movedIDs))
+        revealHiddenBlocks([blockID])
     }
 
     /// Apply Tab / Shift-Tab indent change to the effective selection.
@@ -1503,7 +1505,6 @@ public struct EditorView: View {
         let indices = effectiveSelectedIndices()
         guard !indices.isEmpty else { return }
         guard canChangeIndent(at: indices, by: delta) else { return }
-        let movedIDs = indices.map { document.blocks[$0].id }
         mutate(delta > 0 ? "Indent" : "Outdent") {
             var blocks = document.blocks
             for i in indices {
@@ -1511,7 +1512,7 @@ public struct EditorView: View {
             }
             document.blocks = blocks
         }
-        revealHiddenBlocks(Set(movedIDs))
+        revealHiddenBlocks(state.selection)
     }
 
     private func copySelectionToPasteboard() -> Bool {
@@ -1960,7 +1961,6 @@ public struct EditorView: View {
     func changeIndent(_ blockID: BlockID, by delta: Int) -> KeyPress.Result {
         let indices = document.indicesIncludingSections(of: [blockID])
         guard canChangeIndent(at: indices, by: delta) else { return .ignored }
-        let movedIDs = indices.map { document.blocks[$0].id }
         mutate(delta > 0 ? "Indent" : "Outdent") {
             var blocks = document.blocks
             for i in indices {
@@ -1968,7 +1968,7 @@ public struct EditorView: View {
             }
             document.blocks = blocks
         }
-        revealHiddenBlocks(Set(movedIDs))
+        revealHiddenBlocks([blockID])
         return .handled
     }
 }
