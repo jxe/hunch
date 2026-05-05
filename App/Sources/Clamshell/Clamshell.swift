@@ -115,32 +115,28 @@ public final class Clamshell {
     /// Coalesced async save (autosave path). If a write is already in flight for
     /// this URL, the snapshot replaces any pending one and is written after the
     /// in-flight write completes. After the write lands, fires a fire-and-forget
-    /// `recordEdits` against the lost-block log so the format keeps its own diff
-    /// history without the caller having to wire it up.
+    /// `recordSnapshot` against the lost-block log so every block-version that
+    /// makes it to disk is captured.
     nonisolated public func save(
         _ document: Document,
         resolvingSubpageTitle titleForPath: @Sendable @escaping (String) -> String? = { _ in nil }
     ) async throws {
-        let priorText = try await saver.save(document, resolvingSubpageTitle: titleForPath)
-        guard let priorText else { return }
+        try await saver.save(document, resolvingSubpageTitle: titleForPath)
         let newText = BlockSerializer.serialize(document.blocks, resolvingSubpageTitle: titleForPath)
-        scheduleRecordEdits(at: document.url, previousText: priorText, newText: newText)
+        scheduleRecordSnapshot(at: document.url, newText: newText)
     }
 
     /// Synchronous full write — bypasses the coalescer. For modifications-as-a-unit
     /// (trashing a dirty open doc, appending to a subpage, restoring a lost block)
-    /// where the doc must be on disk before the next operation runs. Also records
-    /// the diff into the lost-block log.
+    /// where the doc must be on disk before the next operation runs. Also snapshots
+    /// the new content into the lost-block log.
     nonisolated public func writeImmediately(
         _ document: Document,
         resolvingSubpageTitle titleForPath: @Sendable @escaping (String) -> String? = { _ in nil }
     ) throws {
-        let priorText = try? files.read(document.url)
         let newText = BlockSerializer.serialize(document.blocks, resolvingSubpageTitle: titleForPath)
         try files.write(newText, to: document.url)
-        if let priorText {
-            scheduleRecordEdits(at: document.url, previousText: priorText, newText: newText)
-        }
+        scheduleRecordSnapshot(at: document.url, newText: newText)
     }
 
     /// Awaits any in-flight + pending save for the URL.
@@ -148,14 +144,12 @@ public final class Clamshell {
         try await saver.flush(url: url)
     }
 
-    nonisolated private func scheduleRecordEdits(at url: URL, previousText: String, newText: String) {
-        guard previousText != newText else { return }
+    nonisolated private func scheduleRecordSnapshot(at url: URL, newText: String) {
         let rel = relativePath(of: url)
         Task { [history] in
-            try? await history.recordEdits(
+            try? await history.recordSnapshot(
                 relativePath: rel,
-                previousText: previousText,
-                newText: newText
+                currentText: newText
             )
         }
     }
@@ -284,13 +278,11 @@ public final class Clamshell {
 
     nonisolated public func recordDeletion(
         at url: URL,
-        previousBlocks: [Block],
-        removedIndices: [Int]
+        previousBlocks: [Block]
     ) async throws {
         try await history.recordDeletion(
             relativePath: relativePath(of: url),
-            previousBlocks: previousBlocks,
-            removedIndices: removedIndices
+            previousBlocks: previousBlocks
         )
     }
 

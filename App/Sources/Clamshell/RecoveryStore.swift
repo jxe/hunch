@@ -1,13 +1,18 @@
 import Foundation
 import Editor
 
-/// Per-page append-only log of blocks that have left a document, plus the operations
-/// to record, list, restore (anchor-based), and purge.
+/// Per-page append-only log of every block-version that has ever lived in a document,
+/// plus the operations to record, list, restore (anchor-based), and purge.
+///
+/// **On-entry model.** Every save snapshots the doc's current fingerprints into the
+/// log; new fingerprints are appended once and never re-logged (dedup is by
+/// fingerprint). Recovery becomes "log entries whose fingerprint isn't currently in
+/// any live `.md` page" — computed at read time. The log therefore contains all
+/// historical *and* current versions; the live-fingerprint filter hides current ones
+/// from the Recover sheet.
 ///
 /// Storage layout: one JSONL log per source page at
 /// `<workspaceRoot>/.history/<relativePath>.jsonl`. Each line is a `LostBlockRecord`.
-/// Dedup is by `fingerprint`: distinct content gets distinct rows; identical content
-/// re-disappearing produces no new row.
 ///
 /// iCloud sync conflicts produce sibling files like `page.md 2.jsonl` or
 /// `page.md.jsonl 2`. On every read we scan for these, merge their rows into the
@@ -30,44 +35,49 @@ public actor RecoveryStore {
 
     // MARK: - Recording
 
-    public func recordEdits(
+    /// Snapshot every block in `currentText` into the log, deduped by fingerprint.
+    /// Idempotent — safe to call on every save.
+    public func recordSnapshot(
         relativePath: String,
-        previousText: String,
-        newText: String,
+        currentText: String,
         date: Date = Date()
     ) async throws {
-        let previousBlocks = BlockParser.parse(previousText)
-        let newBlocks = BlockParser.parse(newText)
-        let newFingerprints = Set(newBlocks.map(BlockFingerprint.compute))
-        let lostRecords = computeRecords(
-            from: previousBlocks,
-            survivingFingerprints: newFingerprints,
-            source: relativePath,
-            cause: .edited,
-            date: date
-        )
-        try appendRecords(lostRecords, for: relativePath)
+        let blocks = BlockParser.parse(currentText)
+        try appendNewFingerprints(blocks: blocks, relativePath: relativePath, date: date)
     }
 
+    /// Snapshot the about-to-be-mutated block list before a destructive UI action
+    /// (typically a multi-block delete). Covers the race where blocks live briefly
+    /// in the doc, get deleted, and the autosave never fires while they're present.
+    /// Same dedup as `recordSnapshot` — already-known fingerprints are skipped.
     public func recordDeletion(
         relativePath: String,
         previousBlocks: [Block],
-        removedIndices: [Int],
         date: Date = Date()
     ) async throws {
-        let removed = Set(removedIndices)
-        let surviving = previousBlocks.enumerated()
-            .filter { !removed.contains($0.offset) }
-            .map { BlockFingerprint.compute($0.element) }
-        let lostRecords = computeRecords(
-            from: previousBlocks,
-            survivingFingerprints: Set(surviving),
+        try appendNewFingerprints(blocks: previousBlocks, relativePath: relativePath, date: date)
+    }
+
+    private func appendNewFingerprints(
+        blocks: [Block],
+        relativePath: String,
+        date: Date
+    ) throws {
+        let logURL = self.logURL(for: relativePath)
+        var existing: [LostBlockRecord] = []
+        if FileManager.default.fileExists(atPath: logURL.path)
+            || hasConflictSiblings(for: logURL) {
+            existing = try mergeAndLoad(logURL: logURL)
+        }
+        let known = Set(existing.map(\.fingerprint))
+
+        let records = computeSnapshotRecords(
+            from: blocks,
+            knownFingerprints: known,
             source: relativePath,
-            cause: .deleted,
-            date: date,
-            restrictTo: removed
+            date: date
         )
-        try appendRecords(lostRecords, for: relativePath)
+        try appendRecords(records, for: relativePath)
     }
 
     // MARK: - Listing
@@ -100,10 +110,14 @@ public actor RecoveryStore {
             canonicalLogs.insert(url.standardizedFileURL)
         }
 
+        let liveBySource = liveFingerprintsForAllPages()
         var out: [LostBlock] = []
         for logURL in canonicalLogs {
             let records = try mergeAndLoad(logURL: logURL)
-            out.append(contentsOf: records.map { LostBlock(record: $0, logURL: logURL) })
+            for record in records {
+                if liveBySource[record.source]?.contains(record.fingerprint) == true { continue }
+                out.append(LostBlock(record: record, logURL: logURL))
+            }
         }
         out.sort { $0.record.recordedAt > $1.record.recordedAt }
         return out
@@ -114,7 +128,9 @@ public actor RecoveryStore {
         guard FileManager.default.fileExists(atPath: logURL.path)
                 || hasConflictSiblings(for: logURL) else { return [] }
         let records = try mergeAndLoad(logURL: logURL)
+        let live = liveFingerprintsForPage(relativePath: relativePath)
         return records
+            .filter { !live.contains($0.fingerprint) }
             .map { LostBlock(record: $0, logURL: logURL) }
             .sorted { $0.record.recordedAt > $1.record.recordedAt }
     }
@@ -136,21 +152,38 @@ public actor RecoveryStore {
         }
     }
 
+    // MARK: - Internal: live fingerprints
+
+    private func liveFingerprintsForPage(relativePath: String) -> Set<String> {
+        let url = workspaceRoot.appendingPathComponent(relativePath)
+        guard FileManager.default.fileExists(atPath: url.path),
+              let raw = try? store.read(url) else { return [] }
+        return Set(BlockParser.parse(raw).map(BlockFingerprint.compute))
+    }
+
+    private func liveFingerprintsForAllPages() -> [String: Set<String>] {
+        let entries = (try? store.scan(workspaceRoot: workspaceRoot)) ?? []
+        var out: [String: Set<String>] = [:]
+        for entry in entries {
+            out[entry.relativePath] = liveFingerprintsForPage(relativePath: entry.relativePath)
+        }
+        return out
+    }
+
     // MARK: - Internal: record computation
 
-    /// Walks `blocks` left-to-right. For every block whose fingerprint is not in
-    /// `survivingFingerprints` (and, if `restrictTo` is non-nil, whose index is in
-    /// it), emit a `LostBlockRecord`. If the lost block is the head of a contiguous
-    /// fully-lost section (e.g. a toggle whose body is also gone), the entire
-    /// section is emitted as one record. Anchors point at the nearest preceding
-    /// block whose fingerprint *is* surviving.
-    private func computeRecords(
+    /// Walks `blocks` left-to-right. For every block whose fingerprint isn't already
+    /// in `knownFingerprints`, emit a `LostBlockRecord` with `cause = .seen`. A
+    /// contiguous "section" (e.g. a toggle and its body) all of which is new gets
+    /// emitted as one record so restoration brings it back together. Anchor is the
+    /// immediate predecessor in the snapshot — gives restoration the best chance of
+    /// finding a stable reference, since every block in the snapshot is in the live
+    /// doc at write time.
+    private func computeSnapshotRecords(
         from blocks: [Block],
-        survivingFingerprints: Set<String>,
+        knownFingerprints: Set<String>,
         source: String,
-        cause: LostBlockRecord.Cause,
-        date: Date,
-        restrictTo allowedIndices: Set<Int>? = nil
+        date: Date
     ) -> [LostBlockRecord] {
         var out: [LostBlockRecord] = []
         var consumed = Set<Int>()
@@ -159,31 +192,25 @@ public actor RecoveryStore {
             if consumed.contains(i) { i += 1; continue }
             let block = blocks[i]
             let fp = BlockFingerprint.compute(block)
-            let isLost = !survivingFingerprints.contains(fp)
-                && (allowedIndices?.contains(i) ?? true)
-            guard isLost else { i += 1; continue }
+            guard !knownFingerprints.contains(fp) else { i += 1; continue }
 
             let end = sectionEnd(of: i, in: blocks)
             let sectionRange = i..<end
-            let allSectionLost = sectionRange.allSatisfy { idx in
-                let fp = BlockFingerprint.compute(blocks[idx])
-                let lost = !survivingFingerprints.contains(fp)
-                let allowed = allowedIndices?.contains(idx) ?? true
-                return lost && allowed
+            let allSectionNew = sectionRange.allSatisfy { idx in
+                !knownFingerprints.contains(BlockFingerprint.compute(blocks[idx]))
             }
 
             let recordRange: Range<Int>
-            if allSectionLost && end > i + 1 {
+            if allSectionNew && end > i + 1 {
                 recordRange = sectionRange
             } else {
                 recordRange = i..<(i + 1)
             }
 
-            // Skip transient autotransform residue: edited-out paragraphs that are
-            // empty or contain just a transform trigger like `#`, `- `, `[] ` —
-            // the user typed it for half a second on the way to a heading or list.
-            if cause == .edited
-                && recordRange.count == 1
+            // Skip transient autotransform residue: empty paragraphs or paragraphs
+            // that match a transform trigger (`#`, `- `, `[] `, etc.) — the user
+            // typed it for half a second on the way to a heading or list.
+            if recordRange.count == 1
                 && isAutotransformResidue(blocks[recordRange.lowerBound]) {
                 consumed.insert(recordRange.lowerBound)
                 i = recordRange.upperBound
@@ -192,8 +219,7 @@ public actor RecoveryStore {
 
             let anchor = anchorFingerprint(
                 before: recordRange.lowerBound,
-                in: blocks,
-                survivingFingerprints: survivingFingerprints
+                in: blocks
             )
             let slice = Array(blocks[recordRange])
             let baseIndent = slice.first?.indent ?? 0
@@ -203,7 +229,7 @@ public actor RecoveryStore {
             out.append(LostBlockRecord(
                 source: source,
                 recordedAt: date,
-                cause: cause,
+                cause: .seen,
                 originalIndex: recordRange.lowerBound,
                 anchorFingerprint: anchor,
                 fingerprint: fp,
@@ -235,18 +261,15 @@ public actor RecoveryStore {
         return triggers.contains(raw)
     }
 
+    /// Immediate predecessor in the snapshot, or nil if this is the first block.
+    /// At restore time the receiving side resolves the anchor against the live
+    /// doc — a missing anchor falls back to end-of-page insertion.
     private func anchorFingerprint(
         before index: Int,
-        in blocks: [Block],
-        survivingFingerprints: Set<String>
+        in blocks: [Block]
     ) -> String? {
-        var i = index - 1
-        while i >= 0 {
-            let fp = BlockFingerprint.compute(blocks[i])
-            if survivingFingerprints.contains(fp) { return fp }
-            i -= 1
-        }
-        return nil
+        guard index > 0 else { return nil }
+        return BlockFingerprint.compute(blocks[index - 1])
     }
 
     // MARK: - Internal: append

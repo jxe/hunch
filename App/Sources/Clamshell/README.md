@@ -77,7 +77,7 @@ upgrade.
 | Write | `save(_:resolvingSubpageTitle:)` (async, coalesced), `writeImmediately(_:resolvingSubpageTitle:)` (sync), `flush(url:)` |
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
-| Lost-block log | `recordDeletion(at:previousBlocks:removedIndices:)`, `listLostBlocks(filter:)`, `purgeLostBlock(_:)` |
+| Lost-block log | `recordDeletion(at:previousBlocks:)`, `listLostBlocks(filter:)`, `purgeLostBlock(_:)` |
 | Metadata | `homeRelativePath` (read/write), `root` |
 
 The `resolvingSubpageTitle: (String) -> String?` callback on the write
@@ -90,12 +90,14 @@ title of `pages/foo.md`. nil = use whatever's in the doc already.
 
 ## Behaviors worth knowing
 
-**Save records edits.** Every `save(_:)` and `writeImmediately(_:)` fires
-a fire-and-forget `recordEdits` against `.history/<rel>.md.jsonl` after
-the write lands. The diff is computed inside Clamshell — the caller
-doesn't pass any "previous text". Blocks that disappeared are recorded as
-`LostBlockRecord`s; an unchanged page is a no-op. Recovery is the only
-reason to be aware of this — it just works.
+**Save snapshots every block-version.** Every `save(_:)` and
+`writeImmediately(_:)` fires a fire-and-forget `recordSnapshot` against
+`.history/<rel>.md.jsonl` after the write lands. Every fingerprint that
+isn't already in the log is appended; subsequent saves with the same
+content are no-ops. The log therefore accumulates every distinct
+block-version the doc has ever held — including the current one. Recovery
+filters at read time: a record is "lost" iff its fingerprint isn't in
+any live `.md` page right now.
 
 **Trash invalidates home.** `moveToTrash(at:)` clears `homeRelativePath`
 if the trashed page was the home page. The pointer can't reference a

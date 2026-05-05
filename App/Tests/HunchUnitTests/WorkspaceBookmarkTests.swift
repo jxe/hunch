@@ -5,7 +5,7 @@ import Editor
 
 @Suite("Workspace bookmark")
 struct WorkspaceBookmarkTests {
-    @Test func resolveRestoresHomeRelativePath() throws {
+    @Test func resolveReturnsTheSavedURL() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("console-bookmark-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -15,11 +15,10 @@ struct WorkspaceBookmarkTests {
         }
 
         WorkspaceBookmark.clear()
-        try WorkspaceBookmark.save(url: dir, homeRelativePath: "home.md")
+        try WorkspaceBookmark.save(url: dir)
 
         let restored = WorkspaceBookmark.resolve()
-        #expect(restored?.url.standardizedFileURL == dir.standardizedFileURL)
-        #expect(restored?.homeRelativePath == "home.md")
-        restored?.url.stopAccessingSecurityScopedResource()
+        #expect(restored?.standardizedFileURL == dir.standardizedFileURL)
+        restored?.stopAccessingSecurityScopedResource()
     }
 }

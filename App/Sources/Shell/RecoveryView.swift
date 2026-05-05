@@ -154,6 +154,7 @@ public struct RecoveryView: View {
             switch lost.record.cause {
             case .deleted: return "square.stack.3d.up"
             case .edited: return "pencil"
+            case .seen: return "clock.arrow.circlepath"
             }
         }
     }
@@ -162,8 +163,11 @@ public struct RecoveryView: View {
         switch entry {
         case .deletedPage: return entry.sourcePath
         case .lostBlock(let lost):
-            let suffix = lost.record.cause == .deleted ? "deleted" : "edited out"
-            return entry.sourcePath + " · " + suffix
+            switch lost.record.cause {
+            case .deleted: return entry.sourcePath + " · deleted"
+            case .edited: return entry.sourcePath + " · edited out"
+            case .seen: return entry.sourcePath
+            }
         }
     }
 

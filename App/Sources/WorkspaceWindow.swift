@@ -286,13 +286,13 @@ final class WorkspaceWindow {
     }
 
     func recordBlockDeletion(indices: [Int], blocks: [Block], actionName: String) {
+        _ = indices
         _ = blocks
         _ = actionName
         guard let openDocument else { return }
         workspace.recordBlockDeletion(
             sourceURL: openDocument.url,
-            previousBlocks: openDocument.blocks,
-            indices: indices
+            previousBlocks: openDocument.blocks
         )
     }
 

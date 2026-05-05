@@ -1,13 +1,15 @@
 import Foundation
 
-/// On-disk record of a block that disappeared from a document. One JSON object per
-/// line in `<workspace>/.history/<relativePath>.jsonl`.
+/// On-disk record of a block-version that has lived in a document. One JSON object
+/// per line in `<workspace>/.history/<relativePath>.jsonl`.
 ///
-/// `cause: edited` is appended automatically when a save's content drops fingerprints
-/// that were on disk before. `cause: deleted` is appended on explicit user delete in
-/// nav mode.
+/// `cause: seen` is appended on every save for any fingerprint that isn't already
+/// in the log. `cause: edited` and `cause: deleted` are legacy from the on-exit
+/// model and only appear in pre-existing logs — readers treat all three uniformly
+/// (any fingerprint not currently in the live doc is recoverable).
 public struct LostBlockRecord: Codable, Sendable, Hashable {
     public enum Cause: String, Codable, Sendable, Hashable {
+        case seen
         case edited
         case deleted
     }

@@ -361,14 +361,13 @@ final class Workspace {
 
     // MARK: - Recovery
 
-    func recordBlockDeletion(sourceURL: URL, previousBlocks: [Block], indices: [Int]) {
+    func recordBlockDeletion(sourceURL: URL, previousBlocks: [Block]) {
         guard let clamshell else { return }
-        Task { [weak self, clamshell, sourceURL, previousBlocks, indices] in
+        Task { [weak self, clamshell, sourceURL, previousBlocks] in
             do {
                 try await clamshell.recordDeletion(
                     at: sourceURL,
-                    previousBlocks: previousBlocks,
-                    removedIndices: indices
+                    previousBlocks: previousBlocks
                 )
             } catch {
                 await MainActor.run {
