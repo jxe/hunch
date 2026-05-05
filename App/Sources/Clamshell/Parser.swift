@@ -277,6 +277,9 @@ public enum BlockParser {
             if let subpage = detectSubpage(inlines) {
                 return [subpage.withIndent(indent)]
             }
+            if let image = detectBlockImage(inlines) {
+                return [image.withIndent(indent)]
+            }
             return [.paragraph(text: inlineToAttributed(inlines), indent: indent)]
 
         case let blockQuote as BlockQuote:
@@ -463,6 +466,32 @@ public enum BlockParser {
         let titleParts: [String] = Array(link.inlineChildren).compactMap { ($0 as? Markdown.Text)?.string }
         let title = titleParts.joined()
         return .subpage(title: title.isEmpty ? dest : title, pageID: dest)
+    }
+
+    // MARK: - Block image detection
+
+    /// Recognise a paragraph whose only meaningful content is a single `![alt](src)`
+    /// image as a block-level `.image`. Inline images that share a paragraph with
+    /// other text fall through to the inline-fallback path in `renderInline` and
+    /// stay as plain markdown — Hunch has no inline-image concept.
+    private static func detectBlockImage(_ inlines: [any InlineMarkup]) -> Block? {
+        var image: Markdown.Image?
+        for inline in inlines {
+            switch inline {
+            case let img as Markdown.Image:
+                guard image == nil else { return nil }
+                image = img
+            case let t as Markdown.Text where t.string.trimmingCharacters(in: .whitespaces).isEmpty:
+                continue
+            case _ as SoftBreak, _ as LineBreak:
+                continue
+            default:
+                return nil
+            }
+        }
+        guard let image, let source = image.source, !source.isEmpty else { return nil }
+        let altParts: [String] = Array(image.inlineChildren).compactMap { ($0 as? Markdown.Text)?.string }
+        return .image(source: source, alt: altParts.joined())
     }
 
     private static func inlineParse(_ source: String) -> AttributedString {

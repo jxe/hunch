@@ -70,6 +70,14 @@ public struct EditorView: View {
     /// link in a rendered (read-only) row and decorates the inline link with
     /// the result. Default is `nil` — no fetching happens, links render as today.
     public let linkPreviewProvider: LinkPreviewProvider?
+    /// Persist pasted image bytes. Returns relative paths suitable for
+    /// `Block.image.source` (one per input, in order). Returning an empty
+    /// array, or fewer paths than inputs, cancels the paste.
+    public let onSaveImages: (_ items: [PastedImage]) -> [String]
+    /// Resolve an image block's `source` to a file URL the renderer can load.
+    /// Nil → renderer shows a missing-image placeholder. Same callback is
+    /// also published into the Environment for `ImageBlockView`.
+    public let imageURLResolver: ImageURLResolver?
 
     // View-shaped @State that doesn't move into EditorState because it's tied to
     // SwiftUI/UIKit lifecycle (FocusState must live on a View; row-frame cache
@@ -140,7 +148,9 @@ public struct EditorView: View {
         onRecordBlockDeletion: @escaping (_ indices: [Int], _ blocks: [Block], _ actionName: String) -> Void = { _, _, _ in },
         serializeBlocksForPasteboard: @escaping (_ blocks: [Block]) -> String = { _ in "" },
         parseBlocksFromPasteboard: @escaping (_ string: String) -> [Block]? = { _ in nil },
-        linkPreviewProvider: LinkPreviewProvider? = nil
+        linkPreviewProvider: LinkPreviewProvider? = nil,
+        onSaveImages: @escaping (_ items: [PastedImage]) -> [String] = { _ in [] },
+        imageURLResolver: ImageURLResolver? = nil
     ) {
         self._document = document
         self.state = state
@@ -159,6 +169,8 @@ public struct EditorView: View {
         self.serializeBlocksForPasteboard = serializeBlocksForPasteboard
         self.parseBlocksFromPasteboard = parseBlocksFromPasteboard
         self.linkPreviewProvider = linkPreviewProvider
+        self.onSaveImages = onSaveImages
+        self.imageURLResolver = imageURLResolver
     }
 
     public var body: some View {
@@ -285,6 +297,7 @@ public struct EditorView: View {
             .environment(\.documentUndoManager, undoController.undoManager)
             .environment(\.documentUndoController, undoController)
             .environment(\.linkPreviewProvider, linkPreviewProvider)
+            .environment(\.imageURLResolver, imageURLResolver)
             #if os(macOS)
             .environment(\.macActiveTextView, macActiveTextView)
             #endif
@@ -577,6 +590,8 @@ public struct EditorView: View {
             return ""
         case .subpage(_, let title, _, _):
             return title
+        case .image(_, let source, let alt, _):
+            return alt.isEmpty ? source : alt
         default:
             return String(block.text.characters)
         }
@@ -606,6 +621,8 @@ public struct EditorView: View {
             return "Template button"
         case .subpage:
             return "Subpage"
+        case .image:
+            return "Image"
         }
     }
 
@@ -1104,7 +1121,7 @@ public struct EditorView: View {
             switch document.blocks[i] {
             case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
                 return true
-            case .templateButton, .code, .divider, .subpage:
+            case .templateButton, .code, .divider, .subpage, .image:
                 return false
             }
         }
@@ -1551,6 +1568,20 @@ public struct EditorView: View {
     /// The host is expected to return blocks normalized to indent 0; we shift each by the
     /// chosen base.
     private func pasteFromPasteboard() -> Bool {
+        // Image-on-pasteboard takes precedence over text — same rule as the
+        // editor's `paste(_:)` override.
+        #if os(macOS)
+        let images = readPasteboardImages(NSPasteboard.general)
+        #else
+        let images = readPasteboardImages(UIPasteboard.general)
+        #endif
+        if !images.isEmpty {
+            let paths = onSaveImages(images)
+            guard !paths.isEmpty else { return true }
+            let blocks: [Block] = paths.map { .image(source: $0, alt: "") }
+            return spliceParsedBlocksAfter(state.cursor, parsed: blocks, focusLast: false)
+        }
+
         let pasted: String
         #if os(macOS)
         guard let str = NSPasteboard.general.string(forType: .string) else { return false }
@@ -1676,7 +1707,23 @@ public struct EditorView: View {
             return .handled
         case .paste(let str):
             return handleEditorPaste(str, blockID: blockID)
+        case .imagesPasted(let images):
+            return handleEditorImagePaste(images, blockID: blockID)
         }
+    }
+
+    /// Persist pasted image bytes via the host, splice the resulting image
+    /// blocks immediately below the row's section, and move focus to the last
+    /// inserted image. If the host returns no paths (callback unset, or the
+    /// host cancelled), we drop the paste — `.handled` either way so the
+    /// platform text view doesn't ALSO try to paste a string fallback.
+    private func handleEditorImagePaste(_ images: [PastedImage], blockID: BlockID) -> KeyPress.Result {
+        guard !images.isEmpty else { return .handled }
+        let paths = onSaveImages(images)
+        guard !paths.isEmpty else { return .handled }
+        let blocks: [Block] = paths.map { .image(source: $0, alt: "") }
+        spliceParsedBlocksAfter(blockID, parsed: blocks, focusLast: false)
+        return .handled
     }
 
     /// Decide what to do with a paste arriving from the active row's editor:
@@ -1870,7 +1917,8 @@ public struct EditorView: View {
              .templateButton(_, _, let indent),
              .code(_, _, _, let indent),
              .divider(_, let indent),
-             .subpage(_, _, _, let indent):
+             .subpage(_, _, _, let indent),
+             .image(_, _, _, let indent):
             return .paragraph(text: attr, indent: indent)
         }
     }
@@ -1939,7 +1987,7 @@ public struct EditorView: View {
         switch previous {
         case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
             break
-        case .code, .divider, .subpage, .templateButton:
+        case .code, .divider, .subpage, .templateButton, .image:
             return .ignored
         }
         let previousID = previous.id

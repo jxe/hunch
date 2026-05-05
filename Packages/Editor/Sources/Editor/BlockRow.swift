@@ -216,6 +216,9 @@ public struct BlockRow: View, Equatable {
 
         case .subpage(_, let title, let path, let indent):
             subpageRow(title: pageTitle(path) ?? title, indent: indent)
+
+        case .image(_, let source, let alt, let indent):
+            imageRow(source: source, alt: alt, indent: indent)
         }
     }
 
@@ -417,6 +420,11 @@ public struct BlockRow: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, CGFloat(indent) * NotionStyle.indentStep)
+    }
+
+    private func imageRow(source: String, alt: String, indent: Int) -> some View {
+        ImageBlockView(source: source, alt: alt)
+            .padding(.leading, NotionStyle.nonListLeading(indent: indent))
     }
 
     /// Renders the block's text. When `isEditing` is true (this row is the active editor),

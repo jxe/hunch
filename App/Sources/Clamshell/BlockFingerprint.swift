@@ -44,6 +44,8 @@ enum BlockFingerprint {
             return "templateButton|\(indent)|l=\(normalizeRaw(label))"
         case .subpage(_, let title, let pageID, _):
             return "subpage|\(indent)|p=\(pageID)|t=\(normalizeRaw(title))"
+        case .image(_, let source, let alt, _):
+            return "image|\(indent)|s=\(source)|a=\(normalizeRaw(alt))"
         }
     }
 

@@ -294,6 +294,65 @@ public final class Clamshell {
         try await history.purge(entry)
     }
 
+    // MARK: - Assets (pasted images)
+
+    nonisolated private static let assetsFolderName = "Assets"
+
+    /// Persist `data` to `Assets/<unique-name>.<ext>` and return the relative
+    /// path suitable for an image block's `source` field. The `Assets/` folder
+    /// is visible (Notion / Obsidian convention) so the same file opens cleanly
+    /// in any other markdown app.
+    ///
+    /// One-shot, content-immutable writes — no need for the `DocumentSaveCoordinator`.
+    nonisolated public func writeImage(_ image: PastedImage) throws -> String {
+        let safeExt = sanitizeImageExtension(image.ext)
+        let filename = pastedImageFilename(ext: safeExt)
+        let assetsURL = root.appendingPathComponent(Clamshell.assetsFolderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: assetsURL, withIntermediateDirectories: true)
+        let dest = assetsURL.appendingPathComponent(filename)
+        try image.data.write(to: dest, options: [.atomic])
+        return Clamshell.assetsFolderName + "/" + filename
+    }
+
+    /// Resolve an image block's `source` field to a file URL the renderer can
+    /// load. Returns nil if the source has a scheme we don't handle, escapes
+    /// the workspace, or the file is missing — the renderer shows a placeholder.
+    nonisolated public func resolveImage(source: String) -> URL? {
+        guard !source.isEmpty else { return nil }
+        // `http://...` etc. — let it pass through to the renderer (which
+        // currently doesn't load remote URLs). For now treat as missing.
+        if source.contains("://") { return nil }
+        let url = root.appendingPathComponent(source).standardizedFileURL
+        // Guard against `..` traversal: the resolved path must still sit under
+        // the workspace root.
+        guard url.path.hasPrefix(root.standardizedFileURL.path + "/") else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    nonisolated private func pastedImageFilename(ext: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        formatter.timeZone = TimeZone.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        let stamp = formatter.string(from: Date())
+        let suffix = randomFilenameSuffix(length: 4)
+        return "pasted-\(stamp)-\(suffix).\(ext)"
+    }
+
+    nonisolated private func randomFilenameSuffix(length: Int) -> String {
+        let chars = Array("abcdefghijklmnopqrstuvwxyz0123456789")
+        return String((0..<length).map { _ in chars.randomElement()! })
+    }
+
+    nonisolated private func sanitizeImageExtension(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        let allowed = CharacterSet.alphanumerics
+        let scrubbed = lower.unicodeScalars.filter { allowed.contains($0) }
+        let result = String(String.UnicodeScalarView(scrubbed))
+        return result.isEmpty ? "bin" : result
+    }
+
     // MARK: - .clamshell.json
 
     private static let metadataFilename = ".clamshell.json"

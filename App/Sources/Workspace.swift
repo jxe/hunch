@@ -359,6 +359,30 @@ final class Workspace {
         return moveToTrash(at: target)
     }
 
+    // MARK: - Pasted images
+
+    /// Persist a batch of pasted images, returning the relative paths the
+    /// editor will write into image-block `source` fields. Skips items that
+    /// fail to write so the editor still inserts blocks for the rest.
+    func saveImages(_ items: [PastedImage]) -> [String] {
+        guard let clamshell else { return [] }
+        var paths: [String] = []
+        paths.reserveCapacity(items.count)
+        for item in items {
+            do {
+                paths.append(try clamshell.writeImage(item))
+            } catch {
+                self.error = "Failed to save pasted image: \(error.localizedDescription)"
+            }
+        }
+        return paths
+    }
+
+    /// Resolve an image block's source string to an on-disk URL.
+    func imageURL(for source: String) -> URL? {
+        clamshell?.resolveImage(source: source)
+    }
+
     // MARK: - Recovery
 
     func recordBlockDeletion(sourceURL: URL, previousBlocks: [Block]) {

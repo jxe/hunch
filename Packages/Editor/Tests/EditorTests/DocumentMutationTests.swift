@@ -294,6 +294,8 @@ struct DocumentMutationTests {
                 return "---"
             case .subpage(_, let title, _, _):
                 return title
+            case .image(_, let source, _, _):
+                return source
             }
         }
     }

@@ -11,6 +11,7 @@ public enum FileStoreError: Error {
 public struct FileStore: Sendable {
     public static let trashDirectoryName = "Trash"
     public static let historyDirectoryName = ".history"
+    public static let assetsDirectoryName = "Assets"
 
     public init() {}
 
@@ -29,7 +30,8 @@ public struct FileStore: Sendable {
         var entries: [WorkspaceEntry] = []
         for case let url as URL in enumerator {
             if url.pathComponents.contains(Self.trashDirectoryName)
-                || url.pathComponents.contains(Self.historyDirectoryName) {
+                || url.pathComponents.contains(Self.historyDirectoryName)
+                || url.pathComponents.contains(Self.assetsDirectoryName) {
                 if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
                     enumerator.skipDescendants()
                 }

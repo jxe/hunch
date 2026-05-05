@@ -344,7 +344,13 @@ private struct EditorPage: View {
                 let blocks = BlockParser.parse(string)
                 return blocks.isEmpty ? nil : blocks
             },
-            linkPreviewProvider: workspace.linkPreviewService.provider()
+            linkPreviewProvider: workspace.linkPreviewService.provider(),
+            onSaveImages: { items in
+                workspace.saveImages(items)
+            },
+            imageURLResolver: { source in
+                workspace.imageURL(for: source)
+            }
         )
         .toolbar {
             if let onShowPageList {

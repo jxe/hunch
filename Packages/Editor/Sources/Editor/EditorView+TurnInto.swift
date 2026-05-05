@@ -321,7 +321,7 @@ extension EditorView {
             return AttributedString(label)
         case .todo(_, let t, _, _):
             return t
-        case .code, .divider, .subpage:
+        case .code, .divider, .subpage, .image:
             return nil
         }
     }
@@ -340,7 +340,7 @@ extension EditorView {
             return label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .code(_, let source, _, _):
             return source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .divider, .subpage:
+        case .divider, .subpage, .image:
             return false
         }
     }
@@ -538,7 +538,7 @@ extension EditorView {
             return .template
         case .subpage:
             return .page
-        case .quote, .code, .divider:
+        case .quote, .code, .divider, .image:
             return nil
         }
     }
@@ -555,7 +555,7 @@ extension EditorView {
             switch block {
             case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle, .templateButton, .subpage:
                 return true
-            case .code, .divider:
+            case .code, .divider, .image:
                 return false
             }
         }
@@ -574,7 +574,7 @@ extension EditorView {
 
     func isStructuralBlock(_ block: Block) -> Bool {
         switch block {
-        case .code, .divider, .subpage:
+        case .code, .divider, .subpage, .image:
             return true
         default:
             return false

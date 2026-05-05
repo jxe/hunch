@@ -104,7 +104,30 @@ public enum BlockSerializer {
         case .subpage(_, let title, let path, let indent):
             let displayTitle = titleForPath(path) ?? title
             return indentPrefix(indent) + "[" + displayTitle + "](" + path + ")\n\n"
+
+        case .image(_, let source, let alt, let indent):
+            return indentPrefix(indent) + "![" + escapeMarkdownLinkText(alt) + "](" + source + ")\n\n"
         }
+    }
+
+    /// Escape `]`, `\`, and newlines inside the alt text so the bracket pair
+    /// stays well-formed when round-tripped through cmark. Empty / typical alts
+    /// have nothing to escape.
+    private static func escapeMarkdownLinkText(_ alt: String) -> String {
+        var out = ""
+        out.reserveCapacity(alt.count)
+        for c in alt {
+            switch c {
+            case "\\", "]":
+                out.append("\\")
+                out.append(c)
+            case "\n", "\r":
+                out.append(" ")
+            default:
+                out.append(c)
+            }
+        }
+        return out
     }
 
     private static func indentPrefix(_ indent: Int) -> String {

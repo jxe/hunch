@@ -243,6 +243,44 @@ struct RoundTripTests {
         #expect(serialized == "[Current Page Title](folder/page.md)\n\n")
     }
 
+    @Test func blockLevelImage() {
+        let blocks = BlockParser.parse("![alt text](Assets/foo.png)\n")
+        #expect(blocks.count == 1)
+        if case .image(_, let source, let alt, let indent) = blocks[0] {
+            #expect(source == "Assets/foo.png")
+            #expect(alt == "alt text")
+            #expect(indent == 0)
+        } else {
+            Issue.record("expected image block, got \(blocks[0])")
+        }
+        roundTrip("![alt text](Assets/foo.png)\n")
+    }
+
+    @Test func imageWithEmptyAlt() {
+        let blocks = BlockParser.parse("![](Assets/foo.png)\n")
+        #expect(blocks.count == 1)
+        guard case .image(_, let source, let alt, _) = blocks[0] else {
+            Issue.record("expected image block, got \(blocks[0])")
+            return
+        }
+        #expect(source == "Assets/foo.png")
+        #expect(alt == "")
+    }
+
+    @Test func inlineImageStaysParagraph() {
+        // Image *inside* a sentence stays as plain markdown — no inline-image
+        // model exists. The whole-paragraph special case requires the image to
+        // be the only meaningful inline child.
+        let blocks = BlockParser.parse("see ![alt](foo.png) here\n")
+        #expect(blocks.count == 1)
+        if case .image = blocks[0] {
+            Issue.record("inline image was promoted to block")
+        }
+        if case .paragraph = blocks[0] {} else {
+            Issue.record("expected paragraph, got \(blocks[0])")
+        }
+    }
+
     @Test func nonSubpageLink() {
         // External (non-.md) link should remain a paragraph
         let blocks = BlockParser.parse("[Apple](https://apple.com)\n")
@@ -654,6 +692,7 @@ struct RoundTripTests {
         case .toggle(_, _, let i): return "toggle-\(i)"
         case .templateButton(_, _, let i): return "template-\(i)"
         case .subpage(_, _, _, let i): return "subpage-\(i)"
+        case .image(_, _, _, let i): return "image-\(i)"
         }
     }
 
@@ -669,6 +708,7 @@ struct RoundTripTests {
         case .code(_, let s, _, _): return s.trimmingCharacters(in: .whitespacesAndNewlines)
         case .divider: return ""
         case .subpage(_, let title, _, _): return title
+        case .image(_, let source, _, _): return source
         }
     }
 }

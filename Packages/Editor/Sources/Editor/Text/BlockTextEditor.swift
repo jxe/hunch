@@ -87,6 +87,10 @@ public enum BlockKey: Sendable, Equatable {
     /// paragraph (return `.ignored` so the platform text view does its native
     /// paste, preserving cursor + undo coalescing).
     case paste(String)
+    /// Pasteboard contained one or more images (or image file URLs). EditorView
+    /// hands the bytes to the host via `onSaveImages`, builds image blocks, and
+    /// splices them below the row — no fall-through to native paste.
+    case imagesPasted([PastedImage])
 }
 
 
@@ -762,16 +766,27 @@ final class ContainedTextView: NSTextView {
     /// and fall through to the native handler so cursor placement + native typing-undo
     /// coalescing both stay correct.
     override func paste(_ sender: Any?) {
-        if let onKey = coordinator?.parent.onKey,
-           let str = NSPasteboard.general.string(forType: .string) {
-            // Multi-block paste calls `mutate(...)` which snapshots `document.blocks`. If
-            // the editing block's binding is stale, that snapshot loses the typed text.
-            // Single-paragraph paste returns `.ignored` and falls through to native paste,
-            // which inserts into NSTextView — fine, the binding stays stale until blur as
-            // usual.
-            coordinator?.commitLiveText(self)
-            if onKey(.paste(str)) == .handled {
-                return
+        if let onKey = coordinator?.parent.onKey {
+            // Image-on-pasteboard takes precedence over text. Cmd-Shift-4 puts a PNG/TIFF
+            // representation alongside no string at all; copying an image from a browser
+            // puts both — in both cases the user expects an image, not the URL.
+            let images = readPasteboardImages(NSPasteboard.general)
+            if !images.isEmpty {
+                coordinator?.commitLiveText(self)
+                if onKey(.imagesPasted(images)) == .handled {
+                    return
+                }
+            }
+            if let str = NSPasteboard.general.string(forType: .string) {
+                // Multi-block paste calls `mutate(...)` which snapshots `document.blocks`. If
+                // the editing block's binding is stale, that snapshot loses the typed text.
+                // Single-paragraph paste returns `.ignored` and falls through to native paste,
+                // which inserts into NSTextView — fine, the binding stays stale until blur as
+                // usual.
+                coordinator?.commitLiveText(self)
+                if onKey(.paste(str)) == .handled {
+                    return
+                }
             }
         }
         super.paste(sender)
@@ -1229,14 +1244,22 @@ final class ContainedTextViewIOS: UITextView {
     /// and fall through to UITextView's native paste so cursor placement and
     /// native undo behavior stay correct.
     override func paste(_ sender: Any?) {
-        if let coordinator,
-           let str = UIPasteboard.general.string {
-            // Multi-block paste runs `mutate(...)` and snapshots `document.blocks`;
-            // commit so the snapshot has live text. Single-paragraph paste returns
-            // `.ignored` and falls through — the binding stays stale until blur.
-            coordinator.commitLiveText(self)
-            if coordinator.parent.onKey(.paste(str)) == .handled {
-                return
+        if let coordinator {
+            let images = readPasteboardImages(UIPasteboard.general)
+            if !images.isEmpty {
+                coordinator.commitLiveText(self)
+                if coordinator.parent.onKey(.imagesPasted(images)) == .handled {
+                    return
+                }
+            }
+            if let str = UIPasteboard.general.string {
+                // Multi-block paste runs `mutate(...)` and snapshots `document.blocks`;
+                // commit so the snapshot has live text. Single-paragraph paste returns
+                // `.ignored` and falls through — the binding stays stale until blur.
+                coordinator.commitLiveText(self)
+                if coordinator.parent.onKey(.paste(str)) == .handled {
+                    return
+                }
             }
         }
         super.paste(sender)

@@ -12,6 +12,7 @@ public enum Block: Identifiable, Equatable, Sendable {
     case toggle(id: BlockID = BlockID(), title: AttributedString, indent: Int = 0)
     case templateButton(id: BlockID = BlockID(), label: String, indent: Int = 0)
     case subpage(id: BlockID = BlockID(), title: String, pageID: String, indent: Int = 0)
+    case image(id: BlockID = BlockID(), source: String, alt: String, indent: Int = 0)
 
     public var id: BlockID {
         switch self {
@@ -25,7 +26,8 @@ public enum Block: Identifiable, Equatable, Sendable {
              .divider(let id, _),
              .toggle(let id, _, _),
              .templateButton(let id, _, _),
-             .subpage(let id, _, _, _):
+             .subpage(let id, _, _, _),
+             .image(let id, _, _, _):
             return id
         }
     }
@@ -42,7 +44,8 @@ public enum Block: Identifiable, Equatable, Sendable {
              .divider(_, let i),
              .toggle(_, _, let i),
              .templateButton(_, _, let i),
-             .subpage(_, _, _, let i):
+             .subpage(_, _, _, let i),
+             .image(_, _, _, let i):
             return i
         }
     }
@@ -63,7 +66,7 @@ public enum Block: Identifiable, Equatable, Sendable {
             return title
         case .templateButton(_, let label, _):
             return AttributedString(label)
-        case .code, .divider, .subpage:
+        case .code, .divider, .subpage, .image:
             return AttributedString()
         }
     }
@@ -89,7 +92,7 @@ public enum Block: Identifiable, Equatable, Sendable {
             return .toggle(id: id, title: newText, indent: indent)
         case .templateButton(let id, _, let indent):
             return .templateButton(id: id, label: String(newText.characters), indent: indent)
-        case .code, .divider, .subpage:
+        case .code, .divider, .subpage, .image:
             return self
         }
     }
@@ -119,6 +122,8 @@ public enum Block: Identifiable, Equatable, Sendable {
             return .templateButton(id: id, label: label, indent: clamped)
         case .subpage(let id, let title, let pageID, _):
             return .subpage(id: id, title: title, pageID: pageID, indent: clamped)
+        case .image(let id, let source, let alt, _):
+            return .image(id: id, source: source, alt: alt, indent: clamped)
         }
     }
 
@@ -146,6 +151,8 @@ public enum Block: Identifiable, Equatable, Sendable {
             return .templateButton(label: label, indent: indent)
         case .subpage(_, let title, let pageID, let indent):
             return .subpage(title: title, pageID: pageID, indent: indent)
+        case .image(_, let source, let alt, let indent):
+            return .image(source: source, alt: alt, indent: indent)
         }
     }
 }

@@ -52,6 +52,24 @@ struct FileStoreTests {
         #expect(entries.contains { $0.relativePath == "nested/b.md" })
     }
 
+    @Test func scanSkipsAssets() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("console-assets-scan-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        try "# Page".write(to: dir.appendingPathComponent("page.md"), atomically: true, encoding: .utf8)
+        let assets = dir.appendingPathComponent(FileStore.assetsDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: assets.appendingPathComponent("foo.png"))
+        // A stray .md file accidentally placed inside Assets/ should also be skipped —
+        // the folder is reserved for image bytes, not pages.
+        try "# Stray".write(to: assets.appendingPathComponent("stray.md"), atomically: true, encoding: .utf8)
+
+        let entries = try FileStore().scan(workspaceRoot: dir)
+        #expect(entries.map(\.relativePath) == ["page.md"])
+    }
+
     @Test func scanSkipsWorkspaceTrash() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("console-trash-scan-\(UUID().uuidString)", isDirectory: true)

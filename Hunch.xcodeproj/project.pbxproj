@@ -18,6 +18,7 @@
 		3EEA45994B20513A94C2EF04 /* FontRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F377A4E9DAA12643BB2666D /* FontRegistration.swift */; };
 		5A4E6525FE966AF1BF39307A /* RecoveryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF336028D883858D9565D98D /* RecoveryStore.swift */; };
 		7047AECA135A40E7543D2CAC /* HunchDragAndDropUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9221CD2529F8914B14AA5D9E /* HunchDragAndDropUITests.swift */; };
+		708FF72CA6FD1CF943DB968E /* ClamshellImageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD818E80A31A592762987ECC /* ClamshellImageTests.swift */; };
 		71C3633279FDAFCA2127A43A /* BlockFingerprintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBE1F6088D2A2F400DBB4939 /* BlockFingerprintTests.swift */; };
 		7C8E5BD992CE032FCAC3E4E9 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 60D4D0042A0050D48AF58979 /* Markdown */; };
 		83407D2B20E40C8CC73BB9AB /* TrashStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D433D497F5377461A70E47E /* TrashStoreTests.swift */; };
@@ -91,6 +92,7 @@
 		95705379B9963C729E4484B1 /* WorkspaceBookmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceBookmark.swift; sourceTree = "<group>"; };
 		9D5DCC509F521050F7038C36 /* Editor */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Editor; path = Packages/Editor; sourceTree = SOURCE_ROOT; };
 		AAAA7247FD43CDAAE1290007 /* BlockFingerprint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockFingerprint.swift; sourceTree = "<group>"; };
+		AD818E80A31A592762987ECC /* ClamshellImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClamshellImageTests.swift; sourceTree = "<group>"; };
 		BAC5EF536498D40451D461DD /* RoundTripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoundTripTests.swift; sourceTree = "<group>"; };
 		BBBF5AC98CF7B5213C676903 /* TrashStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashStore.swift; sourceTree = "<group>"; };
 		C40C5869BF914FA61B2FEC5D /* FileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileStore.swift; sourceTree = "<group>"; };
@@ -201,6 +203,7 @@
 			isa = PBXGroup;
 			children = (
 				DBE1F6088D2A2F400DBB4939 /* BlockFingerprintTests.swift */,
+				AD818E80A31A592762987ECC /* ClamshellImageTests.swift */,
 				3231E2F91BA71E5463D5113B /* DocumentSaveCoordinatorTests.swift */,
 				0C720F60C39E316833209F75 /* FileStoreTests.swift */,
 				2547E4BEE1F99FB5B4C5B7A3 /* RecoveryStoreTests.swift */,
@@ -456,6 +459,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				71C3633279FDAFCA2127A43A /* BlockFingerprintTests.swift in Sources */,
+				708FF72CA6FD1CF943DB968E /* ClamshellImageTests.swift in Sources */,
 				9A199EFB5C714918EDC33DE1 /* DocumentSaveCoordinatorTests.swift in Sources */,
 				998D86BA0C67125C47E336D7 /* FileStoreTests.swift in Sources */,
 				B1A49CF69A67B14CF5E4F626 /* RecoveryStoreTests.swift in Sources */,

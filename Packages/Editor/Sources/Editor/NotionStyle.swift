@@ -247,6 +247,7 @@ public enum BlockSpacing {
         case .quote: return 6
         case .code: return 8
         case .divider: return 12
+        case .image: return 8
         case .subpage, .bullet, .numbered, .todo, .toggle, .templateButton: return 0
         }
     }
@@ -259,6 +260,7 @@ public enum BlockSpacing {
         case .quote: return 6
         case .code: return 8
         case .divider: return 12
+        case .image: return 8
         case .subpage, .bullet, .numbered, .todo, .toggle, .templateButton: return 0
         }
     }
