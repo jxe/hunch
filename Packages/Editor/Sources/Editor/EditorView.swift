@@ -1425,6 +1425,16 @@ public struct EditorView: View {
         document.indicesIncludingSections(of: state.selection)
     }
 
+    /// Block to land on after removing a section that started at
+    /// `firstRemovedIndex` in the pre-deletion document. Notion-like: previous
+    /// block, with new-head fallback when deleting from index 0. Caller invokes
+    /// after `document.blocks` has been mutated.
+    private func blockToSelectAfterRemoval(firstRemovedIndex: Int) -> BlockID? {
+        guard !document.blocks.isEmpty else { return nil }
+        let i = max(0, min(firstRemovedIndex - 1, document.blocks.count - 1))
+        return document.blocks[i].id
+    }
+
     private func effectiveSelectedIDs() -> Set<BlockID> {
         Set(effectiveSelectedIDsInDocumentOrder())
     }
@@ -1476,9 +1486,8 @@ public struct EditorView: View {
             document.blocks = blocks
         }
 
-        let nextIndex = max(0, min(firstIndex - 1, document.blocks.count - 1))
-        if !document.blocks.isEmpty {
-            setCursor(document.blocks[nextIndex].id)
+        if let id = blockToSelectAfterRemoval(firstRemovedIndex: firstIndex) {
+            setCursor(id)
         }
     }
 
@@ -1498,9 +1507,8 @@ public struct EditorView: View {
             document.blocks = blocks
         }
 
-        let nextIndex = max(0, min(firstIndex - 1, document.blocks.count - 1))
-        if !document.blocks.isEmpty {
-            setCursor(document.blocks[nextIndex].id)
+        if let id = blockToSelectAfterRemoval(firstRemovedIndex: firstIndex) {
+            setCursor(id)
         }
     }
 
@@ -1551,9 +1559,8 @@ public struct EditorView: View {
             document.blocks = blocks
         }
 
-        let nextIndex = max(0, min(firstIndex - 1, document.blocks.count - 1))
-        if !document.blocks.isEmpty {
-            setCursor(document.blocks[nextIndex].id)
+        if let id = blockToSelectAfterRemoval(firstRemovedIndex: firstIndex) {
+            setCursor(id)
         } else {
             clearCursor()
         }

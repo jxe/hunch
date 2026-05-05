@@ -81,22 +81,37 @@ public struct Document: Identifiable, Sendable {
             while previousStart >= 0, blocks[previousStart].indent > baseIndent {
                 previousStart -= 1
             }
-            guard previousStart >= 0, blocks[previousStart].indent == baseIndent else { return false }
-
+            if previousStart < 0 { return false }
+            if blocks[previousStart].indent == baseIndent {
+                blocks.removeSubrange(first...last)
+                blocks.insert(contentsOf: movingBlocks, at: previousStart)
+                return true
+            }
+            // Parent boundary — step out: outdent every moving block by one and
+            // splice in just before the parent so the section escapes upward.
+            guard baseIndent > 0 else { return false }
+            let outdented = movingBlocks.map { $0.withIndent($0.indent - 1) }
             blocks.removeSubrange(first...last)
-            blocks.insert(contentsOf: movingBlocks, at: previousStart)
+            blocks.insert(contentsOf: outdented, at: previousStart)
             return true
         } else {
             let nextStart = last + 1
-            guard nextStart < blocks.count, blocks[nextStart].indent == baseIndent else { return false }
-
-            var nextEnd = nextStart + 1
-            while nextEnd < blocks.count, blocks[nextEnd].indent > baseIndent {
-                nextEnd += 1
+            if nextStart < blocks.count, blocks[nextStart].indent == baseIndent {
+                var nextEnd = nextStart + 1
+                while nextEnd < blocks.count, blocks[nextEnd].indent > baseIndent {
+                    nextEnd += 1
+                }
+                blocks.removeSubrange(first...last)
+                blocks.insert(contentsOf: movingBlocks, at: nextEnd - movingCount)
+                return true
             }
-
+            // Parent boundary or end of doc — step out: outdent every moving
+            // block by one and splice in just after the parent's section. After
+            // removal, position `first` is exactly where `nextStart` lived.
+            guard baseIndent > 0 else { return false }
+            let outdented = movingBlocks.map { $0.withIndent($0.indent - 1) }
             blocks.removeSubrange(first...last)
-            blocks.insert(contentsOf: movingBlocks, at: nextEnd - movingCount)
+            blocks.insert(contentsOf: outdented, at: first)
             return true
         }
     }

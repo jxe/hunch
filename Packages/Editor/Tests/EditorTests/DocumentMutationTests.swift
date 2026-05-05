@@ -233,13 +233,65 @@ struct DocumentMutationTests {
         #expect(doc.blocks.map(\.indent) == [0, 1, 1, 0])
     }
 
-    @Test func moveFirstChildUpDoesNotPromotePastParent() {
+    @Test func moveFirstChildUpStepsOutAboveParent() {
         var doc = outlineDoc()
         let carrots = doc.blocks[1].id
 
         let moved = doc.moveSections(containing: [carrots], by: -1)
+        #expect(moved)
+        #expect(blockTexts(doc) == ["Carrots", "Food", "Chicken", "Glassware"])
+        #expect(doc.blocks.map(\.indent) == [0, 0, 1, 0])
+    }
+
+    @Test func moveLastChildDownStepsOutBelowParent() {
+        var doc = outlineDoc()
+        let chicken = doc.blocks[2].id
+
+        let moved = doc.moveSections(containing: [chicken], by: 1)
+        #expect(moved)
+        #expect(blockTexts(doc) == ["Food", "Carrots", "Chicken", "Glassware"])
+        #expect(doc.blocks.map(\.indent) == [0, 1, 0, 0])
+    }
+
+    @Test func moveTopLevelUpAtDocStartReturnsFalse() {
+        var doc = outlineDoc()
+        let food = doc.blocks[0].id
+
+        let moved = doc.moveSections(containing: [food], by: -1)
         #expect(!moved)
         #expect(blockTexts(doc) == ["Food", "Carrots", "Chicken", "Glassware"])
+        #expect(doc.blocks.map(\.indent) == [0, 1, 1, 0])
+    }
+
+    @Test func moveTopLevelDownAtDocEndReturnsFalse() {
+        var doc = outlineDoc()
+        let glassware = doc.blocks[3].id
+
+        let moved = doc.moveSections(containing: [glassware], by: 1)
+        #expect(!moved)
+        #expect(blockTexts(doc) == ["Food", "Carrots", "Chicken", "Glassware"])
+        #expect(doc.blocks.map(\.indent) == [0, 1, 1, 0])
+    }
+
+    @Test func moveMultiBlockChildSelectionStepsOutAboveParent() {
+        var doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            title: "Test",
+            blocks: [
+                .bullet(text: AttributedString("Food"), indent: 0),
+                .bullet(text: AttributedString("Produce"), indent: 1),
+                .bullet(text: AttributedString("Carrots"), indent: 2),
+                .bullet(text: AttributedString("Chicken"), indent: 1),
+                .bullet(text: AttributedString("Glassware"), indent: 0)
+            ]
+        )
+        let produce = doc.blocks[1].id
+        let chicken = doc.blocks[3].id
+
+        let moved = doc.moveSections(containing: [produce, chicken], by: -1)
+        #expect(moved)
+        #expect(blockTexts(doc) == ["Produce", "Carrots", "Chicken", "Food", "Glassware"])
+        #expect(doc.blocks.map(\.indent) == [0, 1, 0, 0, 0])
     }
 
     @Test func moveSelectedSectionCarriesDescendants() {
