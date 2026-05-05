@@ -343,7 +343,8 @@ private struct EditorPage: View {
             parseBlocksFromPasteboard: { string in
                 let blocks = BlockParser.parse(string)
                 return blocks.isEmpty ? nil : blocks
-            }
+            },
+            linkPreviewProvider: workspace.linkPreviewService.provider()
         )
         .toolbar {
             if let onShowPageList {

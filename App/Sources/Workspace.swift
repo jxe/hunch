@@ -34,6 +34,10 @@ final class Workspace {
 
     private(set) var clamshell: Clamshell?
 
+    /// Shared across every editor mounted in this workspace — the disk cache
+    /// is a per-device asset that has nothing to do with which page is open.
+    let linkPreviewService = LinkPreviewService()
+
     /// Per-URL ring buffer of recently observed on-disk content hashes
     /// (most recent first, capped at 5). Used by
     /// `WorkspaceWindow.handlePresentedFileChange` to distinguish:

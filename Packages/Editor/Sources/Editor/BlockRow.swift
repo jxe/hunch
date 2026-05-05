@@ -70,6 +70,13 @@ public struct BlockRow: View, Equatable {
     /// this closure to atomically read-and-clear `EditorState.pendingInitialCursor`.
     let consumeInitialCursor: () -> InitialCursorTarget?
 
+    /// Read-only inline-link decoration. Populated by `.task(id:)` below as the
+    /// host returns metadata for external URLs in this row's text. Stays empty
+    /// when the host didn't supply a `linkPreviewProvider` — in which case the
+    /// decoration code path is a no-op fall-through.
+    @State private var linkPreviews: [URL: LinkPreview] = [:]
+    @Environment(\.linkPreviewProvider) private var linkPreviewProvider: LinkPreviewProvider?
+
     public init(
         block: Binding<Block>,
         editorFocused: FocusState<BlockID?>.Binding,
@@ -113,10 +120,20 @@ public struct BlockRow: View, Equatable {
     }
 
     public var body: some View {
-        content
+        let externalURLs = collectExternalURLs(in: block.text)
+        return content
             .padding(.vertical, BlockSpacing.intrinsicVerticalPadding(block))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isSelected && !isEditing ? NotionStyle.selectionBackground : Color.clear)
+            .task(id: externalURLs) {
+                guard let provider = linkPreviewProvider else { return }
+                for url in externalURLs where linkPreviews[url] == nil {
+                    if let preview = await provider(url) {
+                        if Task.isCancelled { return }
+                        linkPreviews[url] = preview
+                    }
+                }
+            }
             .background(alignment: .leading) {
                 // Toggle / templateButton / subpage are the only blocks that
                 // become drop targets — for those we want a "drop on folder"
@@ -438,12 +455,14 @@ public struct BlockRow: View, Equatable {
                         onClickAtPoint(value.location)
                     })
             } else {
-                Text(InlineRenderer.swiftUIAttributed(
+                decoratedText(
                     block.text,
                     baseFont: font,
                     boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
-                    resolvingPageTitle: pageTitle
-                ))
+                    fontSize: fontSize,
+                    pageTitle: pageTitle,
+                    previews: linkPreviews
+                )
                     .font(font)
                     .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
                     .lineSpacing(lineSpacing)
@@ -457,6 +476,158 @@ public struct BlockRow: View, Equatable {
         }
     }
 }
+
+/// Walk an `AttributedString` and gather every `http`/`https` URL referenced
+/// by an inline `.link` run. Internal `.md` page links don't go through link
+/// previews — they have their own subpage-resolution path (`pageTitle`).
+func collectExternalURLs(in text: AttributedString) -> Set<URL> {
+    var set: Set<URL> = []
+    for run in text.runs {
+        if let url = run.link, isExternalLinkURL(url) {
+            set.insert(url)
+        }
+    }
+    return set
+}
+
+func isExternalLinkURL(_ url: URL) -> Bool {
+    guard let scheme = url.scheme?.lowercased() else { return false }
+    return scheme == "http" || scheme == "https"
+}
+
+/// Build a `Text` view from `source`, mirroring the styling that
+/// `InlineRenderer.swiftUIAttributed` applies to inline marks (bold/italic/code/
+/// strike/link), but with two extra capabilities:
+///
+/// - For external (`http`/`https`) link runs that have a cached `LinkPreview`,
+///   prepend the favicon to the link text. When the source text equals the URL
+///   (autolink / bare URL), substitute the run text with the abbreviated page
+///   title from the preview.
+/// - For internal `.md` link runs, substitute the run text with the resolved
+///   page title (same behavior as `InlineRenderer.swiftUIAttributed`).
+///
+/// Falls through to plain rendering when no previews are cached yet.
+@MainActor
+private func decoratedText(
+    _ source: AttributedString,
+    baseFont: Font,
+    boldFont: Font,
+    fontSize: CGFloat,
+    pageTitle: (String) -> String?,
+    previews: [URL: LinkPreview]
+) -> Text {
+    var output = Text("")
+    for run in source.runs {
+        let segment = source[run.range]
+        let runText = String(segment.characters)
+        let bold = run[InlineAttributes.BoldAttribute.self] == true
+        let italic = run[InlineAttributes.ItalicAttribute.self] == true
+        let code = run[InlineAttributes.CodeAttribute.self] == true
+        let strike = run[InlineAttributes.StrikethroughAttribute.self] == true
+        let link = run.link
+
+        // Decide the display text. Three cases:
+        //  1. Internal .md link → resolve with pageTitle.
+        //  2. External link with cached preview AND user typed the bare URL
+        //     as the link text → substitute with the abbreviated page title.
+        //  3. Anything else → keep the run's text verbatim.
+        var displayText = runText
+        if let url = link {
+            if !isExternalLinkURL(url), url.absoluteString.hasSuffix(".md"),
+               let resolved = pageTitle(url.absoluteString) {
+                displayText = resolved
+            } else if isExternalLinkURL(url),
+                      let preview = previews[url],
+                      let title = preview.title,
+                      runMatchesURL(runText, url: url) {
+                displayText = abbreviateTitle(title)
+            }
+        }
+
+        // External link with a cached preview → render bookmark-row style:
+        // small favicon + bold/normal-color text, no blue/underline. Mirrors
+        // the in-line affordance of `subpageRow` for internal pages.
+        let externalWithPreview = link.flatMap { url -> LinkPreview? in
+            guard isExternalLinkURL(url), let preview = previews[url] else { return nil }
+            return preview
+        }
+
+        // Build the run's styled AttributedString. We do this manually
+        // (instead of calling InlineRenderer for the single-run case) so we
+        // can substitute display text without losing the attributes.
+        var attributed = AttributedString(displayText)
+        if code {
+            attributed.font = NotionStyle.mono(size: NotionStyle.inlineCodeSize)
+            attributed.foregroundColor = NotionStyle.codeForeground
+            attributed.backgroundColor = NotionStyle.codeBackground
+        } else if externalWithPreview != nil {
+            // Bookmark-row styling: medium weight, body foreground, no italic
+            // override (italic still composes if the user marked it).
+            var f = NotionStyle.body(size: fontSize, weight: .medium)
+            if italic { f = f.italic() }
+            attributed.font = f
+        } else {
+            var f = bold ? boldFont : baseFont
+            if italic { f = f.italic() }
+            attributed.font = f
+        }
+        if strike {
+            attributed.strikethroughStyle = .single
+        }
+        if let url = link {
+            attributed.link = url
+            if externalWithPreview == nil {
+                // Plain link styling — only when we DON'T have a preview (or
+                // it's an internal page link). The bookmark-style render
+                // intentionally drops the blue + underline since the favicon
+                // already announces the link.
+                attributed.underlineStyle = .single
+                attributed.foregroundColor = NotionStyle.linkForeground
+            }
+        }
+
+        // Prepend a favicon for external links with a cached icon.
+        if let preview = externalWithPreview,
+           let iconData = preview.iconPNG,
+           let iconImage = decodeFavicon(iconData) {
+            output = output + Text(iconImage)
+                .baselineOffset(-2)
+                + Text(" ")
+        }
+
+        output = output + Text(attributed)
+    }
+    return output
+}
+
+/// Detect when the link's display text is "the URL itself" so we can swap it
+/// for the page title. Covers raw URLs (autolinks) and the host-only shorthand
+/// some markdown sources emit.
+private func runMatchesURL(_ runText: String, url: URL) -> Bool {
+    let trimmed = runText.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed == url.absoluteString { return true }
+    if let host = url.host, trimmed == host { return true }
+    return false
+}
+
+#if os(macOS)
+import AppKit
+private func decodeFavicon(_ data: Data) -> Image? {
+    guard let nsImage = NSImage(data: data) else { return nil }
+    // The fetcher stores at 2x of pageIconSize (28×28 px). Force the logical
+    // size down to pageIconSize so it renders at the same scale as the
+    // `doc.text` icon used in subpage rows.
+    nsImage.size = NSSize(width: NotionStyle.pageIconSize, height: NotionStyle.pageIconSize)
+    return Image(nsImage: nsImage)
+}
+#else
+import UIKit
+private func decodeFavicon(_ data: Data) -> Image? {
+    // Decode at scale=2 so a 28px PNG lands at 14pt logical.
+    guard let uiImage = UIImage(data: data, scale: 2) else { return nil }
+    return Image(uiImage: uiImage)
+}
+#endif
 
 /// Compare two AttributedStrings on the marks the editor cares about (bold/italic/code/
 /// strike/link). We can't rely on `==` because the editor's NSAttributedString round-trip

@@ -65,6 +65,11 @@ public struct EditorView: View {
     /// Parse a string from the system pasteboard back into blocks the editor will
     /// insert on paste. Returning nil cancels the paste. Default returns nil.
     public let parseBlocksFromPasteboard: (_ string: String) -> [Block]?
+    /// Host-provided async fetcher for external-URL preview metadata (favicon +
+    /// page title). The editor calls this for every external `http`/`https`
+    /// link in a rendered (read-only) row and decorates the inline link with
+    /// the result. Default is `nil` — no fetching happens, links render as today.
+    public let linkPreviewProvider: LinkPreviewProvider?
 
     // View-shaped @State that doesn't move into EditorState because it's tied to
     // SwiftUI/UIKit lifecycle (FocusState must live on a View; row-frame cache
@@ -123,7 +128,8 @@ public struct EditorView: View {
         onBlur: @escaping () -> Void = {},
         onRecordBlockDeletion: @escaping (_ indices: [Int], _ blocks: [Block], _ actionName: String) -> Void = { _, _, _ in },
         serializeBlocksForPasteboard: @escaping (_ blocks: [Block]) -> String = { _ in "" },
-        parseBlocksFromPasteboard: @escaping (_ string: String) -> [Block]? = { _ in nil }
+        parseBlocksFromPasteboard: @escaping (_ string: String) -> [Block]? = { _ in nil },
+        linkPreviewProvider: LinkPreviewProvider? = nil
     ) {
         self._document = document
         self.state = state
@@ -141,6 +147,7 @@ public struct EditorView: View {
         self.onRecordBlockDeletion = onRecordBlockDeletion
         self.serializeBlocksForPasteboard = serializeBlocksForPasteboard
         self.parseBlocksFromPasteboard = parseBlocksFromPasteboard
+        self.linkPreviewProvider = linkPreviewProvider
     }
 
     public var body: some View {
@@ -266,6 +273,7 @@ public struct EditorView: View {
             // shared timeline.
             .environment(\.documentUndoManager, undoController.undoManager)
             .environment(\.documentUndoController, undoController)
+            .environment(\.linkPreviewProvider, linkPreviewProvider)
             // Publish for App-level CommandGroup so Cmd-Z routes through this EditorView's
             // undo manager regardless of where focus actually lives. Uses scene-level
             // exposure (rather than `.focusedValue`) because in edit mode the NSTextView
