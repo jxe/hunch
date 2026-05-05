@@ -1262,6 +1262,40 @@ public struct EditorView: View {
         }
     }
 
+    /// Expand any closed toggle/templateButton ancestors so every id in `ids` is
+    /// visible. Called after nav-mode structural mutations (Tab, Option-arrows,
+    /// Cmd-/ Indent) that can land a selected block inside a collapsed container —
+    /// without this, the selection is preserved by id but invisible to the user.
+    /// Mirrors the auto-expand the drag-drop `asChildrenOf` paths already do.
+    /// Iterates: each pass expands one closed ancestor per still-hidden id; nested
+    /// containers converge in O(depth).
+    func revealHiddenBlocks(_ ids: Set<BlockID>) {
+        guard !ids.isEmpty else { return }
+        var safety = 16
+        while safety > 0 {
+            safety -= 1
+            let hidden = hiddenBlockIDs(in: document.blocks)
+            var didExpand = false
+            for id in ids where hidden.contains(id) {
+                guard let idx = document.index(of: id) else { continue }
+                let myIndent = document.blocks[idx].indent
+                var j = idx - 1
+                while j >= 0 {
+                    let candidate = document.blocks[j]
+                    if candidate.indent < myIndent,
+                       isCollapsibleSection(candidate),
+                       !isSectionExpanded(candidate) {
+                        expandSection(candidate)
+                        didExpand = true
+                        break
+                    }
+                    j -= 1
+                }
+            }
+            if !didExpand { break }
+        }
+    }
+
     /// One-pass visible-row layout precompute used by `body`. Returns the visible
     /// `(originalIndex, block)` pairs (in document order) and a parallel array of the
     /// block immediately preceding each pair in visible order. Lifts what would be a
@@ -1396,6 +1430,7 @@ public struct EditorView: View {
         mutate("Move Block") {
             document.blocks = moved.blocks
         }
+        revealHiddenBlocks(Set(ids))
     }
 
     /// Delete every block in the current selection. Selection collapses to the block just
@@ -1452,6 +1487,7 @@ public struct EditorView: View {
     private func indentByOne(blockID: BlockID) {
         let indices = document.indicesIncludingSections(of: [blockID])
         guard canChangeIndent(at: indices, by: 1) else { return }
+        let movedIDs = indices.map { document.blocks[$0].id }
         mutate("Indent") {
             var blocks = document.blocks
             for i in indices {
@@ -1459,6 +1495,7 @@ public struct EditorView: View {
             }
             document.blocks = blocks
         }
+        revealHiddenBlocks(Set(movedIDs))
     }
 
     /// Apply Tab / Shift-Tab indent change to the effective selection.
@@ -1466,6 +1503,7 @@ public struct EditorView: View {
         let indices = effectiveSelectedIndices()
         guard !indices.isEmpty else { return }
         guard canChangeIndent(at: indices, by: delta) else { return }
+        let movedIDs = indices.map { document.blocks[$0].id }
         mutate(delta > 0 ? "Indent" : "Outdent") {
             var blocks = document.blocks
             for i in indices {
@@ -1473,6 +1511,7 @@ public struct EditorView: View {
             }
             document.blocks = blocks
         }
+        revealHiddenBlocks(Set(movedIDs))
     }
 
     private func copySelectionToPasteboard() -> Bool {
@@ -1906,6 +1945,7 @@ public struct EditorView: View {
     func changeIndent(_ blockID: BlockID, by delta: Int) -> KeyPress.Result {
         let indices = document.indicesIncludingSections(of: [blockID])
         guard canChangeIndent(at: indices, by: delta) else { return .ignored }
+        let movedIDs = indices.map { document.blocks[$0].id }
         mutate(delta > 0 ? "Indent" : "Outdent") {
             var blocks = document.blocks
             for i in indices {
@@ -1913,6 +1953,7 @@ public struct EditorView: View {
             }
             document.blocks = blocks
         }
+        revealHiddenBlocks(Set(movedIDs))
         return .handled
     }
 }

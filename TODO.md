@@ -1,7 +1,8 @@
 # Now
 
-- refresh Notion typology
-- there may be some cases where formatting is getting lost
+- refresh Notion typography and spacing
+- delete in the editor should be able to de-indent if the block is empty and indented; return should also be able to unindent
+- the "move to" menu item doesn't seem to be wired up right
 
 # Soon
 
@@ -9,6 +10,7 @@
 - inline styling (see tasks/)
 - inline clicks (see tasks/)
 - hunch-unit-tests-signing error
+- there may be some cases where formatting is getting lost
 
 # Soon
 
