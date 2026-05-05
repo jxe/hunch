@@ -1717,6 +1717,14 @@ public struct EditorView: View {
             return .handled
         }
 
+        // Empty + indented row: Return outdents instead of splitting/adding-child/
+        // exit-list. Mirrors the backspace-at-offset-0 behavior — both keys peel
+        // off one indent level on an empty row before falling back to the usual
+        // semantics at indent 0.
+        if head.isEmpty, tail.isEmpty, block.indent > 0 {
+            return changeIndent(blockID, by: -1)
+        }
+
         // Enter at end of a block that has indent-children: the natural intent is
         // to add a child, not a sibling that would slot between the parent and
         // its first child. Two flavors:
@@ -1880,6 +1888,13 @@ public struct EditorView: View {
     private func deleteEmptyBlock(_ blockID: BlockID) -> KeyPress.Result {
         guard let i = document.index(of: blockID) else { return .ignored }
         let block = document.blocks[i]
+
+        // Empty + indented row: backspace outdents instead of merging/deleting/
+        // converting. Notion-style behavior — peeling off indent levels first
+        // gives the user a way to back out of nesting without touching Tab.
+        if block.indent > 0, String(block.text.characters).isEmpty {
+            return changeIndent(blockID, by: -1)
+        }
 
         let isParagraph: Bool = {
             if case .paragraph = block { return true }

@@ -404,8 +404,8 @@ extension EditorView {
                             title: "Move to",
                             systemImage: "arrow.right.doc.on.clipboard",
                             keyboardShortcut: "m",
-                            keyboardShortcutModifiers: [.command],
-                            keyboardShortcutLabel: "⌘M"
+                            keyboardShortcutModifiers: [.command, .shift],
+                            keyboardShortcutLabel: "⇧⌘M"
                         ) {
                             onRequestMoveDestination(targetIDs) { pickedPageID in
                                 guard let pickedPageID else { return }
