@@ -188,6 +188,73 @@ struct DocumentMutationTests {
         #expect(!doc.slideSiblings([topID, nestedID], by: -1))
     }
 
+    @Test func slideSiblingsDownAtEndMigratesIntoNextSiblingContainer() {
+        // [bullet A {x, y}, bullet B {z}]
+        // Slide-down y from end of A → first child of B.
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            title: "Test",
+            children: [
+                .bullet(text: AttributedString("A"), children: [
+                    .bullet(text: AttributedString("x")),
+                    .bullet(text: AttributedString("y"))
+                ]),
+                .bullet(text: AttributedString("B"), children: [
+                    .bullet(text: AttributedString("z"))
+                ])
+            ]
+        )
+        let yID = doc.children[0].children[1].id
+        #expect(doc.slideSiblings([yID], by: 1))
+        #expect(doc.children[0].children.count == 1)
+        #expect(doc.children[1].children.count == 2)
+        #expect(doc.children[1].children[0].id == yID)
+    }
+
+    @Test func slideSiblingsUpAtTopMigratesIntoPrevSiblingContainer() {
+        // [bullet A {x}, bullet B {y, z}]
+        // Slide-up y from top of B → last child of A.
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            title: "Test",
+            children: [
+                .bullet(text: AttributedString("A"), children: [
+                    .bullet(text: AttributedString("x"))
+                ]),
+                .bullet(text: AttributedString("B"), children: [
+                    .bullet(text: AttributedString("y")),
+                    .bullet(text: AttributedString("z"))
+                ])
+            ]
+        )
+        let yID = doc.children[1].children[0].id
+        #expect(doc.slideSiblings([yID], by: -1))
+        #expect(doc.children[0].children.count == 2)
+        #expect(doc.children[0].children[1].id == yID)
+        #expect(doc.children[1].children.count == 1)
+    }
+
+    @Test func slideSiblingsAtBoundaryFallsBackToOutdentWhenNeighborIsLeaf() {
+        // [bullet A {x}, paragraph P]
+        // Slide-down x from end of A → P is a leaf, can't accept; falls back
+        // to outdent: x becomes a top-level sibling between A and P.
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            title: "Test",
+            children: [
+                .bullet(text: AttributedString("A"), children: [
+                    .bullet(text: AttributedString("x"))
+                ]),
+                .paragraph(text: AttributedString("P"))
+            ]
+        )
+        let xID = doc.children[0].children[0].id
+        #expect(doc.slideSiblings([xID], by: 1))
+        #expect(doc.children.count == 3)
+        #expect(doc.children[0].children.isEmpty)
+        #expect(doc.children[1].id == xID)
+    }
+
     @Test func snapshotIsShallowArrayCopy() {
         let doc = makeDoc()
         let snapshot = doc.snapshot()
