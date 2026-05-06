@@ -12,20 +12,30 @@ extension EditorView {
         }
     }
 
-    func reorderDriftGap(for index: Int) -> CGFloat {
-        // The drift gap renders against the visible-flat preorder index. For
-        // the no-op check, we conservatively suppress the gap whenever the
-        // drop target is anywhere inside the dragged subtree's footprint —
-        // tracked via `draggedSubtreeIDs` rather than per-flat-index ranges.
-        guard let path = state.dropHoverPath,
-              path.parent == nil,
-              path.position == index else { return 0 }
-        if let lift = state.reorderLift,
-           lift.sourceParentID == nil,
-           lift.sourcePositions.contains(index) || index == lift.sourcePositions.upperBound + 1 {
-            return 0
-        }
+    /// Drift gap rendered above the visible-row at `slot` (or at the trailing
+    /// slot == visibleRows.count). Both `hoverSlot` and `liftFootprint` are
+    /// precomputed once per body pass — `hoverSlot` is the visible slot
+    /// corresponding to the current `dropHoverPath`, `liftFootprint` is the
+    /// contiguous range of visible-row slots occupied by the lifted subtree.
+    /// The footprint suppression covers "drop where you already are":
+    /// anywhere inside the lifted rows, or the slot directly after them.
+    func reorderDriftGap(at slot: Int, hoverSlot: Int?, liftFootprint: ClosedRange<Int>?) -> CGFloat {
+        guard hoverSlot == slot else { return 0 }
+        if let f = liftFootprint, f.contains(slot) || slot == f.upperBound + 1 { return 0 }
         return 42
+    }
+
+    /// Visible-slot range covered by the active reorder lift's blocks (and
+    /// any descendants that render in the visible-row stack). Returns nil if
+    /// no lift is active or none of the lifted ids correspond to visible rows.
+    func currentLiftFootprint(in rows: [EditorView.VisibleRow]) -> ClosedRange<Int>? {
+        guard let lift = state.reorderLift else { return nil }
+        var slots: [Int] = []
+        for (k, row) in rows.enumerated() where lift.draggedSubtreeIDs.contains(row.block.id) {
+            slots.append(k)
+        }
+        guard let lo = slots.min(), let hi = slots.max() else { return nil }
+        return lo...hi
     }
 
     func reorderSourceOpacity(for id: BlockID) -> Double {
@@ -380,7 +390,7 @@ extension EditorView {
     ///   row[k-1] under that shared parent
     /// - otherwise (we're exiting row[k-1]'s subtree to land in below's
     ///   parent) → drop "before row[k]" at row[k]'s depth
-    private func dropPath(forVisibleSlot slot: Int, rows: [EditorView.VisibleRow]) -> DropPath {
+    func dropPath(forVisibleSlot slot: Int, rows: [EditorView.VisibleRow]) -> DropPath {
         if slot <= 0 {
             return DropPath(parent: nil, position: 0)
         }
@@ -416,7 +426,7 @@ extension EditorView {
     /// Returns the visible-flat slot the current drop hover corresponds to
     /// (if any). Used as a stickiness hint for `ReorderDropResolver` so the
     /// slot doesn't oscillate near gap boundaries.
-    private func visibleSlotForCurrentDropPath(in rows: [EditorView.VisibleRow]) -> Int? {
+    func visibleSlotForCurrentDropPath(in rows: [EditorView.VisibleRow]) -> Int? {
         guard let path = state.dropHoverPath else { return nil }
         // Find the row whose (parent, position) matches — i.e. the row whose
         // insertion would land at this DropPath. The slot is "the index of the

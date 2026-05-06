@@ -187,6 +187,9 @@ public struct ReorderLift: Equatable, Sendable {
 }
 
 public struct PinchPreviewState: Equatable, Sendable {
+    /// Visible-row slot index (0...visibleRows.count) where the gap is opening.
+    /// Same space as `dropHoverPath` resolves into via `visibleSlotForCurrentDropPath` —
+    /// nested rows participate so a pinch under a heading lands as a heading child.
     public var insertIndex: Int
     public var gapHeight: CGFloat
 

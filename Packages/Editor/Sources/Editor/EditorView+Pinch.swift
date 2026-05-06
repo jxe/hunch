@@ -110,15 +110,22 @@ extension EditorView {
         let gap = preview?.gapHeight ?? pinchRubberBand(max(0, value.spreadDelta))
 
         if gap >= Self.pinchInsertCommitGap, state.editingBlock == nil {
-            let insertIndex = pinchPendingInsertIndex
+            let slot = pinchPendingInsertIndex
                 ?? preview?.insertIndex
                 ?? pinchInsertIndex(for: value.startLocation)
-            // Tier 1 (smaller pinch): pick a kind based on neighbors.
+            // Resolve the visible slot to a tree DropPath, with the visible-row
+            // above/below at that slot as neighbour context for kind inference.
+            let hidden = hiddenBlockIDs(in: document.children)
+            let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden).rows
+            let path = dropPath(forVisibleSlot: slot, rows: rows)
+            let above: Block? = (slot - 1 >= 0 && slot - 1 < rows.count) ? rows[slot - 1].block : nil
+            let below: Block? = (slot >= 0 && slot < rows.count) ? rows[slot].block : nil
+            // Tier 1 (smaller pinch): pick a kind based on neighbours.
             // Tier 2 (larger pinch, past the second threshold): always H1.
             // Both tiers focus the new block.
             let newBlock: Block = (gap >= Self.pinchInsertFocusGap)
                 ? .heading(level: 1, text: AttributedString())
-                : smartInsertBlock(at: insertIndex)
+                : smartInsertBlock(above: above, below: below)
             // Bundle the structural insert and the gap collapse into the same
             // spring transaction so the new row appears inside the opened gap
             // and the surrounding rows close in around it. Without the shared
@@ -126,7 +133,7 @@ extension EditorView {
             // pops in afterwards — visually disjoint.
             Haptics.heavy()
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                insertBlock(newBlock, at: insertIndex, focus: true)
+                insertBlock(newBlock, at: path, focus: true)
                 state.setPinchPreview(nil)
             }
         } else {
@@ -204,18 +211,18 @@ extension EditorView {
         #endif
     }
 
-    /// The insert index for a pinch whose start midpoint is at `point` (in the
-    /// page's hover-named coordinate space — same space rowFrames live in).
-    /// Returns the index of the first row whose mid-Y is below the point; if
-    /// every row sits above the point, returns `blocks.count` (insert at end).
+    /// The insert slot for a pinch whose midpoint is at `point` (page hover
+    /// coordinate space — same space rowFrames live in). Returns a *visible-row
+    /// slot index*, 0...visibleRows.count: the same space `dropPath` and the
+    /// drag-drop indicator speak. Walks the visible-row stack (so nested rows
+    /// participate) and resolves via `ReorderDropResolver` for parity with the
+    /// reorder gesture.
     fileprivate func pinchInsertIndex(for point: CGPoint) -> Int {
-        let blocks = document.children
-        guard !blocks.isEmpty else { return 0 }
-        for (i, block) in blocks.enumerated() {
-            if let frame = rowFrames[block.id], point.y < frame.midY {
-                return i
-            }
+        let hidden = hiddenBlockIDs(in: document.children)
+        let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden).rows
+        let frames: [ReorderDropFrame] = rows.compactMap { row in
+            rowFrames[row.block.id].map { ReorderDropFrame(id: row.block.id, frame: $0) }
         }
-        return blocks.count
+        return ReorderDropResolver.insertionIndex(forY: point.y, rowFrames: frames)
     }
 }

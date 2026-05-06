@@ -184,6 +184,13 @@ public struct EditorView: View {
             let visibleRows = layout.rows
             let prevVisibleBlocks = layout.prevVisible
             let prevDepths = layout.prevDepths
+            // Translate the (tree-aware) drop hover and lift footprint into the
+            // visible-row slot space the gap renderers operate in. Both gestures
+            // render gaps against the body's `ForEach` enumeration index `k`, so
+            // anything they need to compare against has to live in slot space.
+            let dropHoverSlot = visibleSlotForCurrentDropPath(in: visibleRows)
+            let liftFootprint = currentLiftFootprint(in: visibleRows)
+            let trailingSlot = visibleRows.count
             #if os(iOS)
             let selectedIDs: Set<BlockID> = []
             #else
@@ -195,19 +202,19 @@ public struct EditorView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(visibleRows.enumerated()), id: \.element.block.id) { (k, row) in
                         let block = row.block
-                        let i = row.preorderIndex
                         let prev = prevVisibleBlocks[k]
                         let prevDepth = prevDepths[k]
                         let gap = BlockSpacing.gap(before: block, depth: row.depth, after: prev, prevDepth: prevDepth)
-                        let pinchExtraTopGap = pinchExtraGap(forIndex: i)
-                        let reorderExtraTopGap = reorderDriftGap(for: i)
+                        let pinchExtraTopGap = pinchExtraGap(forIndex: k)
+                        let reorderExtraTopGap = reorderDriftGap(at: k, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
                         rowView(for: bindingForBlock(id: block.id), depth: row.depth, snapshot: snapshot, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
                             .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
                             .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
                             .background(rowFrameReporter(id: block.id))
                     }
-                    let trailingPinchGap = pinchExtraGap(forIndex: document.children.count)
-                    gapDropTarget(at: document.children.count, height: 32 + trailingPinchGap + reorderDriftGap(for: document.children.count))
+                    let trailingPinchGap = pinchExtraGap(forIndex: trailingSlot)
+                    let trailingReorderGap = reorderDriftGap(at: trailingSlot, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
+                    gapDropTarget(at: trailingSlot, height: 32 + trailingPinchGap + trailingReorderGap)
                         .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
                 }
                 .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
@@ -652,25 +659,27 @@ public struct EditorView: View {
     }
 
     /// Insert a top-level block at the given index (paragraph creation,
-    /// pinch-open). Pinch and end-of-page tap insertion only target the
-    /// document root, so this is always a top-level insert.
+    /// end-of-page tap). Used where the insertion always targets the
+    /// document root.
     func insertBlock(_ newBlock: Block, at index: Int, focus: Bool = true) {
         let position = max(0, min(index, document.children.count))
+        insertBlock(newBlock, at: DropPath(parent: nil, position: position), focus: focus)
+    }
+
+    /// Tree-aware insert (pinch-open, anywhere in the visible-row stack).
+    func insertBlock(_ newBlock: Block, at path: DropPath, focus: Bool = true) {
         mutate("Insert Block") {
-            document.insertSubtree(newBlock, at: DropPath(parent: nil, position: position))
+            document.insertSubtree(newBlock, at: path)
         }
         if focus {
             transferFocus(to: .editor(newBlock.id, initialCursor: nil))
         }
     }
 
-    /// Pick a sensible block kind for a pinch-open insert at `index`. Continues
+    /// Pick a sensible block kind for a pinch-open insert. Continues
     /// list/quote runs by mirroring the neighbour's kind — above wins, otherwise
-    /// below, otherwise paragraph. Index is into top-level `document.children`.
-    func smartInsertBlock(at index: Int) -> Block {
-        let blocks = document.children
-        let above = (index - 1 >= 0 && index - 1 < blocks.count) ? blocks[index - 1] : nil
-        let below = (index >= 0 && index < blocks.count) ? blocks[index] : nil
+    /// below, otherwise paragraph.
+    func smartInsertBlock(above: Block?, below: Block?) -> Block {
         if let kind = listLikeTemplate(from: above) { return kind }
         if let kind = listLikeTemplate(from: below) { return kind }
         return .paragraph(text: AttributedString())
