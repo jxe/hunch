@@ -116,13 +116,18 @@ private struct EditorCommandButton: View {
     let title: LocalizedStringKey
     let key: KeyEquivalent
     var modifiers: EventModifiers = .command
+    /// Optional validity predicate. Returns true to enable the menu item;
+    /// nil means "always enabled when an editor is focused" (the default).
+    var enabled: ((EditorCommands) -> Bool)? = nil
     let action: (EditorCommands) -> Void
     @FocusedValue(\.editorCommands) private var commands
 
     var body: some View {
         Button(title) { commands.map(action) }
             .keyboardShortcut(key, modifiers: modifiers)
-            .disabled(commands == nil)
+            .disabled(commands == nil || (enabled.map { check in
+                if let c = commands { return !check(c) } else { return false }
+            } ?? false))
     }
 }
 
@@ -138,8 +143,21 @@ private struct EditorBlockMenuItems: View {
         // Tab / Shift+Tab are the editor's real indent shortcuts; registering them
         // here surfaces them in the menu without intercepting Tab elsewhere — a
         // disabled menu item with a key equivalent doesn't consume the key on macOS.
-        EditorCommandButton(title: "Indent", key: .tab, modifiers: []) { $0.indent() }
-        EditorCommandButton(title: "Outdent", key: .tab, modifiers: .shift) { $0.outdent() }
+        // The enabled-predicates gray out the items when no candidate block can
+        // perform the op (root-level first child, etc.), driven by the tree
+        // model's `canIndent` / `canOutdent` predicates.
+        EditorCommandButton(
+            title: "Indent",
+            key: .tab,
+            modifiers: [],
+            enabled: { $0.canIndent() }
+        ) { $0.indent() }
+        EditorCommandButton(
+            title: "Outdent",
+            key: .tab,
+            modifiers: .shift,
+            enabled: { $0.canOutdent() }
+        ) { $0.outdent() }
     }
 }
 

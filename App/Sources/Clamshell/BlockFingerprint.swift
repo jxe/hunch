@@ -4,12 +4,12 @@ import Editor
 
 /// Stable content-identity for a block. `BlockID` is a fresh UUID on every parse, so
 /// it can't be used to ask "is this the same logical block as one in the previous
-/// parse?" — fingerprinting builds a canonical string from the block's kind, indent,
-/// and content, then SHA-256s it down to a 64-bit hex string.
+/// parse?" — fingerprinting builds a canonical string from the block's kind and
+/// content, then SHA-256s it down to a 64-bit hex string.
 ///
-/// Equal fingerprints ⇒ blocks are content-equivalent (modulo `BlockID`). Used by
-/// `RecoveryStore` to decide which blocks disappeared between two saves and to find
-/// the anchor when restoring a recovered block.
+/// Equal fingerprints ⇒ blocks are content-equivalent (modulo `BlockID` and tree
+/// position). Depth is structural rather than content, so it's intentionally NOT
+/// included — moving a paragraph up an indent level shouldn't change its identity.
 enum BlockFingerprint {
     static func compute(_ block: Block) -> String {
         let canonical = canonicalString(block)
@@ -20,32 +20,31 @@ enum BlockFingerprint {
     }
 
     private static func canonicalString(_ block: Block) -> String {
-        let indent = "i=\(block.indent)"
-        switch block {
-        case .paragraph(_, let text, _):
-            return "paragraph|\(indent)|t=\(normalize(text))"
-        case .heading(_, let level, let text, _):
-            return "heading|l=\(level)|\(indent)|t=\(normalize(text))"
-        case .bullet(_, let text, _):
-            return "bullet|\(indent)|t=\(normalize(text))"
-        case .numbered(_, let text, _):
-            return "numbered|\(indent)|t=\(normalize(text))"
-        case .todo(_, let text, let done, _):
-            return "todo|d=\(done ? 1 : 0)|\(indent)|t=\(normalize(text))"
-        case .quote(_, let text, _):
-            return "quote|\(indent)|t=\(normalize(text))"
-        case .code(_, let source, let language, _):
-            return "code|lang=\(language ?? "")|\(indent)|s=\(normalizeRaw(source))"
-        case .divider(_, _):
-            return "divider|\(indent)"
-        case .toggle(_, let title, _):
-            return "toggle|\(indent)|t=\(normalize(title))"
-        case .templateButton(_, let label, _):
-            return "templateButton|\(indent)|l=\(normalizeRaw(label))"
-        case .subpage(_, let title, let pageID, _):
-            return "subpage|\(indent)|p=\(pageID)|t=\(normalizeRaw(title))"
-        case .image(_, let source, let alt, _):
-            return "image|\(indent)|s=\(source)|a=\(normalizeRaw(alt))"
+        switch block.kind {
+        case .paragraph(let text):
+            return "paragraph|t=\(normalize(text))"
+        case .heading(let level, let text):
+            return "heading|l=\(level.rawValue)|t=\(normalize(text))"
+        case .bullet(let text):
+            return "bullet|t=\(normalize(text))"
+        case .numbered(let text):
+            return "numbered|t=\(normalize(text))"
+        case .todo(let text, let done):
+            return "todo|d=\(done ? 1 : 0)|t=\(normalize(text))"
+        case .quote(let text):
+            return "quote|t=\(normalize(text))"
+        case .code(let source, let language):
+            return "code|lang=\(language ?? "")|s=\(normalizeRaw(source))"
+        case .divider:
+            return "divider"
+        case .toggle(let title):
+            return "toggle|t=\(normalize(title))"
+        case .templateButton(let label):
+            return "templateButton|l=\(normalizeRaw(label))"
+        case .subpage(let title, let pageID):
+            return "subpage|p=\(pageID)|t=\(normalizeRaw(title))"
+        case .image(let source, let alt):
+            return "image|s=\(source)|a=\(normalizeRaw(alt))"
         }
     }
 

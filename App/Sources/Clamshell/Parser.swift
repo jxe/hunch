@@ -8,14 +8,25 @@ public enum BlockParser {
     /// than being skipped. Foundation's `.whitespacesAndNewlines` includes U+00A0.
     private static let asciiWhitespace = CharacterSet(charactersIn: " \t\r\n")
 
+    /// Parse a markdown source into a tree-shaped block list. The pipeline is:
+    /// 1. `parseTemplateContainers` — lifts `:::{template-button}` envelopes and
+    ///    nests their bodies as `children`.
+    /// 2. `parseToggleContainers` — lifts `▸ Title` toggle envelopes and nests
+    ///    their bodies as `children`.
+    /// 3. `parseMarkdown` → swift-markdown → `assemble` → `convertBlock` —
+    ///    list items keep their nested children directly (no flattening).
+    /// 4. `foldHeadings` — post-pass that collapses sibling sequences of
+    ///    `[heading, …, heading, …]` into a tree where each heading owns the
+    ///    blocks until the next heading at the same or higher level.
     public static func parse(_ source: String) -> [Block] {
-        parseTemplateContainers(source, baseIndent: 0)
+        let templated = parseTemplateContainers(source)
+        return foldHeadings(templated)
     }
 
-    private static func parseMarkdown(_ source: String, baseIndent: Int) -> [Block] {
+    private static func parseMarkdown(_ source: String) -> [Block] {
         let document = Markdown.Document(parsing: source, options: [.parseBlockDirectives])
         let children = Array(document.children)
-        return assemble(children, indent: 0).blocks.map { $0.withIndent($0.indent + baseIndent) }
+        return assemble(children).blocks
     }
 
     private struct SourceLine {
@@ -39,16 +50,14 @@ public enum BlockParser {
     /// Pre-parse pass for `▸ Title` toggles. Lifts toggle paragraphs out of the source by
     /// indent — body extent is "subsequent lines blank OR indented strictly more than the
     /// toggle's leading spaces, stopping at the first non-blank line at-or-below that
-    /// indent." Body is dedented one indent unit (2 spaces) and recursively parsed at
-    /// `toggleIndent + 1`. Non-toggle text is passed to `parseMarkdown` (terminator);
-    /// toggle body recurses through `parseTemplateContainers` so a `:::` template inside
-    /// a toggle body is recognised.
+    /// indent." Body is dedented one indent unit (2 spaces) and recursively parsed.
+    /// Toggle's body becomes its `children`.
     ///
     /// Fenced code blocks (``` `` ```) are treated as opaque both in the outer scan and in
     /// the body-extent scan, so a `▸ ` line inside fenced code is not lifted, and a code
     /// line outdented to column 0 inside the toggle's body code fence does not terminate
     /// the body.
-    private static func parseToggleContainers(_ source: String, baseIndent: Int) -> [Block] {
+    private static func parseToggleContainers(_ source: String) -> [Block] {
         let lines = splitPreservingLineEndings(source)
         var out: [Block] = []
         var regular = ""
@@ -60,7 +69,7 @@ public enum BlockParser {
                 regular = ""
                 return
             }
-            out.append(contentsOf: parseMarkdown(regular, baseIndent: baseIndent))
+            out.append(contentsOf: parseMarkdown(regular))
             regular = ""
         }
 
@@ -87,8 +96,6 @@ public enum BlockParser {
             }
 
             flushRegular()
-
-            let toggleIndent = baseIndent + (open.leadingSpaces / 2)
 
             var j = i + 1
             var bodyFence: Int? = nil
@@ -120,9 +127,10 @@ public enum BlockParser {
                 .map { stripLeadingSpaces(open.leadingSpaces + 2, from: $0.fullText) }
                 .joined()
 
-            let body = parseTemplateContainers(bodySource, baseIndent: toggleIndent + 1)
-            out.append(.toggle(title: inlineParse(open.title), indent: toggleIndent))
-            out.append(contentsOf: body)
+            // Recursively parse the toggle body with the full pipeline so nested
+            // toggles, templates, and headings within the body all fold correctly.
+            let body = parse(bodySource)
+            out.append(.toggle(title: inlineParse(open.title), children: body))
 
             i = j
         }
@@ -158,7 +166,7 @@ public enum BlockParser {
         return trimmed.dropFirst(count).allSatisfy { $0 == " " }
     }
 
-    private static func parseTemplateContainers(_ source: String, baseIndent: Int) -> [Block] {
+    private static func parseTemplateContainers(_ source: String) -> [Block] {
         let lines = splitPreservingLineEndings(source)
         var out: [Block] = []
         var regular = ""
@@ -169,7 +177,7 @@ public enum BlockParser {
                 regular = ""
                 return
             }
-            out.append(contentsOf: parseToggleContainers(regular, baseIndent: baseIndent))
+            out.append(contentsOf: parseToggleContainers(regular))
             regular = ""
         }
 
@@ -191,32 +199,75 @@ public enum BlockParser {
                 i = lines.count
             }
 
-            let blockIndent = baseIndent + (open.leadingSpaces / 2)
             let bodySource = bodyLines
                 .map { stripLeadingSpaces(open.leadingSpaces, from: $0.fullText) }
                 .joined()
-            let body = parseToggleContainers(bodySource, baseIndent: blockIndent + 1)
-            out.append(.templateButton(label: open.label, indent: blockIndent))
-            out.append(contentsOf: body)
+            // Recursively run the full pipeline so nested toggles and headings
+            // inside the body fold correctly.
+            let body = parse(bodySource)
+            out.append(.templateButton(label: open.label, children: body))
         }
 
         flushRegular()
         return out
     }
 
-    /// Legacy `<details>` parser — retained for files written before the `▸ Title`
-    /// serialization. The serializer no longer emits `<details>`, but workspaces that
-    /// predate the change still contain HTML-toggle envelopes; this pass continues to
-    /// parse them so existing files load. **Do not delete** — files convert lazily on
-    /// next save.
-    ///
-    /// Walks a sibling list of markup nodes, lifting `<details>...</details>` runs into
-    /// a `.toggle` marker followed by the body blocks at `indent + 1`. cmark-gfm closes an
-    /// HTML block at a blank line, so a real-world `<details>` toggle with markdown children
-    /// parses as: HTMLBlock(`<details>...<summary>`), then inner markdown nodes, then
-    /// HTMLBlock(`</details>`). This pass pairs the open/close tags so the inner blocks land
-    /// as flat siblings whose section (via `Document.sectionRange`) is the toggle's body.
-    private static func assemble(_ nodes: [any Markup], indent: Int) -> (blocks: [Block], consumed: Int) {
+    /// Heading-fold post-pass. Takes a flat sibling sequence emitted by the
+    /// markdown stage and folds each heading's "body" (subsequent blocks until
+    /// the next heading at same-or-higher level) into the heading's `children`.
+    /// Run recursively on every container's children list so headings inside
+    /// toggles / template-buttons organize their bodies without escaping.
+    private static func foldHeadings(_ blocks: [Block]) -> [Block] {
+        // First, recurse into any container's children. We must fold headings
+        // *inside* containers before folding at the current scope, because a
+        // toggle's body can contain its own heading hierarchy.
+        let recursed: [Block] = blocks.map { block in
+            switch block.kind {
+            case .heading, .toggle, .templateButton, .bullet, .numbered, .todo:
+                return block.withChildren(foldHeadings(block.children))
+            default:
+                return block
+            }
+        }
+
+        var rootChildren: [Block] = []
+        // Stack of (heading, level) pairs — the heading mutates as we accrue
+        // body children. We carry the heading by VALUE on the stack and
+        // reattach to its parent when popped.
+        var stack: [(block: Block, level: HeadingLevel)] = []
+
+        func appendChild(_ child: Block) {
+            if stack.isEmpty {
+                rootChildren.append(child)
+            } else {
+                stack[stack.count - 1].block.children.append(child)
+            }
+        }
+
+        func popOne() {
+            let popped = stack.removeLast()
+            if stack.isEmpty {
+                rootChildren.append(popped.block)
+            } else {
+                stack[stack.count - 1].block.children.append(popped.block)
+            }
+        }
+
+        for block in recursed {
+            if case .heading(let level, _) = block.kind {
+                while let top = stack.last, top.level.rawValue >= level.rawValue {
+                    popOne()
+                }
+                stack.append((block: block, level: level))
+            } else {
+                appendChild(block)
+            }
+        }
+        while !stack.isEmpty { popOne() }
+        return rootChildren
+    }
+
+    private static func assemble(_ nodes: [any Markup]) -> (blocks: [Block], consumed: Int) {
         var i = 0
         var out: [Block] = []
         while i < nodes.count {
@@ -238,13 +289,12 @@ public enum BlockParser {
                     children.append(nodes[j])
                     j += 1
                 }
-                let inner = assemble(children, indent: indent + 1).blocks
-                out.append(.toggle(title: title, indent: indent))
-                out.append(contentsOf: inner)
+                let inner = assemble(children).blocks
+                out.append(.toggle(title: title, children: inner))
                 i = j + 1   // skip past closing </details>
                 continue
             }
-            out.append(contentsOf: convertBlock(node, indent: indent))
+            out.append(contentsOf: convertBlock(node))
             i += 1
         }
         return (out, i)
@@ -271,54 +321,53 @@ public enum BlockParser {
 
     // MARK: - Block conversion
 
-    private static func convertBlock(_ markup: any Markup, indent: Int) -> [Block] {
+    private static func convertBlock(_ markup: any Markup) -> [Block] {
         switch markup {
         case let heading as Heading:
-            let level = max(1, min(3, heading.level))
-            return [.heading(level: level, text: inlineToAttributed(Array(heading.inlineChildren)), indent: indent)]
+            return [.heading(level: heading.level, text: inlineToAttributed(Array(heading.inlineChildren)))]
 
         case let paragraph as Paragraph:
             let inlines = Array(paragraph.inlineChildren)
             if let subpage = detectSubpage(inlines) {
-                return [subpage.withIndent(indent)]
+                return [subpage]
             }
             if let image = detectBlockImage(inlines) {
-                return [image.withIndent(indent)]
+                return [image]
             }
             let attr = inlineToAttributed(inlines)
             if isEmptySpacerParagraph(attr) {
-                return [.paragraph(text: AttributedString(""), indent: indent)]
+                return [.paragraph(text: AttributedString(""))]
             }
-            return [.paragraph(text: attr, indent: indent)]
+            return [.paragraph(text: attr)]
 
         case let blockQuote as BlockQuote:
             // Each paragraph child becomes a separate `.quote` block in our model.
             var out: [Block] = []
             for child in blockQuote.children {
                 if let p = child as? Paragraph {
-                    out.append(.quote(text: inlineToAttributed(Array(p.inlineChildren)), indent: indent))
+                    out.append(.quote(text: inlineToAttributed(Array(p.inlineChildren))))
                 } else {
-                    out.append(contentsOf: convertBlock(child, indent: indent))
+                    out.append(contentsOf: convertBlock(child))
                 }
             }
             return out
 
         case let list as UnorderedList:
-            return convertList(list, ordered: false, indent: indent)
+            return convertList(list, ordered: false)
 
         case let list as OrderedList:
-            return convertList(list, ordered: true, indent: indent)
+            return convertList(list, ordered: true)
 
         case let codeBlock as CodeBlock:
-            return [.code(source: codeBlock.code, language: codeBlock.language, indent: indent)]
+            return [.code(source: codeBlock.code, language: codeBlock.language)]
 
         case _ as ThematicBreak:
-            return [.divider(indent: indent)]
+            return [.divider()]
 
         case let html as HTMLBlock:
             // Toggle HTML blocks (<details>) are handled by `assemble`; any HTMLBlock that reaches
             // here is unrecognised — round-trip it as a paragraph of its raw source.
-            return [.paragraph(text: AttributedString(html.rawHTML), indent: indent)]
+            return [.paragraph(text: AttributedString(html.rawHTML))]
 
         case let directive as BlockDirective:
             if directive.name == "template-button" {
@@ -326,10 +375,10 @@ public enum BlockParser {
                     .map(\.untrimmedText)
                     .joined(separator: "\n")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                let body = assemble(Array(directive.children), indent: indent + 1).blocks
-                return [.templateButton(label: label, indent: indent)] + body
+                let body = assemble(Array(directive.children)).blocks
+                return [.templateButton(label: label, children: body)]
             }
-            return [.paragraph(text: AttributedString(directive.format()), indent: indent)]
+            return [.paragraph(text: AttributedString(directive.format()))]
 
         default:
             // Tables, images-as-blocks, and other unsupported nodes fall back to plain text.
@@ -337,22 +386,22 @@ public enum BlockParser {
             if plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return []
             }
-            return [.paragraph(text: AttributedString(plain), indent: indent)]
+            return [.paragraph(text: AttributedString(plain))]
         }
     }
 
     // MARK: - Lists
 
-    private static func convertList(_ list: any ListItemContainer, ordered: Bool, indent: Int) -> [Block] {
+    private static func convertList(_ list: any ListItemContainer, ordered: Bool) -> [Block] {
         var out: [Block] = []
         for child in list.children {
             guard let item = child as? ListItem else { continue }
-            out.append(contentsOf: convertListItem(item, ordered: ordered, indent: indent))
+            out.append(contentsOf: convertListItem(item, ordered: ordered))
         }
         return out
     }
 
-    private static func convertListItem(_ item: ListItem, ordered: Bool, indent: Int) -> [Block] {
+    private static func convertListItem(_ item: ListItem, ordered: Bool) -> [Block] {
         // Extract leading paragraph text (the item's own line)
         var leadingText = AttributedString()
         var nested: [Block] = []
@@ -360,23 +409,23 @@ public enum BlockParser {
             if let p = child as? Paragraph, leadingText.characters.isEmpty {
                 leadingText = inlineToAttributed(Array(p.inlineChildren))
             } else if let nestedList = child as? UnorderedList {
-                nested.append(contentsOf: convertList(nestedList, ordered: false, indent: indent + 1))
+                nested.append(contentsOf: convertList(nestedList, ordered: false))
             } else if let nestedList = child as? OrderedList {
-                nested.append(contentsOf: convertList(nestedList, ordered: true, indent: indent + 1))
+                nested.append(contentsOf: convertList(nestedList, ordered: true))
             } else {
-                nested.append(contentsOf: convertBlock(child, indent: indent + 1))
+                nested.append(contentsOf: convertBlock(child))
             }
         }
 
         let head: Block
         if let checkbox = item.checkbox {
-            head = .todo(text: leadingText, done: checkbox == .checked, indent: indent)
+            head = .todo(text: leadingText, done: checkbox == .checked, children: nested)
         } else if ordered {
-            head = .numbered(text: leadingText, indent: indent)
+            head = .numbered(text: leadingText, children: nested)
         } else {
-            head = .bullet(text: leadingText, indent: indent)
+            head = .bullet(text: leadingText, children: nested)
         }
-        return [head] + nested
+        return [head]
     }
 
     // MARK: - Inline → AttributedString
@@ -582,4 +631,3 @@ public enum BlockParser {
         return String(line[index...])
     }
 }
-

@@ -247,11 +247,11 @@ final class Workspace {
         return fallback
     }
 
+    @discardableResult
     private func documentWithCurrentTitle(_ document: Document) -> Document {
-        var updated = document
         let fallback = document.url.deletingPathExtension().lastPathComponent
-        updated.title = Document.deriveTitle(from: document.blocks, fallback: fallback)
-        return updated
+        document.title = Document.deriveTitle(from: document.children, fallback: fallback)
+        return document
     }
 
     private func refreshTitlesInBackground(for scanned: [WorkspaceEntry], workspaceURL: URL) {
@@ -261,7 +261,10 @@ final class Workspace {
         guard !stale.isEmpty, let clamshell else { return }
 
         titleRefreshTask?.cancel()
-        titleRefreshTask = Task.detached(priority: .utility) { [weak self, clamshell, stale, workspaceURL] in
+        // `loadDocumentTitle` constructs a transient `Document` (MainActor)
+        // before deriving the title; the lookup itself stays cheap (no parse
+        // beyond the leading H1), so running it on MainActor is fine.
+        titleRefreshTask = Task { @MainActor [weak self, clamshell, stale, workspaceURL] in
             var refreshed: [URL: CachedTitle] = [:]
             for entry in stale {
                 guard !Task.isCancelled else { return }
@@ -270,9 +273,7 @@ final class Workspace {
                 }
             }
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.applyRefreshedTitles(refreshed, workspaceURL: workspaceURL)
-            }
+            self?.applyRefreshedTitles(refreshed, workspaceURL: workspaceURL)
         }
     }
 
@@ -326,7 +327,7 @@ final class Workspace {
         guard let clamshell else { return nil }
         let target = clamshell.url(for: relativePath)
         guard let doc = try? loadDocument(at: target) else { return nil }
-        return doc.blocks
+        return doc.children
     }
 
     @discardableResult
@@ -334,9 +335,12 @@ final class Workspace {
         guard !blocks.isEmpty, let clamshell else { return nil }
         let target = clamshell.url(for: relativePath)
         do {
-            var doc = try loadDocument(at: target)
-            doc.blocks.append(contentsOf: blocks)
-            doc.title = Document.deriveTitle(from: doc.blocks, fallback: target.deletingPathExtension().lastPathComponent)
+            let doc = try loadDocument(at: target)
+            doc.children.append(contentsOf: blocks)
+            // Re-fold so the appended blocks land inside any heading that
+            // was at the end of the page, not as siblings of it.
+            doc.enforceHeadingContainment()
+            doc.title = Document.deriveTitle(from: doc.children, fallback: target.deletingPathExtension().lastPathComponent)
             try clamshell.writeImmediately(doc, resolvingSubpageTitle: saveTitleResolver())
             doc.modificationDate = modificationDate(for: target)
             // Seed history with the new on-disk text.

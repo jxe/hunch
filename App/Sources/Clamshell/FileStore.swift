@@ -81,15 +81,17 @@ public struct FileStore: Sendable {
         if let writeError { throw FileStoreError.writeFailed(url, underlying: writeError) }
     }
 
+    @MainActor
     public func loadDocument(at url: URL) throws -> Document {
         let source = try read(url)
         let blocks = BlockParser.parse(source)
         let fallbackTitle = url.deletingPathExtension().lastPathComponent
         let title = Document.deriveTitle(from: blocks, fallback: fallbackTitle)
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-        return Document(url: url, title: title, blocks: blocks, modificationDate: mtime)
+        return Document(url: url, title: title, children: blocks, modificationDate: mtime)
     }
 
+    @MainActor
     public func loadDocumentTitle(at url: URL) throws -> String {
         let source = try read(url)
         let blocks = BlockParser.parse(source)
@@ -97,8 +99,11 @@ public struct FileStore: Sendable {
         return Document.deriveTitle(from: blocks, fallback: fallbackTitle)
     }
 
-    public func save(_ document: Document, resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }) throws {
-        try write(BlockSerializer.serialize(document.blocks, resolvingSubpageTitle: titleForPath), to: document.url)
+    /// Write a previously-serialized document body to its URL. Caller is
+    /// responsible for serializing on the MainActor (where `Document` lives)
+    /// before handing the bytes off — keeping the on-disk path nonisolated.
+    public func saveSerialized(_ serialized: String, to url: URL) throws {
+        try write(serialized, to: url)
     }
 
     @discardableResult

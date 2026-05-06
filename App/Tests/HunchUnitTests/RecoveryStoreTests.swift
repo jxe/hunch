@@ -86,9 +86,9 @@ struct RecoveryStoreTests {
         let store = RecoveryStore(workspaceRoot: root)
 
         let blocks: [Block] = [
-            .heading(level: 1, text: AttributedString("Top"), indent: 0),
-            .paragraph(text: AttributedString("Stay"), indent: 0),
-            .paragraph(text: AttributedString("Goes away"), indent: 0)
+            .heading(level: .h1, text: AttributedString("Top")),
+            .paragraph(text: AttributedString("Stay")),
+            .paragraph(text: AttributedString("Goes away"))
         ]
         try await store.recordDeletion(relativePath: "p.md", previousBlocks: blocks)
 

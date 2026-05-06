@@ -83,7 +83,8 @@ public final class Clamshell {
         try files.scan(workspaceRoot: root)
     }
 
-    nonisolated public func loadDocument(at url: URL) throws -> Document {
+    @MainActor
+    public func loadDocument(at url: URL) throws -> Document {
         try files.loadDocument(at: url)
     }
 
@@ -91,13 +92,14 @@ public final class Clamshell {
     /// needed by the host to seed `Workspace.diskHistory`, which protects
     /// in-memory edits from iCloud-Drive stomps (an external write reverting
     /// the file to a previously-seen disk state triggers a defender re-save).
-    nonisolated public func loadDocumentAndRawText(at url: URL) throws -> (Document, String) {
+    @MainActor
+    public func loadDocumentAndRawText(at url: URL) throws -> (Document, String) {
         let raw = try files.read(url)
         let blocks = BlockParser.parse(raw)
         let fallbackTitle = url.deletingPathExtension().lastPathComponent
         let title = Document.deriveTitle(from: blocks, fallback: fallbackTitle)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        return (Document(url: url, title: title, blocks: blocks, modificationDate: mtime), raw)
+        return (Document(url: url, title: title, children: blocks, modificationDate: mtime), raw)
     }
 
     /// Read the raw bytes on disk without parsing — used for hashing into
@@ -106,35 +108,39 @@ public final class Clamshell {
         try files.read(url)
     }
 
-    nonisolated public func loadDocumentTitle(at url: URL) throws -> String {
+    @MainActor
+    public func loadDocumentTitle(at url: URL) throws -> String {
         try files.loadDocumentTitle(at: url)
     }
 
     // MARK: - Pages: write
 
-    /// Coalesced async save (autosave path). If a write is already in flight for
-    /// this URL, the snapshot replaces any pending one and is written after the
-    /// in-flight write completes. After the write lands, fires a fire-and-forget
-    /// `recordSnapshot` against the lost-block log so every block-version that
-    /// makes it to disk is captured.
-    nonisolated public func save(
+    /// Coalesced async save (autosave path). Document is `@MainActor`-isolated,
+    /// so we serialize on the calling actor (MainActor) before handing the
+    /// String + URL across to the save coordinator. After the write lands,
+    /// fires a fire-and-forget `recordSnapshot` against the lost-block log so
+    /// every block-version that makes it to disk is captured.
+    @MainActor
+    public func save(
         _ document: Document,
-        resolvingSubpageTitle titleForPath: @Sendable @escaping (String) -> String? = { _ in nil }
+        resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
     ) async throws {
-        try await saver.save(document, resolvingSubpageTitle: titleForPath)
-        let newText = BlockSerializer.serialize(document.blocks, resolvingSubpageTitle: titleForPath)
-        scheduleRecordSnapshot(at: document.url, newText: newText)
+        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: titleForPath)
+        let url = document.url
+        try await saver.save(url: url, contents: newText)
+        scheduleRecordSnapshot(at: url, newText: newText)
     }
 
     /// Synchronous full write — bypasses the coalescer. For modifications-as-a-unit
     /// (trashing a dirty open doc, appending to a subpage, restoring a lost block)
     /// where the doc must be on disk before the next operation runs. Also snapshots
     /// the new content into the lost-block log.
-    nonisolated public func writeImmediately(
+    @MainActor
+    public func writeImmediately(
         _ document: Document,
-        resolvingSubpageTitle titleForPath: @Sendable @escaping (String) -> String? = { _ in nil }
+        resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
     ) throws {
-        let newText = BlockSerializer.serialize(document.blocks, resolvingSubpageTitle: titleForPath)
+        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: titleForPath)
         try files.write(newText, to: document.url)
         scheduleRecordSnapshot(at: document.url, newText: newText)
     }

@@ -2,52 +2,29 @@ import Foundation
 import Editor
 
 public enum BlockSerializer {
+    /// Serialize a tree of blocks to markdown. The tree's depth is recursively
+    /// translated into leading-space indentation (2 spaces per level). Each
+    /// container kind owns its own envelope: toggles emit `▸ Title` + their
+    /// children; templates wrap children in `:::{template-button}` fences;
+    /// headings emit their hash-prefix line and recurse into children at the
+    /// same depth (heading containment is purely a parser concern).
     public static func serialize(_ blocks: [Block], resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }) -> String {
         var out = ""
-        var i = 0
-        while i < blocks.count {
-            let block = blocks[i]
-            let chunk: String
-            let consumed: Int
-            if case .toggle(_, let title, let indent) = block {
-                // A toggle "owns" the immediately following blocks at greater indent — those
-                // are its body. Emit `▸ Title\n` followed by each body block at its real
-                // indent (each block's own `indentPrefix` handles the spacing). The parser's
-                // `parseToggleContainers` pre-pass lifts toggles by indent before cmark sees
-                // anything, so 4-space-indented body lines are no longer at risk of being
-                // misread as code blocks.
-                var end = i + 1
-                while end < blocks.count, blocks[end].indent > indent {
-                    end += 1
-                }
-                let body = Array(blocks[(i + 1)..<end])
-                let titleLine = indentPrefix(indent) + "▸ " + inlineString(title) + "\n"
-                let bodyText = serialize(body, resolvingSubpageTitle: titleForPath)
-                chunk = titleLine + bodyText
-                consumed = end - i
-            } else if case .templateButton(_, let label, let indent) = block {
-                var end = i + 1
-                while end < blocks.count, blocks[end].indent > indent {
-                    end += 1
-                }
-                let body = blocks[(i + 1)..<end].map { $0.withIndent($0.indent - (indent + 1)) }
-                var inner = serialize(body, resolvingSubpageTitle: titleForPath)
-                while inner.hasSuffix("\n\n") { inner.removeLast() }
-                if body.isEmpty {
-                    inner = ""
-                } else if !inner.hasSuffix("\n") {
-                    inner += "\n"
-                }
-                let fence = templateFence(for: inner)
-                let raw = fence + "{template-button} " + templateLabel(label) + "\n" + inner + fence + "\n\n"
-                chunk = indentLines(raw, indent: indent)
-                consumed = end - i
-            } else {
-                chunk = serialize(block, resolvingSubpageTitle: titleForPath)
-                consumed = 1
-            }
+        serializeChildren(blocks, depth: 0, into: &out, titleForPath: titleForPath, isTopLevel: true)
+        if !out.hasSuffix("\n") { out += "\n" }
+        return out
+    }
+
+    private static func serializeChildren(_ blocks: [Block], depth: Int, into out: inout String, titleForPath: (String) -> String?, isTopLevel: Bool) {
+        for (i, block) in blocks.enumerated() {
+            let chunk = serializeBlock(block, depth: depth, titleForPath: titleForPath)
             out += chunk
-            let isLast = (i + consumed) >= blocks.count
+            let isLast = i == blocks.count - 1
+            // Inter-block separator: paragraphs/headings/quotes/code/dividers
+            // already end with `\n\n`. Lists and the toggle/template envelope
+            // end with `\n` and need an extra blank line between unless we're
+            // mid-list — but every block here is at the same depth, so a blank
+            // line is always safe.
             if !isLast {
                 if !chunk.hasSuffix("\n\n") {
                     if chunk.hasSuffix("\n") {
@@ -57,63 +34,112 @@ public enum BlockSerializer {
                     }
                 }
             }
-            i += consumed
         }
-        if !out.hasSuffix("\n") { out += "\n" }
-        return out
     }
 
-    /// Per-block serialization. `.toggle` is handled in the array form because its body
-    /// lives in subsequent sibling blocks (via `Document.sectionRange`), so a single-block
-    /// serialize emits only the `▸ Title` line with no body.
-    public static func serialize(_ block: Block, resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }) -> String {
-        switch block {
-        case .paragraph(_, let text, let indent):
+    private static func serializeBlock(_ block: Block, depth: Int, titleForPath: (String) -> String?) -> String {
+        let prefix = indentPrefix(depth)
+        switch block.kind {
+        case .paragraph(let text):
             // An empty paragraph has no native markdown representation — blank lines
             // are block separators, not blocks. Emit U+00A0 (non-breaking space) on
             // its own line so the paragraph survives round-trip; the parser detects
             // a single-NBSP paragraph and converts it back to empty.
             let body = inlineString(text)
             let line = body.isEmpty ? "\u{00A0}" : body
-            return indentPrefix(indent) + line + "\n\n"
+            // Paragraphs cannot contain children today, but defensively serialize
+            // any descendant tree for forward-compat.
+            var s = prefix + line + "\n\n"
+            if !block.children.isEmpty {
+                s += serializeContainerBody(block.children, depth: depth + 1, titleForPath: titleForPath)
+            }
+            return s
 
-        case .heading(_, let level, let text, let indent):
-            return indentPrefix(indent) + String(repeating: "#", count: level) + " " + inlineString(text) + "\n\n"
+        case .heading(let level, let text):
+            let line = prefix + String(repeating: "#", count: level.rawValue) + " " + inlineString(text) + "\n\n"
+            // Headings own their body at the SAME depth: a top-level H2 with
+            // body paragraphs serializes the H2 then the paragraphs at depth 0,
+            // not depth 1. The parser's heading-fold pass reconstructs the
+            // ownership purely from sibling order + level comparison.
+            if !block.children.isEmpty {
+                return line + serializeContainerBody(block.children, depth: depth, titleForPath: titleForPath)
+            }
+            return line
 
-        case .bullet(_, let text, let indent):
-            return indentPrefix(indent) + "- " + inlineString(text) + "\n"
+        case .bullet(let text):
+            return listItemLine(marker: "- ", prefix: prefix, text: text, children: block.children, depth: depth, titleForPath: titleForPath)
 
-        case .numbered(_, let text, let indent):
-            return indentPrefix(indent) + "1. " + inlineString(text) + "\n"
+        case .numbered(let text):
+            return listItemLine(marker: "1. ", prefix: prefix, text: text, children: block.children, depth: depth, titleForPath: titleForPath)
 
-        case .todo(_, let text, let done, let indent):
-            return indentPrefix(indent) + "- [" + (done ? "x" : " ") + "] " + inlineString(text) + "\n"
+        case .todo(let text, let done):
+            let mark = "- [" + (done ? "x" : " ") + "] "
+            return listItemLine(marker: mark, prefix: prefix, text: text, children: block.children, depth: depth, titleForPath: titleForPath)
 
-        case .quote(_, let text, let indent):
-            return indentPrefix(indent) + "> " + inlineString(text) + "\n\n"
+        case .quote(let text):
+            return prefix + "> " + inlineString(text) + "\n\n"
 
-        case .code(_, let source, let language, let indent):
+        case .code(let source, let language):
             let fence = "```" + (language ?? "")
             let body = source.hasSuffix("\n") ? source : source + "\n"
-            return indentLines(fence + "\n" + body + "```\n\n", indent: indent)
+            return indentLines(fence + "\n" + body + "```\n\n", indent: depth)
 
-        case .divider(_, let indent):
-            return indentPrefix(indent) + "---\n\n"
+        case .divider:
+            return prefix + "---\n\n"
 
-        case .toggle(_, let title, let indent):
-            return indentPrefix(indent) + "▸ " + inlineString(title) + "\n\n"
+        case .toggle(let title):
+            let titleLine = prefix + "▸ " + inlineString(title) + "\n"
+            var bodyText = serializeContainerBody(block.children, depth: depth + 1, titleForPath: titleForPath)
+            // Toggles always end with a blank line so the next sibling has separation.
+            if !bodyText.hasSuffix("\n\n") {
+                if bodyText.hasSuffix("\n") {
+                    bodyText += "\n"
+                } else if !bodyText.isEmpty {
+                    bodyText += "\n\n"
+                }
+            }
+            return titleLine + bodyText
 
-        case .templateButton(_, let label, let indent):
-            let raw = ":::{template-button} " + templateLabel(label) + "\n:::\n\n"
-            return indentLines(raw, indent: indent)
+        case .templateButton(let label):
+            // Body is serialized as if it were top-level (depth 0) and then
+            // every line indented by `depth` spaces. The fence pair sits at
+            // `depth`. Body trailing blank lines are trimmed.
+            var inner = serializeContainerBody(block.children, depth: 0, titleForPath: titleForPath)
+            while inner.hasSuffix("\n\n") { inner.removeLast() }
+            if block.children.isEmpty {
+                inner = ""
+            } else if !inner.hasSuffix("\n") {
+                inner += "\n"
+            }
+            let fence = templateFence(for: inner)
+            let raw = fence + "{template-button} " + templateLabel(label) + "\n" + inner + fence + "\n\n"
+            return indentLines(raw, indent: depth)
 
-        case .subpage(_, let title, let path, let indent):
+        case .subpage(let title, let path):
             let displayTitle = titleForPath(path) ?? title
-            return indentPrefix(indent) + "[" + displayTitle + "](" + path + ")\n\n"
+            return prefix + "[" + displayTitle + "](" + path + ")\n\n"
 
-        case .image(_, let source, let alt, let indent):
-            return indentPrefix(indent) + "![" + escapeMarkdownLinkText(alt) + "](" + source + ")\n\n"
+        case .image(let source, let alt):
+            return prefix + "![" + escapeMarkdownLinkText(alt) + "](" + source + ")\n\n"
         }
+    }
+
+    /// Serialize a container's children list with proper inter-block
+    /// separation. Used by every container kind that has a body.
+    private static func serializeContainerBody(_ blocks: [Block], depth: Int, titleForPath: (String) -> String?) -> String {
+        var out = ""
+        serializeChildren(blocks, depth: depth, into: &out, titleForPath: titleForPath, isTopLevel: false)
+        return out
+    }
+
+    /// List items terminate with `\n` (not `\n\n`) so successive siblings stay
+    /// in the same list; nested children are emitted at depth + 1 underneath.
+    private static func listItemLine(marker: String, prefix: String, text: AttributedString, children: [Block], depth: Int, titleForPath: (String) -> String?) -> String {
+        var out = prefix + marker + inlineString(text) + "\n"
+        if !children.isEmpty {
+            out += serializeContainerBody(children, depth: depth + 1, titleForPath: titleForPath)
+        }
+        return out
     }
 
     /// Escape `]`, `\`, and newlines inside the alt text so the bracket pair

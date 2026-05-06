@@ -1,158 +1,271 @@
 import Foundation
 
-public enum Block: Identifiable, Equatable, Sendable {
-    case paragraph(id: BlockID = BlockID(), text: AttributedString, indent: Int = 0)
-    case heading(id: BlockID = BlockID(), level: Int, text: AttributedString, indent: Int = 0)
-    case bullet(id: BlockID = BlockID(), text: AttributedString, indent: Int = 0)
-    case numbered(id: BlockID = BlockID(), text: AttributedString, indent: Int = 0)
-    case todo(id: BlockID = BlockID(), text: AttributedString, done: Bool, indent: Int = 0)
-    case quote(id: BlockID = BlockID(), text: AttributedString, indent: Int = 0)
-    case code(id: BlockID = BlockID(), source: String, language: String?, indent: Int = 0)
-    case divider(id: BlockID = BlockID(), indent: Int = 0)
-    case toggle(id: BlockID = BlockID(), title: AttributedString, indent: Int = 0)
-    case templateButton(id: BlockID = BlockID(), label: String, indent: Int = 0)
-    case subpage(id: BlockID = BlockID(), title: String, pageID: String, indent: Int = 0)
-    case image(id: BlockID = BlockID(), source: String, alt: String, indent: Int = 0)
+/// Heading levels are clamped to 1...3 (Notion-style; H4+ are rendered as
+/// paragraphs). Comparable so the heading-fold parser pass can use natural
+/// `top.level >= incoming.level` stack-pop comparisons.
+public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
+    case h1 = 1, h2 = 2, h3 = 3
 
-    public var id: BlockID {
-        switch self {
-        case .paragraph(let id, _, _),
-             .heading(let id, _, _, _),
-             .bullet(let id, _, _),
-             .numbered(let id, _, _),
-             .todo(let id, _, _, _),
-             .quote(let id, _, _),
-             .code(let id, _, _, _),
-             .divider(let id, _),
-             .toggle(let id, _, _),
-             .templateButton(let id, _, _),
-             .subpage(let id, _, _, _),
-             .image(let id, _, _, _):
-            return id
+    public init?(level: Int) {
+        switch level {
+        case 1: self = .h1
+        case 2: self = .h2
+        case 3: self = .h3
+        default: return nil
         }
     }
 
-    public var indent: Int {
-        switch self {
-        case .paragraph(_, _, let i),
-             .heading(_, _, _, let i),
-             .bullet(_, _, let i),
-             .numbered(_, _, let i),
-             .todo(_, _, _, let i),
-             .quote(_, _, let i),
-             .code(_, _, _, let i),
-             .divider(_, let i),
-             .toggle(_, _, let i),
-             .templateButton(_, _, let i),
-             .subpage(_, _, _, let i),
-             .image(_, _, _, let i):
-            return i
-        }
+    /// Clamps any incoming integer to the supported range.
+    public static func clamped(_ level: Int) -> HeadingLevel {
+        HeadingLevel(rawValue: max(1, min(3, level))) ?? .h1
     }
 
-    /// The block's body text for text-bearing blocks (paragraph, heading, list items, quote,
-    /// toggle title). Returns an empty `AttributedString` for code/divider/subpage. Code's
-    /// `source` is intentionally not surfaced here — code editing is out of M3 scope.
+    public static func < (lhs: HeadingLevel, rhs: HeadingLevel) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+/// Per-kind data. Carries no `id`, no `indent`, and no `children` — those live
+/// on `Block`. Keeping payloads in an enum gives autoderived `Equatable` /
+/// `Sendable` and clean exhaustive switches at use sites.
+public enum BlockKind: Equatable, Sendable {
+    case paragraph(text: AttributedString)
+    case heading(level: HeadingLevel, text: AttributedString)
+    case bullet(text: AttributedString)
+    case numbered(text: AttributedString)
+    case todo(text: AttributedString, done: Bool)
+    case quote(text: AttributedString)
+    case code(source: String, language: String?)
+    case divider
+    case toggle(title: AttributedString)
+    case templateButton(label: String)
+    case subpage(title: String, pageID: String)
+    case image(source: String, alt: String)
+}
+
+/// A node in the document tree. Identity is the immutable `BlockID`; the kind
+/// and children are mutable so callers can patch in place. Value semantics —
+/// shallow Array copy on snapshot is the undo path.
+public struct Block: Identifiable, Equatable, Sendable {
+    public let id: BlockID
+    public var kind: BlockKind
+    public var children: [Block]
+
+    public init(id: BlockID = BlockID(), kind: BlockKind, children: [Block] = []) {
+        self.id = id
+        self.kind = kind
+        self.children = children
+    }
+
+    // MARK: Convenience constructors (one per kind, no children)
+    //
+    // The bare-leaf form is the common case in tests, autotransforms, and
+    // mid-edit splits. Container blocks (heading/toggle/templateButton/list
+    // items) compose by setting `children` after construction.
+
+    public static func paragraph(text: AttributedString = AttributedString(), id: BlockID = BlockID(), children: [Block] = []) -> Block {
+        Block(id: id, kind: .paragraph(text: text), children: children)
+    }
+
+    public static func heading(level: HeadingLevel, text: AttributedString, id: BlockID = BlockID(), children: [Block] = []) -> Block {
+        Block(id: id, kind: .heading(level: level, text: text), children: children)
+    }
+
+    /// Convenience that accepts a raw `Int` and clamps to `HeadingLevel`. Used
+    /// by parser/test sites that read levels from cmark.
+    public static func heading(level: Int, text: AttributedString, id: BlockID = BlockID(), children: [Block] = []) -> Block {
+        Block(id: id, kind: .heading(level: HeadingLevel.clamped(level), text: text), children: children)
+    }
+
+    public static func bullet(text: AttributedString, id: BlockID = BlockID(), children: [Block] = []) -> Block {
+        Block(id: id, kind: .bullet(text: text), children: children)
+    }
+
+    public static func numbered(text: AttributedString, id: BlockID = BlockID(), children: [Block] = []) -> Block {
+        Block(id: id, kind: .numbered(text: text), children: children)
+    }
+
+    public static func todo(text: AttributedString, done: Bool, id: BlockID = BlockID(), children: [Block] = []) -> Block {
+        Block(id: id, kind: .todo(text: text, done: done), children: children)
+    }
+
+    public static func quote(text: AttributedString, id: BlockID = BlockID()) -> Block {
+        Block(id: id, kind: .quote(text: text))
+    }
+
+    public static func code(source: String, language: String? = nil, id: BlockID = BlockID()) -> Block {
+        Block(id: id, kind: .code(source: source, language: language))
+    }
+
+    public static func divider(id: BlockID = BlockID()) -> Block {
+        Block(id: id, kind: .divider)
+    }
+
+    public static func toggle(title: AttributedString, id: BlockID = BlockID(), children: [Block] = []) -> Block {
+        Block(id: id, kind: .toggle(title: title), children: children)
+    }
+
+    public static func templateButton(label: String, id: BlockID = BlockID(), children: [Block] = []) -> Block {
+        Block(id: id, kind: .templateButton(label: label), children: children)
+    }
+
+    public static func subpage(title: String, pageID: String, id: BlockID = BlockID()) -> Block {
+        Block(id: id, kind: .subpage(title: title, pageID: pageID))
+    }
+
+    public static func image(source: String, alt: String, id: BlockID = BlockID()) -> Block {
+        Block(id: id, kind: .image(source: source, alt: alt))
+    }
+
+    // MARK: Text / mutation helpers
+
+    /// Body text for text-bearing kinds; empty string for code/divider/subpage/image.
+    /// Toggle returns its title; templateButton returns its label as a plain `AttributedString`.
     public var text: AttributedString {
-        switch self {
-        case .paragraph(_, let text, _),
-             .heading(_, _, let text, _),
-             .bullet(_, let text, _),
-             .numbered(_, let text, _),
-             .todo(_, let text, _, _),
-             .quote(_, let text, _):
-            return text
-        case .toggle(_, let title, _):
-            return title
-        case .templateButton(_, let label, _):
+        switch kind {
+        case .paragraph(let t),
+             .heading(_, let t),
+             .bullet(let t),
+             .numbered(let t),
+             .todo(let t, _),
+             .quote(let t):
+            return t
+        case .toggle(let t):
+            return t
+        case .templateButton(let label):
             return AttributedString(label)
         case .code, .divider, .subpage, .image:
             return AttributedString()
         }
     }
 
-    /// Returns a copy of this block with its text replaced. No-op for blocks
-    /// that don't carry an `AttributedString` body (code/divider/subpage).
-    /// Toggle returns a copy with the *title* replaced.
+    /// Returns a copy with text replaced. No-op for kinds without an
+    /// `AttributedString` body (code/divider/subpage/image). Toggle replaces
+    /// its title; templateButton stringifies the label.
     public func withText(_ newText: AttributedString) -> Block {
-        switch self {
-        case .paragraph(let id, _, let indent):
-            return .paragraph(id: id, text: newText, indent: indent)
-        case .heading(let id, let level, _, let indent):
-            return .heading(id: id, level: level, text: newText, indent: indent)
-        case .bullet(let id, _, let indent):
-            return .bullet(id: id, text: newText, indent: indent)
-        case .numbered(let id, _, let indent):
-            return .numbered(id: id, text: newText, indent: indent)
-        case .todo(let id, _, let done, let indent):
-            return .todo(id: id, text: newText, done: done, indent: indent)
-        case .quote(let id, _, let indent):
-            return .quote(id: id, text: newText, indent: indent)
-        case .toggle(let id, _, let indent):
-            return .toggle(id: id, title: newText, indent: indent)
-        case .templateButton(let id, _, let indent):
-            return .templateButton(id: id, label: String(newText.characters), indent: indent)
+        var copy = self
+        switch kind {
+        case .paragraph:
+            copy.kind = .paragraph(text: newText)
+        case .heading(let level, _):
+            copy.kind = .heading(level: level, text: newText)
+        case .bullet:
+            copy.kind = .bullet(text: newText)
+        case .numbered:
+            copy.kind = .numbered(text: newText)
+        case .todo(_, let done):
+            copy.kind = .todo(text: newText, done: done)
+        case .quote:
+            copy.kind = .quote(text: newText)
+        case .toggle:
+            copy.kind = .toggle(title: newText)
+        case .templateButton:
+            copy.kind = .templateButton(label: String(newText.characters))
         case .code, .divider, .subpage, .image:
             return self
         }
+        return copy
     }
 
-    public func withIndent(_ newIndent: Int) -> Block {
-        let clamped = max(0, min(5, newIndent))
-        switch self {
-        case .paragraph(let id, let text, _):
-            return .paragraph(id: id, text: text, indent: clamped)
-        case .heading(let id, let level, let text, _):
-            return .heading(id: id, level: level, text: text, indent: clamped)
-        case .bullet(let id, let text, _):
-            return .bullet(id: id, text: text, indent: clamped)
-        case .numbered(let id, let text, _):
-            return .numbered(id: id, text: text, indent: clamped)
-        case .todo(let id, let text, let done, _):
-            return .todo(id: id, text: text, done: done, indent: clamped)
-        case .quote(let id, let text, _):
-            return .quote(id: id, text: text, indent: clamped)
-        case .code(let id, let source, let language, _):
-            return .code(id: id, source: source, language: language, indent: clamped)
-        case .divider(let id, _):
-            return .divider(id: id, indent: clamped)
-        case .toggle(let id, let title, _):
-            return .toggle(id: id, title: title, indent: clamped)
-        case .templateButton(let id, let label, _):
-            return .templateButton(id: id, label: label, indent: clamped)
-        case .subpage(let id, let title, let pageID, _):
-            return .subpage(id: id, title: title, pageID: pageID, indent: clamped)
-        case .image(let id, let source, let alt, _):
-            return .image(id: id, source: source, alt: alt, indent: clamped)
+    /// Returns a copy with replaced `children`.
+    public func withChildren(_ newChildren: [Block]) -> Block {
+        var copy = self
+        copy.children = newChildren
+        return copy
+    }
+
+    /// Recursively assigns fresh BlockIDs to this block and every descendant.
+    /// Used for paste/duplicate so identity collisions don't confuse selection
+    /// or focus state.
+    public func withFreshIDs() -> Block {
+        Block(
+            id: BlockID(),
+            kind: kind,
+            children: children.map { $0.withFreshIDs() }
+        )
+    }
+
+    // MARK: Containment rules (used by canDrop / canIndent / parser fold)
+
+    /// Whether this block is structurally permitted to hold children. Leaves
+    /// (paragraph/quote/code/divider/subpage/image) reject all children;
+    /// containers accept by `canContain(_:)`.
+    public var isContainer: Bool {
+        switch kind {
+        case .heading, .bullet, .numbered, .todo, .toggle, .templateButton:
+            return true
+        case .paragraph, .quote, .code, .divider, .subpage, .image:
+            return false
         }
     }
 
-    public func withFreshID() -> Block {
-        switch self {
-        case .paragraph(_, let text, let indent):
-            return .paragraph(text: text, indent: indent)
-        case .heading(_, let level, let text, let indent):
-            return .heading(level: level, text: text, indent: indent)
-        case .bullet(_, let text, let indent):
-            return .bullet(text: text, indent: indent)
-        case .numbered(_, let text, let indent):
-            return .numbered(text: text, indent: indent)
-        case .todo(_, let text, let done, let indent):
-            return .todo(text: text, done: done, indent: indent)
-        case .quote(_, let text, let indent):
-            return .quote(text: text, indent: indent)
-        case .code(_, let source, let language, let indent):
-            return .code(source: source, language: language, indent: indent)
-        case .divider(_, let indent):
-            return .divider(indent: indent)
-        case .toggle(_, let title, let indent):
-            return .toggle(title: title, indent: indent)
-        case .templateButton(_, let label, let indent):
-            return .templateButton(label: label, indent: indent)
-        case .subpage(_, let title, let pageID, let indent):
-            return .subpage(title: title, pageID: pageID, indent: indent)
-        case .image(_, let source, let alt, let indent):
-            return .image(source: source, alt: alt, indent: indent)
+    /// Whether `child.kind` is permitted as a direct child of this block.
+    /// - Heading at level L can contain anything *except* a heading at level
+    ///   ≤ L (such a heading would close this one's body in markdown).
+    /// - Toggle, templateButton, bullet, numbered, todo accept any kind.
+    /// - All others are leaves and accept nothing.
+    public func canContain(_ child: Block) -> Bool {
+        switch kind {
+        case .heading(let myLevel, _):
+            if case .heading(let childLevel, _) = child.kind {
+                return childLevel > myLevel
+            }
+            return true
+        case .toggle, .templateButton, .bullet, .numbered, .todo:
+            return true
+        case .paragraph, .quote, .code, .divider, .subpage, .image:
+            return false
         }
     }
+}
+
+// MARK: - Pattern-match helpers
+//
+// Replacements for the most common `if case .heading(_, _, _, _) = block`
+// patterns that infest the editor today. Avoids 4-arg destructuring at
+// every call site.
+
+public extension Block {
+    var headingLevel: HeadingLevel? {
+        if case .heading(let level, _) = kind { return level }
+        return nil
+    }
+
+    var isToggle: Bool {
+        if case .toggle = kind { return true }
+        return false
+    }
+
+    var isTemplateButton: Bool {
+        if case .templateButton = kind { return true }
+        return false
+    }
+
+    var isListItem: Bool {
+        switch kind {
+        case .bullet, .numbered, .todo: return true
+        default: return false
+        }
+    }
+
+    var isHeading: Bool {
+        if case .heading = kind { return true }
+        return false
+    }
+
+    /// Container that nests structurally (toggle body, list nesting) — the
+    /// kind whose children render visually indented under a parent. Headings
+    /// are containers but NOT structural — their children render at the
+    /// heading's depth (Notion-style flush layout) and the heading-fold
+    /// invariant governs which siblings can sit next to a heading.
+    var isStructuralContainer: Bool {
+        switch kind {
+        case .bullet, .numbered, .todo, .toggle, .templateButton:
+            return true
+        case .heading, .paragraph, .quote, .code, .divider, .subpage, .image:
+            return false
+        }
+    }
+
+    var isLeaf: Bool { !isContainer }
 }

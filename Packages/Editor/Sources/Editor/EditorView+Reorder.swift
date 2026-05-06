@@ -13,12 +13,16 @@ extension EditorView {
     }
 
     func reorderDriftGap(for index: Int) -> CGFloat {
-        guard state.dropHoverIndex == index else { return 0 }
-        // Dropping the source row at its own slot is a no-op — don't open a
-        // gap there. (Also avoids layout churn that would destabilise the
-        // lift's frozen sourceFrame.)
+        // The drift gap renders against the visible-flat preorder index. For
+        // the no-op check, we conservatively suppress the gap whenever the
+        // drop target is anywhere inside the dragged subtree's footprint —
+        // tracked via `draggedSubtreeIDs` rather than per-flat-index ranges.
+        guard let path = state.dropHoverPath,
+              path.parent == nil,
+              path.position == index else { return 0 }
         if let lift = state.reorderLift,
-           index >= lift.sourceIndex && index <= lift.sourceEndIndex + 1 {
+           lift.sourceParentID == nil,
+           lift.sourcePositions.contains(index) || index == lift.sourcePositions.upperBound + 1 {
             return 0
         }
         return 42
@@ -44,6 +48,7 @@ extension EditorView {
         if let lift = state.reorderLift {
             BlockRow(
                 block: .constant(lift.block),
+                depth: 0,
                 editorFocused: $editorFocused,
                 isPageTitle: false,
                 numberingIndex: nil,
@@ -108,20 +113,29 @@ extension EditorView {
         pendingAnchor: Bool,
         isCopy: Bool
     ) -> ReorderLift? {
-        guard let block = snapshot.first(where: { $0.id == blockID }),
-              let sourceFrame = rowFrames[blockID],
-              let sourceIndex = snapshot.firstIndex(where: { $0.id == blockID })
+        guard let block = document.find(blockID),
+              let sourceFrame = rowFrames[blockID]
         else { return nil }
         let ids = dragIDs(for: blockID)
-        let idSet = Set(ids)
-        let sourceIndices = snapshot.enumerated()
-            .compactMap { idSet.contains($0.element.id) ? $0.offset : nil }
+        let parentID = document.parent(of: blockID)
+        // Compute the (parent, positions) pair: positions are the indices of
+        // each lifted root within its parent's children list. Single-row
+        // drags collapse to a single-position range.
+        let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+        let positions = ids.compactMap { id in siblings.firstIndex { $0.id == id } }.sorted()
+        let positionRange: ClosedRange<Int> = (positions.first ?? 0)...(positions.last ?? 0)
+        // All ids inside any lifted subtree (cycle prevention on drop).
+        var allDescendants: Set<BlockID> = []
+        for id in ids {
+            allDescendants.formUnion(document.subtreeIDs(of: id))
+        }
         return ReorderLift(
             block: block,
             ids: ids,
+            sourceParentID: parentID,
+            sourcePositions: positionRange,
+            draggedSubtreeIDs: allDescendants,
             sourceFrame: sourceFrame,
-            sourceIndex: sourceIndex,
-            sourceEndIndex: sourceIndices.last ?? sourceIndex,
             touchOffset: touchOffset ?? CGSize(width: sourceFrame.width / 2, height: sourceFrame.height / 2),
             location: location ?? CGPoint(x: sourceFrame.midX, y: sourceFrame.midY),
             pendingAnchor: pendingAnchor,
@@ -207,11 +221,11 @@ extension EditorView {
             state.currentDropTarget = nil
             state.setReorderLift(nil)
             switch target {
-            case .insertBefore(let index):
+            case .insertAt(let path):
                 if isCopy {
-                    copyBlocks(ids: ids, toIndexBefore: index, snapshot: snapshot)
+                    copyBlocks(ids: ids, to: path, snapshot: snapshot)
                 } else {
-                    moveBlocks(ids: ids, toIndexBefore: index)
+                    moveBlocks(ids: ids, to: path)
                 }
             case .asLastChildOf(let parentID):
                 if isCopy {
@@ -286,7 +300,9 @@ extension EditorView {
                 if abs(velocity) <= 1 { break }
                 scrollBy(velocity * frameDuration)
                 if let liftY = state.reorderLift?.location.y {
-                    applyDropTarget(at: liftY, snapshot: document.blocks)
+                    var snapshot: [Block] = []
+                    document.walk { block, _, _ in snapshot.append(block) }
+                    applyDropTarget(at: liftY, snapshot: snapshot)
                 }
                 try? await Task.sleep(for: .milliseconds(16))
             }
@@ -315,7 +331,7 @@ extension EditorView {
         let edgeBand: CGFloat = 6
         for block in snapshot where !hidden.contains(block.id) && !liftIDs.contains(block.id) {
             guard let frame = rowFrames[block.id] else { continue }
-            if case .subpage(_, _, let path, _) = block,
+            if case .subpage(_, let path) = block.kind,
                y >= frame.minY && y <= frame.maxY {
                 return .intoSubpage(block.id, path)
             }
@@ -324,20 +340,81 @@ extension EditorView {
                 return .asLastChildOf(block.id)
             }
         }
+        // Between-rows insertion: ask the y-resolver for the "kth visible
+        // slot," then convert to a tree DropPath using the visible layout's
+        // depth + parent metadata.
+        let layout = computeVisibleLayout(snapshot: document.children, hidden: hidden)
         let visibleCount = ReorderDropResolver.insertionIndex(
             forY: y,
             rowFrames: orderedDropFrames(snapshot: snapshot),
-            previousIndex: state.dropHoverIndex
+            previousIndex: visibleSlotForCurrentDropPath(in: layout.rows)
         )
-        return .insertBefore(snapshotIndex(forVisibleCount: visibleCount, snapshot: snapshot, hidden: hidden))
+        return .insertAt(dropPath(forVisibleSlot: visibleCount, rows: layout.rows))
+    }
+
+    /// Convert a visible-flat slot index to a tree `DropPath`, consulting the
+    /// row immediately above (and below) the slot to choose the right parent
+    /// and position. The semantics mirror what the user sees:
+    ///
+    /// - slot 0 → top of the document (`parent: nil, position: 0`)
+    /// - trailing slot → append at the document root
+    /// - row[k] is a child of row[k-1] (depth strictly greater) → the drop is
+    ///   the FIRST child of row[k-1] (i.e. before row[k] under that parent)
+    /// - row[k] is a sibling of row[k-1] → drop as the next sibling of row[k-1]
+    /// - row[k] is shallower than row[k-1] → exiting the parent's subtree;
+    ///   drop "before row[k]" at row[k]'s depth
+    private func dropPath(forVisibleSlot slot: Int, rows: [EditorView.VisibleRow]) -> DropPath {
+        if slot <= 0 {
+            return DropPath(parent: nil, position: 0)
+        }
+        if slot >= rows.count {
+            return DropPath(parent: nil, position: document.children.count)
+        }
+        let above = rows[slot - 1]
+        let below = rows[slot]
+
+        if below.depth > above.depth {
+            return DropPath(parent: above.block.id, position: 0)
+        }
+        if below.depth == above.depth {
+            let parentID = above.parentID
+            let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+            let i = siblings.firstIndex(where: { $0.id == above.block.id }) ?? siblings.count - 1
+            return DropPath(parent: parentID, position: i + 1)
+        }
+        // below.depth < above.depth — exiting above's subtree.
+        let parentID = below.parentID
+        let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+        let i = siblings.firstIndex(where: { $0.id == below.block.id }) ?? 0
+        return DropPath(parent: parentID, position: i)
+    }
+
+    /// Returns the visible-flat slot the current drop hover corresponds to
+    /// (if any). Used as a stickiness hint for `ReorderDropResolver` so the
+    /// slot doesn't oscillate near gap boundaries.
+    private func visibleSlotForCurrentDropPath(in rows: [EditorView.VisibleRow]) -> Int? {
+        guard let path = state.dropHoverPath else { return nil }
+        // Find the row whose (parent, position) matches — i.e. the row whose
+        // insertion would land at this DropPath. The slot is "the index of the
+        // row that would sit AT or AFTER this drop path's effective position."
+        for (k, row) in rows.enumerated() {
+            if row.parentID == path.parent {
+                let parentChildren: [Block] = path.parent.flatMap(document.find)?.children ?? document.children
+                if path.position < parentChildren.count {
+                    let target = parentChildren[path.position].id
+                    if row.block.id == target { return k }
+                }
+            }
+        }
+        return nil
     }
 
     func performPayloadDrop(_ payload: BlockDragPayload, atY y: CGFloat, snapshot: [Block]) {
         let hidden = hiddenBlockIDs(in: snapshot)
         let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
         switch target {
-        case .insertBefore(let index):
-            moveBlocks(ids: payload.ids, toIndexBefore: index)
+        case .insertAt(let path):
+            moveBlocks(ids: payload.ids, to: path)
         case .asLastChildOf(let parentID):
             moveBlocks(ids: payload.ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
         case .intoSubpage(_, let path):
@@ -391,153 +468,83 @@ extension EditorView {
 
     /// Compute the BlockIDs to include in a drag started from `blockID`. If the row
     /// is part of a multi-block selection, drag the whole selection (in document
-    /// order); otherwise just the single row.
+    /// order); otherwise just the single row + its descendants.
     func dragIDs(for blockID: BlockID) -> [BlockID] {
         if state.selection.contains(blockID) && state.selection.count > 1 {
             return effectiveSelectedIDsInDocumentOrder()
         }
-        return document.indicesIncludingSections(of: [blockID]).map { document.blocks[$0].id }
+        // Single-row drag: the lifted root + all descendants travel together.
+        guard let block = document.find(blockID) else { return [blockID] }
+        var out: [BlockID] = []
+        var seen: Set<BlockID> = []
+        collectPreorderIDs(block, into: &out, seen: &seen)
+        return out
     }
 
-    /// Move the contiguous-or-not set of blocks identified by `ids` so they're
-    /// inserted starting at `target` (an index in the *current* document blocks). The
-    /// dragged blocks come out of the old positions and go in at `target`, with `target`
-    /// adjusted for the count of dragged blocks that came from before it. No-op if the
-    /// drop is into the dragged range itself.
-    fileprivate func moveBlocks(ids: [BlockID], toIndexBefore target: Int) {
-        let idSet = Set(ids)
-        let sourceIndices = document.blocks.enumerated()
-            .compactMap { (i, block) in idSet.contains(block.id) ? i : nil }
-        guard !sourceIndices.isEmpty else { return }
-
-        // Reject drops onto the dragged range — would be a visual no-op anyway and
-        // saves a useless undo entry.
-        if let first = sourceIndices.first, let last = sourceIndices.last,
-           target >= first && target <= last + 1 {
-            return
-        }
-
-        let removalsBeforeTarget = sourceIndices.filter { $0 < target }.count
-        let adjustedTarget = target - removalsBeforeTarget
-
+    /// Move the subtree-rooted set of blocks identified by `ids` to `target`.
+    /// Validates with `Document.canDrop(ids:to:)` first (rejects descendant
+    /// cycles and containment violations) and then funnels through
+    /// `Document.moveSubtrees(_:to:)`.
+    fileprivate func moveBlocks(ids: [BlockID], to target: DropPath) {
+        guard !ids.isEmpty, document.canDrop(ids: ids, to: target) else { return }
         mutate("Move Block") {
-            let movingBlocks = sourceIndices.map { document.blocks[$0] }
-            var blocks = document.blocks
-            for i in sourceIndices.reversed() {
-                blocks.remove(at: i)
-            }
-            blocks.insert(contentsOf: movingBlocks, at: adjustedTarget)
-            document.blocks = blocks
+            document.moveSubtrees(ids, to: target)
         }
     }
 
-    /// Drop-on-parent: append `ids` after the parent's hidden subtree (snapshot
-    /// position = parent index + 1 + count of contiguous hidden blocks following)
-    /// AND shift each dragged block's indent so the topmost dragged block lands
-    /// at `parent.indent + 1`. Internal nesting within the dragged range is
-    /// preserved by applying the same indent delta to every dragged block.
-    fileprivate func moveBlocks(ids: [BlockID], asChildrenOf parentID: BlockID, snapshot: [Block], hidden: Set<BlockID>) {
-        guard let parentIndex = snapshot.firstIndex(where: { $0.id == parentID }),
-              !ids.contains(parentID)
-        else { return }
-
-        let parent = snapshot[parentIndex]
-        var insertAt = parentIndex + 1
-        while insertAt < snapshot.count && hidden.contains(snapshot[insertAt].id) {
-            insertAt += 1
-        }
-
-        let idSet = Set(ids)
-        let sourceIndices = document.blocks.enumerated()
-            .compactMap { (i, block) in idSet.contains(block.id) ? i : nil }
-        guard !sourceIndices.isEmpty else { return }
-
-        // The drag-source must not include the parent (already guarded), and the
-        // insertion point must not be inside the dragged range.
-        if let first = sourceIndices.first, let last = sourceIndices.last,
-           insertAt >= first && insertAt <= last + 1 {
-            return
-        }
-
-        let movingBlocks = sourceIndices.map { document.blocks[$0] }
-        let oldRootIndent = movingBlocks.map(\.indent).min() ?? 0
-        let newRootIndent = parent.indent + 1
-        let indentDelta = newRootIndent - oldRootIndent
-
-        let removalsBeforeTarget = sourceIndices.filter { $0 < insertAt }.count
-        let adjustedTarget = insertAt - removalsBeforeTarget
-
+    /// Drop-on-parent: append `ids` as the parent's last children. Validates
+    /// with `Document.canDrop` (rejects cycles + containment violations) then
+    /// performs the move. No more indent math — the tree itself encodes depth.
+    fileprivate func moveBlocks(ids: [BlockID], asChildrenOf parentID: BlockID, snapshot _: [Block], hidden _: Set<BlockID>) {
+        guard !ids.contains(parentID),
+              let parent = document.find(parentID) else { return }
+        let target = DropPath(parent: parentID, position: parent.children.count)
+        guard document.canDrop(ids: ids, to: target) else { return }
         mutate("Move Block") {
-            var blocks = document.blocks
-            for i in sourceIndices.reversed() {
-                blocks.remove(at: i)
-            }
-            let shifted = movingBlocks.map { $0.withIndent(max(0, $0.indent + indentDelta)) }
-            blocks.insert(contentsOf: shifted, at: adjustedTarget)
-            document.blocks = blocks
+            document.moveSubtrees(ids, to: target)
         }
-
         // Auto-expand the parent so the user can see the result.
-        switch parent {
-        case .toggle(let id, _, _): state.expandedToggles.insert(id)
-        case .templateButton(let id, _, _): state.expandedTemplates.insert(id)
+        switch parent.kind {
+        case .toggle: state.expandedToggles.insert(parent.id)
+        case .templateButton: state.expandedTemplates.insert(parent.id)
         default: break
         }
     }
 
-    /// Option-drag duplicate: insert fresh-ID copies of `ids` (in their original
-    /// document order, indents preserved) at `target`, leaving the originals
-    /// in place. Selects the new copies. The `snapshot` parameter is unused —
-    /// we source from the live document to match `spliceParsedBlocksAfter` —
-    /// but kept on the signature so the call site mirrors `moveBlocks`.
-    fileprivate func copyBlocks(ids: [BlockID], toIndexBefore target: Int, snapshot _: [Block]) {
-        let idSet = Set(ids)
-        let sourceBlocks = document.blocks.filter { idSet.contains($0.id) }
-        guard !sourceBlocks.isEmpty else { return }
-        let copies = sourceBlocks.map { $0.withFreshID() }
-        let clampedTarget = min(max(0, target), document.blocks.count)
-
+    /// Option-drag duplicate: insert fresh-ID copies of `ids` at `target`,
+    /// leaving the originals in place. Selects the new copies.
+    fileprivate func copyBlocks(ids: [BlockID], to target: DropPath, snapshot _: [Block]) {
+        // Collect originals in document order (so a multi-block selection
+        // duplicates in the right order) and deep-copy with fresh IDs.
+        let ordered = ids.sorted { (a, b) in
+            (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
+        }
+        let copies = ordered.compactMap { document.find($0)?.withFreshIDs() }
+        guard !copies.isEmpty else { return }
         mutate(copies.count > 1 ? "Duplicate Blocks" : "Duplicate Block") {
-            var blocks = document.blocks
-            blocks.insert(contentsOf: copies, at: clampedTarget)
-            document.blocks = blocks
+            document.insertSubtrees(copies, at: target)
         }
         selectAfterCopy(copies)
     }
 
-    /// Option-drag onto a collapsed parent: append duplicates as the parent's
-    /// last children, indent-shifted so the topmost copy lands at
-    /// `parent.indent + 1` (mirrors the non-copy variant).
+    /// Option-drag onto a closed parent: append duplicates as that parent's
+    /// last children. Mirrors `moveBlocks(ids:asChildrenOf:...)` for the copy
+    /// variant.
     fileprivate func copyBlocks(ids: [BlockID], asChildrenOf parentID: BlockID, snapshot _: [Block], hidden _: Set<BlockID>) {
-        guard let liveParentIndex = document.blocks.firstIndex(where: { $0.id == parentID }),
-              !ids.contains(parentID)
-        else { return }
-
-        let parent = document.blocks[liveParentIndex]
-        let idSet = Set(ids)
-        let sourceBlocks = document.blocks.filter { idSet.contains($0.id) }
-        guard !sourceBlocks.isEmpty else { return }
-
-        let oldRootIndent = sourceBlocks.map(\.indent).min() ?? 0
-        let newRootIndent = parent.indent + 1
-        let indentDelta = newRootIndent - oldRootIndent
-        let copies = sourceBlocks.map { $0.withFreshID().withIndent(max(0, $0.indent + indentDelta)) }
-
-        var insertAt = liveParentIndex + 1
-        let liveHidden = hiddenBlockIDs(in: document.blocks)
-        while insertAt < document.blocks.count && liveHidden.contains(document.blocks[insertAt].id) {
-            insertAt += 1
+        guard !ids.contains(parentID),
+              let parent = document.find(parentID) else { return }
+        let target = DropPath(parent: parentID, position: parent.children.count)
+        let ordered = ids.sorted { (a, b) in
+            (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
         }
-
+        let copies = ordered.compactMap { document.find($0)?.withFreshIDs() }
+        guard !copies.isEmpty else { return }
         mutate(copies.count > 1 ? "Duplicate Blocks" : "Duplicate Block") {
-            var blocks = document.blocks
-            blocks.insert(contentsOf: copies, at: insertAt)
-            document.blocks = blocks
+            document.insertSubtrees(copies, at: target)
         }
-
-        switch parent {
-        case .toggle(let id, _, _): state.expandedToggles.insert(id)
-        case .templateButton(let id, _, _): state.expandedTemplates.insert(id)
+        switch parent.kind {
+        case .toggle: state.expandedToggles.insert(parent.id)
+        case .templateButton: state.expandedTemplates.insert(parent.id)
         default: break
         }
         selectAfterCopy(copies)
@@ -550,31 +557,23 @@ extension EditorView {
         state.setNavSelection(blocks: Set(ids), anchor: first, cursor: last)
     }
 
-    /// Drop-on-subpage / Move-to picker: append `ids` to the end of the destination
-    /// page's `.md` file (cross-document write via `onAppendToSubpage`) and remove
-    /// them from this document. Indents are normalized so the topmost moved block
-    /// lands at 0 in the destination; relative nesting within the moved set is
-    /// preserved. If the destination write fails, the source document is left
-    /// untouched.
+    /// Drop-on-subpage / Move-to picker: append `ids` to the end of the
+    /// destination page (cross-document write via `onAppendToSubpage`) and
+    /// remove them from this document. Tree shape and relative nesting are
+    /// preserved verbatim — the destination receives the subtrees as-is.
     func moveBlocks(ids: [BlockID], intoSubpagePath path: String) {
-        let idSet = Set(ids)
-        let sourceIndices = document.blocks.enumerated()
-            .compactMap { (i, block) in idSet.contains(block.id) ? i : nil }
-        guard !sourceIndices.isEmpty else { return }
+        let ordered = ids.sorted { (a, b) in
+            (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
+        }
+        let movingBlocks = ordered.compactMap { document.find($0) }
+        guard !movingBlocks.isEmpty else { return }
 
-        let movingBlocks = sourceIndices.map { document.blocks[$0] }
-        let oldRootIndent = movingBlocks.map(\.indent).min() ?? 0
-        let indentDelta = -oldRootIndent
-        let shifted = movingBlocks.map { $0.withIndent(max(0, $0.indent + indentDelta)) }
-
-        guard onAppendToSubpage(path, shifted) else { return }
+        guard onAppendToSubpage(path, movingBlocks) else { return }
 
         mutate("Move to Subpage") {
-            var blocks = document.blocks
-            for i in sourceIndices.reversed() {
-                blocks.remove(at: i)
+            for id in ordered {
+                document.removeSubtree(id)
             }
-            document.blocks = blocks
         }
         showActionToast("Moved")
     }

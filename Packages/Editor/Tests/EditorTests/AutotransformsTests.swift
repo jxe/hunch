@@ -145,20 +145,19 @@ struct BlockTransformApplyTests {
     @Test func headingProducesHeadingBlock() {
         let blocks = BlockTransform.heading(level: 2).apply(to: attr("Section"))
         #expect(blocks.count == 1)
-        if case .heading(_, let level, let text, _) = blocks[0] {
-            #expect(level == 2)
+        if case .heading(let level, let text) = blocks[0].kind {
+            #expect(level == .h2)
             #expect(String(text.characters) == "Section")
         } else {
             Issue.record("expected heading")
         }
     }
 
-    @Test func bulletProducesBulletAtIndentZero() {
+    @Test func bulletProducesBullet() {
         let blocks = BlockTransform.bullet.apply(to: attr("item"))
         #expect(blocks.count == 1)
-        if case .bullet(_, let text, let indent) = blocks[0] {
+        if case .bullet(let text) = blocks[0].kind {
             #expect(String(text.characters) == "item")
-            #expect(indent == 0)
         } else {
             Issue.record("expected bullet")
         }
@@ -166,9 +165,8 @@ struct BlockTransformApplyTests {
 
     @Test func numberedProducesNumbered() {
         let blocks = BlockTransform.numbered.apply(to: attr("first"))
-        if case .numbered(_, let text, let indent) = blocks[0] {
+        if case .numbered(let text) = blocks[0].kind {
             #expect(String(text.characters) == "first")
-            #expect(indent == 0)
         } else {
             Issue.record("expected numbered")
         }
@@ -176,7 +174,7 @@ struct BlockTransformApplyTests {
 
     @Test func todoUnchecked() {
         let blocks = BlockTransform.todo.apply(to: attr("buy milk"))
-        if case .todo(_, let text, let done, _) = blocks[0] {
+        if case .todo(let text, let done) = blocks[0].kind {
             #expect(String(text.characters) == "buy milk")
             #expect(done == false)
         } else {
@@ -186,7 +184,7 @@ struct BlockTransformApplyTests {
 
     @Test func quote() {
         let blocks = BlockTransform.quote.apply(to: attr("said it"))
-        if case .quote(_, let text, _) = blocks[0] {
+        if case .quote(let text) = blocks[0].kind {
             #expect(String(text.characters) == "said it")
         } else {
             Issue.record("expected quote")
@@ -196,9 +194,8 @@ struct BlockTransformApplyTests {
     @Test func toggleProducesToggle() {
         let blocks = BlockTransform.toggle.apply(to: attr("Details"))
         #expect(blocks.count == 1)
-        if case .toggle(_, let title, let indent) = blocks[0] {
+        if case .toggle(let title) = blocks[0].kind {
             #expect(String(title.characters) == "Details")
-            #expect(indent == 0)
         } else {
             Issue.record("expected toggle")
         }
@@ -207,8 +204,8 @@ struct BlockTransformApplyTests {
     @Test func dividerProducesTwoBlocks() {
         let blocks = BlockTransform.divider.apply(to: attr(""))
         #expect(blocks.count == 2)
-        if case .divider = blocks[0] {} else { Issue.record("expected divider at 0") }
-        if case .paragraph(_, let text, _) = blocks[1] {
+        if case .divider = blocks[0].kind {} else { Issue.record("expected divider at 0") }
+        if case .paragraph(let text) = blocks[1].kind {
             #expect(String(text.characters) == "")
         } else {
             Issue.record("expected paragraph at 1")
@@ -216,32 +213,16 @@ struct BlockTransformApplyTests {
         #expect(blocks[0].id != blocks[1].id)
     }
 
-    @Test func dividerReplacementPreservesSourceIndent() {
-        let blocks = BlockTransform.divider.apply(to: attr("")).map { $0.withIndent(2) }
-        #expect(blocks.count == 2)
-        if case .divider(_, let indent) = blocks[0] {
-            #expect(indent == 2)
-        } else {
-            Issue.record("expected divider at 0")
-        }
-        if case .paragraph(_, let text, let indent) = blocks[1] {
-            #expect(String(text.characters) == "")
-            #expect(indent == 2)
-        } else {
-            Issue.record("expected paragraph at 1")
-        }
-    }
-
     @Test func codeFenceProducesTwoBlocks() {
         let blocks = BlockTransform.codeFence.apply(to: attr(""))
         #expect(blocks.count == 2)
-        if case .code(_, let source, let language, _) = blocks[0] {
+        if case .code(let source, let language) = blocks[0].kind {
             #expect(source == "")
             #expect(language == nil)
         } else {
             Issue.record("expected code at 0")
         }
-        if case .paragraph = blocks[1] {} else { Issue.record("expected paragraph at 1") }
+        if case .paragraph = blocks[1].kind {} else { Issue.record("expected paragraph at 1") }
     }
 
     @Test func focusReplacementIndex() {

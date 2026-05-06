@@ -110,8 +110,7 @@ struct BlockIndentAction: Hashable {
 extension EditorView {
     @discardableResult
     func convertBlockToSubpage(blockID: BlockID, preferredTitle: String?) -> KeyPress.Result {
-        guard let i = document.index(of: blockID) else { return .ignored }
-        let block = document.blocks[i]
+        guard let block = document.find(blockID) else { return .ignored }
         guard !isStructuralBlock(block) else { return .ignored }
 
         let existingLink = wholeBlockMarkdownLink(in: block.text)
@@ -121,23 +120,18 @@ extension EditorView {
             ?? "Untitled"
         let requestedPath = existingLink?.path
 
-        // The block's indent-descendants (canonical via Document.sectionRange) become the
-        // body of the new subpage. The host prepends a title heading + serializes; the
-        // editor just hands over the body blocks (or nil when the new page is empty).
-        let range = document.sectionRange(of: blockID) ?? (i..<i+1)
-        let baseIndent = block.indent
-        let descendants = document.blocks[(i + 1)..<range.upperBound].map {
-            $0.withIndent($0.indent - (baseIndent + 1))
-        }
-        let initialContent: [Block]? = descendants.isEmpty ? nil : descendants
+        // The block's children (the subtree under it) become the body of the
+        // new subpage. The host prepends a title heading + serializes; the
+        // editor just hands over the body blocks (or nil when empty).
+        let initialContent: [Block]? = block.children.isEmpty ? nil : block.children
 
         let pageID = onCreateSubpage(title, requestedPath, initialContent)
             ?? requestedPath
             ?? defaultSubpagePath(for: title)
 
         mutate("Create Subpage") {
-            document.blocks.replaceSubrange(range, with: [
-                .subpage(id: blockID, title: title, pageID: pageID, indent: baseIndent)
+            document.replaceSubtree(blockID, with: [
+                .subpage(title: title, pageID: pageID, id: blockID)
             ])
         }
         DispatchQueue.main.async {
@@ -148,18 +142,17 @@ extension EditorView {
 
     @discardableResult
     func expandSubpage(blockID: BlockID) -> KeyPress.Result {
-        guard let i = document.index(of: blockID) else { return .ignored }
-        guard case .subpage(_, _, let path, let indent) = document.blocks[i] else { return .ignored }
+        guard let block = document.find(blockID),
+              case .subpage(_, let path) = block.kind else { return .ignored }
         guard let loaded = onLoadSubpage(path), !loaded.isEmpty else { return .ignored }
 
-        // Shift all loaded blocks by the subpage row's indent so the inlined
-        // content sits at the same depth as the link it's replacing.
-        let shifted = loaded.map { $0.withIndent($0.indent + indent) }
+        // Loaded subtrees inline at the subpage's tree position — no indent
+        // math needed; the tree itself encodes depth.
         mutate("Expand Subpage") {
-            document.blocks.replaceSubrange(i..<(i + 1), with: shifted)
+            document.replaceSubtree(blockID, with: loaded)
         }
         DispatchQueue.main.async {
-            if let first = shifted.first {
+            if let first = loaded.first {
                 setCursor(first.id)
             }
         }
@@ -173,7 +166,7 @@ extension EditorView {
 
     @discardableResult
     func convert(blockIDs: [BlockID], to target: BlockTurnInto) -> KeyPress.Result {
-        let ids = blockIDs.filter { document.index(of: $0) != nil }
+        let ids = blockIDs.filter { document.find($0) != nil }
         guard !ids.isEmpty else { return .ignored }
         if ids.count == 1, let id = ids.first {
             return convertSingle(blockID: id, to: target)
@@ -201,24 +194,27 @@ extension EditorView {
         if target == .template {
             return convertBlockToTemplate(blockID: blockID)
         }
-        guard let i = document.index(of: blockID) else { return .ignored }
-        let block = document.blocks[i]
+        guard let block = document.find(blockID) else { return .ignored }
         if target == .divider {
             guard canReplaceEmptyBlockWithDivider(block) else { return .ignored }
             mutate("Turn Into") {
-                document.blocks[i] = .divider(id: blockID, indent: block.indent)
+                document.mutate(blockID) { $0.kind = .divider }
             }
             state.expandedToggles.remove(blockID)
             state.expandedTemplates.remove(blockID)
             return .handled
         }
-        if case .subpage = block {
+        if case .subpage = block.kind {
             return convertSubpage(blockID: blockID, to: target)
         }
         guard let text = textForBlockTypeChange(block) else { return .ignored }
 
         mutate("Turn Into") {
-            document.blocks[i] = blockForTurnInto(target, id: blockID, text: text, indent: block.indent)
+            let replacement = blockForTurnInto(target, id: blockID, text: text)
+            // Preserve the original block's children when changing kind.
+            document.mutate(blockID) { existing in
+                existing.kind = replacement.kind
+            }
         }
         if target == .toggle {
             state.expandedToggles.insert(blockID)
@@ -230,19 +226,18 @@ extension EditorView {
 
     @discardableResult
     fileprivate func convertBlockToTemplate(blockID: BlockID) -> KeyPress.Result {
-        guard let i = document.index(of: blockID) else { return .ignored }
-        let block = document.blocks[i]
+        guard let block = document.find(blockID) else { return .ignored }
         guard let text = textForBlockTypeChange(block) else { return .ignored }
         let label = cleanedTitle(String(text.characters)) ?? "Template"
-        let range = document.sectionRange(of: blockID) ?? (i..<i + 1)
-        let hasBody = range.upperBound > i + 1
-        let replacement = Block.templateButton(id: blockID, label: label, indent: block.indent)
-        let defaultBody = Block.paragraph(text: AttributedString(), indent: block.indent + 1)
+        let hasBody = !block.children.isEmpty
+        let defaultBody = Block.paragraph(text: AttributedString())
 
         mutate("Turn Into") {
-            document.blocks[i] = replacement
-            if !hasBody {
-                document.blocks.insert(defaultBody, at: i + 1)
+            document.mutate(blockID) { existing in
+                existing.kind = .templateButton(label: label)
+                if !hasBody {
+                    existing.children = [defaultBody]
+                }
             }
         }
         state.expandedToggles.remove(blockID)
@@ -253,19 +248,26 @@ extension EditorView {
     @discardableResult
     fileprivate func convertSubpage(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
         guard target != .page else { return .ignored }
-        guard let i = document.index(of: blockID) else { return .ignored }
-        guard case .subpage(_, let title, let path, let indent) = document.blocks[i] else { return .ignored }
+        guard let block = document.find(blockID),
+              case .subpage(let title, let path) = block.kind else { return .ignored }
         guard var loaded = onLoadSubpage(path) else { return .ignored }
-        if case .heading(_, 1, let leadingText, _) = loaded.first,
+        if let first = loaded.first,
+           case .heading(.h1, let leadingText) = first.kind,
            String(leadingText.characters).trimmingCharacters(in: .whitespacesAndNewlines) == title {
             loaded.removeFirst()
         }
         guard onAbsorbSubpage(path) else { return .ignored }
 
-        let body = loaded.map { $0.withIndent($0.indent + indent + 1) }
-        let replacement = blockForTurnInto(target, id: blockID, text: AttributedString(title), indent: indent)
+        // The subpage's loaded blocks become the children of the new container
+        // (toggle / templateButton / list item etc.). For non-container kinds
+        // they're inlined as siblings after the converted block.
+        let replacement = blockForTurnInto(target, id: blockID, text: AttributedString(title))
         mutate("Turn Into") {
-            document.blocks.replaceSubrange(i..<(i + 1), with: [replacement] + body)
+            if replacement.isContainer {
+                document.replaceSubtree(blockID, with: [replacement.withChildren(loaded)])
+            } else {
+                document.replaceSubtree(blockID, with: [replacement] + loaded)
+            }
         }
         if target == .toggle {
             state.expandedToggles.insert(blockID)
@@ -278,28 +280,28 @@ extension EditorView {
         return .handled
     }
 
-    fileprivate func blockForTurnInto(_ target: BlockTurnInto, id: BlockID, text: AttributedString, indent: Int) -> Block {
+    fileprivate func blockForTurnInto(_ target: BlockTurnInto, id: BlockID, text: AttributedString) -> Block {
         switch target {
         case .paragraph:
-            return .paragraph(id: id, text: text, indent: indent)
+            return .paragraph(text: text, id: id)
         case .bullet:
-            return .bullet(id: id, text: text, indent: indent)
+            return .bullet(text: text, id: id)
         case .numbered:
-            return .numbered(id: id, text: text, indent: indent)
+            return .numbered(text: text, id: id)
         case .todo:
-            return .todo(id: id, text: text, done: false, indent: indent)
+            return .todo(text: text, done: false, id: id)
         case .toggle:
-            return .toggle(id: id, title: text, indent: indent)
+            return .toggle(title: text, id: id)
         case .template:
-            return .templateButton(id: id, label: String(text.characters), indent: indent)
+            return .templateButton(label: String(text.characters), id: id)
         case .heading1:
-            return .heading(id: id, level: 1, text: text, indent: indent)
+            return .heading(level: .h1, text: text, id: id)
         case .heading2:
-            return .heading(id: id, level: 2, text: text, indent: indent)
+            return .heading(level: .h2, text: text, id: id)
         case .heading3:
-            return .heading(id: id, level: 3, text: text, indent: indent)
+            return .heading(level: .h3, text: text, id: id)
         case .divider:
-            return .divider(id: id, indent: indent)
+            return .divider(id: id)
         case .page:
             preconditionFailure("Page conversion creates a subpage file before replacing the block")
         }
@@ -307,19 +309,19 @@ extension EditorView {
 
     /// Extracts the text/title from a block whose type can be swapped for another
     /// text-bearing type without losing content. Returns nil for blocks that don't
-    /// carry user text (code/divider/subpage).
+    /// carry user text (code/divider/subpage/image).
     func textForBlockTypeChange(_ block: Block) -> AttributedString? {
-        switch block {
-        case .paragraph(_, let t, _),
-             .heading(_, _, let t, _),
-             .bullet(_, let t, _),
-             .numbered(_, let t, _),
-             .quote(_, let t, _),
-             .toggle(_, let t, _):
+        switch block.kind {
+        case .paragraph(let t),
+             .heading(_, let t),
+             .bullet(let t),
+             .numbered(let t),
+             .quote(let t),
+             .toggle(let t):
             return t
-        case .templateButton(_, let label, _):
+        case .templateButton(let label):
             return AttributedString(label)
-        case .todo(_, let t, _, _):
+        case .todo(let t, _):
             return t
         case .code, .divider, .subpage, .image:
             return nil
@@ -327,18 +329,18 @@ extension EditorView {
     }
 
     fileprivate func canReplaceEmptyBlockWithDivider(_ block: Block) -> Bool {
-        switch block {
-        case .paragraph(_, let text, _),
-             .heading(_, _, let text, _),
-             .bullet(_, let text, _),
-             .numbered(_, let text, _),
-             .todo(_, let text, _, _),
-             .quote(_, let text, _),
-             .toggle(_, let text, _):
+        switch block.kind {
+        case .paragraph(let text),
+             .heading(_, let text),
+             .bullet(let text),
+             .numbered(let text),
+             .todo(let text, _),
+             .quote(let text),
+             .toggle(let text):
             return String(text.characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .templateButton(_, let label, _):
+        case .templateButton(let label):
             return label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .code(_, let source, _, _):
+        case .code(let source, _):
             return source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .divider, .subpage, .image:
             return false
@@ -348,15 +350,14 @@ extension EditorView {
     @ViewBuilder
     func blockActionMenuContent(for blockID: BlockID) -> some View {
         let targetIDs = menuTargetIDs(anchorID: blockID)
-        let targetIndices = targetIDs.compactMap { document.index(of: $0) }
-        let targetBlocks = targetIndices.map { document.blocks[$0] }
+        let targetBlocks = targetIDs.compactMap { document.find($0) }
         if !targetBlocks.isEmpty {
             let availableTargets = Set(turnIntoTargets(for: targetBlocks))
             let selectedTarget = selectedTurnIntoTarget(for: targetBlocks)
             let visibleGroups: [(BlockTurnInto.Category, [BlockTurnInto])] = BlockTurnInto.orderedGroups
                 .map { ($0.0, $0.1.filter { availableTargets.contains($0) || $0 == selectedTarget }) }
                 .filter { !$0.1.isEmpty }
-            let indentTargets = indentActions(for: targetIndices)
+            let indentTargets = indentActions(for: targetIDs)
             VStack(alignment: .leading, spacing: 8) {
                 Button("Close") {
                     actionSheet = nil
@@ -477,12 +478,12 @@ extension EditorView {
     func menuTargetIDs(anchorID: BlockID) -> [BlockID] {
         #if os(macOS)
         if state.selection.contains(anchorID), state.selection.count > 1 {
-            let selectedBlocks = document.blocks.filter { state.selection.contains($0.id) }
-            guard let baseIndent = selectedBlocks.map(\.indent).min() else { return [anchorID] }
-            let baseIDs = selectedBlocks
-                .filter { $0.indent == baseIndent }
-                .map(\.id)
-            return baseIDs.isEmpty ? [anchorID] : baseIDs
+            // Tree-aware analog of "blocks at the shallowest selected depth":
+            // collapse the selection to its minimal subtree-roots so a turn-into
+            // applied to a parent doesn't double-apply to its already-covered
+            // descendants.
+            let roots = document.selectionSubtreeRoots(state.selection)
+            return roots.isEmpty ? [anchorID] : roots
         }
         #endif
         return [anchorID]
@@ -512,19 +513,14 @@ extension EditorView {
     }
 
     fileprivate func currentTurnIntoTarget(for block: Block) -> BlockTurnInto? {
-        switch block {
+        switch block.kind {
         case .paragraph:
             return .paragraph
-        case .heading(_, let level, _, _):
+        case .heading(let level, _):
             switch level {
-            case 1:
-                return .heading1
-            case 2:
-                return .heading2
-            case 3:
-                return .heading3
-            default:
-                return nil
+            case .h1: return .heading1
+            case .h2: return .heading2
+            case .h3: return .heading3
             }
         case .bullet:
             return .bullet
@@ -552,7 +548,7 @@ extension EditorView {
         case .divider:
             return canReplaceEmptyBlockWithDivider(block)
         default:
-            switch block {
+            switch block.kind {
             case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle, .templateButton, .subpage:
                 return true
             case .code, .divider, .image:
@@ -561,19 +557,19 @@ extension EditorView {
         }
     }
 
-    fileprivate func indentActions(for indices: [Int]) -> [BlockIndentAction] {
+    fileprivate func indentActions(for ids: [BlockID]) -> [BlockIndentAction] {
         var actions: [BlockIndentAction] = []
-        if canChangeIndent(at: indices, by: -1) {
+        if canChangeIndent(ids: ids, by: -1) {
             actions.append(BlockIndentAction(delta: -1, title: "Outdent", systemImage: "decrease.indent", keyboardShortcut: "["))
         }
-        if canChangeIndent(at: indices, by: +1) {
+        if canChangeIndent(ids: ids, by: +1) {
             actions.append(BlockIndentAction(delta: +1, title: "Indent", systemImage: "increase.indent", keyboardShortcut: "]"))
         }
         return actions
     }
 
     func isStructuralBlock(_ block: Block) -> Bool {
-        switch block {
+        switch block.kind {
         case .code, .divider, .subpage, .image:
             return true
         default:

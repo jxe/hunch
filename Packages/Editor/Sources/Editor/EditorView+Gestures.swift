@@ -194,18 +194,19 @@ extension View {
         #endif
     }
 
+    /// Tap-below-rows: clicking past the end of the document creates a fresh
+    /// trailing paragraph at the document root. Cross-platform — the
+    /// underlying `handleTapBelowRows` already gates on cursor position past
+    /// the last row's frame, so a click anywhere in the empty trailing
+    /// region triggers a new paragraph there.
     @ViewBuilder
-    func iosTapBelowRows(_ onTap: @escaping (CGPoint) -> Void) -> some View {
-        #if os(iOS)
+    func tapBelowRows(_ onTap: @escaping (CGPoint) -> Void) -> some View {
         self.simultaneousGesture(
             SpatialTapGesture()
                 .onEnded { value in
                     onTap(value.location)
                 }
         )
-        #else
-        self
-        #endif
     }
 
     @ViewBuilder

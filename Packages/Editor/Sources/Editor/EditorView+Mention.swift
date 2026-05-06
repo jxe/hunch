@@ -72,8 +72,7 @@ extension EditorView {
         // don't run that flush, so without this we'd read stale (possibly empty)
         // text and the trigger-range guard below would silently bail.
         undoController.commitActiveEditor?()
-        guard let blockIndex = document.index(of: menu.blockID) else { return }
-        let block = document.blocks[blockIndex]
+        guard let block = document.find(menu.blockID) else { return }
         let plain = String(block.text.characters) as NSString
 
         let triggerStart = menu.trigger.nsRange.location
@@ -94,17 +93,16 @@ extension EditorView {
             replacements.append(block.withText(AttributedString(beforeText)))
         }
         replacements.append(.subpage(
-            id: subpageID,
             title: item.title,
             pageID: item.id,
-            indent: block.indent
+            id: subpageID
         ))
         if !afterText.isEmpty {
-            replacements.append(.paragraph(text: AttributedString(afterText), indent: block.indent))
+            replacements.append(.paragraph(text: AttributedString(afterText)))
         }
 
         mutate("Insert Page Link") {
-            document.blocks.replaceSubrange(blockIndex..<blockIndex + 1, with: replacements)
+            document.replaceSubtree(menu.blockID, with: replacements)
         }
 
         DispatchQueue.main.async {

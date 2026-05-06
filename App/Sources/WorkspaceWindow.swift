@@ -171,11 +171,14 @@ final class WorkspaceWindow {
         }
     }
 
+    /// Refresh the document's title from its current top-level H1. Document
+    /// is a class so this mutates in place; returns the same reference for
+    /// call-site readability (`let updated = documentWithCurrentTitle(...)`).
+    @discardableResult
     private func documentWithCurrentTitle(_ document: Document) -> Document {
-        var updated = document
         let fallback = document.url.deletingPathExtension().lastPathComponent
-        updated.title = Document.deriveTitle(from: document.blocks, fallback: fallback)
-        return updated
+        document.title = Document.deriveTitle(from: document.children, fallback: fallback)
+        return document
     }
 
     // MARK: - Save lifecycle
@@ -202,7 +205,7 @@ final class WorkspaceWindow {
             let resolver = workspace.saveTitleResolver()
             // Re-serialize locally so we can record the post-save hash. The
             // coordinator serializes its own copy too — acceptable double-work.
-            let serialized = BlockSerializer.serialize(doc.blocks, resolvingSubpageTitle: resolver)
+            let serialized = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: resolver)
             try await clamshell.save(doc, resolvingSubpageTitle: resolver)
             workspace.recordDiskText(serialized, for: doc.url)
             if openDocument?.url == doc.url {
@@ -231,7 +234,7 @@ final class WorkspaceWindow {
         let wasDirty = isDirty
         isDirty = false
         let resolver = workspace.saveTitleResolver()
-        let serialized = wasDirty ? BlockSerializer.serialize(doc.blocks, resolvingSubpageTitle: resolver) : nil
+        let serialized = wasDirty ? BlockSerializer.serialize(doc.children, resolvingSubpageTitle: resolver) : nil
         let url = doc.url
         Task { [clamshell, doc, wasDirty, resolver, serialized, weak workspace] in
             if wasDirty {
@@ -292,7 +295,7 @@ final class WorkspaceWindow {
         guard let openDocument else { return }
         workspace.recordBlockDeletion(
             sourceURL: openDocument.url,
-            previousBlocks: openDocument.blocks
+            previousBlocks: openDocument.children
         )
     }
 
@@ -316,34 +319,36 @@ final class WorkspaceWindow {
         }
 
         do {
-            let parsed = BlockParser.parse(entry.record.markdown).map { $0.withFreshID() }
+            let parsed = BlockParser.parse(entry.record.markdown).map { $0.withFreshIDs() }
             guard !parsed.isEmpty else { return false }
 
             let useLiveDoc = (openDocument?.url == target)
-            var doc: Document
+            let doc: Document
             if useLiveDoc, let live = openDocument {
                 doc = live
             } else {
                 doc = try workspace.loadDocument(at: target)
             }
 
-            let anchorIndent: Int
-            let insertIndex: Int
+            // Restore as siblings of the anchor block (or appended at the
+            // top level when the anchor isn't found). Tree depth is
+            // implicit — `parsed` carries its own structure.
             if let anchorFP = entry.record.anchorFingerprint,
-               let anchorIdx = doc.blocks.firstIndex(where: { BlockFingerprint.compute($0) == anchorFP }) {
-                anchorIndent = doc.blocks[anchorIdx].indent
-                insertIndex = anchorIdx + 1
+               let anchorID = findFingerprint(anchorFP, in: doc) {
+                let parentID = doc.parent(of: anchorID)
+                let siblings: [Block] = parentID.flatMap(doc.find)?.children ?? doc.children
+                let i = siblings.firstIndex(where: { $0.id == anchorID }) ?? siblings.count - 1
+                doc.insertSubtrees(parsed, at: DropPath(parent: parentID, position: i + 1))
             } else if let original = entry.record.originalIndex {
-                anchorIndent = 0
-                insertIndex = min(max(0, original), doc.blocks.count)
+                let pos = min(max(0, original), doc.children.count)
+                doc.insertSubtrees(parsed, at: DropPath(parent: nil, position: pos))
             } else {
-                anchorIndent = 0
-                insertIndex = doc.blocks.count
+                doc.insertSubtrees(parsed, at: DropPath(parent: nil, position: doc.children.count))
             }
-
-            let reindented = parsed.map { $0.withIndent($0.indent + anchorIndent) }
-            doc.blocks.insert(contentsOf: reindented, at: insertIndex)
-            doc.title = Document.deriveTitle(from: doc.blocks, fallback: target.deletingPathExtension().lastPathComponent)
+            // Restored blocks may have inserted as siblings of headings; fold
+            // them in so the recovered shape matches the rest of the doc.
+            doc.enforceHeadingContainment()
+            doc.title = Document.deriveTitle(from: doc.children, fallback: target.deletingPathExtension().lastPathComponent)
 
             if useLiveDoc {
                 openDocument = doc
@@ -364,6 +369,18 @@ final class WorkspaceWindow {
             workspace.error = "Restore failed: \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Find the block with the given fingerprint anywhere in the document
+    /// tree. Used by the recovery / lost-block restore path to anchor inserts.
+    private func findFingerprint(_ fp: String, in doc: Document) -> BlockID? {
+        var match: BlockID?
+        doc.walk { block, _, _ in
+            if match == nil, BlockFingerprint.compute(block) == fp {
+                match = block.id
+            }
+        }
+        return match
     }
 
     // MARK: - File presenter

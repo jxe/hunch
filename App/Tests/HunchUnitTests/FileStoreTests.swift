@@ -5,7 +5,7 @@ import Editor
 
 @Suite("FileStore")
 struct FileStoreTests {
-    @Test func writeReadRoundTrip() throws {
+    @Test @MainActor func writeReadRoundTrip() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("console-test-\(UUID().uuidString).md")
         defer { try? FileManager.default.removeItem(at: tmp) }
@@ -16,10 +16,12 @@ struct FileStoreTests {
 
         let doc = try store.loadDocument(at: tmp)
         #expect(doc.title == "Title")
-        #expect(doc.blocks.count == 4)  // heading, paragraph, bullet, bullet
+        // Heading-fold: H1 owns the trailing paragraph + bulleted list.
+        #expect(doc.children.count == 1)
+        #expect(doc.children[0].children.count == 3)  // paragraph + 2 bullets
     }
 
-    @Test func loadDocumentTitleUsesFirstH1WithFilenameFallback() throws {
+    @Test @MainActor func loadDocumentTitleUsesFirstH1WithFilenameFallback() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("console-title-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

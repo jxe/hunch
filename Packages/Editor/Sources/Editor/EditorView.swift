@@ -175,19 +175,15 @@ public struct EditorView: View {
 
     public var body: some View {
         GeometryReader { geometry in
-            let numbering = NumberingContext.compute(document.blocks)
-            let snapshot = document.blocks
+            let numbering = NumberingContext.compute(document.children)
+            let snapshot = document.children
             let hidden = hiddenBlockIDs(in: snapshot)
-            // Single forward pass: build visible (originalIndex, block) pairs and a
-            // parallel prev-visible array where `prevVisibleBlocks[k]` is the visible
-            // block immediately preceding `visiblePairs[k]` (or nil). Replaces a per-row
-            // `firstIndex(where:)` lookup that was O(N²) in the row count for every body
-            // re-eval. ViewBuilder closures forbid `for` so the pass lives in a helper.
+            // Tree-aware visible-row layout walk — yields one VisibleRow per
+            // displayed block with its depth and prev-sibling reference.
             let layout = computeVisibleLayout(snapshot: snapshot, hidden: hidden)
-            let visiblePairs = layout.pairs
+            let visibleRows = layout.rows
             let prevVisibleBlocks = layout.prevVisible
-            // Hoisted out of the ForEach: previously each row called effectiveSelectedIDs()
-            // which is itself O(N), making selection lookup O(N²) per body re-eval.
+            let prevDepths = layout.prevDepths
             #if os(iOS)
             let selectedIDs: Set<BlockID> = []
             #else
@@ -197,23 +193,22 @@ public struct EditorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(visiblePairs.enumerated()), id: \.element.1.id) { (k, pair) in
-                        let (i, block) = pair
+                    ForEach(Array(visibleRows.enumerated()), id: \.element.block.id) { (k, row) in
+                        let block = row.block
+                        let i = row.preorderIndex
                         let prev = prevVisibleBlocks[k]
-                        let gap = BlockSpacing.gap(before: block, after: prev)
+                        let prevDepth = prevDepths[k]
+                        let gap = BlockSpacing.gap(before: block, depth: row.depth, after: prev, prevDepth: prevDepth)
                         let pinchExtraTopGap = pinchExtraGap(forIndex: i)
                         let reorderExtraTopGap = reorderDriftGap(for: i)
-                        rowView(for: $document.blocks[i], snapshot: snapshot, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
+                        rowView(for: bindingForBlock(id: block.id), depth: row.depth, snapshot: snapshot, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
                             .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
-                            .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverIndex)
+                            .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
                             .background(rowFrameReporter(id: block.id))
                     }
-                    // Trailing slot for "insert at end" — claims the existing bottom 32pt
-                    // page padding. Total visual spacing unchanged: the outer
-                    // `.padding(.vertical, 32)` becomes `.padding(.top, 32)` only.
-                    let trailingPinchGap = pinchExtraGap(forIndex: snapshot.count)
-                    gapDropTarget(at: snapshot.count, height: 32 + trailingPinchGap + reorderDriftGap(for: snapshot.count))
-                        .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverIndex)
+                    let trailingPinchGap = pinchExtraGap(forIndex: document.children.count)
+                    gapDropTarget(at: document.children.count, height: 32 + trailingPinchGap + reorderDriftGap(for: document.children.count))
+                        .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
                 }
                 .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
                 .padding(.horizontal, horizontalPadding)
@@ -268,7 +263,7 @@ public struct EditorView: View {
             .macScrollPosition($scrollPosition)
             .macNearestRowHover(rowFrames: rowFrames) { id in state.hoveredBlock = id }
             .background(NotionStyle.background)
-            .iosTapBelowRows {
+            .tapBelowRows {
                 handleTapBelowRows(at: $0)
             }
             .overlay(alignment: .topLeading) {
@@ -311,15 +306,15 @@ public struct EditorView: View {
             .focusable()
             .focused($pageFocused)
             .onAppear {
-                if state.cursor == nil, let first = document.blocks.first {
+                if state.cursor == nil, let first = document.children.first {
                     state.setCursor(first.id)
                 }
                 forcePageFocusGrab()
                 installUndoApply()
                 wireEditorCommands()
             }
-            .onChange(of: state.dropHoverIndex) { _, newValue in
-                handleDropHoverChange(newValue)
+            .onChange(of: state.dropHoverPath) { _, newValue in
+                handleDropHoverChange(newValue?.position)
             }
             .onChange(of: state.mode) { oldMode, newMode in
                 actionSheet = nil
@@ -383,8 +378,23 @@ public struct EditorView: View {
 
     // MARK: - Row builder
 
+    /// Returns a `Binding<Block>` that reads the block by id from the live
+    /// document and writes it back via `Document.mutate`. Used by the body
+    /// in place of the old `$document.blocks[i]` index-based binding.
+    private func bindingForBlock(id: BlockID) -> Binding<Block> {
+        Binding(
+            get: { document.find(id) ?? Block.paragraph(text: AttributedString()) },
+            set: { newValue in
+                document.mutate(id) { existing in
+                    existing.kind = newValue.kind
+                    existing.children = newValue.children
+                }
+            }
+        )
+    }
+
     @ViewBuilder
-    private func rowView(for binding: Binding<Block>, snapshot: [Block], numberingIndex: Int?, selectedIDs: Set<BlockID>) -> some View {
+    private func rowView(for binding: Binding<Block>, depth: Int, snapshot: [Block], numberingIndex: Int?, selectedIDs: Set<BlockID>) -> some View {
         let block = binding.wrappedValue
         // iOS has no nav-mode multi-select — there's no hardware keyboard arrow nav and the
         // blue tint after dismissing the keyboard is just visual noise. Hardcode false to
@@ -406,6 +416,7 @@ public struct EditorView: View {
 
         BlockRow(
             block: binding,
+            depth: depth,
             editorFocused: $editorFocused,
             isPageTitle: isPageTitleBlock(block, snapshot: snapshot),
             numberingIndex: numberingIndex,
@@ -427,7 +438,7 @@ public struct EditorView: View {
                 transferFocus(to: .editor(block.id, initialCursor: .point(point)))
             },
             onToggleExpansion: {
-                if case .templateButton = block {
+                if case .templateButton = block.kind {
                     if state.expandedTemplates.contains(block.id) {
                         state.expandedTemplates.remove(block.id)
                     } else {
@@ -495,7 +506,7 @@ public struct EditorView: View {
             .accessibilityLabel(accessibilityLabel(for: block))
             .accessibilityValue(state.reorderLift?.ids.contains(block.id) == true ? "reorder-source" : "")
             .onTapGesture {
-                if case .subpage(_, _, let path, _) = block {
+                if case .subpage(_, let path) = block.kind {
                     transferFocus(to: .nav(cursor: block.id))
                     onSubpageTap(path)
                     return
@@ -542,10 +553,15 @@ public struct EditorView: View {
     }
 
     private func topSelectedBlockID() -> BlockID? {
-        for block in document.blocks where state.selection.contains(block.id) {
-            return block.id
+        // First-in-document-order id within the selection.
+        var best: (id: BlockID, order: Int)?
+        for id in state.selection {
+            guard let order = document.documentOrder(of: id) else { continue }
+            if best == nil || order < best!.order {
+                best = (id, order)
+            }
         }
-        return nil
+        return best?.id
     }
 
     private func showHandleOverlay(for id: BlockID) -> Bool {
@@ -583,14 +599,14 @@ public struct EditorView: View {
     }
 
     private func accessibilityText(for block: Block) -> String {
-        switch block {
-        case .code(_, let source, _, _):
+        switch block.kind {
+        case .code(let source, _):
             return source
         case .divider:
             return ""
-        case .subpage(_, let title, _, _):
+        case .subpage(let title, _):
             return title
-        case .image(_, let source, let alt, _):
+        case .image(let source, let alt):
             return alt.isEmpty ? source : alt
         default:
             return String(block.text.characters)
@@ -598,11 +614,11 @@ public struct EditorView: View {
     }
 
     private func blockKindLabel(for block: Block) -> String {
-        switch block {
+        switch block.kind {
         case .paragraph:
             return "Paragraph"
-        case .heading(_, let level, _, _):
-            return "Heading \(level)"
+        case .heading(let level, _):
+            return "Heading \(level.rawValue)"
         case .bullet:
             return "Bullet"
         case .numbered:
@@ -635,10 +651,13 @@ public struct EditorView: View {
         insertBlock(.paragraph(text: AttributedString()), at: index, focus: focus)
     }
 
+    /// Insert a top-level block at the given index (paragraph creation,
+    /// pinch-open). Pinch and end-of-page tap insertion only target the
+    /// document root, so this is always a top-level insert.
     func insertBlock(_ newBlock: Block, at index: Int, focus: Bool = true) {
-        let insertionIndex = max(0, min(index, document.blocks.count))
+        let position = max(0, min(index, document.children.count))
         mutate("Insert Block") {
-            document.blocks.insert(newBlock, at: insertionIndex)
+            document.insertSubtree(newBlock, at: DropPath(parent: nil, position: position))
         }
         if focus {
             transferFocus(to: .editor(newBlock.id, initialCursor: nil))
@@ -646,12 +665,10 @@ public struct EditorView: View {
     }
 
     /// Pick a sensible block kind for a pinch-open insert at `index`. Continues
-    /// list/quote runs by mirroring the neighbour's kind & indent — above wins,
-    /// otherwise below, otherwise paragraph. Captures cases like inserting
-    /// between two bullets, after the last bullet of a list, or between a
-    /// heading and the first item of a list (all should yield a list item).
+    /// list/quote runs by mirroring the neighbour's kind — above wins, otherwise
+    /// below, otherwise paragraph. Index is into top-level `document.children`.
     func smartInsertBlock(at index: Int) -> Block {
-        let blocks = document.blocks
+        let blocks = document.children
         let above = (index - 1 >= 0 && index - 1 < blocks.count) ? blocks[index - 1] : nil
         let below = (index >= 0 && index < blocks.count) ? blocks[index] : nil
         if let kind = listLikeTemplate(from: above) { return kind }
@@ -660,18 +677,19 @@ public struct EditorView: View {
     }
 
     /// If `block` is a list-like row (bullet/numbered/todo/quote), return a
-    /// fresh empty block of the same kind & indent. Otherwise nil.
+    /// fresh empty block of the same kind. Tree-depth follows from where the
+    /// caller inserts; no per-block indent to copy.
     private func listLikeTemplate(from block: Block?) -> Block? {
         guard let block else { return nil }
-        switch block {
-        case .bullet(_, _, let indent):
-            return .bullet(text: AttributedString(), indent: indent)
-        case .numbered(_, _, let indent):
-            return .numbered(text: AttributedString(), indent: indent)
-        case .todo(_, _, _, let indent):
-            return .todo(text: AttributedString(), done: false, indent: indent)
-        case .quote(_, _, let indent):
-            return .quote(text: AttributedString(), indent: indent)
+        switch block.kind {
+        case .bullet:
+            return .bullet(text: AttributedString())
+        case .numbered:
+            return .numbered(text: AttributedString())
+        case .todo:
+            return .todo(text: AttributedString(), done: false)
+        case .quote:
+            return .quote(text: AttributedString())
         default:
             return nil
         }
@@ -679,19 +697,19 @@ public struct EditorView: View {
 
 
     private func instantiateTemplateButton(blockID: BlockID) {
-        guard let i = document.index(of: blockID),
-              case .templateButton = document.blocks[i],
-              let range = document.sectionRange(of: blockID) else { return }
-        let body = document.blocks[(i + 1)..<range.upperBound]
+        guard let block = document.find(blockID),
+              case .templateButton = block.kind else { return }
+        let body = block.children
         guard !body.isEmpty else { return }
 
-        let copies = body.map { block in
-            block
-                .withIndent(max(0, block.indent - 1))
-                .withFreshID()
-        }
+        // Instantiate by appending fresh-id copies of the template's body as
+        // siblings AFTER the template-button itself, at the same depth.
+        let copies = body.map { $0.withFreshIDs() }
+        let parentID = document.parent(of: blockID)
+        let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+        guard let myIndex = siblings.firstIndex(where: { $0.id == blockID }) else { return }
         mutate("Insert Template") {
-            document.blocks.insert(contentsOf: copies, at: range.upperBound)
+            document.insertSubtrees(copies, at: DropPath(parent: parentID, position: myIndex + 1))
         }
         if let first = copies.first {
             transferFocus(to: .nav(cursor: first.id))
@@ -701,12 +719,25 @@ public struct EditorView: View {
 
     private func handleTapBelowRows(at point: CGPoint) {
         guard state.editingBlock == nil else { return }
-        guard let lastBlock = document.blocks.last, let frame = rowFrames[lastBlock.id] else {
-            insertParagraph(at: document.blocks.count)
+        // Visible-flat last block: walk visible-flat in reverse to find a row
+        // with a known frame. Tap-below-rows always appends at the document
+        // root, so we use top-level children's count.
+        let visibleLast = lastVisibleBlock()
+        guard let lastBlock = visibleLast, let frame = rowFrames[lastBlock.id] else {
+            insertParagraph(at: document.children.count)
             return
         }
         guard point.y > frame.maxY + 12 else { return }
-        insertParagraph(at: document.blocks.count)
+        insertParagraph(at: document.children.count)
+    }
+
+    private func lastVisibleBlock() -> Block? {
+        let hidden = hiddenBlockIDs(in: document.children)
+        var lastVisible: Block?
+        document.walk { block, _, _ in
+            if !hidden.contains(block.id) { lastVisible = block }
+        }
+        return lastVisible
     }
 
     func showActionToast(_ message: String) {
@@ -720,8 +751,8 @@ public struct EditorView: View {
     }
 
     private func isPageTitleBlock(_ block: Block, snapshot: [Block]) -> Bool {
-        guard case .heading(_, 1, _, _) = block else { return false }
-        guard let first = snapshot.first else { return false }
+        guard case .heading(.h1, _) = block.kind else { return false }
+        guard let first = document.children.first else { return false }
         return first.id == block.id
     }
 
@@ -832,12 +863,17 @@ public struct EditorView: View {
 
     /// Wrap a structural mutation so its inverse is registered with `undoController`.
     /// Callers must only call `mutate` when actually changing something — the helper
-    /// doesn't equality-check. Snapshots `document.blocks` before the change, runs
+    /// doesn't equality-check. Snapshots the document tree before the change, runs
     /// the change, then registers the previous snapshot as the undo. Redo is
     /// re-registered by the apply closure during `isUndoing`.
     func mutate(_ name: String, _ change: () -> Void) {
-        let before = document.blocks
+        let before = document.snapshot()
         change()
+        // Re-apply heading containment after every structural mutation. This
+        // is what makes "Enter at end of heading creates a paragraph INSIDE
+        // the heading" work — the split inserts a sibling, and refold moves
+        // it under the heading. Idempotent on already-valid trees.
+        document.enforceHeadingContainment()
         undoController.register(before, name: name)
         onEdited()
     }
@@ -898,22 +934,38 @@ public struct EditorView: View {
             case .code: break
             }
         }
+        editorCommands.canIndent = {
+            // Use the editing block when one's mounted; otherwise use the
+            // current selection's subtree-roots.
+            if let bid = state.editingBlock {
+                return document.canIndent(bid)
+            }
+            let roots = document.selectionSubtreeRoots(state.selection)
+            return !roots.isEmpty && roots.allSatisfy { document.canIndent($0) }
+        }
+        editorCommands.canOutdent = {
+            if let bid = state.editingBlock {
+                return document.canOutdent(bid)
+            }
+            let roots = document.selectionSubtreeRoots(state.selection)
+            return !roots.isEmpty && roots.allSatisfy { document.canOutdent($0) }
+        }
     }
 
     /// Install the closure that the undo controller calls on Cmd-Z (and on redo).
-    /// Restores `document.blocks` and fixes up cursor/selection against the new
+    /// Restores the document tree and fixes up cursor/selection against the new
     /// block set. Re-registers the inverse so redo works.
     private func installUndoApply() {
         undoController.apply = { newBlocks in
-            let beforeRedo = document.blocks
-            document.blocks = newBlocks
+            let beforeRedo = document.snapshot()
+            document.restore(newBlocks)
 
-            // Validate cursor/selection/edit-mode against the new block set in one
-            // sweep — drops invalid IDs from the navigating selection, falls back
-            // to nav mode if the editing block disappeared. Any resulting mode
-            // change drives focus updates via `.onChange(of: state.mode)`.
-            let validIDs = Set(newBlocks.map { $0.id })
-            state.revalidate(against: validIDs, fallbackCursor: newBlocks.first?.id)
+            // Validate cursor/selection/edit-mode against the new tree — drops
+            // invalid IDs from the navigating selection, falls back to nav mode
+            // if the editing block disappeared.
+            var validIDs: Set<BlockID> = []
+            document.walk { block, _, _ in validIDs.insert(block.id) }
+            state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
 
             // Re-register inverse — when this runs during isUndoing, UndoManager pushes
             // it to the redo stack; during isRedoing, it goes back on the undo stack.
@@ -921,9 +973,9 @@ public struct EditorView: View {
             onEdited()
         }
         undoController.applyTextChange = { blockID, oldText in
-            guard let i = document.blocks.firstIndex(where: { $0.id == blockID }) else { return }
-            let beforeRedoText = document.blocks[i].text
-            document.blocks[i] = document.blocks[i].withText(oldText)
+            guard let block = document.find(blockID) else { return }
+            let beforeRedoText = block.text
+            document.setText(blockID, oldText)
             undoController.registerTextChange(blockID: blockID, oldText: beforeRedoText)
             onEdited()
         }
@@ -972,8 +1024,8 @@ public struct EditorView: View {
             // `document.blocks` until SwiftUI re-renders. A hard guard here would
             // silently bail for that exact (common) case — Cmd+Return creating a
             // new row was the canonical bug.
-            if let block = document.blocks.first(where: { $0.id == id }) {
-                switch block {
+            if let block = document.find(id) {
+                switch block.kind {
                 case .code, .divider, .subpage:
                     transferFocus(to: .nav(cursor: id))
                     return
@@ -1044,7 +1096,7 @@ public struct EditorView: View {
         if setTodoDoneOnSelection(true) { return true }
         guard let id = state.cursor, state.selection.count == 1 else { return false }
         if navigateIntoSubpage(id) { return true }
-        guard let block = document.blocks.first(where: { $0.id == id }),
+        guard let block = document.find(id),
               isCollapsibleSection(block) else { return false }
         withAnimation(.easeInOut(duration: 0.15)) {
             expandSection(block)
@@ -1059,17 +1111,17 @@ public struct EditorView: View {
     private func handleNavLeftArrow() -> Bool {
         if setTodoDoneOnSelection(false) { return true }
         guard let id = state.cursor, state.selection.count == 1 else { return false }
-        guard let cursorIdx = document.blocks.firstIndex(where: { $0.id == id }) else { return false }
+        guard let cursorBlock = document.find(id) else { return false }
 
-        if isSectionExpanded(document.blocks[cursorIdx]) {
+        if isSectionExpanded(cursorBlock) {
             withAnimation(.easeInOut(duration: 0.15)) {
-                collapseSection(document.blocks[cursorIdx])
+                collapseSection(cursorBlock)
             }
             return true
         }
 
-        guard let parentID = enclosingCollapsibleSectionID(at: cursorIdx),
-              let parent = document.blocks.first(where: { $0.id == parentID }) else { return false }
+        guard let parentID = enclosingCollapsibleSectionID(forBlockID: id),
+              let parent = document.find(parentID) else { return false }
         withAnimation(.easeInOut(duration: 0.15)) {
             collapseSection(parent)
         }
@@ -1116,21 +1168,22 @@ public struct EditorView: View {
         setLabel: String,
         clearLabel: String
     ) -> Bool where K.Value == Bool {
-        let indices = selectedIndices()
-        let targets = indices.filter { i in
-            switch document.blocks[i] {
+        let targetIDs = state.selection.compactMap { id -> BlockID? in
+            guard let block = document.find(id) else { return nil }
+            switch block.kind {
             case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
-                return true
+                return id
             case .templateButton, .code, .divider, .subpage, .image:
-                return false
+                return nil
             }
         }
-        guard !targets.isEmpty else { return false }
+        guard !targetIDs.isEmpty else { return false }
 
         var sawAnyText = false
         var allMarked = true
-        for i in targets {
-            let text = document.blocks[i].text
+        for id in targetIDs {
+            guard let block = document.find(id) else { continue }
+            let text = block.text
             if text.runs.isEmpty { continue }
             sawAnyText = true
             for run in text.runs {
@@ -1145,16 +1198,16 @@ public struct EditorView: View {
         let newValue = !allMarked
 
         mutate(newValue ? setLabel : clearLabel) {
-            var blocks = document.blocks
-            for i in targets {
-                var text = blocks[i].text
-                let range = text.startIndex..<text.endIndex
-                if range.lowerBound < range.upperBound {
-                    text[range][K.self] = newValue
-                    blocks[i] = blocks[i].withText(text)
+            for id in targetIDs {
+                document.mutate(id) { block in
+                    var text = block.text
+                    let range = text.startIndex..<text.endIndex
+                    if range.lowerBound < range.upperBound {
+                        text[range][K.self] = newValue
+                        block = block.withText(text)
+                    }
                 }
             }
-            document.blocks = blocks
         }
         return true
     }
@@ -1162,45 +1215,43 @@ public struct EditorView: View {
     /// If every block in the current selection is a `.todo`, set their `done` state to
     /// `done` (skipping any that already match). Returns `true` if it acted.
     private func setTodoDoneOnSelection(_ done: Bool) -> Bool {
-        let indices = selectedIndices()
-        guard !indices.isEmpty else { return false }
-        let targets: [(Int, BlockID, AttributedString, Int)] = indices.compactMap { i in
-            if case let .todo(id, text, _, indent) = document.blocks[i] {
-                return (i, id, text, indent)
-            }
-            return nil
+        let targetIDs = Array(state.selection)
+        guard !targetIDs.isEmpty else { return false }
+        let allTodos = targetIDs.allSatisfy { id in
+            if let block = document.find(id), case .todo = block.kind { return true }
+            return false
         }
-        guard targets.count == indices.count else { return false }
-        let needsChange = targets.contains { i, _, _, _ in
-            if case let .todo(_, _, currentDone, _) = document.blocks[i] {
+        guard allTodos else { return false }
+        let needsChange = targetIDs.contains { id in
+            if let block = document.find(id), case .todo(_, let currentDone) = block.kind {
                 return currentDone != done
             }
             return false
         }
         guard needsChange else { return true }
         mutate(done ? "Check" : "Uncheck") {
-            var blocks = document.blocks
-            for (i, id, text, indent) in targets {
-                blocks[i] = .todo(id: id, text: text, done: done, indent: indent)
+            for id in targetIDs {
+                document.mutate(id) { block in
+                    if case .todo(let text, _) = block.kind {
+                        block.kind = .todo(text: text, done: done)
+                    }
+                }
             }
-            document.blocks = blocks
         }
         return true
     }
 
-    /// Innermost ancestor collapsible section whose section contains `cursorIdx`.
-    private func enclosingCollapsibleSectionID(at cursorIdx: Int) -> BlockID? {
-        var best: (id: BlockID, indent: Int)?
-        for i in 0..<cursorIdx {
-            let b = document.blocks[i]
-            guard isCollapsibleSection(b) else { continue }
-            if let range = document.sectionRange(of: b.id), range.contains(cursorIdx) {
-                if best == nil || b.indent > best!.indent {
-                    best = (b.id, b.indent)
-                }
+    /// Innermost collapsible-section ancestor of `blockID`. Walks the parent
+    /// chain and returns the first toggle/templateButton encountered.
+    private func enclosingCollapsibleSectionID(forBlockID blockID: BlockID) -> BlockID? {
+        var current: BlockID? = document.parent(of: blockID)
+        while let id = current {
+            if let block = document.find(id), isCollapsibleSection(block) {
+                return id
             }
+            current = document.parent(of: id)
         }
-        return best?.id
+        return nil
     }
 
     /// IDs of blocks that should be hidden from rendering and from arrow-nav because they
@@ -1208,26 +1259,34 @@ public struct EditorView: View {
     /// body (subsequent blocks at greater indent) is hidden when collapsed.
     func hiddenBlockIDs(in blocks: [Block]) -> Set<BlockID> {
         var hidden: Set<BlockID> = []
-        var i = 0
-        while i < blocks.count {
-            let block = blocks[i]
-            if isCollapsedSection(block) {
-                let indent = block.indent
-                var end = i + 1
-                while end < blocks.count, blocks[end].indent > indent {
-                    hidden.insert(blocks[end].id)
-                    end += 1
-                }
-                i = end
-                continue
-            }
-            i += 1
-        }
+        collectHidden(in: blocks, into: &hidden)
         return hidden
     }
 
+    private func collectHidden(in blocks: [Block], into hidden: inout Set<BlockID>) {
+        for block in blocks {
+            if isCollapsedSection(block) {
+                // The container itself stays visible — only its descendants
+                // hide. Nested expanded toggles inside a closed parent stay
+                // hidden because we never recurse past the closed boundary.
+                for child in block.children {
+                    insertSubtree(child, into: &hidden)
+                }
+            } else {
+                collectHidden(in: block.children, into: &hidden)
+            }
+        }
+    }
+
+    private func insertSubtree(_ block: Block, into hidden: inout Set<BlockID>) {
+        hidden.insert(block.id)
+        for child in block.children {
+            insertSubtree(child, into: &hidden)
+        }
+    }
+
     private func isCollapsibleSection(_ block: Block) -> Bool {
-        switch block {
+        switch block.kind {
         case .toggle, .templateButton:
             return true
         default:
@@ -1236,44 +1295,44 @@ public struct EditorView: View {
     }
 
     func isCollapsedSection(_ block: Block) -> Bool {
-        switch block {
-        case .toggle(let id, _, _):
-            return !state.expandedToggles.contains(id)
-        case .templateButton(let id, _, _):
-            return !state.expandedTemplates.contains(id)
+        switch block.kind {
+        case .toggle:
+            return !state.expandedToggles.contains(block.id)
+        case .templateButton:
+            return !state.expandedTemplates.contains(block.id)
         default:
             return false
         }
     }
 
     private func isSectionExpanded(_ block: Block) -> Bool {
-        switch block {
-        case .toggle(let id, _, _):
-            return state.expandedToggles.contains(id)
-        case .templateButton(let id, _, _):
-            return state.expandedTemplates.contains(id)
+        switch block.kind {
+        case .toggle:
+            return state.expandedToggles.contains(block.id)
+        case .templateButton:
+            return state.expandedTemplates.contains(block.id)
         default:
             return false
         }
     }
 
     private func expandSection(_ block: Block) {
-        switch block {
-        case .toggle(let id, _, _):
-            state.expandedToggles.insert(id)
-        case .templateButton(let id, _, _):
-            state.expandedTemplates.insert(id)
+        switch block.kind {
+        case .toggle:
+            state.expandedToggles.insert(block.id)
+        case .templateButton:
+            state.expandedTemplates.insert(block.id)
         default:
             break
         }
     }
 
     private func collapseSection(_ block: Block) {
-        switch block {
-        case .toggle(let id, _, _):
-            state.expandedToggles.remove(id)
-        case .templateButton(let id, _, _):
-            state.expandedTemplates.remove(id)
+        switch block.kind {
+        case .toggle:
+            state.expandedToggles.remove(block.id)
+        case .templateButton:
+            state.expandedTemplates.remove(block.id)
         default:
             break
         }
@@ -1291,56 +1350,121 @@ public struct EditorView: View {
         var safety = 16
         while safety > 0 {
             safety -= 1
-            let hidden = hiddenBlockIDs(in: document.blocks)
+            let hidden = hiddenBlockIDs(in: document.children)
             var didExpand = false
             for id in ids where hidden.contains(id) {
-                guard let idx = document.index(of: id) else { continue }
-                let myIndent = document.blocks[idx].indent
-                var j = idx - 1
-                while j >= 0 {
-                    let candidate = document.blocks[j]
-                    if candidate.indent < myIndent,
-                       isCollapsibleSection(candidate),
-                       !isSectionExpanded(candidate) {
-                        expandSection(candidate)
+                // Walk up the parent chain looking for the closest collapsed
+                // collapsible ancestor.
+                var ancestorID = document.parent(of: id)
+                while let aid = ancestorID {
+                    if let block = document.find(aid),
+                       isCollapsibleSection(block),
+                       !isSectionExpanded(block) {
+                        expandSection(block)
                         didExpand = true
                         break
                     }
-                    j -= 1
+                    ancestorID = document.parent(of: aid)
                 }
             }
             if !didExpand { break }
         }
     }
 
-    /// One-pass visible-row layout precompute used by `body`. Returns the visible
-    /// `(originalIndex, block)` pairs (in document order) and a parallel array of the
-    /// block immediately preceding each pair in visible order. Lifts what would be a
-    /// per-row `firstIndex` walk over the snapshot out of the `ForEach`, so each body
-    /// re-eval is O(N) rather than O(N²) in the row count.
-    private func computeVisibleLayout(snapshot: [Block], hidden: Set<BlockID>)
-        -> (pairs: [(Int, Block)], prevVisible: [Block?])
+    /// One-pass visible-row layout precompute used by `body`. Walks the tree
+    /// in preorder, skipping any subtree under a closed toggle/templateButton,
+    /// and emits one `VisibleRow` per visible block. Replaces the old flat-
+    /// snapshot indexing scheme.
+    struct VisibleRow {
+        let block: Block
+        let depth: Int
+        let parentID: BlockID?
+        let preorderIndex: Int
+    }
+
+    func computeVisibleLayout(snapshot: [Block], hidden: Set<BlockID>)
+        -> (rows: [VisibleRow], prevVisible: [Block?], prevDepths: [Int])
     {
-        var pairs: [(Int, Block)] = []
+        var rows: [VisibleRow] = []
         var prevVisible: [Block?] = []
-        pairs.reserveCapacity(snapshot.count)
+        var prevDepths: [Int] = []
+        rows.reserveCapacity(snapshot.count)
         prevVisible.reserveCapacity(snapshot.count)
+        prevDepths.reserveCapacity(snapshot.count)
         var lastVisible: Block? = nil
-        for (i, block) in snapshot.enumerated() {
-            if hidden.contains(block.id) { continue }
-            pairs.append((i, block))
-            prevVisible.append(lastVisible)
-            lastVisible = block
+        var lastDepth: Int = 0
+        var preorderCounter = 0
+        appendVisible(in: document.children, depth: 0, parentID: nil, hidden: hidden,
+                      rows: &rows, prevVisible: &prevVisible, prevDepths: &prevDepths,
+                      lastVisible: &lastVisible, lastDepth: &lastDepth, preorderCounter: &preorderCounter)
+        return (rows, prevVisible, prevDepths)
+    }
+
+    private func appendVisible(
+        in blocks: [Block],
+        depth: Int,
+        parentID: BlockID?,
+        hidden: Set<BlockID>,
+        rows: inout [VisibleRow],
+        prevVisible: inout [Block?],
+        prevDepths: inout [Int],
+        lastVisible: inout Block?,
+        lastDepth: inout Int,
+        preorderCounter: inout Int
+    ) {
+        for block in blocks {
+            let myIndex = preorderCounter
+            preorderCounter += 1
+            // Block visibility: hidden if any ancestor is collapsed. The
+            // `hidden` set is populated by `hiddenBlockIDs` which marks every
+            // descendant of a closed container.
+            if !hidden.contains(block.id) {
+                rows.append(VisibleRow(block: block, depth: depth, parentID: parentID, preorderIndex: myIndex))
+                prevVisible.append(lastVisible)
+                prevDepths.append(lastDepth)
+                lastVisible = block
+                lastDepth = depth
+            }
+            // Recurse into children only if this block is not a collapsed
+            // container — descendants under a closed toggle don't render.
+            // Heading containers don't bump depth: their children render
+            // flush with the heading itself (Notion-style), so a paragraph
+            // under an H1 sits at the same horizontal position as the H1.
+            if !isCollapsedSection(block) {
+                let childDepth = block.isHeading ? depth : depth + 1
+                appendVisible(in: block.children, depth: childDepth, parentID: block.id, hidden: hidden,
+                              rows: &rows, prevVisible: &prevVisible, prevDepths: &prevDepths,
+                              lastVisible: &lastVisible, lastDepth: &lastDepth, preorderCounter: &preorderCounter)
+            } else {
+                // Still bump the preorder counter for the hidden subtree so
+                // ids and indices align with the legacy flat representation.
+                bumpPreorder(in: block.children, counter: &preorderCounter)
+            }
         }
-        return (pairs, prevVisible)
+    }
+
+    private func bumpPreorder(in blocks: [Block], counter: inout Int) {
+        for block in blocks {
+            counter += 1
+            bumpPreorder(in: block.children, counter: &counter)
+        }
+    }
+
+    /// Preorder flat view of every block in the tree. Cheap derived
+    /// representation used by keyboard cursor nav. NOT a snapshot — caller
+    /// reads it once per event.
+    private func preorderFlat() -> [Block] {
+        var out: [Block] = []
+        document.walk { block, _, _ in out.append(block) }
+        return out
     }
 
     /// Move the cursor by `delta` rows; collapse to a single-block selection at the new cursor.
     /// Skips blocks hidden inside collapsed toggles.
     private func moveCursor(by delta: Int) {
-        let blocks = document.blocks
+        let blocks = preorderFlat()
         guard !blocks.isEmpty else { return }
-        let hidden = hiddenBlockIDs(in: blocks)
+        let hidden = hiddenBlockIDs(in: document.children)
         let visible = blocks.filter { !hidden.contains($0.id) }
         guard !visible.isEmpty else { return }
         let currentIndex = state.cursor.flatMap { id in visible.firstIndex(where: { $0.id == id }) } ?? 0
@@ -1350,9 +1474,9 @@ public struct EditorView: View {
 
     /// Extend the selection in the direction of `delta`. The anchor stays put; the cursor
     /// moves by outline sections so extending over a parent consumes its descendants as
-    /// real selection, not only via the effective-selection expansion used by operations.
+    /// real selection.
     private func extendSelection(by delta: Int) {
-        let blocks = document.blocks
+        let blocks = preorderFlat()
         guard !blocks.isEmpty else { return }
 
         let initialAnchor = state.anchor ?? state.cursor ?? blocks.first?.id
@@ -1362,7 +1486,7 @@ public struct EditorView: View {
               let anchorIndex = blocks.firstIndex(where: { $0.id == anchorID }),
               let cursorIndex = blocks.firstIndex(where: { $0.id == cursorID }) else { return }
 
-        let nextIndex = outlineSelectionStep(from: cursorIndex, anchoredAt: anchorIndex, by: delta)
+        let nextIndex = outlineSelectionStep(from: cursorIndex, anchoredAt: anchorIndex, by: delta, blocks: blocks)
         let newCursor = blocks[nextIndex].id
 
         let lo = min(anchorIndex, nextIndex)
@@ -1371,43 +1495,48 @@ public struct EditorView: View {
         state.setNavSelection(blocks: newSelection, anchor: anchorID, cursor: newCursor)
     }
 
-    private func outlineSelectionStep(from cursorIndex: Int, anchoredAt anchorIndex: Int, by delta: Int) -> Int {
-        let blocks = document.blocks
+    private func outlineSelectionStep(from cursorIndex: Int, anchoredAt anchorIndex: Int, by delta: Int, blocks: [Block]) -> Int {
         guard !blocks.isEmpty else { return cursorIndex }
+        // Subtree size for a block (number of descendants in preorder).
+        func subtreeEnd(of blockID: BlockID, startingAt i: Int) -> Int {
+            guard let block = document.find(blockID) else { return i + 1 }
+            var size = 0
+            countDescendants(block, into: &size)
+            return i + 1 + size
+        }
 
         if delta > 0 {
             if cursorIndex < anchorIndex {
-                if let range = document.sectionRange(of: blocks[cursorIndex].id),
-                   range.upperBound <= anchorIndex {
-                    return range.upperBound
-                }
+                let end = subtreeEnd(of: blocks[cursorIndex].id, startingAt: cursorIndex)
+                if end <= anchorIndex { return end }
                 return min(anchorIndex, cursorIndex + 1)
             }
-
-            if let range = document.sectionRange(of: blocks[cursorIndex].id),
-               range.upperBound > cursorIndex + 1 {
-                guard range.upperBound < blocks.count else { return cursorIndex }
-                return range.upperBound
+            let end = subtreeEnd(of: blocks[cursorIndex].id, startingAt: cursorIndex)
+            if end > cursorIndex + 1 {
+                guard end < blocks.count else { return cursorIndex }
+                return end
             }
             return min(blocks.count - 1, cursorIndex + 1)
         }
 
         if delta < 0 {
             if cursorIndex > anchorIndex {
-                if let anchorRange = document.sectionRange(of: blocks[anchorIndex].id),
-                   anchorRange.contains(cursorIndex) {
+                let anchorEnd = subtreeEnd(of: blocks[anchorIndex].id, startingAt: anchorIndex)
+                if (anchorIndex..<anchorEnd).contains(cursorIndex) {
                     return anchorIndex
                 }
                 return max(anchorIndex, cursorIndex - 1)
             }
-
-            let indent = blocks[cursorIndex].indent
-            var previousStart = cursorIndex - 1
-            while previousStart >= 0, blocks[previousStart].indent > indent {
-                previousStart -= 1
-            }
-            if previousStart >= 0, blocks[previousStart].indent == indent {
-                return previousStart
+            // Step up to the previous SIBLING (not just a previous preorder-
+            // adjacent block, which might be a parent's last descendant).
+            let cursorBlockID = blocks[cursorIndex].id
+            let parentID = document.parent(of: cursorBlockID)
+            let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+            if let posInParent = siblings.firstIndex(where: { $0.id == cursorBlockID }), posInParent > 0 {
+                let prevSiblingID = siblings[posInParent - 1].id
+                if let prevIdx = blocks.firstIndex(where: { $0.id == prevSiblingID }) {
+                    return prevIdx
+                }
             }
             return max(0, cursorIndex - 1)
         }
@@ -1415,127 +1544,153 @@ public struct EditorView: View {
         return cursorIndex
     }
 
-    /// Indices of selected blocks in document order. Empty if no selection.
-    private func selectedIndices() -> [Int] {
-        document.blocks.enumerated()
-            .compactMap { (i, block) in state.selection.contains(block.id) ? i : nil }
-    }
-
-    private func effectiveSelectedIndices() -> [Int] {
-        document.indicesIncludingSections(of: state.selection)
-    }
-
-    /// Block to land on after removing a section that started at
-    /// `firstRemovedIndex` in the pre-deletion document. Notion-like: previous
-    /// block, with new-head fallback when deleting from index 0. Caller invokes
-    /// after `document.blocks` has been mutated.
-    private func blockToSelectAfterRemoval(firstRemovedIndex: Int) -> BlockID? {
-        guard !document.blocks.isEmpty else { return nil }
-        let i = max(0, min(firstRemovedIndex - 1, document.blocks.count - 1))
-        return document.blocks[i].id
+    private func countDescendants(_ block: Block, into out: inout Int) {
+        for child in block.children {
+            out += 1
+            countDescendants(child, into: &out)
+        }
     }
 
     private func effectiveSelectedIDs() -> Set<BlockID> {
         Set(effectiveSelectedIDsInDocumentOrder())
     }
 
+    /// Selected blocks plus every descendant of each, in document order.
+    /// Used by drag/copy/delete to expand a sparse selection into the full
+    /// covered subtree.
     func effectiveSelectedIDsInDocumentOrder() -> [BlockID] {
-        effectiveSelectedIndices().map { document.blocks[$0].id }
+        var out: [BlockID] = []
+        var seen: Set<BlockID> = []
+        for id in state.selection {
+            guard let block = document.find(id) else { continue }
+            collectPreorderIDs(block, into: &out, seen: &seen)
+        }
+        // Sort by document order.
+        out.sort { (a, b) in
+            (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
+        }
+        return out
+    }
+
+    func collectPreorderIDs(_ block: Block, into out: inout [BlockID], seen: inout Set<BlockID>) {
+        if seen.insert(block.id).inserted {
+            out.append(block.id)
+        }
+        for child in block.children {
+            collectPreorderIDs(child, into: &out, seen: &seen)
+        }
     }
 
     // MARK: - Selection-wide operations
 
     /// Move the contiguous selection up or down across outline siblings. Selected
     /// parents carry their descendants, so top-level blocks hop over whole sections.
+    /// Tree analog: requires every selected subtree-root to share one parent;
+    /// otherwise no-op.
     private func moveSelectionInDocument(by delta: Int) {
-        let ids = effectiveSelectedIDsInDocumentOrder()
-        guard !ids.isEmpty else { return }
-
-        var moved = document
-        guard moved.moveSections(containing: ids, by: delta) else { return }
-
+        let roots = document.selectionSubtreeRoots(state.selection)
+        guard !roots.isEmpty else { return }
+        // Snapshot pre-mutation so `mutate` registers an undo iff we actually
+        // changed something.
+        let canMove = document.slideSiblings(Set(roots), by: delta)
+        guard canMove else { return }
+        // Roll back the move so `mutate` can record it as one undo entry; then
+        // re-apply inside the mutation closure.
+        // (`slideSiblings` already mutated; treat the trial as the mutation.)
+        // Since slideSiblings has been called above, the doc is already moved.
+        // Register the inverse by snapshotting the pre-move state — but we
+        // already lost that. Reconstruct via inverse direction.
+        _ = document.slideSiblings(Set(roots), by: -delta)
         mutate("Move Block") {
-            document.blocks = moved.blocks
+            _ = document.slideSiblings(Set(roots), by: delta)
         }
-        // Only reveal the user-selected (top-level) blocks — passing the
-        // section-expanded set would pop open a moved closed toggle, since its
-        // own hidden children look like "hidden selected blocks" needing reveal.
         revealHiddenBlocks(state.selection)
     }
 
-    /// Delete every block in the current selection. Selection collapses to the block just
-    /// before the deleted range (or the first remaining if we removed the head). No-op if
-    /// the selection covers every block in the document.
+    /// Delete every block in the current selection. No-op if the selection
+    /// covers every top-level block.
     private func deleteSelection() {
-        let indices = effectiveSelectedIndices()
-        guard !indices.isEmpty else { return }
-        guard indices.count < document.blocks.count else { return }
-
-        let removed = indices.map { document.blocks[$0] }
-        onRecordBlockDeletion(indices, removed, "Delete")
-
-        let firstIndex = indices.first!
-        mutate("Delete") {
-            // Snapshot, mutate locally, write once. Removing through the @Binding
-            // in a loop dropped all but the first removal — match the pattern
-            // used by `moveSelectionInDocument`.
-            var blocks = document.blocks
-            for i in indices.reversed() {
-                blocks.remove(at: i)
-            }
-            document.blocks = blocks
-        }
-
-        if let id = blockToSelectAfterRemoval(firstRemovedIndex: firstIndex) {
-            setCursor(id)
-        }
+        deleteBlocks(ids: Array(state.selection), actionName: "Delete")
     }
 
     private func deleteBlocks(ids: [BlockID], actionName: String) {
-        let indices = document.indicesIncludingSections(of: ids)
-        guard !indices.isEmpty, indices.count < document.blocks.count else { return }
-
-        let removed = indices.map { document.blocks[$0] }
-        onRecordBlockDeletion(indices, removed, actionName)
-
-        let firstIndex = indices.first!
-        mutate(actionName) {
-            var blocks = document.blocks
-            for i in indices.reversed() {
-                blocks.remove(at: i)
-            }
-            document.blocks = blocks
+        let roots = document.selectionSubtreeRoots(Set(ids))
+        guard !roots.isEmpty else { return }
+        // Don't allow deleting the entire top-level tree.
+        let coveredRoots = roots.filter { document.parent(of: $0) == nil }
+        if coveredRoots.count >= document.children.count, document.children.count > 0 {
+            return
         }
 
-        if let id = blockToSelectAfterRemoval(firstRemovedIndex: firstIndex) {
+        // Capture the removed subtrees flat-preorder (for `onRecordBlockDeletion`).
+        var removedFlat: [Block] = []
+        var indicesFlat: [Int] = []
+        for id in roots {
+            guard let order = document.documentOrder(of: id) else { continue }
+            indicesFlat.append(order)
+            if let block = document.find(id) {
+                appendPreorder(block, into: &removedFlat)
+            }
+        }
+        onRecordBlockDeletion(indicesFlat, removedFlat, actionName)
+
+        let cursorTarget = nearestCursorAfterRemoval(of: roots)
+        mutate(actionName) {
+            // Bottom-up by depth to avoid stranding a child whose parent was
+            // already removed.
+            let ordered = roots.sorted { (a, b) -> Bool in
+                let da = (document.path(to: a)?.count ?? 0)
+                let db = (document.path(to: b)?.count ?? 0)
+                return da > db
+            }
+            for id in ordered {
+                document.removeSubtree(id)
+            }
+        }
+
+        if let id = cursorTarget {
             setCursor(id)
         }
     }
 
-    private func indentByOne(blockID: BlockID) {
-        let indices = document.indicesIncludingSections(of: [blockID])
-        guard canChangeIndent(at: indices, by: 1) else { return }
-        mutate("Indent") {
-            var blocks = document.blocks
-            for i in indices {
-                blocks[i] = blocks[i].withIndent(blocks[i].indent + 1)
-            }
-            document.blocks = blocks
+    /// Walk a subtree in preorder and append every node to `out`.
+    private func appendPreorder(_ block: Block, into out: inout [Block]) {
+        out.append(block)
+        for child in block.children {
+            appendPreorder(child, into: &out)
         }
-        revealHiddenBlocks([blockID])
     }
 
-    /// Apply Tab / Shift-Tab indent change to the effective selection.
+    /// Pick a cursor target after removing the given subtree-roots. Tries the
+    /// preorder-predecessor of the first root; falls back to the first
+    /// remaining top-level block.
+    private func nearestCursorAfterRemoval(of roots: [BlockID]) -> BlockID? {
+        guard let first = roots.first else { return nil }
+        if let predecessor = document.preorderPredecessor(of: first) {
+            return predecessor
+        }
+        return document.children.first(where: { !roots.contains($0.id) })?.id
+    }
+
+    private func indentByOne(blockID: BlockID) {
+        _ = changeIndent(blockID, by: 1)
+    }
+
+    /// Apply Tab / Shift-Tab indent change to the effective selection. Each
+    /// subtree-root indents/outdents independently — selection across parents
+    /// is allowed; ops that aren't valid for some roots no-op for those.
     private func indentSelection(by delta: Int) {
-        let indices = effectiveSelectedIndices()
-        guard !indices.isEmpty else { return }
-        guard canChangeIndent(at: indices, by: delta) else { return }
+        let roots = document.selectionSubtreeRoots(state.selection)
+        guard !roots.isEmpty else { return }
+        guard canChangeIndent(ids: roots, by: delta) else { return }
         mutate(delta > 0 ? "Indent" : "Outdent") {
-            var blocks = document.blocks
-            for i in indices {
-                blocks[i] = blocks[i].withIndent(blocks[i].indent + delta)
+            for id in roots {
+                if delta > 0 {
+                    document.indent(id)
+                } else if delta < 0 {
+                    document.outdent(id)
+                }
             }
-            document.blocks = blocks
         }
         revealHiddenBlocks(state.selection)
     }
@@ -1545,21 +1700,30 @@ public struct EditorView: View {
     }
 
     /// Cut: copy the selection to the pasteboard, then delete it as a single undo entry.
-    /// Mirrors the `deleteSelection` guard against deleting every block in the document.
+    /// Mirrors the `deleteSelection` guard against deleting the entire document.
     private func cutSelectionToPasteboard() -> Bool {
-        let indices = effectiveSelectedIndices()
-        guard !indices.isEmpty else { return false }
-        guard indices.count < document.blocks.count else { return false }
+        let roots = document.selectionSubtreeRoots(state.selection)
+        guard !roots.isEmpty else { return false }
+        // Don't allow cutting every top-level block.
+        let topLevelRoots = roots.filter { document.parent(of: $0) == nil }
+        if topLevelRoots.count >= document.children.count, document.children.count > 0 {
+            return false
+        }
         guard copyBlocksToPasteboard(ids: state.selection) else { return false }
 
-        let firstIndex = indices.first!
+        let cursorTarget = nearestCursorAfterRemoval(of: roots)
         mutate("Cut") {
-            var blocks = document.blocks
-            for i in indices.reversed() { blocks.remove(at: i) }
-            document.blocks = blocks
+            let ordered = roots.sorted { (a, b) -> Bool in
+                let da = (document.path(to: a)?.count ?? 0)
+                let db = (document.path(to: b)?.count ?? 0)
+                return da > db
+            }
+            for id in ordered {
+                document.removeSubtree(id)
+            }
         }
 
-        if let id = blockToSelectAfterRemoval(firstRemovedIndex: firstIndex) {
+        if let id = cursorTarget {
             setCursor(id)
         } else {
             clearCursor()
@@ -1613,30 +1777,28 @@ public struct EditorView: View {
     private func spliceParsedBlocksAfter(_ anchorID: BlockID?, parsed: [Block], focusLast: Bool) -> Bool {
         guard !parsed.isEmpty else { return false }
 
-        let baseIndent: Int
-        let insertIndex: Int
-        if let anchorID,
-           let anchorIdx = document.index(of: anchorID),
-           let section = document.sectionRange(of: anchorID) {
-            let anchorIndent = document.blocks[anchorIdx].indent
-            let hasChildren = section.count > 1
-            baseIndent = hasChildren ? anchorIndent + 1 : anchorIndent
-            insertIndex = section.upperBound
+        // Tree analog of "after the anchor's section": if the anchor has
+        // children, splice as the FIRST CHILDREN of the anchor; otherwise
+        // splice as the next siblings of the anchor under its parent.
+        let dropPath: DropPath
+        if let anchorID, let anchor = document.find(anchorID) {
+            if !anchor.children.isEmpty {
+                dropPath = DropPath(parent: anchorID, position: 0)
+            } else {
+                let parentID = document.parent(of: anchorID)
+                let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+                let i = siblings.firstIndex(where: { $0.id == anchorID }) ?? siblings.count - 1
+                dropPath = DropPath(parent: parentID, position: i + 1)
+            }
         } else {
-            baseIndent = 0
-            insertIndex = document.blocks.count
+            dropPath = DropPath(parent: nil, position: document.children.count)
         }
-        let reindented = baseIndent == 0
-            ? parsed
-            : parsed.map { $0.withIndent($0.indent + baseIndent) }
 
         mutate("Paste") {
-            var blocks = document.blocks
-            blocks.insert(contentsOf: reindented, at: insertIndex)
-            document.blocks = blocks
+            document.insertSubtrees(parsed, at: dropPath)
         }
 
-        if let last = reindented.last {
+        if let last = parsed.last {
             if focusLast {
                 DispatchQueue.main.async { self.transferFocus(to: .editor(last.id, initialCursor: nil)) }
             } else {
@@ -1647,15 +1809,10 @@ public struct EditorView: View {
     }
 
     func copyBlocksToPasteboard(ids: some Sequence<BlockID>) -> Bool {
-        let indices = document.indicesIncludingSections(of: ids)
-        guard !indices.isEmpty else { return false }
-
-        let selectedBlocks = indices.map { document.blocks[$0] }
-        let minIndent = selectedBlocks.map(\.indent).min() ?? 0
-        let normalizedBlocks = selectedBlocks.map { block in
-            block.withIndent(block.indent - minIndent)
-        }
-        let serialized = serializeBlocksForPasteboard(normalizedBlocks)
+        let roots = document.selectionSubtreeRoots(Set(ids))
+        guard !roots.isEmpty else { return false }
+        let blocks = roots.compactMap { document.find($0) }
+        let serialized = serializeBlocksForPasteboard(blocks)
         guard !serialized.isEmpty else { return false }
 
         #if os(macOS)
@@ -1665,14 +1822,6 @@ public struct EditorView: View {
         UIPasteboard.general.string = serialized
         #endif
         return true
-    }
-
-    func canChangeIndent(at indices: [Int], by delta: Int) -> Bool {
-        guard !indices.isEmpty else { return false }
-        return indices.allSatisfy { i in
-            let next = document.blocks[i].indent + delta
-            return next >= 0 && next <= 5
-        }
     }
 
     // MARK: - Editor-side keyboard handling (delegated from the active BlockTextEditor)
@@ -1747,7 +1896,7 @@ public struct EditorView: View {
         guard let parsed = parseBlocksFromPasteboard(str), !parsed.isEmpty else {
             return .ignored
         }
-        if parsed.count == 1, case .paragraph = parsed[0] {
+        if parsed.count == 1, case .paragraph = parsed[0].kind {
             return .ignored
         }
         spliceParsedBlocksAfter(blockID, parsed: parsed, focusLast: true)
@@ -1756,8 +1905,7 @@ public struct EditorView: View {
 
 
     private func splitBlock(_ blockID: BlockID, at cursorOffset: Int) -> KeyPress.Result {
-        guard let i = document.index(of: blockID) else { return .ignored }
-        let block = document.blocks[i]
+        guard let block = document.find(blockID) else { return .ignored }
         let plain = String(block.text.characters)
         let safeOffset = max(0, min(cursorOffset, plain.count))
         let splitIndex = plain.index(plain.startIndex, offsetBy: safeOffset)
@@ -1772,38 +1920,37 @@ public struct EditorView: View {
             return .handled
         }
 
-        // Empty + indented row: Return outdents instead of splitting/adding-child/
-        // exit-list. Mirrors the backspace-at-offset-0 behavior — both keys peel
-        // off one indent level on an empty row before falling back to the usual
-        // semantics at indent 0.
-        if head.isEmpty, tail.isEmpty, block.indent > 0 {
-            return changeIndent(blockID, by: -1)
+        // Empty + indented row: Return tries to outdent. If the outdent is
+        // refused (e.g. parent is a heading — heading-containment forbids
+        // outdent there), fall through to the convert-to-paragraph or split
+        // path so the user gets SOMETHING useful instead of a no-op.
+        if head.isEmpty, tail.isEmpty, document.parent(of: blockID) != nil {
+            let result = changeIndent(blockID, by: -1)
+            if result == .handled { return result }
         }
 
-        // Enter at end of a block that has indent-children: the natural intent is
-        // to add a child, not a sibling that would slot between the parent and
-        // its first child. Two flavors:
-        //   * Closed toggle/template — the children are hidden, so a "child" would
-        //     vanish; insert a sibling AFTER the whole collapsed section instead.
-        //   * Anything else with children — insert a new FIRST child of the same
-        //     type as the existing first child.
-        if tail.isEmpty,
-           i + 1 < document.blocks.count,
-           document.blocks[i + 1].indent > block.indent {
-            let firstChildIdx = i + 1
+        // Enter at end of a block that has children: add a child instead of a
+        // sibling between the parent and its first child. Two flavors:
+        //   * Closed toggle/template — children are hidden, so insert a
+        //     sibling AFTER the whole collapsed section instead.
+        //   * Anything else with children — insert a new FIRST child of the
+        //     same kind as the existing first child.
+        if tail.isEmpty, !block.children.isEmpty {
             if isCollapsedSection(block) {
-                let endOfSection = document.sectionRange(of: blockID)?.upperBound ?? firstChildIdx
+                let parentID = document.parent(of: blockID)
+                let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+                let i = siblings.firstIndex(where: { $0.id == blockID }) ?? siblings.count - 1
                 let newBlock = followUpBlock(after: block, withText: "")
                 mutate("Split Block") {
-                    document.blocks.insert(newBlock, at: endOfSection)
+                    document.insertSubtree(newBlock, at: DropPath(parent: parentID, position: i + 1))
                 }
                 transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
                 return .handled
             } else {
-                let firstChild = document.blocks[firstChildIdx]
+                let firstChild = block.children[0]
                 let newBlock = followUpBlock(after: firstChild, withText: "")
                 mutate("Split Block") {
-                    document.blocks.insert(newBlock, at: firstChildIdx)
+                    document.insertSubtree(newBlock, at: DropPath(parent: blockID, position: 0))
                 }
                 transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
                 return .handled
@@ -1811,13 +1958,15 @@ public struct EditorView: View {
         }
 
         // Empty list item + Enter exits the list: convert to paragraph in place.
-        // Reached only when the block has no indent-children (the branch above
-        // handles that case) and the row is fully empty.
+        // Reached only when the block has no children (handled above) and the
+        // row is fully empty.
         if head.isEmpty && tail.isEmpty {
-            switch block {
+            switch block.kind {
             case .bullet, .numbered, .todo:
                 mutate("Convert to Paragraph") {
-                    document.blocks[i] = .paragraph(id: block.id, text: AttributedString(), indent: block.indent)
+                    document.mutate(blockID) { existing in
+                        existing.kind = .paragraph(text: AttributedString())
+                    }
                 }
                 return .handled
             default:
@@ -1825,22 +1974,22 @@ public struct EditorView: View {
             }
         }
 
-        let updatedCurrent = block.withText(AttributedString(head))
         let newBlock = followUpBlock(after: block, withText: tail)
+        let parentID = document.parent(of: blockID)
+        let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+        let i = siblings.firstIndex(where: { $0.id == blockID }) ?? siblings.count - 1
 
         mutate("Split Block") {
-            var blocks = document.blocks
-            blocks[i] = updatedCurrent
-            blocks.insert(newBlock, at: i + 1)
-            document.blocks = blocks
+            document.setText(blockID, AttributedString(head))
+            document.insertSubtree(newBlock, at: DropPath(parent: parentID, position: i + 1))
         }
         transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
         return .handled
     }
 
     private func navigateIntoSubpage(_ blockID: BlockID) -> Bool {
-        guard let block = document.blocks.first(where: { $0.id == blockID }),
-              case .subpage(_, _, let path, _) = block else {
+        guard let block = document.find(blockID),
+              case .subpage(_, let path) = block.kind else {
             return false
         }
         transferFocus(to: .nav(cursor: blockID))
@@ -1854,25 +2003,31 @@ public struct EditorView: View {
     /// on the block at `transform.focusReplacementIndex` (which is the fresh paragraph for
     /// divider/codeFence and the transformed block otherwise).
     private func applyAutotransform(_ transform: BlockTransform, remainingText: AttributedString, blockID: BlockID) {
-        guard let source = document.blocks.first(where: { $0.id == blockID }) else { return }
-        let replacements = transform.apply(to: remainingText).map { $0.withIndent(source.indent) }
+        guard let source = document.find(blockID) else { return }
+        let replacements = transform.apply(to: remainingText)
         guard !replacements.isEmpty else { return }
-        mutate("Format Block") {
-            document.replace(blockID: blockID, with: replacements)
+        // For `> ` (toggle) on a row with children, the new toggle inherits
+        // the source's children as its body so they don't vanish.
+        let firstReplacementWithChildren: [Block]
+        if transform == .toggle, !source.children.isEmpty, var first = replacements.first {
+            first.children = source.children
+            firstReplacementWithChildren = [first] + replacements.dropFirst()
+        } else {
+            firstReplacementWithChildren = replacements
         }
-        // `> ` on a row with indent-descendants converts it to a toggle whose body is those
-        // descendants — start expanded so they don't immediately vanish from the page.
+        mutate("Format Block") {
+            document.replaceSubtree(blockID, with: firstReplacementWithChildren)
+        }
         if transform == .toggle {
-            for case .toggle(let id, _, _) in replacements {
-                state.expandedToggles.insert(id)
+            for replacement in firstReplacementWithChildren {
+                if case .toggle = replacement.kind {
+                    state.expandedToggles.insert(replacement.id)
+                }
             }
         }
-        let focusTarget = replacements[transform.focusReplacementIndex]
+        let focusTarget = firstReplacementWithChildren[transform.focusReplacementIndex]
         DispatchQueue.main.async {
-            // Code/divider rows aren't editable in M3 (`transferFocus(to: .editor)`
-            // routes them to nav); for those transforms the focus target is the empty
-            // paragraph, which is editable.
-            switch focusTarget {
+            switch focusTarget.kind {
             case .code, .divider, .subpage:
                 transferFocus(to: .nav(cursor: focusTarget.id))
             default:
@@ -1887,21 +2042,24 @@ public struct EditorView: View {
     /// edit mode on it.
     private func createEmptySiblingAndEdit() -> Bool {
         guard let id = state.cursor, state.selection.count == 1 else { return false }
-        guard let i = document.index(of: id) else { return false }
-        let source = document.blocks[i]
+        guard let source = document.find(id) else { return false }
         let newBlock = followUpBlock(after: source, withText: "")
-        let insertAt = document.sectionRange(of: id)?.upperBound ?? (i + 1)
+        // Tree analog of "after the source's section": if the source has
+        // children, splice as the FIRST CHILD of source (so the new block is
+        // visually adjacent and at one deeper level). Otherwise, splice as the
+        // next sibling under the source's parent.
+        let dropPath: DropPath
+        if !source.children.isEmpty {
+            dropPath = DropPath(parent: id, position: 0)
+        } else {
+            let parentID = document.parent(of: id)
+            let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+            let i = siblings.firstIndex(where: { $0.id == id }) ?? siblings.count - 1
+            dropPath = DropPath(parent: parentID, position: i + 1)
+        }
 
-        // Explicit snapshot-then-assign pattern (matches splitBlock and the other
-        // mutate callers). `transferFocus` won't see the new block in `document.blocks`
-        // when it runs — SwiftUI snapshots @Binding<Document> at the previous render
-        // and doesn't re-call the host's get within the same event handler — but its
-        // editor-block lookup is soft (assumes editable on absence), so we proceed
-        // and let SwiftUI re-render with the new block + the new mode.
         mutate("New Block") {
-            var blocks = document.blocks
-            blocks.insert(newBlock, at: insertAt)
-            document.blocks = blocks
+            document.insertSubtree(newBlock, at: dropPath)
         }
         transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
         return true
@@ -1909,24 +2067,17 @@ public struct EditorView: View {
 
     private func followUpBlock(after block: Block, withText text: String) -> Block {
         let attr = AttributedString(text)
-        switch block {
-        case .bullet(_, _, let indent):
-            return .bullet(text: attr, indent: indent)
-        case .numbered(_, _, let indent):
-            return .numbered(text: attr, indent: indent)
-        case .todo(_, _, _, let indent):
-            return .todo(text: attr, done: false, indent: indent)
-        case .quote(_, _, let indent):
-            return .quote(text: attr, indent: indent)
-        case .heading(_, _, _, let indent),
-             .paragraph(_, _, let indent),
-             .toggle(_, _, let indent),
-             .templateButton(_, _, let indent),
-             .code(_, _, _, let indent),
-             .divider(_, let indent),
-             .subpage(_, _, _, let indent),
-             .image(_, _, _, let indent):
-            return .paragraph(text: attr, indent: indent)
+        switch block.kind {
+        case .bullet:
+            return .bullet(text: attr)
+        case .numbered:
+            return .numbered(text: attr)
+        case .todo:
+            return .todo(text: attr, done: false)
+        case .quote:
+            return .quote(text: attr)
+        case .heading, .paragraph, .toggle, .templateButton, .code, .divider, .subpage, .image:
+            return .paragraph(text: attr)
         }
     }
 
@@ -1942,18 +2093,18 @@ public struct EditorView: View {
     ///    templateButton) we ignore — the user can navigate up and delete it
     ///    explicitly.
     private func deleteEmptyBlock(_ blockID: BlockID) -> KeyPress.Result {
-        guard let i = document.index(of: blockID) else { return .ignored }
-        let block = document.blocks[i]
+        guard let block = document.find(blockID) else { return .ignored }
 
-        // Empty + indented row: backspace outdents instead of merging/deleting/
-        // converting. Notion-style behavior — peeling off indent levels first
-        // gives the user a way to back out of nesting without touching Tab.
-        if block.indent > 0, String(block.text.characters).isEmpty {
-            return changeIndent(blockID, by: -1)
+        // Empty + nested row: backspace tries to outdent. If outdent is
+        // refused (parent is a heading — heading-containment forbids it),
+        // fall through to the convert-to-paragraph or merge path.
+        if document.parent(of: blockID) != nil, String(block.text.characters).isEmpty {
+            let result = changeIndent(blockID, by: -1)
+            if result == .handled { return result }
         }
 
         let isParagraph: Bool = {
-            if case .paragraph = block { return true }
+            if case .paragraph = block.kind { return true }
             return false
         }()
 
@@ -1961,12 +2112,14 @@ public struct EditorView: View {
             // Convert to paragraph in place, preserving any text. The cursor stays at
             // offset 0 — if the editor re-mounts because the row layout changed, the
             // pending-cursor channel steers it back to 0 instead of seek-to-end.
-            switch block {
+            switch block.kind {
             case .bullet, .numbered, .todo, .heading, .quote, .toggle:
                 let preservedText = block.text
                 state.setPendingInitialCursor(.offset(0))
                 mutate("Convert to Paragraph") {
-                    document.blocks[i] = .paragraph(id: block.id, text: preservedText, indent: block.indent)
+                    document.mutate(blockID) { existing in
+                        existing.kind = .paragraph(text: preservedText)
+                    }
                 }
                 return .handled
             default:
@@ -1975,56 +2128,73 @@ public struct EditorView: View {
         }
 
         let plain = String(block.text.characters)
+        let previousID = document.preorderPredecessor(of: blockID)
 
         if plain.isEmpty {
-            guard document.blocks.count > 1 else { return .ignored }
-            let previous = i > 0 ? document.blocks[i - 1].id : document.blocks.first?.id
-            mutate("Delete Block") {
-                document.blocks.remove(at: i)
+            // Don't allow deleting the last top-level block.
+            if document.children.count <= 1, document.parent(of: blockID) == nil {
+                return .ignored
             }
-            if let previous {
-                transferFocus(to: .editor(previous, initialCursor: nil))
+            mutate("Delete Block") {
+                document.removeSubtree(blockID)
+            }
+            if let previousID {
+                transferFocus(to: .editor(previousID, initialCursor: nil))
             }
             return .handled
         }
 
         // Non-empty paragraph: merge into the previous text-bearing block.
-        guard i > 0 else { return .ignored }
-        let previous = document.blocks[i - 1]
-        switch previous {
+        guard let previousID, let previous = document.find(previousID) else { return .ignored }
+        switch previous.kind {
         case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
             break
         case .code, .divider, .subpage, .templateButton, .image:
             return .ignored
         }
-        let previousID = previous.id
         let previousLen = previous.text.characters.count
         var combined = previous.text
         combined.append(block.text)
-        let merged = previous.withText(combined)
 
         mutate("Merge Block") {
-            var blocks = document.blocks
-            blocks[i - 1] = merged
-            blocks.remove(at: i)
-            document.blocks = blocks
+            document.setText(previousID, combined)
+            document.removeSubtree(blockID)
         }
         transferFocus(to: .editor(previousID, initialCursor: .offset(previousLen)))
         return .handled
     }
 
     func changeIndent(_ blockID: BlockID, by delta: Int) -> KeyPress.Result {
-        let indices = document.indicesIncludingSections(of: [blockID])
-        guard canChangeIndent(at: indices, by: delta) else { return .ignored }
-        mutate(delta > 0 ? "Indent" : "Outdent") {
-            var blocks = document.blocks
-            for i in indices {
-                blocks[i] = blocks[i].withIndent(blocks[i].indent + delta)
+        // Tree analog of indent/outdent: reparent to the previous sibling
+        // (delta = +1) or to the next sibling of the parent (delta = -1).
+        if delta > 0 {
+            guard document.canIndent(blockID) else { return .ignored }
+            mutate("Indent") {
+                document.indent(blockID)
             }
-            document.blocks = blocks
+        } else if delta < 0 {
+            guard document.canOutdent(blockID) else { return .ignored }
+            mutate("Outdent") {
+                document.outdent(blockID)
+            }
+        } else {
+            return .ignored
         }
         revealHiddenBlocks([blockID])
         return .handled
+    }
+
+    /// Multi-block indent/outdent validity. All-or-nothing: every subtree-root
+    /// in `ids` must be permitted, otherwise the op is rejected.
+    func canChangeIndent(ids: [BlockID], by delta: Int) -> Bool {
+        guard !ids.isEmpty else { return false }
+        let roots = document.selectionSubtreeRoots(Set(ids))
+        if delta > 0 {
+            return roots.allSatisfy { document.canIndent($0) }
+        } else if delta < 0 {
+            return roots.allSatisfy { document.canOutdent($0) }
+        }
+        return false
     }
 }
 

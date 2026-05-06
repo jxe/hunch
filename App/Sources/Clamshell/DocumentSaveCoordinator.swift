@@ -7,12 +7,17 @@ import Editor
 /// against its own snapshot, then a single follow-up write covers the latest.
 /// This is what makes the four autosave triggers (debounce / blur /
 /// scenePhase / 30s backstop) safe to fan in here without racing.
+///
+/// **Sendable boundary**: with `Document` now a `@MainActor`-isolated class,
+/// callers pre-serialize the document on the MainActor and hand the resulting
+/// `String` (plus the destination `URL`) to `save(...)`. Only Sendable values
+/// cross into the actor.
 public actor DocumentSaveCoordinator {
     private let store: FileStore
 
     private struct SaveRequest: Sendable {
-        var document: Document
-        var titleForPath: @Sendable (String) -> String?
+        var url: URL
+        var contents: String
     }
 
     private struct State {
@@ -26,15 +31,11 @@ public actor DocumentSaveCoordinator {
         self.store = store
     }
 
-    /// Save the document. If a write is already in flight for the URL, the new
-    /// request replaces any pending one and is written after the in-flight
-    /// write completes.
-    public func save(
-        _ document: Document,
-        resolvingSubpageTitle titleForPath: @Sendable @escaping (String) -> String? = { _ in nil }
-    ) async throws {
-        let request = SaveRequest(document: document, titleForPath: titleForPath)
-        let url = request.document.url
+    /// Save the document body. If a write is already in flight for the URL,
+    /// the new request replaces any pending one and is written after the
+    /// in-flight write completes.
+    public func save(url: URL, contents: String) async throws {
+        let request = SaveRequest(url: url, contents: contents)
         if states[url]?.inFlight != nil {
             states[url]?.pending = request
             return
@@ -51,13 +52,13 @@ public actor DocumentSaveCoordinator {
     }
 
     private func runWriteLoop(initial: SaveRequest) async throws {
-        let url = initial.document.url
+        let url = initial.url
         var current = initial
         let store = self.store
         while true {
             let snapshot = current
             let task = Task<Void, Error> { @Sendable [store] in
-                try store.save(snapshot.document, resolvingSubpageTitle: snapshot.titleForPath)
+                try store.saveSerialized(snapshot.contents, to: snapshot.url)
             }
             states[url] = State(inFlight: task, pending: nil)
             try await task.value

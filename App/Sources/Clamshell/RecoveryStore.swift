@@ -172,13 +172,11 @@ public actor RecoveryStore {
 
     // MARK: - Internal: record computation
 
-    /// Walks `blocks` left-to-right. For every block whose fingerprint isn't already
-    /// in `knownFingerprints`, emit a `LostBlockRecord` with `cause = .seen`. A
-    /// contiguous "section" (e.g. a toggle and its body) all of which is new gets
-    /// emitted as one record so restoration brings it back together. Anchor is the
-    /// immediate predecessor in the snapshot — gives restoration the best chance of
-    /// finding a stable reference, since every block in the snapshot is in the live
-    /// doc at write time.
+    /// Walk the tree in preorder. For each block whose fingerprint isn't in
+    /// `knownFingerprints`, emit a `LostBlockRecord` with the subtree serialized
+    /// as markdown — and DON'T recurse into the subtree (its descendants are
+    /// covered by this record). Anchor is the preorder predecessor, giving
+    /// restoration a stable reference.
     private func computeSnapshotRecords(
         from blocks: [Block],
         knownFingerprints: Set<String>,
@@ -186,75 +184,68 @@ public actor RecoveryStore {
         date: Date
     ) -> [LostBlockRecord] {
         var out: [LostBlockRecord] = []
+        // Build the flat preorder once so we can compute originalIndex and the
+        // preorder anchor lookup matches the legacy semantics.
+        var flat: [Block] = []
+        flatten(blocks, into: &flat)
         var consumed = Set<Int>()
         var i = 0
-        while i < blocks.count {
+        while i < flat.count {
             if consumed.contains(i) { i += 1; continue }
-            let block = blocks[i]
+            let block = flat[i]
             let fp = BlockFingerprint.compute(block)
             guard !knownFingerprints.contains(fp) else { i += 1; continue }
 
-            let end = sectionEnd(of: i, in: blocks)
-            let sectionRange = i..<end
-            let allSectionNew = sectionRange.allSatisfy { idx in
-                !knownFingerprints.contains(BlockFingerprint.compute(blocks[idx]))
-            }
-
-            let recordRange: Range<Int>
-            if allSectionNew && end > i + 1 {
-                recordRange = sectionRange
-            } else {
-                recordRange = i..<(i + 1)
-            }
-
-            // Skip transient autotransform residue: empty paragraphs or paragraphs
-            // that match a transform trigger (`#`, `- `, `[] `, etc.) — the user
-            // typed it for half a second on the way to a heading or list.
-            if recordRange.count == 1
-                && isAutotransformResidue(blocks[recordRange.lowerBound]) {
-                consumed.insert(recordRange.lowerBound)
-                i = recordRange.upperBound
+            // Skip transient autotransform residue.
+            if isAutotransformResidue(block) {
+                consumed.insert(i)
+                i += 1
                 continue
             }
 
-            let anchor = anchorFingerprint(
-                before: recordRange.lowerBound,
-                in: blocks
-            )
-            let slice = Array(blocks[recordRange])
-            let baseIndent = slice.first?.indent ?? 0
-            let normalized = slice.map { $0.withIndent($0.indent - baseIndent) }
-            let markdown = BlockSerializer.serialize(normalized)
+            let anchor = anchorFingerprint(before: i, in: flat)
+            // Serialize the entire subtree rooted at this block. The block
+            // value already carries its children (because Block is a value
+            // type and Block.children is part of it).
+            let markdown = BlockSerializer.serialize([block])
 
             out.append(LostBlockRecord(
                 source: source,
                 recordedAt: date,
                 cause: .seen,
-                originalIndex: recordRange.lowerBound,
+                originalIndex: i,
                 anchorFingerprint: anchor,
                 fingerprint: fp,
                 markdown: markdown
             ))
-            for k in recordRange { consumed.insert(k) }
-            i = recordRange.upperBound
+            // Skip the whole subtree — descendants are inside the record.
+            var subtreeSize = 0
+            countDescendants(block, into: &subtreeSize)
+            for k in i...(i + subtreeSize) { consumed.insert(k) }
+            i += 1 + subtreeSize
         }
         return out
     }
 
-    private func sectionEnd(of index: Int, in blocks: [Block]) -> Int {
-        let baseIndent = blocks[index].indent
-        var end = index + 1
-        while end < blocks.count, blocks[end].indent > baseIndent {
-            end += 1
+    private func flatten(_ blocks: [Block], into out: inout [Block]) {
+        for block in blocks {
+            out.append(block)
+            flatten(block.children, into: &out)
         }
-        return end
+    }
+
+    private func countDescendants(_ block: Block, into out: inout Int) {
+        for child in block.children {
+            out += 1
+            countDescendants(child, into: &out)
+        }
     }
 
     /// True for paragraphs whose body is empty or matches a markdown autotransform
     /// trigger (`#`, `## `, `- `, `[] `, etc.). These show up momentarily while the
     /// user is typing a heading/list/etc., and shouldn't pollute the recovery feed.
     private func isAutotransformResidue(_ block: Block) -> Bool {
-        guard case .paragraph(_, let text, _) = block else { return false }
+        guard case .paragraph(let text) = block.kind else { return false }
         let raw = String(text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.isEmpty { return true }
         let triggers: Set<String> = ["#", "##", "###", "-", "*", "1.", "[]", "[ ]", ">", "▸"]
@@ -310,10 +301,12 @@ public actor RecoveryStore {
     /// if any merging happened).
     private func mergeAndLoad(logURL: URL) throws -> [LostBlockRecord] {
         var merged: [String: LostBlockRecord] = [:]   // key = fingerprint
+        var didMigrate = false
 
         if FileManager.default.fileExists(atPath: logURL.path) {
             for record in try readLog(at: logURL) {
-                upsert(record, into: &merged)
+                let migrated = migrateFingerprintsIfNeeded(record, didMigrate: &didMigrate)
+                upsert(migrated, into: &merged)
             }
         }
 
@@ -321,19 +314,42 @@ public actor RecoveryStore {
         for sibling in siblings {
             if let records = try? readLog(at: sibling) {
                 for record in records {
-                    upsert(record, into: &merged)
+                    let migrated = migrateFingerprintsIfNeeded(record, didMigrate: &didMigrate)
+                    upsert(migrated, into: &merged)
                 }
             }
         }
 
         let result = Array(merged.values).sorted { $0.recordedAt > $1.recordedAt }
-        if !siblings.isEmpty {
+        if !siblings.isEmpty || didMigrate {
             try writeAll(result, to: logURL)
             for sibling in siblings {
                 try? FileManager.default.removeItem(at: sibling)
             }
         }
         return result
+    }
+
+    /// One-shot fingerprint migration: when the algorithm changes (e.g. the
+    /// indent component was dropped from the canonical string), the
+    /// fingerprint stored on each record becomes mismatched. Re-parse the
+    /// record's `markdown` and recompute under the current algorithm; if the
+    /// result differs, rewrite the record with the new fingerprint.
+    private func migrateFingerprintsIfNeeded(_ record: LostBlockRecord, didMigrate: inout Bool) -> LostBlockRecord {
+        let parsed = BlockParser.parse(record.markdown)
+        guard let first = parsed.first else { return record }
+        let recomputed = BlockFingerprint.compute(first)
+        if recomputed == record.fingerprint { return record }
+        didMigrate = true
+        return LostBlockRecord(
+            source: record.source,
+            recordedAt: record.recordedAt,
+            cause: record.cause,
+            originalIndex: record.originalIndex,
+            anchorFingerprint: record.anchorFingerprint,
+            fingerprint: recomputed,
+            markdown: record.markdown
+        )
     }
 
     private func upsert(_ record: LostBlockRecord, into merged: inout [String: LostBlockRecord]) {

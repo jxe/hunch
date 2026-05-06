@@ -166,10 +166,10 @@ public enum NotionStyle {
     public static let listMarkerColumnWidth: CGFloat = 24
 
     /// Leading inset for marker-less rows (paragraph, heading, quote, code, divider).
-    /// At indent N>0, aligns with where a list item at indent N-1 puts its TEXT — so
-    /// `indent` reads consistently across block kinds.
-    public static func nonListLeading(indent: Int) -> CGFloat {
-        indent <= 0 ? 0 : CGFloat(indent - 1) * indentStep + listMarkerColumnWidth + listMarkerGap
+    /// At depth N>0, aligns with where a list item at depth N-1 puts its TEXT — so
+    /// depth reads consistently across block kinds.
+    public static func nonListLeading(depth: Int) -> CGFloat {
+        depth <= 0 ? 0 : CGFloat(depth - 1) * indentStep + listMarkerColumnWidth + listMarkerGap
     }
     public static let listMarkerFrameHeight: CGFloat = 16
     public static let bulletMarkerDiameter: CGFloat = 6
@@ -193,8 +193,9 @@ public enum NotionStyle {
 /// margins, so we compute the gap explicitly and apply it via `.padding(.top, gap)` on the
 /// second block.
 public enum BlockSpacing {
-    /// Inter-block gap to insert *above* `current`, given the immediately preceding sibling.
-    public static func gap(before current: Block, after prev: Block?) -> CGFloat {
+    /// Inter-block gap to insert *above* `current`, given the immediately preceding sibling
+    /// in document order (visible-flat order, may be a sibling at a different tree depth).
+    public static func gap(before current: Block, depth: Int, after prev: Block?, prevDepth: Int) -> CGFloat {
         guard let prev else {
             // First child of a container — no gap above.
             return 0
@@ -202,10 +203,10 @@ public enum BlockSpacing {
         let prevBottom = bottomMargin(prev)
         var currTop = topMargin(current)
 
-        // Nested-child relationship: current sits one or more indent levels deeper than prev.
+        // Nested-child relationship: current sits one or more depth levels deeper than prev.
         // Treat as a child stacked under its parent — no boundary bump, no extra top margin —
         // so the spacing matches sibling-to-sibling list spacing.
-        let isNestedChild = current.indent > prev.indent
+        let isNestedChild = depth > prevDepth
         if isNestedChild {
             currTop = 0
         } else if isListItem(prev) != isListItem(current) {
@@ -222,7 +223,7 @@ public enum BlockSpacing {
     /// This corresponds to CSS `padding-top` + `padding-bottom`; SwiftUI applies it via
     /// `.padding(.vertical, …)`.
     public static func intrinsicVerticalPadding(_ block: Block) -> CGFloat {
-        switch block {
+        switch block.kind {
         // List items: ~5pt above/below per item — measured against notion_prompt_example.png,
         // gives an item-to-item gap that's ~1.5× the within-paragraph line height. Toggles
         // are list-item shaped (chevron + title, body as siblings), so they share this rule.
@@ -238,11 +239,10 @@ public enum BlockSpacing {
     /// which doesn't match). Headings carry generous breathing room above; paragraphs sit on a
     /// 6-7pt margin so two stacked paragraphs show a clear blank-line-style gap.
     private static func topMargin(_ block: Block) -> CGFloat {
-        switch block {
-        case .heading(_, 1, _, _): return 32  // page-title H1: ~2em above when there is something
-        case .heading(_, 2, _, _): return 28  // H2 above body or after another heading
-        case .heading(_, 3, _, _): return 22
-        case .heading: return 18
+        switch block.kind {
+        case .heading(.h1, _): return 32  // page-title H1: ~2em above when there is something
+        case .heading(.h2, _): return 28  // H2 above body or after another heading
+        case .heading(.h3, _): return 22
         case .paragraph: return 5
         case .quote: return 6
         case .code: return 8
@@ -253,8 +253,8 @@ public enum BlockSpacing {
     }
 
     private static func bottomMargin(_ block: Block) -> CGFloat {
-        switch block {
-        case .heading(_, 1, _, _): return 6
+        switch block.kind {
+        case .heading(.h1, _): return 6
         case .heading: return 5
         case .paragraph: return 5
         case .quote: return 6
@@ -266,7 +266,7 @@ public enum BlockSpacing {
     }
 
     private static func isListItem(_ block: Block) -> Bool {
-        switch block {
+        switch block.kind {
         case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton: return true
         default: return false
         }

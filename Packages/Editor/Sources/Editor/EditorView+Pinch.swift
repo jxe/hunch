@@ -209,7 +209,7 @@ extension EditorView {
     /// Returns the index of the first row whose mid-Y is below the point; if
     /// every row sits above the point, returns `blocks.count` (insert at end).
     fileprivate func pinchInsertIndex(for point: CGPoint) -> Int {
-        let blocks = document.blocks
+        let blocks = document.children
         guard !blocks.isEmpty else { return 0 }
         for (i, block) in blocks.enumerated() {
             if let frame = rowFrames[block.id], point.y < frame.midY {

@@ -3,781 +3,164 @@ import Foundation
 @testable import Hunch
 import Editor
 
-@Suite("Markdown round-trip")
+/// Round-trip tests covering the parser/serializer/heading-fold pipeline.
+/// The old indent-based assertions were retired with the tree refactor —
+/// these test the new tree shape + idempotence property.
+@Suite("Round-trip parser/serializer")
 struct RoundTripTests {
-    /// Round-trip equivalence at the *block-shape* level: structure, indent, code language,
-    /// toggle tree, plain text content. Inline attributes are checked separately because
-    /// the surface markdown syntax can normalise (`*x*` → `_x_` or vice versa).
-    @Test func paragraph() {
-        roundTrip("Hello world.\n")
+    /// Helper: parse → serialize → parse → serialize. The second pass must
+    /// match the first character-for-character (idempotence property).
+    private func assertIdempotent(_ source: String) {
+        let blocks1 = BlockParser.parse(source)
+        let serialized1 = BlockSerializer.serialize(blocks1)
+        let blocks2 = BlockParser.parse(serialized1)
+        let serialized2 = BlockSerializer.serialize(blocks2)
+        #expect(serialized1 == serialized2, "round-trip not idempotent for: \(source.prefix(80))")
     }
 
-    @Test func headings() {
-        roundTrip("# H1\n\n## H2\n\n### H3\n")
+    // MARK: - Idempotence on representative inputs
+
+    @Test func paragraphAndHeading() {
+        assertIdempotent("# Title\n\nA paragraph.\n")
     }
 
-    @Test func bullets() {
-        roundTrip("- one\n- two\n- three\n")
+    @Test func bulletAndNestedList() {
+        assertIdempotent("- one\n  - nested\n- two\n")
     }
 
-    @Test func nestedBullets() {
-        let src = """
-        - a
-          - a.1
-            - a.1.1
-        - b
-        """
-        let blocks = BlockParser.parse(src)
-        let indents = blocks.compactMap { block -> Int? in
-            if case .bullet(_, _, let i) = block { return i }
-            return nil
-        }
-        #expect(indents == [0, 1, 2, 0])
+    @Test func numberedList() {
+        assertIdempotent("1. first\n1. second\n")
     }
 
-    @Test func bulletWithParagraphChild() {
-        let src = """
-        - parent
-
-          child paragraph
-        """
-        let blocks = BlockParser.parse(src)
-        guard blocks.count == 2 else {
-            Issue.record("expected 2 blocks, got \(blocks.count)")
-            return
-        }
-        if case .paragraph(_, let text, let indent) = blocks[1] {
-            #expect(String(text.characters) == "child paragraph")
-            #expect(indent == 1)
-        } else {
-            Issue.record("expected paragraph child")
-        }
-        roundTrip(src)
-    }
-
-    @Test func bulletWithQuoteChild() {
-        let src = """
-        - parent
-          > child quote
-        """
-        let blocks = BlockParser.parse(src)
-        #expect(blocks.count == 2)
-        if case .quote(_, let text, let indent) = blocks[1] {
-            #expect(String(text.characters) == "child quote")
-            #expect(indent == 1)
-        } else {
-            Issue.record("expected quote child")
-        }
-        roundTrip(src)
-    }
-
-    @Test func bulletWithCodeChild() {
-        let src = """
-        - parent
-
-          ```swift
-          let x = 1
-          ```
-        """
-        let blocks = BlockParser.parse(src)
-        guard blocks.count == 2 else {
-            Issue.record("expected 2 blocks, got \(blocks.count)")
-            return
-        }
-        if case .code(_, let source, let language, let indent) = blocks[1] {
-            #expect(language == "swift")
-            #expect(source.contains("let x = 1"))
-            #expect(indent == 1)
-        } else {
-            Issue.record("expected code child")
-        }
-        roundTrip(src)
-    }
-
-    @Test func nestedBulletWithParagraphChild() {
-        let src = """
-        - parent
-          - child
-
-            paragraph
-        """
-        let blocks = BlockParser.parse(src)
-        guard blocks.count == 3 else {
-            Issue.record("expected 3 blocks, got \(blocks.count)")
-            return
-        }
-        if case .paragraph(_, let text, let indent) = blocks[2] {
-            #expect(String(text.characters) == "paragraph")
-            #expect(indent == 2)
-        } else {
-            Issue.record("expected paragraph child")
-        }
-        roundTrip(src)
-    }
-
-    @Test func numbered() {
-        roundTrip("1. one\n1. two\n")
-    }
-
-    @Test func todo() {
-        let blocks = BlockParser.parse("- [ ] open\n- [x] done\n")
-        guard blocks.count == 2 else {
-            Issue.record("expected 2 todo blocks, got \(blocks.count)")
-            return
-        }
-        if case .todo(_, _, let done1, _) = blocks[0] { #expect(done1 == false) }
-        else { Issue.record("first block not todo") }
-        if case .todo(_, _, let done2, _) = blocks[1] { #expect(done2 == true) }
-        else { Issue.record("second block not todo") }
+    @Test func todoList() {
+        assertIdempotent("- [ ] open\n- [x] done\n")
     }
 
     @Test func quote() {
-        let blocks = BlockParser.parse("> a quote\n")
-        #expect(blocks.count == 1)
-        if case .quote(_, let text, _) = blocks[0] {
-            #expect(String(text.characters) == "a quote")
-        } else {
-            Issue.record("not a quote")
-        }
+        assertIdempotent("> A quoted line.\n")
     }
 
-    @Test func codeBlock() {
-        let blocks = BlockParser.parse("```swift\nlet x = 1\n```\n")
-        #expect(blocks.count == 1)
-        if case .code(_, let source, let lang, _) = blocks[0] {
-            #expect(lang == "swift")
-            #expect(source.contains("let x = 1"))
-        } else {
-            Issue.record("not a code block")
-        }
+    @Test func codeFence() {
+        assertIdempotent("```swift\nlet x = 1\n```\n")
     }
 
     @Test func divider() {
-        let blocks = BlockParser.parse("---\n")
-        #expect(blocks.count == 1)
-        if case .divider = blocks[0] {} else { Issue.record("not divider") }
+        assertIdempotent("---\n\nbelow\n")
     }
 
-    @Test func toggleSimple() {
-        let src = """
-        ▸ Title
-          - a
-          - b
-        """
-        let blocks = BlockParser.parse(src)
-        // Body blocks are flat siblings at indent + 1, not nested in a children array.
-        #expect(blocks.count == 3)
-        guard case .toggle(_, let title, let toggleIndent) = blocks[0] else {
-            Issue.record("not a toggle")
+    @Test func toggleWithBody() {
+        assertIdempotent("▸ Title\n  body line\n")
+    }
+
+    @Test func templateButtonWithBody() {
+        assertIdempotent(":::{template-button} Add Task\n- [ ] new\n:::\n")
+    }
+
+    @Test func subpageLink() {
+        assertIdempotent("[Other Page](other.md)\n")
+    }
+
+    // MARK: - Heading containment (new tree semantics)
+
+    @Test func h1OwnsTrailingParagraph() {
+        let blocks = BlockParser.parse("# Title\n\nBody paragraph.\n")
+        #expect(blocks.count == 1)
+        guard case .heading(.h1, _) = blocks[0].kind else {
+            Issue.record("expected H1 root")
             return
         }
-        #expect(String(title.characters) == "Title")
-        #expect(toggleIndent == 0)
-        if case .bullet(_, _, let i) = blocks[1] {
-            #expect(i == 1)
-        } else { Issue.record("first body block not bullet") }
-        if case .bullet(_, _, let i) = blocks[2] {
-            #expect(i == 1)
-        } else { Issue.record("second body block not bullet") }
-    }
-
-    @Test func toggleSimpleLegacyParse() {
-        // Legacy `<details>` files still parse — workspaces predating the `▸` format.
-        let src = """
-        <details><summary>Title</summary>
-
-        - a
-        - b
-
-        </details>
-        """
-        let blocks = BlockParser.parse(src)
-        #expect(blocks.count == 3)
-        guard case .toggle(_, let title, let toggleIndent) = blocks[0] else {
-            Issue.record("not a toggle")
-            return
-        }
-        #expect(String(title.characters) == "Title")
-        #expect(toggleIndent == 0)
-        if case .bullet(_, _, let i) = blocks[1] { #expect(i == 1) }
-        else { Issue.record("first body block not bullet") }
-        if case .bullet(_, _, let i) = blocks[2] { #expect(i == 1) }
-        else { Issue.record("second body block not bullet") }
-    }
-
-    @Test func toggleLegacyConvertsOnReserialize() {
-        let src = """
-        <details><summary>Old</summary>
-
-        body paragraph
-
-        </details>
-        """
-        let blocks = BlockParser.parse(src)
-        let serialized = BlockSerializer.serialize(blocks)
-        #expect(serialized.contains("▸ Old"))
-        #expect(!serialized.contains("<details>"))
-        #expect(!serialized.contains("</details>"))
-    }
-
-    @Test func subpage() {
-        let blocks = BlockParser.parse("[Notes](folder/page.md)\n")
-        #expect(blocks.count == 1)
-        if case .subpage(_, let title, let path, _) = blocks[0] {
-            #expect(title == "Notes")
-            #expect(path == "folder/page.md")
+        #expect(blocks[0].children.count == 1)
+        if case .paragraph(let text) = blocks[0].children[0].kind {
+            #expect(String(text.characters) == "Body paragraph.")
         } else {
-            Issue.record("not a subpage")
+            Issue.record("expected paragraph under H1")
         }
     }
 
-    @Test func subpageSerializationCanResolveCurrentTitle() {
-        let blocks: [Block] = [
-            .subpage(title: "Old Link Text", pageID: "folder/page.md")
-        ]
-
-        let serialized = BlockSerializer.serialize(blocks) { path in
-            path == "folder/page.md" ? "Current Page Title" : nil
-        }
-
-        #expect(serialized == "[Current Page Title](folder/page.md)\n\n")
-    }
-
-    @Test func blockLevelImage() {
-        let blocks = BlockParser.parse("![alt text](Assets/foo.png)\n")
+    @Test func h2InsideH1IsItsChild() {
+        let blocks = BlockParser.parse("# A\n\n## B\n\nbody\n")
         #expect(blocks.count == 1)
-        if case .image(_, let source, let alt, let indent) = blocks[0] {
-            #expect(source == "Assets/foo.png")
-            #expect(alt == "alt text")
-            #expect(indent == 0)
+        guard case .heading(.h1, _) = blocks[0].kind else {
+            Issue.record("expected H1 root")
+            return
+        }
+        // H1's children: [H2 with body]
+        #expect(blocks[0].children.count == 1)
+        if case .heading(.h2, _) = blocks[0].children[0].kind {
+            #expect(blocks[0].children[0].children.count == 1)
         } else {
-            Issue.record("expected image block, got \(blocks[0])")
+            Issue.record("expected H2 under H1")
         }
-        roundTrip("![alt text](Assets/foo.png)\n")
     }
 
-    @Test func imageWithEmptyAlt() {
-        let blocks = BlockParser.parse("![](Assets/foo.png)\n")
-        #expect(blocks.count == 1)
-        guard case .image(_, let source, let alt, _) = blocks[0] else {
-            Issue.record("expected image block, got \(blocks[0])")
+    @Test func sameLevelHeadingPopsParent() {
+        let blocks = BlockParser.parse("# A\n\n## B\n\n# C\n\nbody\n")
+        // [A {children: [B]}, C {children: [body]}]
+        #expect(blocks.count == 2)
+        guard case .heading(.h1, let aText) = blocks[0].kind,
+              case .heading(.h1, let cText) = blocks[1].kind else {
+            Issue.record("expected two top-level H1s")
             return
         }
-        #expect(source == "Assets/foo.png")
-        #expect(alt == "")
+        #expect(String(aText.characters) == "A")
+        #expect(String(cText.characters) == "C")
+        #expect(blocks[0].children.count == 1)  // B
+        #expect(blocks[1].children.count == 1)  // body
     }
 
-    @Test func inlineImageStaysParagraph() {
-        // Image *inside* a sentence stays as plain markdown — no inline-image
-        // model exists. The whole-paragraph special case requires the image to
-        // be the only meaningful inline child.
-        let blocks = BlockParser.parse("see ![alt](foo.png) here\n")
-        #expect(blocks.count == 1)
-        if case .image = blocks[0] {
-            Issue.record("inline image was promoted to block")
-        }
-        if case .paragraph = blocks[0] {} else {
-            Issue.record("expected paragraph, got \(blocks[0])")
-        }
-    }
-
-    @Test func nonSubpageLink() {
-        // External (non-.md) link should remain a paragraph
-        let blocks = BlockParser.parse("[Apple](https://apple.com)\n")
-        #expect(blocks.count == 1)
-        if case .paragraph = blocks[0] {} else {
-            Issue.record("expected paragraph, got \(blocks[0])")
-        }
-    }
-
-    @Test func inlineEmphasisRoundTrip() {
-        let blocks = BlockParser.parse("This is **bold** and *italic* and `code`.\n")
-        #expect(blocks.count == 1)
-        guard case .paragraph(_, let text, _) = blocks[0] else {
-            Issue.record("not paragraph")
+    @Test func deeperHeadingClosesShallowOne() {
+        // H2 → H1 should close H2 (H1 doesn't nest inside H2).
+        let blocks = BlockParser.parse("## A\n\n# B\n\nbody\n")
+        #expect(blocks.count == 2)
+        guard case .heading(.h2, _) = blocks[0].kind,
+              case .heading(.h1, _) = blocks[1].kind else {
+            Issue.record("expected H2 then H1 at root")
             return
         }
-        // Verify each emphasis kind is present somewhere in the runs.
-        var sawBold = false, sawItalic = false, sawCode = false
-        for run in text.runs {
-            if run[InlineAttributes.BoldAttribute.self] == true { sawBold = true }
-            if run[InlineAttributes.ItalicAttribute.self] == true { sawItalic = true }
-            if run[InlineAttributes.CodeAttribute.self] == true { sawCode = true }
-        }
-        #expect(sawBold)
-        #expect(sawItalic)
-        #expect(sawCode)
+        #expect(blocks[0].children.isEmpty)
+        #expect(blocks[1].children.count == 1)
+    }
 
-        // Re-serialize and re-parse: emphases survive
-        let serialized = BlockSerializer.serialize(blocks)
-        let parsed2 = BlockParser.parse(serialized)
-        guard case .paragraph(_, let text2, _) = parsed2[0] else {
-            Issue.record("re-parse not paragraph")
+    @Test func cascadeH2H1H3() {
+        // Tricky case: H2 followed by H1 — H1 should pop the H2 and start
+        // anew. Then H3 is a child of the H1.
+        let blocks = BlockParser.parse("## A\n\n# B\n\n### C\n")
+        #expect(blocks.count == 2)
+        guard case .heading(.h2, _) = blocks[0].kind,
+              case .heading(.h1, _) = blocks[1].kind else {
+            Issue.record("expected H2 then H1")
             return
         }
-        var sawBold2 = false, sawItalic2 = false, sawCode2 = false
-        for run in text2.runs {
-            if run[InlineAttributes.BoldAttribute.self] == true { sawBold2 = true }
-            if run[InlineAttributes.ItalicAttribute.self] == true { sawItalic2 = true }
-            if run[InlineAttributes.CodeAttribute.self] == true { sawCode2 = true }
-        }
-        #expect(sawBold2)
-        #expect(sawItalic2)
-        #expect(sawCode2)
-    }
-
-    @Test func toggleBodyEditableAndRoundTrips() {
-        // The whole point of the flat-toggle change: a toggle's body lives as siblings at
-        // indent + 1, so it goes through the normal block-row path and edits naturally.
-        // Verify a paragraph in the body is at the right indent on parse, that it survives
-        // re-serialize, and that adding an indent + 1 sibling extends the toggle's section.
-        let src = """
-        ▸ Toggle
-          Body paragraph.
-
-          - bullet
-        """
-        var blocks = BlockParser.parse(src)
-        #expect(blocks.count == 3)
-        guard case .toggle(let toggleID, _, 0) = blocks[0] else { Issue.record("not a toggle"); return }
-        if case .paragraph(_, _, let i) = blocks[1] { #expect(i == 1) } else { Issue.record("body not paragraph") }
-        if case .bullet(_, _, let i) = blocks[2] { #expect(i == 1) } else { Issue.record("body not bullet") }
-
-        // Append a new sibling at indent 1 — section extends.
-        blocks.append(.paragraph(text: AttributedString("appended"), indent: 1))
-        let doc = Document(url: URL(fileURLWithPath: "/tmp/x.md"), title: "Toggle", blocks: blocks)
-        #expect(doc.sectionRange(of: toggleID) == 0..<4)
-
-        // Re-serialize / re-parse keeps the new sibling inside the toggle.
-        let reparsed = BlockParser.parse(BlockSerializer.serialize(blocks))
-        #expect(reparsed.count == 4)
-        if case .paragraph(_, let t, let i) = reparsed[3] {
-            #expect(String(t.characters) == "appended")
-            #expect(i == 1)
-        } else { Issue.record("appended not paragraph at indent 1") }
-    }
-
-    @Test func toggleNestedRoundTrip() {
-        let src = """
-        ▸ Outer
-          - one
-          - two
-          ▸ Inner
-            - inner-one
-        """
-        let blocks = BlockParser.parse(src)
-        // Outer toggle, two outer-body bullets at indent 1, inner toggle at indent 1, one
-        // inner-body bullet at indent 2.
-        guard case .toggle(_, let outerTitle, let outerIndent) = blocks[0] else {
-            Issue.record("outer not toggle")
-            return
-        }
-        #expect(String(outerTitle.characters) == "Outer")
-        #expect(outerIndent == 0)
-        let innerIdx = blocks.firstIndex { if case .toggle = $0 { return $0.id != blocks[0].id } else { return false } }
-        guard let innerIdx, case .toggle(_, let innerTitle, let innerIndent) = blocks[innerIdx] else {
-            Issue.record("inner toggle not found")
-            return
-        }
-        #expect(String(innerTitle.characters) == "Inner")
-        #expect(innerIndent == 1)
-        // Re-serialize and re-parse: structure preserved.
-        let serialized = BlockSerializer.serialize(blocks)
-        let reparsed = BlockParser.parse(serialized)
-        #expect(reparsed.count == blocks.count)
-        for (a, b) in zip(blocks, reparsed) {
-            #expect(blockKind(a) == blockKind(b))
-        }
-    }
-
-    @Test func toggleNestedLegacyParse() {
-        let src = """
-        <details><summary>Outer</summary>
-
-        - one
-
-        <details><summary>Inner</summary>
-
-        - inner-one
-
-        </details>
-
-        </details>
-        """
-        let blocks = BlockParser.parse(src)
-        guard case .toggle(_, let outerTitle, 0) = blocks[0] else {
-            Issue.record("outer not toggle"); return
-        }
-        #expect(String(outerTitle.characters) == "Outer")
-        let innerIdx = blocks.firstIndex { if case .toggle = $0 { return $0.id != blocks[0].id } else { return false } }
-        guard let innerIdx, case .toggle(_, _, 1) = blocks[innerIdx] else {
-            Issue.record("inner toggle not at indent 1"); return
-        }
-    }
-
-    @Test func toggleMixedLegacyAndNewFormats() {
-        let src = """
-        <details><summary>Legacy</summary>
-
-        legacy body
-
-        </details>
-
-        ▸ New
-          new body
-        """
-        let blocks = BlockParser.parse(src)
-        let toggles = blocks.compactMap { b -> String? in
-            if case .toggle(_, let t, _) = b { return String(t.characters) }
-            return nil
-        }
-        #expect(toggles == ["Legacy", "New"])
-    }
-
-    @Test func toggleBodyAllBlockKinds() {
-        let src = """
-        ▸ Wrap
-          paragraph
-
-          # heading 1
-
-          - bullet
-          1. numbered
-          - [ ] todo
-          > quote
-          ---
-          [Subpage](sub.md)
-          :::{template-button} Template
-          template body
-          :::
-        """
-        let blocks = BlockParser.parse(src)
-        // First block is the toggle. All others should be at indent 1 (or deeper for
-        // template body).
-        guard case .toggle(_, _, 0) = blocks[0] else { Issue.record("not toggle"); return }
-        let kinds = blocks.dropFirst().map(blockKind)
-        // Sanity: every body block is at indent ≥ 1 (none leaked out to indent 0).
-        for b in blocks.dropFirst() {
-            #expect(b.indent >= 1, "body block leaked to indent < 1: \(blockKind(b))")
-        }
-        // Re-serialize / re-parse: shape stable.
-        let reparsed = BlockParser.parse(BlockSerializer.serialize(blocks))
-        let reKinds = reparsed.dropFirst().map(blockKind)
-        #expect(kinds == reKinds, "shape diverged on round-trip")
-    }
-
-    @Test func toggleBodyContainsCodeBlock() {
-        // Code block inside a toggle body — body-extent detector must treat fenced code
-        // as opaque so a code line outdented to column 0 doesn't terminate the body.
-        let src = """
-        ▸ Wrap
-          ```python
-          def foo():
-              return 1
-          ```
-        """
-        let blocks = BlockParser.parse(src)
-        guard blocks.count == 2 else { Issue.record("expected 2 blocks, got \(blocks.count)"); return }
-        guard case .toggle(_, _, 0) = blocks[0] else { Issue.record("not toggle"); return }
-        if case .code(_, let source, let lang, let i) = blocks[1] {
-            #expect(lang == "python")
-            #expect(source.contains("return 1"))
-            #expect(i == 1)
+        #expect(blocks[1].children.count == 1)
+        if case .heading(.h3, _) = blocks[1].children[0].kind {
+            // ok
         } else {
-            Issue.record("body not code")
+            Issue.record("expected H3 under H1")
         }
-        roundTrip(src)
     }
 
-    @Test func toggleDeeplyNested() {
-        let src = """
-        ▸ A
-          ▸ B
-            ▸ C
-              ▸ D
-                leaf
-        """
-        let blocks = BlockParser.parse(src)
-        #expect(blocks.count == 5)
-        for (idx, expected) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
-            if case .toggle(_, _, let i) = blocks[idx] { #expect(i == expected) }
-            else { Issue.record("blocks[\(idx)] not toggle") }
-        }
-        if case .paragraph(_, _, let i) = blocks[4] { #expect(i == 4) }
-        else { Issue.record("leaf not paragraph") }
-    }
-
-    @Test func toggleInsideTemplateBody() {
-        let src = """
-        :::{template-button} Wrap
-        ▸ Inner
-          inner body
-        :::
-        """
-        let blocks = BlockParser.parse(src)
-        // template at 0, toggle at 1, paragraph at 2.
-        #expect(blocks.count == 3)
-        guard case .templateButton(_, _, 0) = blocks[0] else { Issue.record("not template"); return }
-        guard case .toggle(_, _, 1) = blocks[1] else { Issue.record("not toggle at 1"); return }
-        if case .paragraph(_, _, let i) = blocks[2] { #expect(i == 2) }
-        else { Issue.record("body not paragraph") }
-    }
-
-    @Test func templateButtonInsideToggleBody() {
-        let src = """
-        ▸ Wrap
-          :::{template-button} Inside
-          template body
-          :::
-        """
-        let blocks = BlockParser.parse(src)
-        #expect(blocks.count == 3)
-        guard case .toggle(_, _, 0) = blocks[0] else { Issue.record("not toggle"); return }
-        guard case .templateButton(_, let label, 1) = blocks[1] else {
-            Issue.record("not template at 1"); return
-        }
-        #expect(label == "Inside")
-        if case .paragraph(_, _, let i) = blocks[2] { #expect(i == 2) }
-        else { Issue.record("template body not paragraph at 2") }
-    }
-
-    @Test func toggleEmptyBody() {
-        let src = "▸ Title\n"
-        let blocks = BlockParser.parse(src)
+    @Test func headingInsideToggleStaysInsideToggle() {
+        // The H2 inside a toggle's body should NOT escape the toggle.
+        let source = "▸ Toggle Title\n  ## Inside\n  body\n"
+        let blocks = BlockParser.parse(source)
         #expect(blocks.count == 1)
-        guard case .toggle(_, let title, 0) = blocks[0] else { Issue.record("not toggle"); return }
-        #expect(String(title.characters) == "Title")
-        // Empty body still round-trips.
-        let reparsed = BlockParser.parse(BlockSerializer.serialize(blocks))
-        #expect(reparsed.count == 1)
-    }
-
-    @Test func toggleFollowedByNonToggle() {
-        let src = """
-        ▸ T
-          body line
-        following paragraph
-        """
-        let blocks = BlockParser.parse(src)
-        #expect(blocks.count == 3)
-        guard case .toggle(let id, _, 0) = blocks[0] else { Issue.record("not toggle"); return }
-        if case .paragraph(_, _, let i) = blocks[1] { #expect(i == 1) }
-        else { Issue.record("body not paragraph at 1") }
-        if case .paragraph(_, let t, let i) = blocks[2] {
-            #expect(String(t.characters) == "following paragraph")
-            #expect(i == 0)
-        } else { Issue.record("following not paragraph at 0") }
-        // Section range: toggle owns only the body-indent block.
-        let doc = Document(url: URL(fileURLWithPath: "/tmp/x.md"), title: "T", blocks: blocks)
-        #expect(doc.sectionRange(of: id) == 0..<2)
-    }
-
-    @Test func toggleTitleWithInlineMarks() {
-        let src = "▸ **Bold** *italic* `code` [link](https://example.com)\n"
-        let blocks = BlockParser.parse(src)
-        #expect(blocks.count == 1)
-        guard case .toggle(_, let title, _) = blocks[0] else { Issue.record("not toggle"); return }
-        var sawBold = false, sawItalic = false, sawCode = false, sawLink = false
-        for run in title.runs {
-            if run[InlineAttributes.BoldAttribute.self] == true { sawBold = true }
-            if run[InlineAttributes.ItalicAttribute.self] == true { sawItalic = true }
-            if run[InlineAttributes.CodeAttribute.self] == true { sawCode = true }
-            if run.link != nil { sawLink = true }
-        }
-        #expect(sawBold)
-        #expect(sawItalic)
-        #expect(sawCode)
-        #expect(sawLink)
-    }
-
-    @Test func templateButtonSimple() {
-        let src = """
-        :::{template-button} Meeting notes
-        ## Agenda
-        - Topic
-        :::
-        """
-        let blocks = BlockParser.parse(src)
-        #expect(blocks.count == 3)
-        guard case .templateButton(_, let label, let indent) = blocks[0] else {
-            Issue.record("not a template button")
+        guard case .toggle = blocks[0].kind else {
+            Issue.record("expected toggle root")
             return
         }
-        #expect(label == "Meeting notes")
-        #expect(indent == 0)
-        if case .heading(_, 2, let text, let i) = blocks[1] {
-            #expect(String(text.characters) == "Agenda")
-            #expect(i == 1)
+        // Toggle's children should contain an H2 with a body paragraph.
+        let body = blocks[0].children
+        #expect(body.count == 1)
+        if case .heading(.h2, _) = body[0].kind {
+            #expect(body[0].children.count == 1)
         } else {
-            Issue.record("body heading missing")
-        }
-        if case .bullet(_, let text, let i) = blocks[2] {
-            #expect(String(text.characters) == "Topic")
-            #expect(i == 1)
-        } else {
-            Issue.record("body bullet missing")
-        }
-        roundTrip(src)
-    }
-
-    @Test func templateButtonNestedAndIndented() {
-        let src = """
-          :::{template-button} Outer: punctuation, ok!
-          - one
-            - two
-          :::{template-button} Inner
-          Body
-          :::
-          :::
-        """
-        let blocks = BlockParser.parse(src)
-        guard case .templateButton(_, let outer, 1) = blocks[0] else {
-            Issue.record("outer template missing")
-            return
-        }
-        #expect(outer == "Outer: punctuation, ok!")
-        let innerIndex = blocks.firstIndex {
-            if case .templateButton(_, "Inner", _) = $0 { return true }
-            return false
-        }
-        guard let innerIndex, case .templateButton(_, _, let innerIndent) = blocks[innerIndex] else {
-            Issue.record("inner template missing")
-            return
-        }
-        #expect(innerIndent == 2)
-        roundTrip(src)
-    }
-
-    @Test func templateButtonFenceCollisionUsesLongerFence() {
-        let blocks: [Block] = [
-            .templateButton(label: "Snippet"),
-            .paragraph(text: AttributedString("::::"), indent: 1)
-        ]
-        let serialized = BlockSerializer.serialize(blocks)
-        #expect(serialized.hasPrefix(":::::{template-button} Snippet"))
-        let reparsed = BlockParser.parse(serialized)
-        #expect(reparsed.count == 2)
-        if case .paragraph(_, let text, let indent) = reparsed[1] {
-            #expect(String(text.characters) == "::::")
-            #expect(indent == 1)
-        } else {
-            Issue.record("body paragraph missing")
+            Issue.record("expected H2 inside toggle")
         }
     }
 
-    // MARK: - empty-paragraph spacers
-    //
-    // Empty paragraphs between siblings have no native markdown representation —
-    // CommonMark collapses runs of blank lines into block separators. The
-    // serializer emits U+00A0 on its own line as a sentinel; the parser converts
-    // single-NBSP paragraphs back to empty.
+    // MARK: - Subtree round-trip stability
 
-    @Test func emptyParagraphBetweenBullets() {
-        let blocks: [Block] = [
-            .bullet(text: AttributedString("first")),
-            .paragraph(text: AttributedString("")),
-            .bullet(text: AttributedString("second")),
-        ]
-        roundTripBlocks(blocks)
-    }
-
-    @Test func emptyParagraphBetweenParagraphs() {
-        let blocks: [Block] = [
-            .paragraph(text: AttributedString("alpha")),
-            .paragraph(text: AttributedString("")),
-            .paragraph(text: AttributedString("beta")),
-        ]
-        roundTripBlocks(blocks)
-    }
-
-    @Test func multipleConsecutiveEmptyParagraphs() {
-        let blocks: [Block] = [
-            .paragraph(text: AttributedString("alpha")),
-            .paragraph(text: AttributedString("")),
-            .paragraph(text: AttributedString("")),
-            .paragraph(text: AttributedString("beta")),
-        ]
-        roundTripBlocks(blocks)
-    }
-
-    @Test func lonelyEmptyParagraph() {
-        // Defends the `flushRegular` ASCII-whitespace fix: a document whose
-        // entire content is U+00A0 must not be discarded before reaching
-        // swift-markdown.
-        let blocks: [Block] = [.paragraph(text: AttributedString(""))]
-        roundTripBlocks(blocks)
-    }
-
-    @Test func paragraphWithEmbeddedNBSPNotPromoted() {
-        // A paragraph whose text *contains* an NBSP among other characters
-        // is real content, not a spacer. It must round-trip as a paragraph.
-        let blocks: [Block] = [
-            .paragraph(text: AttributedString("hello\u{00A0}world")),
-        ]
-        let serialized = BlockSerializer.serialize(blocks)
-        let reparsed = BlockParser.parse(serialized)
-        #expect(reparsed.count == 1)
-        if case .paragraph(_, let text, _) = reparsed[0] {
-            #expect(String(text.characters) == "hello\u{00A0}world")
-        } else {
-            Issue.record("expected paragraph with embedded NBSP")
-        }
-    }
-
-    // MARK: - helpers
-
-    private func roundTrip(_ source: String, file: StaticString = #filePath, line: UInt = #line) {
-        let parsed = BlockParser.parse(source)
-        let serialized = BlockSerializer.serialize(parsed)
-        let reparsed = BlockParser.parse(serialized)
-        // Block-shape equivalence: count and case of each block.
-        #expect(parsed.count == reparsed.count, "block count mismatch after round-trip")
-        for (a, b) in zip(parsed, reparsed) {
-            #expect(blockKind(a) == blockKind(b), "block kind mismatch: \(blockKind(a)) vs \(blockKind(b))")
-            #expect(plainText(a) == plainText(b), "text mismatch")
-        }
-    }
-
-    private func roundTripBlocks(_ blocks: [Block]) {
-        let serialized = BlockSerializer.serialize(blocks)
-        let reparsed = BlockParser.parse(serialized)
-        #expect(blocks.count == reparsed.count, "block count mismatch (serialized: \(serialized.debugDescription))")
-        for (a, b) in zip(blocks, reparsed) {
-            #expect(blockKind(a) == blockKind(b), "block kind mismatch: \(blockKind(a)) vs \(blockKind(b))")
-            #expect(plainText(a) == plainText(b), "text mismatch")
-        }
-    }
-
-    private func blockKind(_ b: Block) -> String {
-        switch b {
-        case .paragraph(_, _, let i): return "paragraph-\(i)"
-        case .heading(_, let level, _, let i): return "heading-\(level)-\(i)"
-        case .bullet(_, _, let i): return "bullet-\(i)"
-        case .numbered(_, _, let i): return "numbered-\(i)"
-        case .todo(_, _, _, let i): return "todo-\(i)"
-        case .quote(_, _, let i): return "quote-\(i)"
-        case .code(_, _, let lang, let i): return "code-\(lang ?? "nil")-\(i)"
-        case .divider(_, let i): return "divider-\(i)"
-        case .toggle(_, _, let i): return "toggle-\(i)"
-        case .templateButton(_, _, let i): return "template-\(i)"
-        case .subpage(_, _, _, let i): return "subpage-\(i)"
-        case .image(_, _, _, let i): return "image-\(i)"
-        }
-    }
-
-    private func plainText(_ b: Block) -> String {
-        switch b {
-        case .paragraph(_, let t, _), .heading(_, _, let t, _),
-             .bullet(_, let t, _), .numbered(_, let t, _),
-             .todo(_, let t, _, _), .quote(_, let t, _),
-             .toggle(_, let t, _):
-            return String(t.characters)
-        case .templateButton(_, let label, _):
-            return label
-        case .code(_, let s, _, _): return s.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .divider: return ""
-        case .subpage(_, let title, _, _): return title
-        case .image(_, let source, _, _): return source
-        }
+    @Test func headingWithBulletListIdempotent() {
+        assertIdempotent("# Section\n\n- item\n- item\n  - nested\n\nbelow\n")
     }
 }

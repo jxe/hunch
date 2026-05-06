@@ -137,12 +137,20 @@ public struct MentionMenuState: Equatable, Sendable {
 public struct ReorderLift: Equatable, Sendable {
     /// Lead block — what the lift overlay renders.
     public var block: Block
-    /// All blocks being reordered. Single-row drags carry one ID; drags
+    /// All subtree-roots being reordered. Single-row drags carry one ID; drags
     /// initiated from a multi-block selection carry the whole selection.
     public var ids: [BlockID]
+    /// The parent of the lifted blocks (`nil` for root). All `ids` share this
+    /// parent — the gesture refuses to lift a selection that crosses parents.
+    public var sourceParentID: BlockID?
+    /// Range of positions occupied by `ids` under `sourceParentID` at lift
+    /// time, in document order. Used by the drop validator to reject "drop
+    /// onto yourself".
+    public var sourcePositions: ClosedRange<Int>
+    /// All ids in the lifted subtrees (roots + every descendant). Drop validator
+    /// rejects targets whose `parent` is in this set (cycle prevention).
+    public var draggedSubtreeIDs: Set<BlockID>
     public var sourceFrame: CGRect
-    public var sourceIndex: Int
-    public var sourceEndIndex: Int
     public var touchOffset: CGSize
     public var location: CGPoint
     /// True while the lift is mounted but `touchOffset` is a placeholder
@@ -156,9 +164,10 @@ public struct ReorderLift: Equatable, Sendable {
     public init(
         block: Block,
         ids: [BlockID],
+        sourceParentID: BlockID?,
+        sourcePositions: ClosedRange<Int>,
+        draggedSubtreeIDs: Set<BlockID>,
         sourceFrame: CGRect,
-        sourceIndex: Int,
-        sourceEndIndex: Int,
         touchOffset: CGSize,
         location: CGPoint,
         pendingAnchor: Bool,
@@ -166,9 +175,10 @@ public struct ReorderLift: Equatable, Sendable {
     ) {
         self.block = block
         self.ids = ids
+        self.sourceParentID = sourceParentID
+        self.sourcePositions = sourcePositions
+        self.draggedSubtreeIDs = draggedSubtreeIDs
         self.sourceFrame = sourceFrame
-        self.sourceIndex = sourceIndex
-        self.sourceEndIndex = sourceEndIndex
         self.touchOffset = touchOffset
         self.location = location
         self.pendingAnchor = pendingAnchor
@@ -186,10 +196,13 @@ public struct PinchPreviewState: Equatable, Sendable {
     }
 }
 
-/// Resolved drop target: either a between-rows insertion (snapshot index in
-/// `document.blocks`) or an "append as child" of a closed parent.
+/// Resolved drop target. `insertAt(DropPath)` is the between-rows form (parent
+/// id + position in that parent's children list). `asLastChildOf` is a
+/// distinct case because the UX is different — drop highlight lives on the
+/// parent row, the chevron auto-expands. `intoSubpage` is a cross-document
+/// move into a `.subpage`.
 public enum DropTarget: Equatable, Sendable {
-    case insertBefore(Int)
+    case insertAt(DropPath)
     case asLastChildOf(BlockID)
     case intoSubpage(BlockID, String)
 }
@@ -242,10 +255,10 @@ public extension EditorState {
         if case .pinchOpening(let p) = gesture { return p }
         return nil
     }
-    /// Insertion-slot view of `currentDropTarget` — non-nil only when the
+    /// Insertion-path view of `currentDropTarget` — non-nil only when the
     /// resolved target is a between-rows drop.
-    var dropHoverIndex: Int? {
-        if case .insertBefore(let i) = currentDropTarget { return i }
+    var dropHoverPath: DropPath? {
+        if case .insertAt(let p) = currentDropTarget { return p }
         return nil
     }
     /// Drop-on-row view of `currentDropTarget` — the row id we're hovering

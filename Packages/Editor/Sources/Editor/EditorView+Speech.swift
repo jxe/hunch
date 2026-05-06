@@ -45,7 +45,7 @@ extension EditorView {
 
         let newBlock = Block.paragraph(text: AttributedString(trimmed))
         mutate("Insert Transcript") {
-            document.blocks.append(newBlock)
+            document.children.append(newBlock)
         }
         transferFocus(to: .nav(cursor: newBlock.id))
     }

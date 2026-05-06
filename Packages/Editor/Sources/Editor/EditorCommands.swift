@@ -18,6 +18,13 @@ public final class EditorCommands {
     public var indent: () -> Void = {}
     public var outdent: () -> Void = {}
 
+    /// Validity predicates for gray-out. The menu bar reads these to disable
+    /// `Indent` / `Outdent` items when no candidate block could perform the
+    /// op (e.g. selection is at the document root with no previous sibling).
+    /// Defaults return `true` so menus stay enabled when no editor is focused.
+    public var canIndent: () -> Bool = { true }
+    public var canOutdent: () -> Bool = { true }
+
     public init() {}
 }
 
