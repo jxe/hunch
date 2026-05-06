@@ -326,43 +326,60 @@ extension EditorView {
 
     fileprivate func resolveDropTarget(atY y: CGFloat, snapshot: [Block], hidden: Set<BlockID>) -> DropTarget {
         let liftIDs = state.reorderLift?.ids ?? []
-        // Hit-test for "drop on closed parent". Use a small edge band so the
-        // gap above/below the row still feels reachable.
+        // Build the visible-flat layout once and use it for BOTH the hit-test
+        // (drop on subpage / closed parent) and the between-rows slot
+        // resolver. Iterating the top-level snapshot directly would miss
+        // nested rows; iterating the legacy flat preorder of `snapshot`
+        // would double-count blocks that also live inside their parent's
+        // `children` array.
+        let layout = computeVisibleLayout(snapshot: document.children, hidden: hidden)
+        let rows = layout.rows
+
+        // Hit-test for "drop on closed parent" / "drop onto subpage". Edge
+        // band keeps the gap above/below the row reachable for between-rows
+        // drops.
         let edgeBand: CGFloat = 6
-        for block in snapshot where !hidden.contains(block.id) && !liftIDs.contains(block.id) {
-            guard let frame = rowFrames[block.id] else { continue }
-            if case .subpage(_, let path) = block.kind,
+        for row in rows where !liftIDs.contains(row.block.id) {
+            guard let frame = rowFrames[row.block.id] else { continue }
+            if case .subpage(_, let path) = row.block.kind,
                y >= frame.minY && y <= frame.maxY {
-                return .intoSubpage(block.id, path)
+                return .intoSubpage(row.block.id, path)
             }
             guard y > frame.minY + edgeBand && y < frame.maxY - edgeBand else { continue }
-            if isCollapsedSection(block) {
-                return .asLastChildOf(block.id)
+            if isCollapsedSection(row.block) {
+                return .asLastChildOf(row.block.id)
             }
         }
-        // Between-rows insertion: ask the y-resolver for the "kth visible
-        // slot," then convert to a tree DropPath using the visible layout's
-        // depth + parent metadata.
-        let layout = computeVisibleLayout(snapshot: document.children, hidden: hidden)
-        let visibleCount = ReorderDropResolver.insertionIndex(
+
+        // Between-rows insertion: resolve "kth visible slot" against the
+        // visible-flat row frames, then convert to a tree DropPath using
+        // the layout's depth + parent metadata.
+        let visibleFrames: [ReorderDropFrame] = rows.compactMap { row in
+            rowFrames[row.block.id].map { ReorderDropFrame(id: row.block.id, frame: $0) }
+        }
+        let slot = ReorderDropResolver.insertionIndex(
             forY: y,
-            rowFrames: orderedDropFrames(snapshot: snapshot),
-            previousIndex: visibleSlotForCurrentDropPath(in: layout.rows)
+            rowFrames: visibleFrames,
+            previousIndex: visibleSlotForCurrentDropPath(in: rows)
         )
-        return .insertAt(dropPath(forVisibleSlot: visibleCount, rows: layout.rows))
+        return .insertAt(dropPath(forVisibleSlot: slot, rows: rows))
     }
 
-    /// Convert a visible-flat slot index to a tree `DropPath`, consulting the
-    /// row immediately above (and below) the slot to choose the right parent
-    /// and position. The semantics mirror what the user sees:
+    /// Convert a visible-flat slot index to a tree `DropPath`. Decides based
+    /// on the parent relationship between the rows above and below the slot,
+    /// not on visible depth — heading children render at the heading's
+    /// depth (Notion-flush layout), so depth alone can't distinguish
+    /// "first child of heading" from "next sibling of heading."
     ///
-    /// - slot 0 → top of the document (`parent: nil, position: 0`)
+    /// - slot 0 → top of the document
     /// - trailing slot → append at the document root
-    /// - row[k] is a child of row[k-1] (depth strictly greater) → the drop is
-    ///   the FIRST child of row[k-1] (i.e. before row[k] under that parent)
-    /// - row[k] is a sibling of row[k-1] → drop as the next sibling of row[k-1]
-    /// - row[k] is shallower than row[k-1] → exiting the parent's subtree;
-    ///   drop "before row[k]" at row[k]'s depth
+    /// - row[k] is a direct child of row[k-1] → drop becomes first child of
+    ///   row[k-1] (whether or not depths differ — heading-children look
+    ///   visually flat with the heading)
+    /// - row[k] and row[k-1] share a parent → drop as the next sibling of
+    ///   row[k-1] under that shared parent
+    /// - otherwise (we're exiting row[k-1]'s subtree to land in below's
+    ///   parent) → drop "before row[k]" at row[k]'s depth
     private func dropPath(forVisibleSlot slot: Int, rows: [EditorView.VisibleRow]) -> DropPath {
         if slot <= 0 {
             return DropPath(parent: nil, position: 0)
@@ -373,16 +390,23 @@ extension EditorView {
         let above = rows[slot - 1]
         let below = rows[slot]
 
-        if below.depth > above.depth {
+        // First child of `above`. Catches the heading-flush case where above
+        // and below share a depth value but below is structurally inside
+        // above. Without this check, the slot would resolve to "next
+        // sibling of above" — the wrong scope.
+        if below.parentID == above.block.id {
             return DropPath(parent: above.block.id, position: 0)
         }
-        if below.depth == above.depth {
+
+        // Sibling under a shared parent.
+        if above.parentID == below.parentID {
             let parentID = above.parentID
             let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
             let i = siblings.firstIndex(where: { $0.id == above.block.id }) ?? siblings.count - 1
             return DropPath(parent: parentID, position: i + 1)
         }
-        // below.depth < above.depth — exiting above's subtree.
+
+        // Exiting above's subtree. Drop "before below" in below's parent.
         let parentID = below.parentID
         let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
         let i = siblings.firstIndex(where: { $0.id == below.block.id }) ?? 0

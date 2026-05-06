@@ -495,9 +495,23 @@ public final class Document: @MainActor Identifiable {
 
     /// Move the given subtrees to `target` in one go. Validates with
     /// `canDrop` first. Preserves document order of the moved blocks.
+    ///
+    /// Adjusts `target.position` for source blocks that lived under
+    /// `target.parent` at a position before the drop slot — without this,
+    /// dragging a block forward within the same parent lands it one slot
+    /// later than intended (because removing the source shifts the trailing
+    /// siblings down by one before the insert).
     @discardableResult
     public func moveSubtrees(_ ids: [BlockID], to target: DropPath) -> Bool {
         guard canDrop(ids: ids, to: target) else { return false }
+
+        // Snapshot the source positions in target.parent BEFORE removal so
+        // we can compute "how many source blocks were before the target".
+        let preSiblings: [Block] = target.parent.flatMap(find)?.children ?? children
+        let removalsBeforeTarget = ids.compactMap { id -> Int? in
+            preSiblings.firstIndex(where: { $0.id == id })
+        }.filter { $0 < target.position }.count
+
         // Collect the subtrees in document order before removing them.
         let ordered = ids.sorted { (a, b) in
             (documentOrder(of: a) ?? .max) < (documentOrder(of: b) ?? .max)
@@ -508,21 +522,16 @@ public final class Document: @MainActor Identifiable {
                 collected.append(removed)
             }
         }
-        // After removals, target.position may have shifted. Adjust if any of
-        // the removed siblings lived under target.parent at a position ≤ the
-        // requested target.position.
-        var adjustedPosition = target.position
+
+        // Apply the pre-removal adjustment, then clamp to the now-shorter
+        // children count.
+        let postCount: Int
         if let targetParent = target.parent {
-            // Count how many of the collected blocks were originally under targetParent
-            // at a position less than the original target.position. Without the original
-            // positions captured pre-removal we approximate by clamping; the caller is
-            // expected to compute target on a snapshot they took before the drag.
-            if let parentBlock = find(targetParent) {
-                adjustedPosition = max(0, min(adjustedPosition, parentBlock.children.count))
-            }
+            postCount = find(targetParent)?.children.count ?? 0
         } else {
-            adjustedPosition = max(0, min(adjustedPosition, children.count))
+            postCount = children.count
         }
+        let adjustedPosition = max(0, min(target.position - removalsBeforeTarget, postCount))
         let dropPath = DropPath(parent: target.parent, position: adjustedPosition)
         return insertSubtrees(collected, at: dropPath)
     }
