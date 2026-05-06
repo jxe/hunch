@@ -3,6 +3,11 @@ import Editor
 import Markdown
 
 public enum BlockParser {
+    /// ASCII-only whitespace — used in `flushRegular` so that NBSP-only buffers
+    /// (the empty-paragraph spacer marker) fall through to swift-markdown rather
+    /// than being skipped. Foundation's `.whitespacesAndNewlines` includes U+00A0.
+    private static let asciiWhitespace = CharacterSet(charactersIn: " \t\r\n")
+
     public static func parse(_ source: String) -> [Block] {
         parseTemplateContainers(source, baseIndent: 0)
     }
@@ -51,7 +56,7 @@ public enum BlockParser {
         var fenceLength: Int? = nil
 
         func flushRegular() {
-            guard !regular.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            guard !regular.trimmingCharacters(in: BlockParser.asciiWhitespace).isEmpty else {
                 regular = ""
                 return
             }
@@ -160,7 +165,7 @@ public enum BlockParser {
         var i = 0
 
         func flushRegular() {
-            guard !regular.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            guard !regular.trimmingCharacters(in: BlockParser.asciiWhitespace).isEmpty else {
                 regular = ""
                 return
             }
@@ -280,7 +285,11 @@ public enum BlockParser {
             if let image = detectBlockImage(inlines) {
                 return [image.withIndent(indent)]
             }
-            return [.paragraph(text: inlineToAttributed(inlines), indent: indent)]
+            let attr = inlineToAttributed(inlines)
+            if isEmptySpacerParagraph(attr) {
+                return [.paragraph(text: AttributedString(""), indent: indent)]
+            }
+            return [.paragraph(text: attr, indent: indent)]
 
         case let blockQuote as BlockQuote:
             // Each paragraph child becomes a separate `.quote` block in our model.
@@ -441,6 +450,18 @@ public enum BlockParser {
             result.append(renderInline(inline, attributes: attributes))
         }
         return result
+    }
+
+    // MARK: - Empty-paragraph spacer detection
+
+    /// Recognise a paragraph whose only character is U+00A0 — the marker
+    /// `BlockSerializer` emits for empty paragraphs. CommonMark has no syntax
+    /// for blank-line *content*, so this round-trips intentional empty paragraphs
+    /// the user inserted between siblings.
+    private static func isEmptySpacerParagraph(_ attr: AttributedString) -> Bool {
+        let chars = attr.characters
+        guard chars.count == 1, let first = chars.first else { return false }
+        return first == "\u{00A0}"
     }
 
     // MARK: - Subpage detection

@@ -69,7 +69,13 @@ public enum BlockSerializer {
     public static func serialize(_ block: Block, resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }) -> String {
         switch block {
         case .paragraph(_, let text, let indent):
-            return indentPrefix(indent) + inlineString(text) + "\n\n"
+            // An empty paragraph has no native markdown representation — blank lines
+            // are block separators, not blocks. Emit U+00A0 (non-breaking space) on
+            // its own line so the paragraph survives round-trip; the parser detects
+            // a single-NBSP paragraph and converts it back to empty.
+            let body = inlineString(text)
+            let line = body.isEmpty ? "\u{00A0}" : body
+            return indentPrefix(indent) + line + "\n\n"
 
         case .heading(_, let level, let text, let indent):
             return indentPrefix(indent) + String(repeating: "#", count: level) + " " + inlineString(text) + "\n\n"

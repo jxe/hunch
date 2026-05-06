@@ -665,6 +665,65 @@ struct RoundTripTests {
         }
     }
 
+    // MARK: - empty-paragraph spacers
+    //
+    // Empty paragraphs between siblings have no native markdown representation —
+    // CommonMark collapses runs of blank lines into block separators. The
+    // serializer emits U+00A0 on its own line as a sentinel; the parser converts
+    // single-NBSP paragraphs back to empty.
+
+    @Test func emptyParagraphBetweenBullets() {
+        let blocks: [Block] = [
+            .bullet(text: AttributedString("first")),
+            .paragraph(text: AttributedString("")),
+            .bullet(text: AttributedString("second")),
+        ]
+        roundTripBlocks(blocks)
+    }
+
+    @Test func emptyParagraphBetweenParagraphs() {
+        let blocks: [Block] = [
+            .paragraph(text: AttributedString("alpha")),
+            .paragraph(text: AttributedString("")),
+            .paragraph(text: AttributedString("beta")),
+        ]
+        roundTripBlocks(blocks)
+    }
+
+    @Test func multipleConsecutiveEmptyParagraphs() {
+        let blocks: [Block] = [
+            .paragraph(text: AttributedString("alpha")),
+            .paragraph(text: AttributedString("")),
+            .paragraph(text: AttributedString("")),
+            .paragraph(text: AttributedString("beta")),
+        ]
+        roundTripBlocks(blocks)
+    }
+
+    @Test func lonelyEmptyParagraph() {
+        // Defends the `flushRegular` ASCII-whitespace fix: a document whose
+        // entire content is U+00A0 must not be discarded before reaching
+        // swift-markdown.
+        let blocks: [Block] = [.paragraph(text: AttributedString(""))]
+        roundTripBlocks(blocks)
+    }
+
+    @Test func paragraphWithEmbeddedNBSPNotPromoted() {
+        // A paragraph whose text *contains* an NBSP among other characters
+        // is real content, not a spacer. It must round-trip as a paragraph.
+        let blocks: [Block] = [
+            .paragraph(text: AttributedString("hello\u{00A0}world")),
+        ]
+        let serialized = BlockSerializer.serialize(blocks)
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 1)
+        if case .paragraph(_, let text, _) = reparsed[0] {
+            #expect(String(text.characters) == "hello\u{00A0}world")
+        } else {
+            Issue.record("expected paragraph with embedded NBSP")
+        }
+    }
+
     // MARK: - helpers
 
     private func roundTrip(_ source: String, file: StaticString = #filePath, line: UInt = #line) {
@@ -674,6 +733,16 @@ struct RoundTripTests {
         // Block-shape equivalence: count and case of each block.
         #expect(parsed.count == reparsed.count, "block count mismatch after round-trip")
         for (a, b) in zip(parsed, reparsed) {
+            #expect(blockKind(a) == blockKind(b), "block kind mismatch: \(blockKind(a)) vs \(blockKind(b))")
+            #expect(plainText(a) == plainText(b), "text mismatch")
+        }
+    }
+
+    private func roundTripBlocks(_ blocks: [Block]) {
+        let serialized = BlockSerializer.serialize(blocks)
+        let reparsed = BlockParser.parse(serialized)
+        #expect(blocks.count == reparsed.count, "block count mismatch (serialized: \(serialized.debugDescription))")
+        for (a, b) in zip(blocks, reparsed) {
             #expect(blockKind(a) == blockKind(b), "block kind mismatch: \(blockKind(a)) vs \(blockKind(b))")
             #expect(plainText(a) == plainText(b), "text mismatch")
         }
