@@ -1,15 +1,14 @@
 # Now
 
+- is scrolling a bit janky
+- pasting images outside in edit mode
 - refresh Notion typography and spacing
+- inline links & clicks (see tasks/)
 
 # Soon
 
 - there may be some cases where formatting is getting lost
 - drop indendenting could be more intelligent
-- inline links & clicks (see tasks/)
-
-# Soon
-
 - hunch-unit-tests-signing error
 - link previews and mentions when a row is in 'edit' mode
 - round the `style` tags corners

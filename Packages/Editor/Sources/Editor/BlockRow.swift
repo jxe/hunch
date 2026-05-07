@@ -31,6 +31,7 @@ public struct BlockRow: View, Equatable {
             && lhs.isDropTarget == rhs.isDropTarget
             && lhs.isActionMenuTarget == rhs.isActionMenuTarget
             && lhs.mentionActive == rhs.mentionActive
+            && lhs.pageTitles == rhs.pageTitles
     }
     @FocusState.Binding var editorFocused: BlockID?
     let onKey: (BlockKey) -> KeyPress.Result
@@ -49,7 +50,14 @@ public struct BlockRow: View, Equatable {
     /// Called when the toggle's chevron is tapped. No-op for non-toggle blocks.
     let onToggleExpansion: () -> Void
     let onTemplateButtonPress: () -> Void
-    let pageTitle: (String) -> String?
+    /// Resolved titles for every `.md` page reference this row needs to render —
+    /// the subpage path for `.subpage` blocks, plus inline page links inside
+    /// `block.text`. Pre-resolved at the call site so page renames invalidate
+    /// the row's `Equatable` `==` (the parent `pageTitle` closure isn't itself
+    /// comparable). Map from the link's `path.md` (matching what `block.kind`
+    /// stores for subpages and what `.link` URLs' `absoluteString` carries for
+    /// inline page links) to the resolved page title.
+    let pageTitles: [String: String]
     /// Forwarded to the BlockTextEditor — called once on its first mount to fetch
     /// the cursor target captured at tap/split/merge time. EditorView constructs
     /// this closure to atomically read-and-clear `EditorState.pendingInitialCursor`.
@@ -77,7 +85,7 @@ public struct BlockRow: View, Equatable {
         onClickAtPoint: @escaping (CGPoint) -> Void = { _ in },
         onToggleExpansion: @escaping () -> Void = {},
         onTemplateButtonPress: @escaping () -> Void = {},
-        pageTitle: @escaping (String) -> String? = { _ in nil },
+        pageTitles: [String: String] = [:],
         consumeInitialCursor: @escaping () -> InitialCursorTarget? = { nil }
     ) {
         self._block = block
@@ -98,7 +106,7 @@ public struct BlockRow: View, Equatable {
         self.onClickAtPoint = onClickAtPoint
         self.onToggleExpansion = onToggleExpansion
         self.onTemplateButtonPress = onTemplateButtonPress
-        self.pageTitle = pageTitle
+        self.pageTitles = pageTitles
         self.consumeInitialCursor = consumeInitialCursor
     }
 
@@ -194,7 +202,7 @@ public struct BlockRow: View, Equatable {
             templateButtonRow()
 
         case .subpage(let title, let path):
-            subpageRow(title: pageTitle(path) ?? title)
+            subpageRow(title: pageTitles[path] ?? title)
 
         case .image(let source, let alt):
             imageRow(source: source, alt: alt)
@@ -363,7 +371,7 @@ public struct BlockRow: View, Equatable {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: pageTitle))
+                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageTitles[$0] }))
                         .font(NotionStyle.body())
                         .lineSpacing(NotionStyle.bodyLineSpacing)
                 }
@@ -444,7 +452,7 @@ public struct BlockRow: View, Equatable {
                     baseFont: font,
                     boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
                     fontSize: fontSize,
-                    pageTitle: pageTitle,
+                    pageTitles: pageTitles,
                     previews: linkPreviews
                 )
                     .font(font)
@@ -461,9 +469,30 @@ public struct BlockRow: View, Equatable {
     }
 }
 
+/// Pre-resolve every `.md` page title this row needs to render: the subpage
+/// path for `.subpage` blocks plus every inline page-link URL inside the
+/// block's text. The result is the value `BlockRow` stores as `pageTitles` and
+/// compares in `==`, so a rename of any referenced page changes the map for
+/// the rows that mention it (and only those rows) — letting `.equatable()`
+/// short-circuit the rest while keeping link titles correct.
+func resolvePageTitles(for block: Block, resolver: (String) -> String?) -> [String: String] {
+    var result: [String: String] = [:]
+    if case .subpage(_, let path) = block.kind, let resolved = resolver(path) {
+        result[path] = resolved
+    }
+    for run in block.text.runs {
+        guard let url = run.link, !isExternalLinkURL(url), url.absoluteString.hasSuffix(".md") else { continue }
+        let key = url.absoluteString
+        if result[key] == nil, let resolved = resolver(key) {
+            result[key] = resolved
+        }
+    }
+    return result
+}
+
 /// Walk an `AttributedString` and gather every `http`/`https` URL referenced
 /// by an inline `.link` run. Internal `.md` page links don't go through link
-/// previews — they have their own subpage-resolution path (`pageTitle`).
+/// previews — they have their own subpage-resolution path (`pageTitles`).
 func collectExternalURLs(in text: AttributedString) -> Set<URL> {
     var set: Set<URL> = []
     for run in text.runs {
@@ -485,7 +514,7 @@ private func decoratedText(
     baseFont: Font,
     boldFont: Font,
     fontSize: CGFloat,
-    pageTitle: (String) -> String?,
+    pageTitles: [String: String],
     previews: [URL: LinkPreview]
 ) -> Text {
     var output = Text("")
@@ -501,7 +530,7 @@ private func decoratedText(
         var displayText = runText
         if let url = link {
             if !isExternalLinkURL(url), url.absoluteString.hasSuffix(".md"),
-               let resolved = pageTitle(url.absoluteString) {
+               let resolved = pageTitles[url.absoluteString] {
                 displayText = resolved
             } else if isExternalLinkURL(url),
                       let preview = previews[url],

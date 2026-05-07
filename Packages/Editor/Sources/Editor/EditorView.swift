@@ -105,7 +105,7 @@ public struct EditorView: View {
     /// resets; explicitly cleared on document switch via `.onChange(of: document.id)`.
     @State var undoController = DocumentUndoController()
     @State var editorCommands = EditorCommands()
-    @State var rowFrames: [BlockID: CGRect] = [:]
+    @State var rowFrames = RowFramesStore()
     @State var lastDropHapticIndex: Int?
     @State var pinchGestureActive = false
     @State var pinchCrossedInsertThreshold = false
@@ -222,7 +222,7 @@ public struct EditorView: View {
                 .padding(.top, 32)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .onPreferenceChange(RowFramePreferenceKey.self) { frames in
-                    rowFrames = frames
+                    rowFrames.frames = frames
                 }
                 .iosPageReorder(
                     isEnabled: !pinchGestureActive,
@@ -252,7 +252,7 @@ public struct EditorView: View {
                 // sibling and superview never reaches the scroll view → metrics stay
                 // at zero, autoscroll bails. macScrollMetrics uses
                 // `.onScrollGeometryChange` so it doesn't need to be inside.
-                .iosScrollMetrics($scrollMetrics)
+                .iosScrollMetrics(scrollMetrics)
             }
             .coordinateSpace(name: PageHoverCoordinateSpace.name)
             .iosPageBlockDropTarget(
@@ -266,7 +266,7 @@ public struct EditorView: View {
                     state.currentDropTarget = nil
                 }
             )
-            .macScrollMetrics($scrollMetrics)
+            .macScrollMetrics(scrollMetrics)
             .macScrollPosition($scrollPosition)
             .macNearestRowHover(rowFrames: rowFrames) { id in state.hoveredBlock = id }
             .background(NotionStyle.background)
@@ -460,9 +460,10 @@ public struct EditorView: View {
             onTemplateButtonPress: {
                 instantiateTemplateButton(blockID: block.id)
             },
-            pageTitle: pageTitle,
+            pageTitles: resolvePageTitles(for: block, resolver: pageTitle),
             consumeInitialCursor: { state.takePendingInitialCursor() }
         )
+            .equatable()
             // Whole-row reorder on macOS. Coexists with click-to-edit
             // (.onTapGesture below) because of the 4pt minimumDistance: a
             // click without movement enters edit mode; movement past 4pt

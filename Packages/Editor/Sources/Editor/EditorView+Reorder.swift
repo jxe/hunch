@@ -64,7 +64,7 @@ extension EditorView {
                 numberingIndex: nil,
                 isSelected: false,
                 isEditing: false,
-                pageTitle: pageTitle
+                pageTitles: resolvePageTitles(for: lift.block, resolver: pageTitle)
             )
             .frame(width: lift.sourceFrame.width, height: lift.sourceFrame.height, alignment: .leading)
             .overlay(alignment: .topLeading) {

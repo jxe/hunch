@@ -33,12 +33,12 @@ extension View {
     }
 
     @ViewBuilder
-    func macNearestRowHover(rowFrames: [BlockID: CGRect], onChange: @escaping (BlockID?) -> Void) -> some View {
+    func macNearestRowHover(rowFrames: RowFramesStore, onChange: @escaping (BlockID?) -> Void) -> some View {
         #if os(macOS)
         self.onContinuousHover { phase in
             switch phase {
             case .active(let location):
-                onChange(nearestRowID(to: location, in: rowFrames))
+                onChange(nearestRowID(to: location, in: rowFrames.frames))
             case .ended:
                 onChange(nil)
             }
@@ -101,7 +101,7 @@ extension View {
     @ViewBuilder
     func iosPageReorder(
         isEnabled: Bool,
-        rowFrames: [BlockID: CGRect],
+        rowFrames: RowFramesStore,
         onBegin: @escaping (BlockID, CGPoint) -> Void,
         onChanged: @escaping (CGPoint) -> Void,
         onEnded: @escaping (CGPoint) -> Void,
@@ -151,7 +151,7 @@ extension View {
     }
 
     @ViewBuilder
-    func iosScrollMetrics(_ metrics: Binding<PageScrollMetrics>) -> some View {
+    func iosScrollMetrics(_ metrics: PageScrollMetrics) -> some View {
         #if os(iOS)
         self.background(IOSScrollMetricsReader(metrics: metrics))
         #else
@@ -164,17 +164,17 @@ extension View {
     /// and reorder auto-scroll both read from this; programmatic scroll on
     /// macOS goes through `macScrollPosition` below.
     @ViewBuilder
-    func macScrollMetrics(_ metrics: Binding<PageScrollMetrics>) -> some View {
+    func macScrollMetrics(_ metrics: PageScrollMetrics) -> some View {
         #if os(macOS)
         self
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, new in
-                metrics.wrappedValue.contentOffsetY = new
+                metrics.contentOffsetY = new
             }
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, new in
-                metrics.wrappedValue.contentHeight = new
+                metrics.contentHeight = new
             }
             .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { _, new in
-                metrics.wrappedValue.viewportHeight = new
+                metrics.viewportHeight = new
             }
         #else
         self
@@ -229,7 +229,28 @@ struct PagePinchValue {
     var spreadDelta: CGFloat
 }
 
-struct PageScrollMetrics: Equatable {
+/// Live row-frame store. Same reasoning as `PageScrollMetrics`: SwiftUI emits
+/// fresh `RowFramePreferenceKey` values every scroll frame (rows' frames in
+/// `PageHoverCoordinateSpace` shift as scroll content moves), and writing
+/// those into `@State` invalidates `EditorView.body`. Storing the dict on a
+/// reference type lets the preference handler mutate without re-firing body,
+/// while reorder/hover gesture handlers still see the latest frames through
+/// the same instance.
+@MainActor
+final class RowFramesStore {
+    var frames: [BlockID: CGRect] = [:]
+
+    subscript(id: BlockID) -> CGRect? {
+        frames[id]
+    }
+}
+
+/// Reference type so property mutations (driven by every scroll tick) don't
+/// reassign `EditorView`'s `@State`-held value and invalidate `body`. The
+/// gesture extensions (reorder/pinch auto-scroll) read these properties from
+/// the live instance; `EditorView.body` itself never reads them.
+@MainActor
+final class PageScrollMetrics {
     var viewportHeight: CGFloat = 0
     var contentHeight: CGFloat = 0
     var contentOffsetY: CGFloat = 0
@@ -338,7 +359,7 @@ struct IOSNavigationBackGestureGate: UIViewControllerRepresentable {
 /// handler ignores the events.
 struct IOSPageReorderGestureBridge: UIViewRepresentable {
     var isEnabled: Bool
-    var rowFrames: [BlockID: CGRect]
+    var rowFrames: RowFramesStore
     var onBegin: (BlockID, CGPoint) -> Void
     var onChanged: (CGPoint) -> Void
     var onEnded: (CGPoint) -> Void
@@ -419,7 +440,7 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
             let location = pageCoordinateLocation(for: recognizer, scrollView: scrollView)
             switch recognizer.state {
             case .began:
-                guard let blockID = nearestRowID(to: location, frames: parent.rowFrames) else {
+                guard let blockID = nearestRowID(to: location, frames: parent.rowFrames.frames) else {
                     activeBlockID = nil
                     return
                 }
@@ -474,7 +495,7 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
                 return true
             }
             let location = pageCoordinateLocation(for: gestureRecognizer, scrollView: scrollView)
-            return nearestRowID(to: location, frames: parent.rowFrames) != nil
+            return nearestRowID(to: location, frames: parent.rowFrames.frames) != nil
         }
     }
 }
@@ -686,10 +707,10 @@ final class PageScrollController {
 }
 
 struct IOSScrollMetricsReader: UIViewRepresentable {
-    @Binding var metrics: PageScrollMetrics
+    let metrics: PageScrollMetrics
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(metrics: $metrics)
+        Coordinator(metrics: metrics)
     }
 
     func makeUIView(context: Context) -> ReaderView {
@@ -699,7 +720,7 @@ struct IOSScrollMetricsReader: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ReaderView, context: Context) {
-        context.coordinator.metrics = $metrics
+        context.coordinator.metrics = metrics
         uiView.coordinator = context.coordinator
         uiView.installIfNeeded()
     }
@@ -754,13 +775,13 @@ struct IOSScrollMetricsReader: UIViewRepresentable {
 
     @MainActor
     final class Coordinator {
-        var metrics: Binding<PageScrollMetrics>
+        var metrics: PageScrollMetrics
         private weak var observedScrollView: UIScrollView?
         private var observation: NSKeyValueObservation?
         private var boundsObservation: NSKeyValueObservation?
         private var contentSizeObservation: NSKeyValueObservation?
 
-        init(metrics: Binding<PageScrollMetrics>) {
+        init(metrics: PageScrollMetrics) {
             self.metrics = metrics
         }
 
@@ -797,16 +818,11 @@ struct IOSScrollMetricsReader: UIViewRepresentable {
         }
 
         private func publish(_ scrollView: UIScrollView) {
-            let next = PageScrollMetrics(
-                viewportHeight: scrollView.bounds.height,
-                contentHeight: scrollView.contentSize.height,
-                contentOffsetY: scrollView.contentOffset.y,
-                topInset: scrollView.adjustedContentInset.top,
-                bottomInset: scrollView.adjustedContentInset.bottom
-            )
-            if metrics.wrappedValue != next {
-                metrics.wrappedValue = next
-            }
+            metrics.viewportHeight = scrollView.bounds.height
+            metrics.contentHeight = scrollView.contentSize.height
+            metrics.contentOffsetY = scrollView.contentOffset.y
+            metrics.topInset = scrollView.adjustedContentInset.top
+            metrics.bottomInset = scrollView.adjustedContentInset.bottom
         }
     }
 }
