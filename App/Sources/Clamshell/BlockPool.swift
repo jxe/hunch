@@ -16,8 +16,8 @@ public actor BlockPool {
     public static let directoryName = ".blocks"
     private static let parentSentinelTopLevel = "_"
 
-    private let workspaceRoot: URL
-    private let store: FileStore
+    nonisolated private let workspaceRoot: URL
+    nonisolated private let store: FileStore
 
     public init(workspaceRoot: URL, store: FileStore = FileStore()) {
         self.workspaceRoot = workspaceRoot
@@ -99,20 +99,31 @@ public actor BlockPool {
     }
 
     /// All pool entries for the given page, sorted by mtime descending.
+    /// Reads + header-parses every file. For the recovery list path, prefer
+    /// `enumerateMetadata` + on-demand `read`.
     public func enumerate(page relativePath: String) throws -> [PoolEntry] {
         let dir = poolDir(for: relativePath)
         guard FileManager.default.fileExists(atPath: dir.path) else { return [] }
         return try entries(in: dir, source: relativePath)
     }
 
-    /// All pool entries across the workspace, grouped by source page rel path.
-    public func enumerateAll() throws -> [String: [PoolEntry]] {
+    /// Metadata-only enumeration for one page: filenames + mtimes only, no
+    /// file reads. Drives Pass 1 of the Recover sheet.
+    public func enumerateMetadata(page relativePath: String) -> [PoolEntryMetadata] {
+        let dir = poolDir(for: relativePath)
+        guard FileManager.default.fileExists(atPath: dir.path) else { return [] }
+        return metadata(in: dir, source: relativePath)
+    }
+
+    /// Metadata-only enumeration across the workspace, grouped by source rel
+    /// path. Pure directory scan + filename filter — no per-file reads.
+    public func enumerateAllMetadata() -> [String: [PoolEntryMetadata]] {
         let root = workspaceRoot.appendingPathComponent(Self.directoryName, isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [:] }
-        var out: [String: [PoolEntry]] = [:]
-        for pageDir in try pageDirs(under: root) {
+        var out: [String: [PoolEntryMetadata]] = [:]
+        for pageDir in (try? pageDirs(under: root)) ?? [] {
             let rel = relativePath(of: pageDir, under: root)
-            out[rel] = try entries(in: pageDir, source: rel)
+            out[rel] = metadata(in: pageDir, source: rel)
         }
         return out
     }
@@ -153,17 +164,9 @@ public actor BlockPool {
     }
 
     private func entries(in dir: URL, source: String) throws -> [PoolEntry] {
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
-        )) ?? []
         var out: [PoolEntry] = []
-        for url in urls {
-            guard url.pathExtension.lowercased() == "md" else { continue }
-            let hash = url.deletingPathExtension().lastPathComponent
-            // Filenames are SHA-256 hex (64 chars). Skip anything else.
-            guard hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else { continue }
-            if let entry = try? loadEntry(url: url, source: source, hash: hash) {
+        for meta in metadata(in: dir, source: source) {
+            if let entry = try? loadEntry(meta: meta) {
                 out.append(entry)
             }
         }
@@ -171,25 +174,42 @@ public actor BlockPool {
         return out
     }
 
-    private func loadEntry(url: URL, source: String, hash: String) throws -> PoolEntry {
-        let body = try store.read(url)
-        let (parentHash, markdown) = parseHeader(body)
-        let blocks = BlockParser.parse(markdown)
-        // The pool stores one block per file (atomic — no children). If the
-        // markdown happens to round-trip into multiple blocks (rare/corrupt),
-        // take the first.
-        guard let block = blocks.first else {
-            throw FileStoreError.readFailed(url, underlying: NSError(domain: "BlockPool", code: -1, userInfo: [NSLocalizedDescriptionKey: "Empty pool entry"]))
+    private func metadata(in dir: URL, source: String) -> [PoolEntryMetadata] {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
+        )) ?? []
+        var out: [PoolEntryMetadata] = []
+        for url in urls {
+            guard url.pathExtension.lowercased() == "md" else { continue }
+            let hash = url.deletingPathExtension().lastPathComponent
+            // Filenames are SHA-256 hex (64 chars). Skip anything else.
+            guard hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else { continue }
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            out.append(PoolEntryMetadata(hash: hash, source: source, recordedAt: mtime, fileURL: url))
         }
+        out.sort { $0.recordedAt > $1.recordedAt }
+        return out
+    }
+
+    private func loadEntry(url: URL, source: String, hash: String) throws -> PoolEntry {
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        return try loadEntry(meta: PoolEntryMetadata(hash: hash, source: source, recordedAt: mtime, fileURL: url))
+    }
+
+    /// Body read + header parse for one pool file. No markdown→Block parse —
+    /// the caller does that on demand at restore time. Nonisolated so callers
+    /// can fan body reads out concurrently without serializing on the actor.
+    nonisolated public func loadEntry(meta: PoolEntryMetadata) throws -> PoolEntry {
+        let body = try store.read(meta.fileURL)
+        let (parentHash, markdown) = Self.parseHeader(body)
         return PoolEntry(
-            block: block,
             markdown: markdown,
-            hash: hash,
+            hash: meta.hash,
             parentHash: parentHash,
-            source: source,
-            recordedAt: mtime,
-            fileURL: url
+            source: meta.source,
+            recordedAt: meta.recordedAt,
+            fileURL: meta.fileURL
         )
     }
 
@@ -197,7 +217,7 @@ public actor BlockPool {
     /// trailing newlines and of files where the header is missing (legacy /
     /// hand-edited) — those return parentHash = nil and the entire body as
     /// markdown.
-    private func parseHeader(_ body: String) -> (parentHash: String?, markdown: String) {
+    nonisolated private static func parseHeader(_ body: String) -> (parentHash: String?, markdown: String) {
         let prefix = "parent: "
         guard body.hasPrefix(prefix) else { return (nil, body) }
         guard let newline = body.firstIndex(of: "\n") else { return (nil, body) }
@@ -243,9 +263,10 @@ public actor BlockPool {
     }
 }
 
-/// One pool entry — the atomic block parsed back from disk plus its metadata.
+/// One pool entry's body — raw markdown plus its on-disk metadata. Block
+/// parsing is deferred to the restore site so the recovery list isn't
+/// gated on swift-markdown for every pool file.
 public struct PoolEntry: Sendable {
-    public let block: Block
     public let markdown: String
     public let hash: String
     public let parentHash: String?
@@ -254,12 +275,25 @@ public struct PoolEntry: Sendable {
     public let fileURL: URL
 }
 
+/// Cheap descriptor for one pool file: derives entirely from the directory
+/// listing (`hash` from filename, `recordedAt` from mtime), no body read.
+/// Drives the metadata-first first paint of the Recover sheet.
+public struct PoolEntryMetadata: Sendable, Hashable {
+    public let hash: String
+    public let source: String
+    public let recordedAt: Date
+    public let fileURL: URL
+}
+
 /// UI-facing recoverable-block descriptor. A pool entry that's no longer in
 /// its source page's live set. Identity is `(source, hash)` — same content
 /// re-orphaned twice on the same page collapses into one entry.
+///
+/// `markdown` and `parentHash` are nil while the entry is a stub (Pass 1 of
+/// the Recover sheet); a background body-fill replaces the stub with a
+/// populated copy.
 public struct LostBlock: Sendable, Identifiable {
-    public let block: Block
-    public let markdown: String
+    public let markdown: String?
     public let hash: String
     public let parentHash: String?
     public let source: String
@@ -268,14 +302,25 @@ public struct LostBlock: Sendable, Identifiable {
 
     public var id: String { "\(source)|\(hash)" }
 
+    /// True once the body has been read and `markdown`/`parentHash` are filled.
+    public var isLoaded: Bool { markdown != nil }
+
     init(entry: PoolEntry) {
-        self.block = entry.block
         self.markdown = entry.markdown
         self.hash = entry.hash
         self.parentHash = entry.parentHash
         self.source = entry.source
         self.recordedAt = entry.recordedAt
         self.fileURL = entry.fileURL
+    }
+
+    init(stub meta: PoolEntryMetadata) {
+        self.markdown = nil
+        self.hash = meta.hash
+        self.parentHash = nil
+        self.source = meta.source
+        self.recordedAt = meta.recordedAt
+        self.fileURL = meta.fileURL
     }
 }
 

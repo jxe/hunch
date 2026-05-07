@@ -310,34 +310,63 @@ public final class Clamshell {
 
     // MARK: - Lost blocks (pool-backed)
 
-    public func listLostBlocks(filter: LostBlocksFilter = .all) async throws -> [LostBlock] {
+    /// Metadata-only stub list — fast first-paint for the Recover sheet. No
+    /// pool-file body reads. Each returned `LostBlock` has `markdown == nil`
+    /// and `parentHash == nil`; pair with `loadLostBlockBody(_:)` to fill.
+    /// Per-page work runs concurrently so iCloud per-page latencies overlap.
+    public func listLostBlockStubs(filter: LostBlocksFilter = .all) async -> [LostBlock] {
+        let metadataByPage: [String: [PoolEntryMetadata]]
         switch filter {
         case .page(let rel):
-            return try await listLostBlocksForPage(relativePath: rel)
+            let pageMeta = await pool.enumerateMetadata(page: rel)
+            metadataByPage = pageMeta.isEmpty ? [:] : [rel: pageMeta]
         case .all:
-            return try await listLostBlocksForAllPages()
+            metadataByPage = await pool.enumerateAllMetadata()
         }
-    }
+        guard !metadataByPage.isEmpty else { return [] }
 
-    private func listLostBlocksForPage(relativePath: String) async throws -> [LostBlock] {
-        let entries = try await pool.enumerate(page: relativePath)
-        let live = liveAtomicHashes(at: url(for: relativePath))
-        return entries
-            .filter { !live.contains($0.hash) }
-            .map(LostBlock.init(entry:))
-    }
-
-    private func listLostBlocksForAllPages() async throws -> [LostBlock] {
-        let bySource = try await pool.enumerateAll()
-        var out: [LostBlock] = []
-        for (rel, entries) in bySource {
-            let live = liveAtomicHashes(at: url(for: rel))
-            for entry in entries where !live.contains(entry.hash) {
-                out.append(LostBlock(entry: entry))
+        let rootURL = root
+        let files = self.files
+        let stubs = await withTaskGroup(of: [LostBlock].self) { group in
+            for (rel, metas) in metadataByPage {
+                let pageURL = rootURL.appendingPathComponent(rel).standardizedFileURL
+                group.addTask { [pageURL, metas, files] in
+                    let live = Clamshell.liveAtomicHashes(at: pageURL, files: files)
+                    return metas
+                        .filter { !live.contains($0.hash) }
+                        .map { LostBlock(stub: $0) }
+                }
             }
+            var out: [LostBlock] = []
+            for await pageStubs in group {
+                out.append(contentsOf: pageStubs)
+            }
+            return out
         }
-        out.sort { $0.recordedAt > $1.recordedAt }
-        return out
+        return stubs.sorted { $0.recordedAt > $1.recordedAt }
+    }
+
+    /// Read one stub's body off disk and return a populated `LostBlock`.
+    /// Pass 2 of the Recover sheet — nonisolated so callers can fan reads out
+    /// without serializing on either Clamshell or BlockPool's actor.
+    nonisolated public func loadLostBlockBody(_ stub: LostBlock) -> LostBlock {
+        guard !stub.isLoaded else { return stub }
+        let meta = PoolEntryMetadata(
+            hash: stub.hash,
+            source: stub.source,
+            recordedAt: stub.recordedAt,
+            fileURL: stub.fileURL
+        )
+        guard let entry = try? pool.loadEntry(meta: meta) else { return stub }
+        return LostBlock(entry: entry)
+    }
+
+    /// Convenience: stubs + sequential body fill. Used by tests and any caller
+    /// that wants a fully-populated list in one await — for the live UI path
+    /// prefer the streaming `listLostBlockStubs` + `loadLostBlockBody`.
+    public func listLostBlocks(filter: LostBlocksFilter = .all) async throws -> [LostBlock] {
+        let stubs = await listLostBlockStubs(filter: filter)
+        return stubs.map { loadLostBlockBody($0) }
     }
 
     public func purgeLostBlock(_ entry: LostBlock) async throws {
@@ -353,18 +382,18 @@ public final class Clamshell {
     }
 
     nonisolated private func liveAtomicHashes(at url: URL) -> Set<String> {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let raw = try? files.read(url) else { return [] }
-        return atomicHashes(in: BlockParser.parse(raw))
+        Self.liveAtomicHashes(at: url, files: files)
     }
 
-    nonisolated private func atomicHashes(in blocks: [Block]) -> Set<String> {
+    nonisolated fileprivate static func liveAtomicHashes(at url: URL, files: FileStore) -> Set<String> {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let raw = try? files.read(url) else { return [] }
         var out: Set<String> = []
-        collectAtomicHashes(blocks, into: &out)
+        collectAtomicHashes(BlockParser.parse(raw), into: &out)
         return out
     }
 
-    nonisolated private func collectAtomicHashes(_ blocks: [Block], into out: inout Set<String>) {
+    nonisolated private static func collectAtomicHashes(_ blocks: [Block], into out: inout Set<String>) {
         for block in blocks {
             out.insert(BlockFingerprint.atomicHash(block))
             collectAtomicHashes(block.children, into: &out)

@@ -126,7 +126,37 @@ struct BlockPoolTests {
 
         let lost = try await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.count == 1)
-        #expect(lost.first?.markdown.contains("Lose") == true)
+        #expect(lost.first?.markdown?.contains("Lose") == true)
+    }
+
+    @MainActor
+    @Test func stubsListIsMetadataOnly() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p",
+            children: [Block.paragraph(text: attr("ghost"))],
+            modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p", children: [], modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        let stubs = await clamshell.listLostBlockStubs(filter: .page(relativePath: "p.md"))
+        #expect(stubs.count == 1)
+        let stub = try #require(stubs.first)
+        #expect(stub.markdown == nil)
+        #expect(stub.parentHash == nil)
+        #expect(stub.isLoaded == false)
+
+        let populated = clamshell.loadLostBlockBody(stub)
+        #expect(populated.isLoaded)
+        #expect(populated.markdown?.contains("ghost") == true)
+        #expect(populated.id == stub.id)
     }
 
     @MainActor

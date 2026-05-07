@@ -326,7 +326,17 @@ final class WorkspaceWindow {
         }
 
         do {
-            let restored = entry.block.withFreshIDs()
+            // The recovery list now hands us stubs first and fills bodies in
+            // the background — at restore time the row's markdown is usually
+            // already on the entry, but if the user clicks before its body
+            // landed we resolve it synchronously off-actor here.
+            let populated = entry.markdown != nil ? entry : clamshell.loadLostBlockBody(entry)
+            guard let markdown = populated.markdown,
+                  let parsed = BlockParser.parse(markdown).first else {
+                workspace.error = "Couldn't read the recovered block from disk."
+                return false
+            }
+            let restored = parsed.withFreshIDs()
 
             let useLiveDoc = (openDocument?.url == target)
             let doc: Document
@@ -341,8 +351,8 @@ final class WorkspaceWindow {
             // restored block as a child of it. If we run out of ancestors,
             // append at the top of the page.
             let parentID = await resolveLiveAncestor(
-                startingParentHash: entry.parentHash,
-                pageRel: entry.source,
+                startingParentHash: populated.parentHash,
+                pageRel: populated.source,
                 in: doc,
                 clamshell: clamshell
             )

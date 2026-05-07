@@ -15,7 +15,9 @@ public struct RecoveryView: View {
     /// (e.g. the empty-workspace state); in that case the segmented control
     /// hides "This page" and only `.all` is reachable.
     let currentPageRelativePath: String?
-    let loadEntries: (RecoveryListFilter) async -> [RecoverableEntry]
+    /// Two-pass stream: first emission is the trash + stub list, subsequent
+    /// emissions replace stubs with populated entries as bodies load.
+    let entriesStream: (RecoveryListFilter) -> AsyncStream<[RecoverableEntry]>
     let onRestore: (RecoverableEntry) async -> Bool
     let onClose: () -> Void
 
@@ -30,13 +32,13 @@ public struct RecoveryView: View {
     public init(
         initialFilter: RecoveryListFilter,
         currentPageRelativePath: String?,
-        loadEntries: @escaping (RecoveryListFilter) async -> [RecoverableEntry],
+        entriesStream: @escaping (RecoveryListFilter) -> AsyncStream<[RecoverableEntry]>,
         onRestore: @escaping (RecoverableEntry) async -> Bool,
         onClose: @escaping () -> Void
     ) {
         self.initialFilter = initialFilter
         self.currentPageRelativePath = currentPageRelativePath
-        self.loadEntries = loadEntries
+        self.entriesStream = entriesStream
         self.onRestore = onRestore
         self.onClose = onClose
         _filter = State(initialValue: initialFilter)
@@ -62,9 +64,8 @@ public struct RecoveryView: View {
                     }
                 }
         }
-        .task { await refresh() }
-        .onChange(of: filter) { _, _ in
-            Task { await refresh() }
+        .task(id: filter) {
+            await consumeStream(for: filter)
         }
         .alert(
             "Restore this item?",
@@ -218,16 +219,17 @@ public struct RecoveryView: View {
         }
     }
 
-    private func refresh() async {
-        loadState = entries.isEmpty ? .loading : .loaded
-        let next = await loadEntries(filter)
-        entries = next
-        loadState = next.isEmpty ? .empty : .loaded
+    private func consumeStream(for filter: RecoveryListFilter) async {
+        if entries.isEmpty { loadState = .loading }
+        for await next in entriesStream(filter) {
+            entries = next
+            loadState = next.isEmpty ? .empty : .loaded
+        }
     }
 
     private func performRestore(_ entry: RecoverableEntry) async {
         if await onRestore(entry) {
-            await refresh()
+            await consumeStream(for: filter)
         }
     }
 }

@@ -61,7 +61,7 @@ struct ContentView: View {
                     RecoveryView(
                         initialFilter: filter,
                         currentPageRelativePath: window.currentPageRelativePath,
-                        loadEntries: { filter in await workspace.listRecoverableEntries(filter: filter) },
+                        entriesStream: { filter in workspace.streamRecoverableEntries(filter: filter) },
                         onRestore: { entry in await window.restoreRecoverable(entry) },
                         onClose: { window.recoveryFilter = nil }
                     )
@@ -235,19 +235,21 @@ private struct EditorPage: View {
                 .accessibilityLabel("Search Pages")
             }
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    undoController?.undoManager.undo()
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .accessibilityLabel("Undo")
-                .disabled(!(undoController?.undoManager.canUndo ?? false))
-                .contextMenu {
+                if undoController?.undoManager.canUndo == true {
                     Button {
-                        window.recoveryFilter = .page(relativePath: workspace.relativePath(of: url))
+                        undoController?.undoManager.undo()
                     } label: {
-                        Label("Recover…", systemImage: "clock.arrow.circlepath")
+                        Image(systemName: "arrow.uturn.backward")
                     }
+                    .accessibilityLabel("Undo")
+                    .contextMenu { recoverMenuItem(for: url) }
+                } else {
+                    Menu {
+                        recoverMenuItem(for: url)
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .accessibilityLabel("More")
                 }
             }
             if undoController?.undoManager.canRedo == true {

@@ -399,22 +399,62 @@ final class Workspace {
         clamshell.snapshotIntoPool(at: sourceURL, blocks: previousBlocks)
     }
 
-    func listRecoverableEntries(filter: RecoveryListFilter = .all) async -> [RecoverableEntry] {
-        var out: [RecoverableEntry] = []
-        guard let clamshell else { return out }
-        if case .all = filter {
-            let pages = (try? await clamshell.listTrashedPages()) ?? []
-            out.append(contentsOf: pages.map { .deletedPage($0) })
+    /// Two-pass stream: first emission is trash entries + lost-block stubs
+    /// (cheap directory scan, no body reads), subsequent emissions replace
+    /// stubs with populated entries as their bodies land in parallel.
+    func streamRecoverableEntries(filter: RecoveryListFilter = .all) -> AsyncStream<[RecoverableEntry]> {
+        AsyncStream { continuation in
+            let task = Task { @MainActor [weak self] in
+                guard let self, let clamshell = self.clamshell else {
+                    continuation.yield([])
+                    continuation.finish()
+                    return
+                }
+
+                var trashEntries: [RecoverableEntry] = []
+                if case .all = filter {
+                    let pages = (try? await clamshell.listTrashedPages()) ?? []
+                    trashEntries = pages.map { .deletedPage($0) }
+                }
+                let lostFilter: Clamshell.LostBlocksFilter
+                switch filter {
+                case .all: lostFilter = .all
+                case .page(let rel): lostFilter = .page(relativePath: rel)
+                }
+                let stubs = await clamshell.listLostBlockStubs(filter: lostFilter)
+
+                var lostByID: [String: LostBlock] = [:]
+                for stub in stubs { lostByID[stub.id] = stub }
+
+                func snapshot() -> [RecoverableEntry] {
+                    var out = trashEntries
+                    out.append(contentsOf: lostByID.values.map { .lostBlock($0) })
+                    out.sort { $0.timestamp > $1.timestamp }
+                    return out
+                }
+
+                continuation.yield(snapshot())
+                if Task.isCancelled || stubs.isEmpty {
+                    continuation.finish()
+                    return
+                }
+
+                // Pass 2: parallel body fills. `loadLostBlockBody` is nonisolated
+                // and synchronous, so each task can do its read independently.
+                await withTaskGroup(of: LostBlock.self) { group in
+                    for stub in stubs {
+                        group.addTask { clamshell.loadLostBlockBody(stub) }
+                    }
+                    for await populated in group {
+                        if Task.isCancelled { break }
+                        lostByID[populated.id] = populated
+                        continuation.yield(snapshot())
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
-        let lostFilter: Clamshell.LostBlocksFilter
-        switch filter {
-        case .all: lostFilter = .all
-        case .page(let rel): lostFilter = .page(relativePath: rel)
-        }
-        let lost = (try? await clamshell.listLostBlocks(filter: lostFilter)) ?? []
-        out.append(contentsOf: lost.map { .lostBlock($0) })
-        out.sort { $0.timestamp > $1.timestamp }
-        return out
     }
 
     @discardableResult
@@ -537,7 +577,9 @@ public enum RecoverableEntry: Identifiable, Sendable, Hashable {
     public var displayTitle: String {
         switch self {
         case .deletedPage(let e): return e.displayTitle
-        case .lostBlock(let l): return RecoverableEntry.previewLine(from: l.markdown)
+        case .lostBlock(let l):
+            guard let md = l.markdown else { return "Loading…" }
+            return RecoverableEntry.previewLine(from: md)
         }
     }
 
