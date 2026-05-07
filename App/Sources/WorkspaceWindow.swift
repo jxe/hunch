@@ -319,15 +319,14 @@ final class WorkspaceWindow {
     @discardableResult
     func restoreLostBlock(_ entry: LostBlock) async -> Bool {
         guard let clamshell = workspace.clamshell, let workspaceURL = workspace.workspaceURL else { return false }
-        let target = workspaceURL.appendingPathComponent(entry.record.source).standardizedFileURL
+        let target = workspaceURL.appendingPathComponent(entry.source).standardizedFileURL
         guard FileManager.default.fileExists(atPath: target.path) else {
-            workspace.error = "Original page no longer exists at \(entry.record.source)."
+            workspace.error = "Original page no longer exists at \(entry.source)."
             return false
         }
 
         do {
-            let parsed = BlockParser.parse(entry.record.markdown).map { $0.withFreshIDs() }
-            guard !parsed.isEmpty else { return false }
+            let restored = entry.block.withFreshIDs()
 
             let useLiveDoc = (openDocument?.url == target)
             let doc: Document
@@ -337,21 +336,19 @@ final class WorkspaceWindow {
                 doc = try workspace.loadDocument(at: target)
             }
 
-            // Restore as siblings of the anchor block (or appended at the
-            // top level when the anchor isn't found). Tree depth is
-            // implicit — `parsed` carries its own structure.
-            if let anchorFP = entry.record.anchorFingerprint,
-               let anchorID = findFingerprint(anchorFP, in: doc) {
-                let parentID = doc.parent(of: anchorID)
-                let siblings: [Block] = parentID.flatMap(doc.find)?.children ?? doc.children
-                let i = siblings.firstIndex(where: { $0.id == anchorID }) ?? siblings.count - 1
-                doc.insertSubtrees(parsed, at: DropPath(parent: parentID, position: i + 1))
-            } else if let original = entry.record.originalIndex {
-                let pos = min(max(0, original), doc.children.count)
-                doc.insertSubtrees(parsed, at: DropPath(parent: nil, position: pos))
-            } else {
-                doc.insertSubtrees(parsed, at: DropPath(parent: nil, position: doc.children.count))
-            }
+            // Climb the lost block's recorded parent chain in the pool until
+            // we find a hash that's currently live in the doc — append the
+            // restored block as a child of it. If we run out of ancestors,
+            // append at the top of the page.
+            let parentID = await resolveLiveAncestor(
+                startingParentHash: entry.parentHash,
+                pageRel: entry.source,
+                in: doc,
+                clamshell: clamshell
+            )
+            let siblings = parentID.flatMap(doc.find)?.children ?? doc.children
+            doc.insertSubtrees([restored], at: DropPath(parent: parentID, position: siblings.count))
+
             // Restored blocks may have inserted as siblings of headings; fold
             // them in so the recovered shape matches the rest of the doc.
             doc.enforceHeadingContainment()
@@ -378,12 +375,31 @@ final class WorkspaceWindow {
         }
     }
 
-    /// Find the block with the given fingerprint anywhere in the document
-    /// tree. Used by the recovery / lost-block restore path to anchor inserts.
-    private func findFingerprint(_ fp: String, in doc: Document) -> BlockID? {
+    /// Walk up the recorded parent chain until we find a hash that's currently
+    /// alive in `doc`, returning that block's ID; nil = top-level.
+    private func resolveLiveAncestor(
+        startingParentHash: String?,
+        pageRel: String,
+        in doc: Document,
+        clamshell: Clamshell
+    ) async -> BlockID? {
+        var current = startingParentHash
+        // Prevent unbounded climbs in the unlikely case of corrupt circular references.
+        var safety = 64
+        while let hash = current, safety > 0 {
+            if let id = findAtomicHash(hash, in: doc) { return id }
+            current = await clamshell.parentHash(forPool: pageRel, hash: hash)
+            safety -= 1
+        }
+        return nil
+    }
+
+    /// Find a block whose atomic hash matches `hash` anywhere in the document
+    /// tree. Returns the first match in preorder.
+    private func findAtomicHash(_ hash: String, in doc: Document) -> BlockID? {
         var match: BlockID?
         doc.walk { block, _, _ in
-            if match == nil, BlockFingerprint.compute(block) == fp {
+            if match == nil, BlockFingerprint.atomicHash(block) == hash {
                 match = block.id
             }
         }

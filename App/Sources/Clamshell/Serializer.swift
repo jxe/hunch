@@ -15,6 +15,16 @@ public enum BlockSerializer {
         return out
     }
 
+    /// Serialize a single block to markdown WITHOUT its children. Used to
+    /// store an atomic block in the per-page content pool — a toggle file
+    /// holds just `▸ Title`, a heading just `# Heading`, etc. Restoration
+    /// reattaches the block as a child of whatever ancestor is still live;
+    /// orphaned descendants are restored separately.
+    public static func serializeAtomic(_ block: Block) -> String {
+        let bare = Block(id: block.id, kind: block.kind, children: [])
+        return serializeBlock(bare, depth: 0, titleForPath: { _ in nil })
+    }
+
     private static func serializeChildren(_ blocks: [Block], depth: Int, into out: inout String, titleForPath: (String) -> String?, isTopLevel: Bool) {
         for (i, block) in blocks.enumerated() {
             let chunk = serializeBlock(block, depth: depth, titleForPath: titleForPath)

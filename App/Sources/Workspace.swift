@@ -389,20 +389,14 @@ final class Workspace {
 
     // MARK: - Recovery
 
+    /// Snapshot the about-to-be-mutated block tree into the pool before a
+    /// destructive UI action. Covers the race where blocks live briefly in
+    /// the doc, get deleted, and the autosave never fires while they're
+    /// present — without this, those blocks would never be in the pool and
+    /// would be unrecoverable.
     func recordBlockDeletion(sourceURL: URL, previousBlocks: [Block]) {
         guard let clamshell else { return }
-        Task { [weak self, clamshell, sourceURL, previousBlocks] in
-            do {
-                try await clamshell.recordDeletion(
-                    at: sourceURL,
-                    previousBlocks: previousBlocks
-                )
-            } catch {
-                await MainActor.run {
-                    self?.error = "Recording block deletion failed: \(error.localizedDescription)"
-                }
-            }
-        }
+        clamshell.snapshotIntoPool(at: sourceURL, blocks: previousBlocks)
     }
 
     func listRecoverableEntries(filter: RecoveryListFilter = .all) async -> [RecoverableEntry] {
@@ -529,21 +523,21 @@ public enum RecoverableEntry: Identifiable, Sendable, Hashable {
     public var timestamp: Date {
         switch self {
         case .deletedPage(let e): return e.timestamp
-        case .lostBlock(let l): return l.record.recordedAt
+        case .lostBlock(let l): return l.recordedAt
         }
     }
 
     public var sourcePath: String {
         switch self {
         case .deletedPage(let e): return e.sourcePath
-        case .lostBlock(let l): return l.record.source
+        case .lostBlock(let l): return l.source
         }
     }
 
     public var displayTitle: String {
         switch self {
         case .deletedPage(let e): return e.displayTitle
-        case .lostBlock(let l): return RecoverableEntry.previewLine(from: l.record.markdown)
+        case .lostBlock(let l): return RecoverableEntry.previewLine(from: l.markdown)
         }
     }
 

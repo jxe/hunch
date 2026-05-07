@@ -198,25 +198,12 @@ public struct RecoveryView: View {
     private func icon(for entry: RecoverableEntry) -> String {
         switch entry {
         case .deletedPage: return "doc.text"
-        case .lostBlock(let lost):
-            switch lost.record.cause {
-            case .deleted: return "square.stack.3d.up"
-            case .edited: return "pencil"
-            case .seen: return "clock.arrow.circlepath"
-            }
+        case .lostBlock: return "square.stack.3d.up"
         }
     }
 
     private func secondaryLine(for entry: RecoverableEntry) -> String {
-        switch entry {
-        case .deletedPage: return entry.sourcePath
-        case .lostBlock(let lost):
-            switch lost.record.cause {
-            case .deleted: return entry.sourcePath + " · deleted"
-            case .edited: return entry.sourcePath + " · edited out"
-            case .seen: return entry.sourcePath
-            }
-        }
+        entry.sourcePath
     }
 
     private func restoreMessage(for entry: RecoverableEntry) -> String {
@@ -224,9 +211,9 @@ public struct RecoveryView: View {
         case .deletedPage:
             return "“\(entry.displayTitle)” will be moved back to \(entry.sourcePath)."
         case .lostBlock(let lost):
-            let location = lost.record.anchorFingerprint != nil
-                ? "after the original anchor block"
-                : "at the end of the page"
+            let location = lost.parentHash != nil
+                ? "inside its original parent (or the closest live ancestor)"
+                : "at the top of the page"
             return "Block will be inserted in \(entry.sourcePath) \(location), without overwriting the current contents."
         }
     }

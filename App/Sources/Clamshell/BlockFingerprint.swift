@@ -12,11 +12,20 @@ import Editor
 /// included — moving a paragraph up an indent level shouldn't change its identity.
 enum BlockFingerprint {
     static func compute(_ block: Block) -> String {
-        let canonical = canonicalString(block)
-        let digest = SHA256.hash(data: Data(canonical.utf8))
+        let digest = sha256(block)
         // Take the first 8 bytes → 16 hex chars → 64-bit identity. Plenty of entropy
         // for at most a few hundred records per page.
         return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Full SHA-256 hex of the same canonical content `compute` hashes — used as
+    /// the on-disk filename in the per-page block pool (`.blocks/<rel>/<hash>.md`).
+    static func atomicHash(_ block: Block) -> String {
+        sha256(block).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func sha256(_ block: Block) -> SHA256.Digest {
+        SHA256.hash(data: Data(canonicalString(block).utf8))
     }
 
     private static func canonicalString(_ block: Block) -> String {
