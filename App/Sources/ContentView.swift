@@ -11,14 +11,6 @@ struct ContentView: View {
     #if os(iOS)
     @State private var showingSwitchPicker = false
     #endif
-    @State private var pageSearchText = ""
-    /// Sidebar's keyboard cursor (visual highlight). Mirrors the currently-open
-    /// page when no arrow nav has happened; arrow keys move it independently
-    /// of the navstack. Activation (click or Return) calls `window.open` and
-    /// the sidebar re-syncs on the next path change.
-    @State private var sidebarCursor: MentionItem.ID?
-    /// Same idea for the square.stack sheet.
-    @State private var pageListSheetCursor: MentionItem.ID?
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -40,42 +32,35 @@ struct ContentView: View {
                 // the NavigationStack mounts with a non-empty path; without it
                 // `openDocument` would never load and `pageDetail` would render
                 // the ProgressView fallback forever.
-                .onChange(of: window.path, initial: true) { _, newPath in
+                .onChange(of: window.path, initial: true) { _, _ in
                     window.handlePathChange()
-                    // Keep the sidebar's keyboard cursor pinned to whatever's
-                    // currently navigated. Without this, arrow keys would resume
-                    // from a stale highlight after the user clicked a row.
-                    sidebarCursor = newPath.first.flatMap { url in
-                        workspace.entries.first(where: { $0.url == url })?.relativePath
-                    }
                 }
-                .sheet(isPresented: $window.showPageList) {
-                    pageListSheet
-                }
-                .sheet(item: $window.moveRequest) { _ in
-                    PagePickerSheet(
-                        title: "Move to…",
+                .sheet(isPresented: $window.showSearch) {
+                    SearchSheet(
                         workspace: workspace,
-                        excluding: window.openDocument?.url,
-                        onPick: { item in window.resolveMoveRequest(with: item.id) },
-                        onCancel: { window.resolveMoveRequest(with: nil) }
+                        excluding: nil,
+                        onActivate: { item in
+                            window.navigateFromSearch(relativePath: item.id)
+                            window.showSearch = false
+                        },
+                        onSetHome: setHome,
+                        onMoveToTrash: moveToTrash,
+                        onClose: { window.showSearch = false }
                     )
                 }
-                .sheet(isPresented: $window.showJumpTo) {
-                    PagePickerSheet(
-                        title: "Jump to Page…",
+                .sheet(item: $window.moveRequest) { _ in
+                    SearchSheet(
                         workspace: workspace,
                         excluding: window.openDocument?.url,
-                        onPick: { item in
-                            window.jumpTo(item.id)
-                            window.showJumpTo = false
-                        },
-                        onCancel: { window.showJumpTo = false }
+                        title: "Move to…",
+                        onActivate: { item in window.resolveMoveRequest(with: item.id) },
+                        onClose: { window.resolveMoveRequest(with: nil) }
                     )
                 }
                 .sheet(item: $window.recoveryFilter) { filter in
                     RecoveryView(
-                        filter: filter,
+                        initialFilter: filter,
+                        currentPageRelativePath: window.currentPageRelativePath,
                         loadEntries: { filter in await workspace.listRecoverableEntries(filter: filter) },
                         onRestore: { entry in await window.restoreRecoverable(entry) },
                         onClose: { window.recoveryFilter = nil }
@@ -106,7 +91,7 @@ struct ContentView: View {
     }
 
     /// NavigationStack root: the home page editor when home is set and loaded;
-    /// the page-list sidebar otherwise (fresh workspace, no home picked yet).
+    /// an empty state otherwise (fresh workspace, no home picked yet).
     @ViewBuilder
     private var rootView: some View {
         if let homeURL = workspace.homeURL {
@@ -115,8 +100,7 @@ struct ContentView: View {
                     url: homeURL,
                     document: document,
                     workspace: workspace,
-                    window: window,
-                    onShowPageList: { window.showPageList = true }
+                    window: window
                 )
             } else {
                 ProgressView()
@@ -124,7 +108,7 @@ struct ContentView: View {
                     .background(NotionStyle.background)
             }
         } else {
-            sidebar
+            EmptyWorkspaceView(workspace: workspace, window: window)
         }
     }
 
@@ -133,14 +117,6 @@ struct ContentView: View {
             get: { workspace.error != nil },
             set: { newValue in if !newValue { workspace.error = nil } }
         )
-    }
-
-    /// Activate a row from any page-picker surface: navigate to the page and,
-    /// when called from a sheet (`dismissSheet: true`), close it.
-    private func activate(_ item: MentionItem, dismissSheet: Bool) {
-        guard let entry = workspace.entries.first(where: { $0.relativePath == item.id }) else { return }
-        window.open(entry)
-        if dismissSheet { window.showPageList = false }
     }
 
     private func setHome(_ item: MentionItem) {
@@ -153,107 +129,6 @@ struct ContentView: View {
         if let entry = workspace.entries.first(where: { $0.relativePath == item.id }) {
             _ = window.moveToTrash(entry)
         }
-    }
-
-    /// Page-list sheet shown from the home toolbar icon. Mirrors the sidebar's
-    /// content (PagePickerView + Recently Deleted) but in a modal context.
-    private var pageListSheet: some View {
-        NavigationStack {
-            PagePickerView(
-                items: workspace.pages(matching: pageSearchText, excluding: nil),
-                selection: $pageListSheetCursor,
-                onActivate: { item in activate(item, dismissSheet: true) },
-                onSetHome: setHome,
-                onMoveToTrash: moveToTrash
-            )
-            .navigationTitle("Pages")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .searchable(text: $pageSearchText, placement: .automatic, prompt: "Search pages")
-            .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        window.showPageList = false
-                        window.recoveryFilter = .all
-                    } label: {
-                        Label("Recover", systemImage: "clock.arrow.circlepath")
-                    }
-                    .help("Recently Deleted")
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { window.showPageList = false }
-                }
-            }
-        }
-        #if os(macOS)
-        .frame(minWidth: 360, minHeight: 480)
-        #endif
-    }
-
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Pages")
-                .font(NotionStyle.body(size: 13, weight: .semibold))
-                .foregroundStyle(NotionStyle.mutedForeground)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-            PagePickerView(
-                items: workspace.pages(matching: pageSearchText, excluding: nil),
-                selection: $sidebarCursor,
-                onActivate: { item in activate(item, dismissSheet: false) },
-                onSetHome: setHome,
-                onMoveToTrash: moveToTrash
-            )
-            Divider()
-            Button {
-                window.recoveryFilter = .all
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 11))
-                    Text("Recover")
-                        .font(NotionStyle.body(size: 12))
-                    Spacer()
-                }
-                .foregroundStyle(NotionStyle.mutedForeground)
-                .contentShape(Rectangle())
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-            }
-            .buttonStyle(.plain)
-        }
-        .navigationTitle(workspace.workspaceURL?.lastPathComponent ?? "Workspace")
-        .searchable(text: $pageSearchText, placement: .automatic, prompt: "Search pages")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showingSwitchPicker = true
-                } label: {
-                    Image(systemName: "folder.badge.gearshape")
-                }
-                .accessibilityLabel("Switch Workspace")
-            }
-        }
-        .fileImporter(
-            isPresented: $showingSwitchPicker,
-            allowedContentTypes: [markdownFileType],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first {
-                    window.reset()
-                    workspace.switchWorkspace()
-                    workspace.setWorkspaceFromKeyFile(url)
-                }
-            case .failure(let error):
-                workspace.error = error.localizedDescription
-            }
-        }
-        #endif
     }
 
     @ViewBuilder
@@ -286,9 +161,6 @@ private struct EditorPage: View {
     let document: Document
     @Bindable var workspace: Workspace
     @Bindable var window: WorkspaceWindow
-    /// Non-nil only for the home root: adds a toolbar button that surfaces
-    /// the page-list sheet. Subpages get `nil` and don't show the icon.
-    var onShowPageList: (() -> Void)? = nil
 
     @State private var editorState = EditorState()
     @Environment(\.scenePhase) private var scenePhase
@@ -353,15 +225,15 @@ private struct EditorPage: View {
             }
         )
         .toolbar {
-            if let onShowPageList {
-                ToolbarItem(placement: .navigation) {
-                    Button(action: onShowPageList) {
-                        Image(systemName: "square.stack")
-                    }
-                    .accessibilityLabel("Show Page List")
-                }
-            }
             #if os(iOS)
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    window.showSearch = true
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .accessibilityLabel("Search Pages")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     undoController?.undoManager.undo()
@@ -374,7 +246,7 @@ private struct EditorPage: View {
                     Button {
                         window.recoveryFilter = .page(relativePath: workspace.relativePath(of: url))
                     } label: {
-                        Label("Recover lost blocks…", systemImage: "clock.arrow.circlepath")
+                        Label("Recover…", systemImage: "clock.arrow.circlepath")
                     }
                 }
             }
@@ -387,16 +259,6 @@ private struct EditorPage: View {
                     }
                     .accessibilityLabel("Redo")
                 }
-            }
-            #else
-            // macOS keeps the clock toolbar icon — there's no toolbar Undo to long-press.
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    window.recoveryFilter = .page(relativePath: workspace.relativePath(of: url))
-                } label: {
-                    Image(systemName: "clock.arrow.circlepath")
-                }
-                .accessibilityLabel("Recover")
             }
             #endif
             ToolbarItem(placement: .primaryAction) {
@@ -470,15 +332,19 @@ private struct WorkspacePickerView: View {
     }
 }
 
-/// Sheet shell shared by the move-to and jump-to flows. Owns its own search
-/// query so each presentation starts fresh. The currently-open document is
-/// always excluded — both flows are about navigating somewhere else.
-private struct PagePickerSheet: View {
-    let title: String
+/// Unified search sheet. Used both for navigation (set-home / move-to-trash
+/// rows enabled, activate pushes via the caller's `onActivate`) and for the
+/// block-move destination picker (set-home / move-to-trash absent, activate
+/// completes the move). The sheet itself is mode-agnostic; the caller wires
+/// the appropriate callbacks.
+private struct SearchSheet: View {
     let workspace: Workspace
     let excluding: URL?
-    let onPick: (MentionItem) -> Void
-    let onCancel: () -> Void
+    var title: String = "Search"
+    let onActivate: (MentionItem) -> Void
+    var onSetHome: ((MentionItem) -> Void)? = nil
+    var onMoveToTrash: ((MentionItem) -> Void)? = nil
+    let onClose: () -> Void
 
     @State private var query: String = ""
     @State private var cursor: MentionItem.ID?
@@ -492,7 +358,9 @@ private struct PagePickerSheet: View {
             PagePickerView(
                 items: items,
                 selection: $cursor,
-                onActivate: { item in onPick(item) }
+                onActivate: onActivate,
+                onSetHome: onSetHome,
+                onMoveToTrash: onMoveToTrash
             )
             .onAppear {
                 if cursor == nil { cursor = items.first?.id }
@@ -507,12 +375,87 @@ private struct PagePickerSheet: View {
             .searchable(text: $query, placement: .automatic, prompt: "Search pages")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
+                    Button("Cancel", action: onClose)
                 }
             }
         }
         #if os(macOS)
         .frame(minWidth: 360, minHeight: 480)
+        #endif
+    }
+}
+
+/// Shown as the NavigationStack root when no workspace home page is set.
+/// Two ways forward: search the workspace for an existing page (which can
+/// then be set as home) or create a fresh page that becomes home.
+private struct EmptyWorkspaceView: View {
+    @Bindable var workspace: Workspace
+    @Bindable var window: WorkspaceWindow
+    #if os(iOS)
+    @State private var showingSwitchPicker = false
+    #endif
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "doc.text")
+                .font(.system(size: 48))
+                .foregroundStyle(NotionStyle.mutedForeground)
+            Text("No home page")
+                .font(NotionStyle.body(size: 18, weight: .semibold))
+                .foregroundStyle(NotionStyle.foreground)
+            Text("Search to pick an existing page, or create a new one.")
+                .font(NotionStyle.body(size: 14))
+                .foregroundStyle(NotionStyle.mutedForeground)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+            HStack(spacing: 12) {
+                Button {
+                    window.showSearch = true
+                } label: {
+                    Label("Search", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+                Button {
+                    guard let path = workspace.createSubpage(title: "Untitled", requestedPath: nil, initialContent: nil),
+                          let entry = workspace.entries.first(where: { $0.relativePath == path }) else { return }
+                    workspace.setHome(entry)
+                } label: {
+                    Label("New page", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(NotionStyle.background)
+        #if os(iOS)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingSwitchPicker = true
+                } label: {
+                    Image(systemName: "folder.badge.gearshape")
+                }
+                .accessibilityLabel("Switch Workspace")
+            }
+        }
+        .fileImporter(
+            isPresented: $showingSwitchPicker,
+            allowedContentTypes: [markdownFileType],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    window.reset()
+                    workspace.switchWorkspace()
+                    workspace.setWorkspaceFromKeyFile(url)
+                }
+            case .failure(let error):
+                workspace.error = error.localizedDescription
+            }
+        }
         #endif
     }
 }

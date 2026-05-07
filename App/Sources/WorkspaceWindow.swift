@@ -20,8 +20,10 @@ final class WorkspaceWindow {
     var openDocument: Document?
 
     var moveRequest: MoveRequest?
-    var showJumpTo: Bool = false
-    var showPageList: Bool = false
+    /// Unified page-search sheet — replaces the old jump-to and page-list sheets.
+    /// Selecting a result pushes the page onto the nav stack (or resets to home
+    /// when the result *is* home), preserving the trail.
+    var showSearch: Bool = false
     var recoveryFilter: RecoveryListFilter?
 
     struct MoveRequest: Identifiable {
@@ -67,6 +69,21 @@ final class WorkspaceWindow {
         }
     }
 
+    /// Search-result activation: push the picked page onto the navstack so the
+    /// back trail is preserved. If the picked page *is* home and we're already
+    /// at the root, do nothing; if it's home from a deeper page, drain the
+    /// path back to root rather than pushing home on top of itself.
+    func navigateFromSearch(relativePath: String) {
+        if relativePath == workspace.homeRelativePath {
+            if !path.isEmpty {
+                cacheOpenDocument()
+                path = []
+            }
+            return
+        }
+        openSubpage(relativePath: relativePath)
+    }
+
     /// Subpage / inline link: push deeper.
     func openSubpage(relativePath: String) {
         guard let clamshell = workspace.clamshell else { return }
@@ -74,16 +91,6 @@ final class WorkspaceWindow {
         if path.last == target { return }
         cacheOpenDocument()
         path.append(target)
-    }
-
-    /// Push a page onto the navstack — distinct from `open(_:)` which resets
-    /// to a single entry above home. Used by ⌘P jump-to so jumping mid-stack
-    /// preserves the trail.
-    func jumpTo(_ relativePath: String) {
-        guard let url = workspace.entries.first(where: { $0.relativePath == relativePath })?.url else { return }
-        if path.last == url { return }
-        cacheOpenDocument()
-        path.append(url)
     }
 
     func goBack() {

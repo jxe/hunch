@@ -8,11 +8,18 @@ import Editor
 /// `filter` is `.all` (everything) or `.page(rel)` (one source page only —
 /// used by the editor toolbar's clock button).
 public struct RecoveryView: View {
-    let filter: RecoveryListFilter
+    /// Seed value — the live filter is `@State` so the segmented control can
+    /// flip between scopes without the sheet remounting.
+    let initialFilter: RecoveryListFilter
+    /// Captured at sheet-open time. Empty when triggered from a no-page context
+    /// (e.g. the empty-workspace state); in that case the segmented control
+    /// hides "This page" and only `.all` is reachable.
+    let currentPageRelativePath: String?
     let loadEntries: (RecoveryListFilter) async -> [RecoverableEntry]
     let onRestore: (RecoverableEntry) async -> Bool
     let onClose: () -> Void
 
+    @State private var filter: RecoveryListFilter
     @State private var entries: [RecoverableEntry] = []
     @State private var loadState: LoadState = .loading
     @State private var pendingRestore: RecoverableEntry?
@@ -21,21 +28,31 @@ public struct RecoveryView: View {
     enum LoadState { case loading, loaded, empty }
 
     public init(
-        filter: RecoveryListFilter,
+        initialFilter: RecoveryListFilter,
+        currentPageRelativePath: String?,
         loadEntries: @escaping (RecoveryListFilter) async -> [RecoverableEntry],
         onRestore: @escaping (RecoverableEntry) async -> Bool,
         onClose: @escaping () -> Void
     ) {
-        self.filter = filter
+        self.initialFilter = initialFilter
+        self.currentPageRelativePath = currentPageRelativePath
         self.loadEntries = loadEntries
         self.onRestore = onRestore
         self.onClose = onClose
+        _filter = State(initialValue: initialFilter)
     }
 
     public var body: some View {
         NavigationStack {
-            content
-                .navigationTitle(navigationTitleText)
+            VStack(spacing: 0) {
+                if currentPageRelativePath != nil {
+                    scopePicker
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                }
+                content
+            }
+                .navigationTitle("Recover")
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
@@ -46,6 +63,9 @@ public struct RecoveryView: View {
                 }
         }
         .task { await refresh() }
+        .onChange(of: filter) { _, _ in
+            Task { await refresh() }
+        }
         .alert(
             "Restore this item?",
             isPresented: Binding(
@@ -63,11 +83,39 @@ public struct RecoveryView: View {
         }
     }
 
-    private var navigationTitleText: String {
-        switch filter {
-        case .all: return "Recover"
-        case .page(let rel): return "Recover · \(rel)"
+    @ViewBuilder
+    private var scopePicker: some View {
+        if let rel = currentPageRelativePath {
+            Picker("Scope", selection: scopeBinding) {
+                Text("This page").tag(Scope.thisPage)
+                Text("All pages").tag(Scope.all)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityHint(rel)
         }
+    }
+
+    private enum Scope: Hashable { case thisPage, all }
+
+    private var scopeBinding: Binding<Scope> {
+        Binding(
+            get: {
+                switch filter {
+                case .all: return .all
+                case .page: return .thisPage
+                }
+            },
+            set: { newValue in
+                switch newValue {
+                case .all:
+                    filter = .all
+                case .thisPage:
+                    if let rel = currentPageRelativePath {
+                        filter = .page(relativePath: rel)
+                    }
+                }
+            }
+        )
     }
 
     @ViewBuilder

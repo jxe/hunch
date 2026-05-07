@@ -34,21 +34,13 @@ struct HunchApp: App {
 
                 Divider()
 
-                JumpToPageMenuButton(workspaceURL: workspace.workspaceURL)
+                SearchMenuButton(workspaceURL: workspace.workspaceURL)
                     .keyboardShortcut("p", modifiers: [.command])
-                    .modifierKeyAlternate(.option) {
-                        ShowAllPagesMenuButton(workspaceURL: workspace.workspaceURL)
-                            .keyboardShortcut("p", modifiers: [.command, .option])
-                    }
 
                 Divider()
 
-                RecentlyDeletedMenuButton(workspaceURL: workspace.workspaceURL)
+                RecoverMenuButton(workspaceURL: workspace.workspaceURL)
                     .keyboardShortcut("\\", modifiers: [.command, .shift])
-                    .modifierKeyAlternate(.option) {
-                        RecentlyDeletedOnPageMenuButton()
-                            .keyboardShortcut("\\", modifiers: [.command, .shift, .option])
-                    }
             }
             CommandGroup(after: .sidebar) {
                 BackMenuButton()
@@ -184,52 +176,34 @@ private struct SwitchWorkspaceMenuButton: View {
     }
 }
 
-private struct JumpToPageMenuButton: View {
+private struct SearchMenuButton: View {
     let workspaceURL: URL?
     @FocusedValue(\.workspaceWindow) private var window
 
     var body: some View {
-        Button("Jump to Page…") {
-            window?.showJumpTo = true
+        Button("Search…") {
+            window?.showSearch = true
         }
         .disabled(workspaceURL == nil || window == nil)
     }
 }
 
-private struct ShowAllPagesMenuButton: View {
+private struct RecoverMenuButton: View {
     let workspaceURL: URL?
     @FocusedValue(\.workspaceWindow) private var window
 
     var body: some View {
-        Button("Show All Pages…") {
-            window?.showPageList = true
-        }
-        .disabled(workspaceURL == nil || window == nil)
-    }
-}
-
-private struct RecentlyDeletedMenuButton: View {
-    let workspaceURL: URL?
-    @FocusedValue(\.workspaceWindow) private var window
-
-    var body: some View {
-        Button("Recently Deleted…") {
-            window?.recoveryFilter = .all
-        }
-        .disabled(workspaceURL == nil || window == nil)
-    }
-}
-
-private struct RecentlyDeletedOnPageMenuButton: View {
-    @FocusedValue(\.workspaceWindow) private var window
-
-    var body: some View {
-        Button("Recently Deleted on This Page…") {
+        Button("Recover…") {
+            // Default to the current page when one's open; otherwise show
+            // workspace-wide. The Recover sheet exposes a segmented control
+            // to flip between scopes inline.
             if let rel = window?.currentPageRelativePath {
                 window?.recoveryFilter = .page(relativePath: rel)
+            } else {
+                window?.recoveryFilter = .all
             }
         }
-        .disabled(window?.currentPageRelativePath == nil)
+        .disabled(workspaceURL == nil || window == nil)
     }
 }
 
