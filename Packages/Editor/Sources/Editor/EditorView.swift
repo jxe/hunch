@@ -106,6 +106,10 @@ public struct EditorView: View {
     @State var undoController = DocumentUndoController()
     @State var editorCommands = EditorCommands()
     @State var rowFrames = RowFramesStore()
+    /// Hoisted from per-row `@State` so `BlockRow` can stay free of any
+    /// DynamicProperty wrapper (which would defeat `.equatable()`). Keyed by
+    /// the absolute URL; rows receive only the subset relevant to their text.
+    @State var linkPreviews: [URL: LinkPreview] = [:]
     @State var lastDropHapticIndex: Int?
     @State var pinchGestureActive = false
     @State var pinchCrossedInsertThreshold = false
@@ -199,7 +203,7 @@ public struct EditorView: View {
             let horizontalPadding = NotionStyle.pageHorizontalPadding(for: geometry.size.width)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(visibleRows.enumerated()), id: \.element.block.id) { (k, row) in
                         let block = row.block
                         let prev = prevVisibleBlocks[k]
@@ -421,8 +425,13 @@ public struct EditorView: View {
         let isActionMenuTarget = false
         #endif
 
+        let blockExternalURLs = collectExternalURLs(in: block.text)
+        let relevantLinkPreviews: [URL: LinkPreview] = blockExternalURLs.reduce(into: [:]) { dict, url in
+            if let preview = linkPreviews[url] { dict[url] = preview }
+        }
         BlockRow(
-            block: binding,
+            block: block,
+            onBlockChange: { newBlock in binding.wrappedValue = newBlock },
             depth: depth,
             editorFocused: $editorFocused,
             isPageTitle: isPageTitleBlock(block, snapshot: snapshot),
@@ -461,6 +470,9 @@ public struct EditorView: View {
                 instantiateTemplateButton(blockID: block.id)
             },
             pageTitles: resolvePageTitles(for: block, resolver: pageTitle),
+            linkPreviews: relevantLinkPreviews,
+            onLinkPreviewLoaded: { url, preview in linkPreviews[url] = preview },
+            linkPreviewProvider: linkPreviewProvider,
             consumeInitialCursor: { state.takePendingInitialCursor() }
         )
             .equatable()

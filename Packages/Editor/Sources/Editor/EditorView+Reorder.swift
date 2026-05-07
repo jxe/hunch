@@ -57,7 +57,8 @@ extension EditorView {
     func reorderLiftView() -> some View {
         if let lift = state.reorderLift {
             BlockRow(
-                block: .constant(lift.block),
+                block: lift.block,
+                onBlockChange: { _ in },
                 depth: 0,
                 editorFocused: $editorFocused,
                 isPageTitle: false,
@@ -364,15 +365,34 @@ extension EditorView {
         // Between-rows insertion: resolve "kth visible slot" against the
         // visible-flat row frames, then convert to a tree DropPath using
         // the layout's depth + parent metadata.
-        let visibleFrames: [ReorderDropFrame] = rows.compactMap { row in
-            rowFrames[row.block.id].map { ReorderDropFrame(id: row.block.id, frame: $0) }
-        }
-        let slot = ReorderDropResolver.insertionIndex(
-            forY: y,
-            rowFrames: visibleFrames,
-            previousIndex: visibleSlotForCurrentDropPath(in: rows)
-        )
+        let slot = resolveDropSlot(forY: y, in: rows, previousIndex: visibleSlotForCurrentDropPath(in: rows))
         return .insertAt(dropPath(forVisibleSlot: slot, rows: rows))
+    }
+
+    /// Converts a Y-position into a slot index in `rows` (the full
+    /// visible-row layout). Under `LazyVStack`, only on-screen rows have
+    /// entries in `rowFrames`, so the resolver's "kth frame" answer lives in
+    /// a sparser space than `rows` — this maps one to the other so callers
+    /// always speak the `rows` index space (which is what `dropPath` and the
+    /// gap renderers expect). Returns 0 when nothing is on screen, which
+    /// `dropPath` handles as "top of document."
+    func resolveDropSlot(forY y: CGFloat, in rows: [EditorView.VisibleRow], previousIndex: Int? = nil) -> Int {
+        let knownFrames: [(rowsIndex: Int, frame: ReorderDropFrame)] = rows.enumerated().compactMap { (k, row) in
+            rowFrames[row.block.id].map { (k, ReorderDropFrame(id: row.block.id, frame: $0)) }
+        }
+        guard !knownFrames.isEmpty else { return previousIndex ?? 0 }
+        let prevInKnownSpace: Int? = previousIndex.map { prev in
+            knownFrames.firstIndex { $0.rowsIndex >= prev } ?? knownFrames.count
+        }
+        let knownSlot = ReorderDropResolver.insertionIndex(
+            forY: y,
+            rowFrames: knownFrames.map { $0.frame },
+            previousIndex: prevInKnownSpace
+        )
+        if knownSlot < knownFrames.count {
+            return knownFrames[knownSlot].rowsIndex
+        }
+        return (knownFrames.last.map { $0.rowsIndex + 1 }) ?? rows.count
     }
 
     /// Convert a visible-flat slot index to a tree `DropPath`. Decides based

@@ -220,9 +220,6 @@ extension EditorView {
     fileprivate func pinchInsertIndex(for point: CGPoint) -> Int {
         let hidden = hiddenBlockIDs(in: document.children)
         let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden).rows
-        let frames: [ReorderDropFrame] = rows.compactMap { row in
-            rowFrames[row.block.id].map { ReorderDropFrame(id: row.block.id, frame: $0) }
-        }
-        return ReorderDropResolver.insertionIndex(forY: point.y, rowFrames: frames)
+        return resolveDropSlot(forY: point.y, in: rows)
     }
 }

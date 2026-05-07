@@ -1,7 +1,12 @@
 import SwiftUI
 
 public struct BlockRow: View, Equatable {
-    @Binding var block: Block
+    /// Block content as a value. Mutations route through `onBlockChange` —
+    /// keeping the row free of `@Binding` lets `.equatable()` actually gate
+    /// `body` (DynamicProperty wrappers like `@Binding` reset per parent
+    /// re-render and force body to run regardless of `==`).
+    public let block: Block
+    public let onBlockChange: (Block) -> Void
     /// Depth of this block in the document tree. Replaces the old per-case
     /// `indent` field — passed in by the visible-layout walk so the row
     /// renders the right leading inset without consulting the model directly.
@@ -32,8 +37,13 @@ public struct BlockRow: View, Equatable {
             && lhs.isActionMenuTarget == rhs.isActionMenuTarget
             && lhs.mentionActive == rhs.mentionActive
             && lhs.pageTitles == rhs.pageTitles
+            && lhs.linkPreviews == rhs.linkPreviews
     }
-    @FocusState.Binding var editorFocused: BlockID?
+    /// Plain-typed focus binding (NOT `@FocusState.Binding`). Same reason as
+    /// `block` above — `@FocusState.Binding` is a DynamicProperty wrapper that
+    /// would defeat `.equatable()`. Held by value here, only consulted inside
+    /// `BlockTextEditor` when `isEditing` is true.
+    let editorFocused: FocusState<BlockID?>.Binding
     let onKey: (BlockKey) -> KeyPress.Result
     let onEdited: () -> Void
     let onAutotransform: (BlockTransform, AttributedString) -> Void
@@ -63,11 +73,18 @@ public struct BlockRow: View, Equatable {
     /// this closure to atomically read-and-clear `EditorState.pendingInitialCursor`.
     let consumeInitialCursor: () -> InitialCursorTarget?
 
-    @State private var linkPreviews: [URL: LinkPreview] = [:]
-    @Environment(\.linkPreviewProvider) private var linkPreviewProvider: LinkPreviewProvider?
+    /// Subset of the host's link-preview cache relevant to this row. Filtered
+    /// at the call site to just the URLs in `block.text`, so the dict stays
+    /// small and Equatable comparisons are cheap. Async fetches still run
+    /// inside this row's `.task` and call `onLinkPreviewLoaded` to write back
+    /// to the host's cache.
+    let linkPreviews: [URL: LinkPreview]
+    let onLinkPreviewLoaded: (URL, LinkPreview) -> Void
+    let linkPreviewProvider: LinkPreviewProvider?
 
     public init(
-        block: Binding<Block>,
+        block: Block,
+        onBlockChange: @escaping (Block) -> Void,
         depth: Int,
         editorFocused: FocusState<BlockID?>.Binding,
         isPageTitle: Bool = false,
@@ -86,9 +103,13 @@ public struct BlockRow: View, Equatable {
         onToggleExpansion: @escaping () -> Void = {},
         onTemplateButtonPress: @escaping () -> Void = {},
         pageTitles: [String: String] = [:],
+        linkPreviews: [URL: LinkPreview] = [:],
+        onLinkPreviewLoaded: @escaping (URL, LinkPreview) -> Void = { _, _ in },
+        linkPreviewProvider: LinkPreviewProvider? = nil,
         consumeInitialCursor: @escaping () -> InitialCursorTarget? = { nil }
     ) {
-        self._block = block
+        self.block = block
+        self.onBlockChange = onBlockChange
         self.depth = depth
         self.isPageTitle = isPageTitle
         self.numberingIndex = numberingIndex
@@ -97,7 +118,7 @@ public struct BlockRow: View, Equatable {
         self.isExpanded = isExpanded
         self.isDropTarget = isDropTarget
         self.isActionMenuTarget = isActionMenuTarget
-        self._editorFocused = editorFocused
+        self.editorFocused = editorFocused
         self.onKey = onKey
         self.onEdited = onEdited
         self.onAutotransform = onAutotransform
@@ -107,6 +128,9 @@ public struct BlockRow: View, Equatable {
         self.onToggleExpansion = onToggleExpansion
         self.onTemplateButtonPress = onTemplateButtonPress
         self.pageTitles = pageTitles
+        self.linkPreviews = linkPreviews
+        self.onLinkPreviewLoaded = onLinkPreviewLoaded
+        self.linkPreviewProvider = linkPreviewProvider
         self.consumeInitialCursor = consumeInitialCursor
     }
 
@@ -121,7 +145,7 @@ public struct BlockRow: View, Equatable {
                 for url in externalURLs where linkPreviews[url] == nil {
                     if let preview = await provider(url) {
                         if Task.isCancelled { return }
-                        linkPreviews[url] = preview
+                        onLinkPreviewLoaded(url, preview)
                     }
                 }
             }
@@ -161,7 +185,7 @@ public struct BlockRow: View, Equatable {
             set: { newValue in
                 if String(newValue.characters) != String(block.text.characters) ||
                    !attributedStringMarksEqual(newValue, block.text) {
-                    block = block.withText(newValue)
+                    onBlockChange(block.withText(newValue))
                     onEdited()
                 }
             }
@@ -253,7 +277,9 @@ public struct BlockRow: View, Equatable {
         HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
             Button {
                 if case .todo(let text, let isDone) = block.kind {
-                    block.kind = .todo(text: text, done: !isDone)
+                    var updated = block
+                    updated.kind = .todo(text: text, done: !isDone)
+                    onBlockChange(updated)
                     onEdited()
                 }
             } label: {
@@ -423,7 +449,7 @@ public struct BlockRow: View, Equatable {
                 fontSize: fontSize,
                 bold: bold,
                 lineSpacing: lineSpacing,
-                focused: $editorFocused,
+                focused: editorFocused,
                 blockID: block.id,
                 onKey: onKey,
                 onAutotransform: onAutotransform,
