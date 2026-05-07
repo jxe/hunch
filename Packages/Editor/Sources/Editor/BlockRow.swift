@@ -340,22 +340,20 @@ public struct BlockRow: View, Equatable {
 
     private func toggleRow() -> some View {
         HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    onToggleExpansion()
+            Image(systemName: "chevron.right")
+                .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .foregroundStyle(NotionStyle.foreground)
+                .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                .alignmentGuide(.firstTextBaseline) { dimensions in
+                    dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                 }
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: NotionStyle.chevronSize, weight: .medium))
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .foregroundStyle(NotionStyle.foreground)
-                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
-                    .alignmentGuide(.firstTextBaseline) { dimensions in
-                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        onToggleExpansion()
                     }
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+                }
 
             editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
         }
@@ -365,22 +363,20 @@ public struct BlockRow: View, Equatable {
 
     private func templateButtonRow() -> some View {
         HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    onToggleExpansion()
+            Image(systemName: "chevron.right")
+                .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .foregroundStyle(NotionStyle.foreground)
+                .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                .alignmentGuide(.firstTextBaseline) { dimensions in
+                    dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                 }
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: NotionStyle.chevronSize, weight: .medium))
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .foregroundStyle(NotionStyle.foreground)
-                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
-                    .alignmentGuide(.firstTextBaseline) { dimensions in
-                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        onToggleExpansion()
                     }
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+                }
 
             if isEditing {
                 HStack(spacing: 7) {
