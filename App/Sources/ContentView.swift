@@ -289,6 +289,17 @@ private struct EditorPage: View {
         guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
         editorState.requestToggleVoiceRecording()
     }
+
+    #if os(iOS)
+    @ViewBuilder
+    private func recoverMenuItem(for url: URL) -> some View {
+        Button {
+            window.recoveryFilter = .page(relativePath: workspace.relativePath(of: url))
+        } label: {
+            Label("Recover…", systemImage: "clock.arrow.circlepath")
+        }
+    }
+    #endif
 }
 
 private struct WorkspacePickerView: View {
