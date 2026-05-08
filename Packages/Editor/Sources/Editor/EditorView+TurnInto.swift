@@ -408,9 +408,16 @@ extension EditorView {
                             keyboardShortcutModifiers: [.command, .shift],
                             keyboardShortcutLabel: "⇧⌘M"
                         ) {
-                            onRequestMoveDestination(targetIDs) { pickedPageID in
-                                guard let pickedPageID else { return }
-                                moveBlocks(ids: targetIDs, intoSubpagePath: pickedPageID)
+                            let inDoc = inDocMoveCandidates(excluding: targetIDs)
+                            onRequestMoveDestination(targetIDs, inDoc) { destination in
+                                switch destination {
+                                case .page(let pageID):
+                                    moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
+                                case .block(let parentID):
+                                    moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
+                                case nil:
+                                    break
+                                }
                             }
                         }
                         ForEach(indentTargets, id: \.self) { action in

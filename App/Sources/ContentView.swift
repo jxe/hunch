@@ -48,12 +48,12 @@ struct ContentView: View {
                         onClose: { window.showSearch = false }
                     )
                 }
-                .sheet(item: $window.moveRequest) { _ in
-                    SearchSheet(
+                .sheet(item: $window.moveRequest) { request in
+                    MoveDestinationSheet(
                         workspace: workspace,
+                        inDocCandidates: request.inDocCandidates,
                         excluding: window.openDocument?.url,
-                        title: "Move to…",
-                        onActivate: { item in window.resolveMoveRequest(with: item.id) },
+                        onActivate: { destination in window.resolveMoveRequest(with: destination) },
                         onClose: { window.resolveMoveRequest(with: nil) }
                     )
                 }
@@ -194,8 +194,12 @@ private struct EditorPage: View {
             onAppendToSubpage: { pageID, blocks in
                 window.appendToSubpage(relativePath: pageID, blocks: blocks)
             },
-            onRequestMoveDestination: { blockIDs, completion in
-                window.requestMoveDestination(blockIDs: blockIDs, completion: completion)
+            onRequestMoveDestination: { blockIDs, inDocCandidates, completion in
+                window.requestMoveDestination(
+                    blockIDs: blockIDs,
+                    inDocCandidates: inDocCandidates,
+                    completion: completion
+                )
             },
             onNavigateBack: {
                 window.goBack()

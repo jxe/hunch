@@ -29,7 +29,8 @@ final class WorkspaceWindow {
     struct MoveRequest: Identifiable {
         let id = UUID()
         let blockIDs: [BlockID]
-        let completion: (String?) -> Void
+        let inDocCandidates: [InDocMoveTarget]
+        let completion: (MoveDestination?) -> Void
     }
 
     private var debounceTask: Task<Void, Never>?
@@ -147,14 +148,22 @@ final class WorkspaceWindow {
 
     // MARK: - Move-to picker
 
-    func requestMoveDestination(blockIDs: [BlockID], completion: @escaping (String?) -> Void) {
-        moveRequest = MoveRequest(blockIDs: blockIDs, completion: completion)
+    func requestMoveDestination(
+        blockIDs: [BlockID],
+        inDocCandidates: [InDocMoveTarget],
+        completion: @escaping (MoveDestination?) -> Void
+    ) {
+        moveRequest = MoveRequest(
+            blockIDs: blockIDs,
+            inDocCandidates: inDocCandidates,
+            completion: completion
+        )
     }
 
-    func resolveMoveRequest(with pageID: String?) {
+    func resolveMoveRequest(with destination: MoveDestination?) {
         guard let req = moveRequest else { return }
         moveRequest = nil
-        req.completion(pageID)
+        req.completion(destination)
     }
 
     // MARK: - Document binding

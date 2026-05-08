@@ -46,11 +46,18 @@ public struct EditorView: View {
     /// Append blocks to the end of the page at `pageID`. Returns `true` on success.
     /// Used by drop-on-subpage to move dragged blocks into a child page.
     public let onAppendToSubpage: (_ pageID: String, _ blocks: [Block]) -> Bool
-    /// Ask the host to present its page picker for a "Move to" action. The host
-    /// shows whatever picker UI it owns (sheet, popover, etc.) and calls back
-    /// with the chosen `pageID` (relative path) — or nil if the user cancelled.
-    /// The editor then performs the move.
-    public let onRequestMoveDestination: (_ blockIDs: [BlockID], _ pick: @escaping (String?) -> Void) -> Void
+    /// Ask the host to present its picker for a "Move to" action. The editor
+    /// passes the moving block ids plus a list of in-document destinations
+    /// (headings + toggles already filtered to legal drop targets); the host
+    /// merges those with the workspace page list, presents its picker, and
+    /// calls back with a `MoveDestination` — `.page(...)` for cross-page,
+    /// `.block(...)` for in-doc — or `nil` if the user cancelled. The editor
+    /// then performs the move.
+    public let onRequestMoveDestination: (
+        _ blockIDs: [BlockID],
+        _ inDocCandidates: [InDocMoveTarget],
+        _ pick: @escaping (MoveDestination?) -> Void
+    ) -> Void
     public let onNavigateBack: () -> Void
     public let onEdited: () -> Void
     public let onBlur: () -> Void
@@ -145,7 +152,11 @@ public struct EditorView: View {
         onLoadSubpage: @escaping (_ pageID: String) -> [Block]? = { _ in nil },
         onAbsorbSubpage: @escaping (_ pageID: String) -> Bool = { _ in true },
         onAppendToSubpage: @escaping (_ pageID: String, _ blocks: [Block]) -> Bool = { _, _ in false },
-        onRequestMoveDestination: @escaping (_ blockIDs: [BlockID], _ pick: @escaping (String?) -> Void) -> Void = { _, pick in pick(nil) },
+        onRequestMoveDestination: @escaping (
+            _ blockIDs: [BlockID],
+            _ inDocCandidates: [InDocMoveTarget],
+            _ pick: @escaping (MoveDestination?) -> Void
+        ) -> Void = { _, _, pick in pick(nil) },
         onNavigateBack: @escaping () -> Void = {},
         onEdited: @escaping () -> Void = {},
         onBlur: @escaping () -> Void = {},
@@ -600,6 +611,39 @@ public struct EditorView: View {
         }
     }
 
+    /// In-document destinations for the Move-to picker: every heading/toggle
+    /// in the current page that is a legal drop target for `moving`. Excludes
+    /// the moving subtrees themselves (no self-drops, no cycles) and anything
+    /// `Document.canDrop` rejects (heading-containment violations). Result is
+    /// in document order with each target's tree depth attached so the picker
+    /// can indent rows to surface the page outline.
+    func inDocMoveCandidates(excluding moving: [BlockID]) -> [InDocMoveTarget] {
+        var excluded: Set<BlockID> = []
+        for id in moving { excluded.formUnion(document.subtreeIDs(of: id)) }
+        var out: [InDocMoveTarget] = []
+        document.walk { block, depth, _ in
+            guard !excluded.contains(block.id) else { return }
+            let kind: InDocMoveTarget.Kind
+            let fallback: String
+            switch block.kind {
+            case .heading(let level, _):
+                kind = .heading(level: level)
+                fallback = "Untitled heading"
+            case .toggle:
+                kind = .toggle
+                fallback = "Untitled toggle"
+            default:
+                return
+            }
+            let dropTarget = DropPath(parent: block.id, position: block.children.count)
+            guard document.canDrop(ids: moving, to: dropTarget) else { return }
+            let raw = String(block.text.characters)
+            let title = raw.isEmpty ? fallback : raw
+            out.append(InDocMoveTarget(id: block.id, title: title, kind: kind, depth: depth))
+        }
+        return out
+    }
+
 
     private func accessibilityLabel(for block: Block) -> String {
         let text = accessibilityText(for: block)
@@ -908,9 +952,16 @@ public struct EditorView: View {
         editorCommands.openMoveTo = {
             guard let id = topSelectedBlockID() else { return }
             let targetIDs = menuTargetIDs(anchorID: id)
-            onRequestMoveDestination(targetIDs) { picked in
-                guard let picked else { return }
-                moveBlocks(ids: targetIDs, intoSubpagePath: picked)
+            let inDoc = inDocMoveCandidates(excluding: targetIDs)
+            onRequestMoveDestination(targetIDs, inDoc) { destination in
+                switch destination {
+                case .page(let pageID):
+                    moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
+                case .block(let parentID):
+                    moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
+                case nil:
+                    break
+                }
             }
         }
         editorCommands.indent = {

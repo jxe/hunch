@@ -549,7 +549,7 @@ extension EditorView {
     /// Drop-on-parent: append `ids` as the parent's last children. Validates
     /// with `Document.canDrop` (rejects cycles + containment violations) then
     /// performs the move. No more indent math — the tree itself encodes depth.
-    fileprivate func moveBlocks(ids: [BlockID], asChildrenOf parentID: BlockID, snapshot _: [Block], hidden _: Set<BlockID>) {
+    func moveBlocks(ids: [BlockID], asChildrenOf parentID: BlockID, snapshot _: [Block], hidden _: Set<BlockID>) {
         guard !ids.contains(parentID),
               let parent = document.find(parentID) else { return }
         let target = DropPath(parent: parentID, position: parent.children.count)
@@ -563,6 +563,7 @@ extension EditorView {
         case .templateButton: state.expandedTemplates.insert(parent.id)
         default: break
         }
+        showActionToast("Moved")
     }
 
     /// Option-drag duplicate: insert fresh-ID copies of `ids` at `target`,
