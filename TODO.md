@@ -1,6 +1,7 @@
 # Now
 
-- is scrolling a bit janky
+- really nice README
+- change bundle ID and ready for TestFlight
 - pasting images outside in edit mode
 - refresh Notion typography and spacing
 - inline links & clicks (see tasks/)

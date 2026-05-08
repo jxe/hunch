@@ -163,7 +163,6 @@ private struct EditorPage: View {
     @Bindable var window: WorkspaceWindow
 
     @State private var editorState = EditorState()
-    @Environment(\.scenePhase) private var scenePhase
     @FocusedValue(\.documentUndoController) private var undoController
 
     var body: some View {
@@ -266,30 +265,9 @@ private struct EditorPage: View {
             }
             #endif
             ToolbarItem(placement: .primaryAction) {
-                EditorRecordingButton(state: editorState)
+                RecordingButton(editorState: editorState)
             }
         }
-        .onAppear { forwardPendingVoiceRecording() }
-        .onChange(of: scenePhase) { _, new in
-            if new == .active { forwardPendingVoiceRecording() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: VoiceRecordingLaunchRequest.notificationName)) { _ in
-            // The intent fires from another process and writes the pending-start
-            // flag before posting the notification — consume the flag too so a
-            // later `.active` transition doesn't fire a second time.
-            _ = VoiceRecordingLaunchRequest.consumePendingStart()
-            // Defer the state mutation off the publisher's synchronous delivery —
-            // if the notification posts during a SwiftUI render pass the inline
-            // assign trips "Modifying state during view update".
-            Task { @MainActor in
-                editorState.requestToggleVoiceRecording()
-            }
-        }
-    }
-
-    private func forwardPendingVoiceRecording() {
-        guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
-        editorState.requestToggleVoiceRecording()
     }
 }
 

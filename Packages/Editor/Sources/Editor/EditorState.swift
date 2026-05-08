@@ -53,26 +53,30 @@ public final class EditorState {
     // Transient bottom-of-page toast (e.g. "Deleted") with an Undo affordance.
     public internal(set) var actionToast: String? = nil
 
-    /// Voice-recording controller. Lives on `EditorState` so host UI (toolbar
-    /// buttons, status indicators) can read recording state without poking at
-    /// the editor's internals. The editor still owns the *flow* — it watches
-    /// `voiceRecordingToggleTicket`, drives the recorder, and inserts the
-    /// transcript into the document — but the recorder instance is here.
-    public internal(set) var speechRecorder = PageSpeechRecorder()
-
-    /// Counter the editor watches via `onChange`; bumping it toggles the
-    /// recording (start when idle, stop+transcribe+insert when recording).
-    /// Source-agnostic — bumped by the toolbar button, Siri intents, hotkeys,
-    /// tests. We use a counter (not a Bool) so two consecutive requests both
-    /// fire even if the editor hasn't yet noticed the first.
-    public internal(set) var voiceRecordingToggleTicket: Int = 0
+    /// Bumped by `appendBlocks(_:actionName:)`. EditorView observes via
+    /// `.onChange` and consumes the buffered payload via `takePendingAppend()`.
+    /// Counter (not a Bool) so two consecutive appends both fire even if the
+    /// editor hasn't yet noticed the first.
+    public internal(set) var pendingAppendTicket: Int = 0
+    internal var pendingAppendBuffer: (blocks: [Block], actionName: String)? = nil
 
     public init() {}
 
-    /// Ask the editor to toggle voice recording. If idle → start; if recording
-    /// → stop, transcribe, and insert the transcript at the current focus.
-    public func requestToggleVoiceRecording() {
-        voiceRecordingToggleTicket &+= 1
+    /// Append host-supplied blocks to the end of the document. Wraps the
+    /// mutation in undo registration with `actionName` and transfers focus
+    /// (nav-mode cursor) to the last appended block. Source-agnostic — used
+    /// today by Hunch's voice-transcription pipeline, but the editor itself
+    /// doesn't care where the blocks came from.
+    public func appendBlocks(_ blocks: [Block], actionName: String = "Insert Blocks") {
+        guard !blocks.isEmpty else { return }
+        pendingAppendBuffer = (blocks, actionName)
+        pendingAppendTicket &+= 1
+    }
+
+    internal func takePendingAppend() -> (blocks: [Block], actionName: String)? {
+        let v = pendingAppendBuffer
+        pendingAppendBuffer = nil
+        return v
     }
 }
 

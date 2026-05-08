@@ -132,7 +132,6 @@ public struct EditorView: View {
     @State var pinchAutoScrollVelocity: CGFloat = 0
     @State var reorderAutoScrollTask: Task<Void, Never>?
     @State var reorderAutoScrollVelocity: CGFloat = 0
-    @State var speechError: String?
 
     /// Drives the compact block action popover. On iOS this is opened by a
     /// leading row swipe; on macOS by clicking the drag handle or Cmd-/ in nav mode.
@@ -354,8 +353,10 @@ public struct EditorView: View {
                 }
             }
             #endif
-            .onChange(of: state.voiceRecordingToggleTicket) { _, _ in
-                Task { await handleVoiceRecordingToggle() }
+            .onChange(of: state.pendingAppendTicket) { _, _ in
+                if let payload = state.takePendingAppend() {
+                    appendBlocksFromHost(payload.blocks, actionName: payload.actionName)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .hunchEscapeKeyDown)) { _ in
                 handleEscapeKey()
@@ -376,11 +377,6 @@ public struct EditorView: View {
                 KeyEquivalent("/"),
                 KeyEquivalent("[")
             ], action: handleNavKeyPress)
-            .alert("Recording", isPresented: speechErrorBinding) {
-                Button("OK") { speechError = nil }
-            } message: {
-                Text(speechError ?? "")
-            }
             .iosEdgeGateNavigateBack()
         }
     }
@@ -942,6 +938,19 @@ public struct EditorView: View {
         document.enforceHeadingContainment()
         undoController.register(before, name: name)
         onEdited()
+    }
+
+    /// Consume a host-supplied append payload (via `EditorState.appendBlocks`).
+    /// Mutates with undo, then puts the nav-mode cursor on the last appended
+    /// block so the user lands on what was just inserted.
+    func appendBlocksFromHost(_ blocks: [Block], actionName: String) {
+        guard !blocks.isEmpty else { return }
+        mutate(actionName) {
+            document.children.append(contentsOf: blocks)
+        }
+        if let lastID = blocks.last?.id {
+            transferFocus(to: .nav(cursor: lastID))
+        }
     }
 
     private func wireEditorCommands() {
