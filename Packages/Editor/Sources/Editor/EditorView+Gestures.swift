@@ -201,7 +201,10 @@ extension View {
     /// region triggers a new paragraph there.
     @ViewBuilder
     func tapBelowRows(_ onTap: @escaping (CGPoint) -> Void) -> some View {
-        self.simultaneousGesture(
+        // `.gesture` (not `.simultaneousGesture`) so the enclosing ScrollView's
+        // pan claims the touch first on iOS — otherwise a rubber-band pull at
+        // the bottom of the page fires this tap on release and pops the keyboard.
+        self.gesture(
             SpatialTapGesture()
                 .onEnded { value in
                     onTap(value.location)
@@ -756,7 +759,11 @@ struct IOSScrollMetricsReader: UIViewRepresentable {
         }
 
         func installIfNeeded() {
-            guard let scrollView = nearestScrollView() else { return }
+            guard let scrollView = nearestScrollView() else {
+                // NSLog("[REORDER-AS] metrics reader: nearestScrollView returned nil")
+                return
+            }
+            // NSLog("[REORDER-AS] metrics reader: attached to scrollView bounds=%@ adjustedInset=(t:%f b:%f)", NSCoder.string(for: scrollView.bounds), scrollView.adjustedContentInset.top, scrollView.adjustedContentInset.bottom)
             PageScrollController.shared.scrollView = scrollView
             coordinator?.update(from: scrollView)
         }
@@ -823,6 +830,7 @@ struct IOSScrollMetricsReader: UIViewRepresentable {
             metrics.contentOffsetY = scrollView.contentOffset.y
             metrics.topInset = scrollView.adjustedContentInset.top
             metrics.bottomInset = scrollView.adjustedContentInset.bottom
+            // NSLog("[REORDER-AS] metrics publish viewport=%f content=%f offsetY=%f topInset=%f bottomInset=%f", metrics.viewportHeight, metrics.contentHeight, metrics.contentOffsetY, metrics.topInset, metrics.bottomInset)
         }
     }
 }

@@ -276,7 +276,9 @@ extension EditorView {
         let threshold: CGFloat = 110
         let maxVelocity: CGFloat = 620
         let effectiveBottom = scrollMetrics.viewportHeight - scrollMetrics.topInset - scrollMetrics.bottomInset
+        // NSLog("[REORDER-AS] update loc.y=%f viewportH=%f topInset=%f bottomInset=%f effectiveBottom=%f", location.y, scrollMetrics.viewportHeight, scrollMetrics.topInset, scrollMetrics.bottomInset, effectiveBottom)
         guard effectiveBottom > threshold * 2 else {
+            // NSLog("[REORDER-AS] effectiveBottom too small (%f <= %f), bailing", effectiveBottom, threshold * 2)
             stopReorderAutoScroll()
             return
         }
@@ -293,6 +295,7 @@ extension EditorView {
         } else {
             velocity = 0
         }
+        // NSLog("[REORDER-AS] velocity=%f topD=%f bottomD=%f", velocity, topDistance, bottomDistance)
 
         reorderAutoScrollVelocity = velocity
         if abs(velocity) > 1 {
@@ -303,12 +306,20 @@ extension EditorView {
     }
 
     fileprivate func startReorderAutoScrollIfNeeded() {
-        guard reorderAutoScrollTask == nil else { return }
+        guard reorderAutoScrollTask == nil else {
+            // NSLog("[REORDER-AS] task already running")
+            return
+        }
+        // NSLog("[REORDER-AS] starting task")
         reorderAutoScrollTask = Task { @MainActor in
             let frameDuration: TimeInterval = 1.0 / 60.0
             while !Task.isCancelled {
                 let velocity = reorderAutoScrollVelocity
-                if abs(velocity) <= 1 { break }
+                if abs(velocity) <= 1 {
+                    // NSLog("[REORDER-AS] velocity dropped, breaking")
+                    break
+                }
+                // NSLog("[REORDER-AS] tick velocity=%f scrollBy=%f offsetY(before)=%f", velocity, velocity * frameDuration, scrollMetrics.contentOffsetY)
                 scrollBy(velocity * frameDuration)
                 if let liftY = state.reorderLift?.location.y {
                     var snapshot: [Block] = []
@@ -317,6 +328,7 @@ extension EditorView {
                 }
                 try? await Task.sleep(for: .milliseconds(16))
             }
+            // NSLog("[REORDER-AS] task ended")
             reorderAutoScrollTask = nil
         }
     }
