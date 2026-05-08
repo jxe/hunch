@@ -1183,6 +1183,10 @@ public struct EditorView: View {
         withAnimation(.easeInOut(duration: 0.15)) {
             expandSection(block)
         }
+        // Re-attach AppKit first responder: the `expandedToggles` mutation rebuilds
+        // the VStack inside an animation transaction and drops it. `pageFocused`
+        // stays `true`, so a same-value setter is a no-op.
+        forcePageFocusGrab()
         return true
     }
 
@@ -1199,6 +1203,7 @@ public struct EditorView: View {
             withAnimation(.easeInOut(duration: 0.15)) {
                 collapseSection(cursorBlock)
             }
+            forcePageFocusGrab()
             return true
         }
 
@@ -1208,6 +1213,7 @@ public struct EditorView: View {
             collapseSection(parent)
         }
         setCursor(parentID)
+        forcePageFocusGrab()
         return true
     }
 
