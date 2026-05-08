@@ -282,7 +282,13 @@ public struct EditorView: View {
             )
             .macScrollMetrics(scrollMetrics)
             .macScrollPosition($scrollPosition)
-            .macNearestRowHover(rowFrames: rowFrames) { id in state.hoveredBlock = id }
+            // Guard against same-value writes: `@Observable` invalidates body on
+            // every setter call, and SwiftUI redispatches hover whenever layout
+            // shifts row frames — without the guard this closes a feedback loop
+            // with the LazyVStack layout pass and pegs CPU at idle.
+            .macNearestRowHover(rowFrames: rowFrames) { id in
+                if state.hoveredBlock != id { state.hoveredBlock = id }
+            }
             .background(NotionStyle.background)
             .tapBelowRows {
                 handleTapBelowRows(at: $0)
@@ -547,8 +553,12 @@ public struct EditorView: View {
                     .opacity(showHandleOverlay(for: block.id) && !isEditing ? 1 : 0)
                     .offset(x: -DragHandle.gutterWidth, y: 2)
                     .onHover { hovering in
+                        // Guard against same-value writes — see the
+                        // `macNearestRowHover` site for context.
                         if hovering {
-                            state.hoveredHandle = block.id
+                            if state.hoveredHandle != block.id {
+                                state.hoveredHandle = block.id
+                            }
                         } else if state.hoveredHandle == block.id {
                             state.hoveredHandle = nil
                         }
