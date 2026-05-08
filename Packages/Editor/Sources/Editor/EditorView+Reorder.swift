@@ -566,6 +566,10 @@ extension EditorView {
               let parent = document.find(parentID) else { return }
         let target = DropPath(parent: parentID, position: parent.children.count)
         guard document.canDrop(ids: ids, to: target) else { return }
+        // Capture a cursor target near the source BEFORE the move, so the nav
+        // cursor stays where the user moved from instead of following the
+        // blocks into the destination.
+        let cursorTarget = nearestCursorAfterRemoval(of: ids)
         mutate("Move Block") {
             document.moveSubtrees(ids, to: target)
         }
@@ -574,6 +578,9 @@ extension EditorView {
         case .toggle: state.expandedToggles.insert(parent.id)
         case .templateButton: state.expandedTemplates.insert(parent.id)
         default: break
+        }
+        if let id = cursorTarget {
+            setCursor(id)
         }
         showActionToast("Moved")
     }
@@ -637,10 +644,17 @@ extension EditorView {
 
         guard onAppendToSubpage(path, movingBlocks) else { return }
 
+        // Capture a cursor target near the source BEFORE removing the blocks,
+        // so the nav cursor stays where the user moved from rather than
+        // pointing at IDs that no longer exist in this document.
+        let cursorTarget = nearestCursorAfterRemoval(of: ordered)
         mutate("Move to Subpage") {
             for id in ordered {
                 document.removeSubtree(id)
             }
+        }
+        if let id = cursorTarget {
+            setCursor(id)
         }
         showActionToast("Moved")
     }

@@ -1000,7 +1000,25 @@ public struct EditorView: View {
         }
         editorCommands.toggleLinkOrSubpage = {
             guard let id = state.cursor, state.selection.count == 1 else { return }
-            _ = convertBlockToSubpage(blockID: id, preferredTitle: nil)
+            // The Cmd-K menu shortcut wins over NSTextView's keyDown, so the
+            // live-text capture path in BlockTextEditor's keyDown never runs.
+            // Mirror it here: capture the selected substring (or full string)
+            // before committing, so a freshly-typed row whose binding is still
+            // empty still gets its typed text used as the new page's title.
+            var preferred: String? = nil
+            #if os(macOS)
+            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView {
+                let range = view.selectedRange()
+                let str = view.string
+                if range.length > 0, let r = Range(range, in: str) {
+                    preferred = String(str[r])
+                } else if !str.isEmpty {
+                    preferred = str
+                }
+                view.coordinator?.commitLiveText(view)
+            }
+            #endif
+            _ = convertBlockToSubpage(blockID: id, preferredTitle: preferred)
         }
         editorCommands.toggleInlineMark = { mark in
             #if os(macOS)
@@ -1752,7 +1770,7 @@ public struct EditorView: View {
     /// Pick a cursor target after removing the given subtree-roots. Tries the
     /// preorder-predecessor of the first root; falls back to the first
     /// remaining top-level block.
-    private func nearestCursorAfterRemoval(of roots: [BlockID]) -> BlockID? {
+    func nearestCursorAfterRemoval(of roots: [BlockID]) -> BlockID? {
         guard let first = roots.first else { return nil }
         if let predecessor = document.preorderPredecessor(of: first) {
             return predecessor
@@ -2125,26 +2143,20 @@ public struct EditorView: View {
     }
 
     /// Nav-mode Cmd+Return: create an empty sibling of the same kind directly
-    /// after the selected block (or after its whole indent-section, so the new
-    /// row doesn't get wedged between a parent and its children) and enter
-    /// edit mode on it.
+    /// after the selected block and enter edit mode on it.
     private func createEmptySiblingAndEdit() -> Bool {
         guard let id = state.cursor, state.selection.count == 1 else { return false }
         guard let source = document.find(id) else { return false }
         let newBlock = followUpBlock(after: source, withText: "")
-        // Tree analog of "after the source's section": if the source has
-        // children, splice as the FIRST CHILD of source (so the new block is
-        // visually adjacent and at one deeper level). Otherwise, splice as the
-        // next sibling under the source's parent.
-        let dropPath: DropPath
-        if !source.children.isEmpty {
-            dropPath = DropPath(parent: id, position: 0)
-        } else {
-            let parentID = document.parent(of: id)
-            let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
-            let i = siblings.firstIndex(where: { $0.id == id }) ?? siblings.count - 1
-            dropPath = DropPath(parent: parentID, position: i + 1)
-        }
+        // Always insert as the next sibling under the source's parent — even
+        // containers with children (toggles, lists) get a peer below, not a
+        // nested first-child. Headings auto-refold their body via
+        // enforceHeadingContainment(), so a sibling inserted after a heading
+        // lands at the end of its section as expected.
+        let parentID = document.parent(of: id)
+        let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+        let i = siblings.firstIndex(where: { $0.id == id }) ?? siblings.count - 1
+        let dropPath = DropPath(parent: parentID, position: i + 1)
 
         mutate("New Block") {
             document.insertSubtree(newBlock, at: dropPath)
