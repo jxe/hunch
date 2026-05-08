@@ -389,19 +389,21 @@ final class Workspace {
 
     // MARK: - Recovery
 
-    /// Snapshot the about-to-be-mutated block tree into the pool before a
-    /// destructive UI action. Covers the race where blocks live briefly in
-    /// the doc, get deleted, and the autosave never fires while they're
-    /// present — without this, those blocks would never be in the pool and
-    /// would be unrecoverable.
+    /// Snapshot the about-to-be-mutated block tree into the recovery log
+    /// before a destructive UI action. Covers the race where blocks live
+    /// briefly in the doc, get deleted, and the autosave never fires while
+    /// they're present — without this, those blocks would never be logged
+    /// and would be unrecoverable.
     func recordBlockDeletion(sourceURL: URL, previousBlocks: [Block]) {
         guard let clamshell else { return }
-        clamshell.snapshotIntoPool(at: sourceURL, blocks: previousBlocks)
+        clamshell.snapshotIntoRecoveryLog(at: sourceURL, blocks: previousBlocks)
     }
 
-    /// Two-pass stream: first emission is trash entries + lost-block stubs
-    /// (cheap directory scan, no body reads), subsequent emissions replace
-    /// stubs with populated entries as their bodies land in parallel.
+    /// One-shot stream of recoverable entries (trash + lost blocks). JSONL
+    /// gives us hash + parent + markdown per line, so there's no cheaper
+    /// first pass the way the per-block pool had — we yield one fully
+    /// populated batch. The stream API stays so the call site keeps an
+    /// `AsyncStream` shape and can be enriched later (e.g. tail-first reads).
     func streamRecoverableEntries(filter: RecoveryListFilter = .all) -> AsyncStream<[RecoverableEntry]> {
         AsyncStream { continuation in
             let task = Task { @MainActor [weak self] in
@@ -411,46 +413,21 @@ final class Workspace {
                     return
                 }
 
-                var trashEntries: [RecoverableEntry] = []
+                var out: [RecoverableEntry] = []
                 if case .all = filter {
                     let pages = (try? await clamshell.listTrashedPages()) ?? []
-                    trashEntries = pages.map { .deletedPage($0) }
+                    out.append(contentsOf: pages.map { .deletedPage($0) })
                 }
                 let lostFilter: Clamshell.LostBlocksFilter
                 switch filter {
                 case .all: lostFilter = .all
                 case .page(let rel): lostFilter = .page(relativePath: rel)
                 }
-                let stubs = await clamshell.listLostBlockStubs(filter: lostFilter)
+                let lost = await clamshell.listLostBlocks(filter: lostFilter)
+                out.append(contentsOf: lost.map { .lostBlock($0) })
+                out.sort { $0.timestamp > $1.timestamp }
 
-                var lostByID: [String: LostBlock] = [:]
-                for stub in stubs { lostByID[stub.id] = stub }
-
-                func snapshot() -> [RecoverableEntry] {
-                    var out = trashEntries
-                    out.append(contentsOf: lostByID.values.map { .lostBlock($0) })
-                    out.sort { $0.timestamp > $1.timestamp }
-                    return out
-                }
-
-                continuation.yield(snapshot())
-                if Task.isCancelled || stubs.isEmpty {
-                    continuation.finish()
-                    return
-                }
-
-                // Pass 2: parallel body fills. `loadLostBlockBody` is nonisolated
-                // and synchronous, so each task can do its read independently.
-                await withTaskGroup(of: LostBlock.self) { group in
-                    for stub in stubs {
-                        group.addTask { clamshell.loadLostBlockBody(stub) }
-                    }
-                    for await populated in group {
-                        if Task.isCancelled { break }
-                        lostByID[populated.id] = populated
-                        continuation.yield(snapshot())
-                    }
-                }
+                continuation.yield(out)
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -577,9 +554,7 @@ public enum RecoverableEntry: Identifiable, Sendable, Hashable {
     public var displayTitle: String {
         switch self {
         case .deletedPage(let e): return e.displayTitle
-        case .lostBlock(let l):
-            guard let md = l.markdown else { return "Loading…" }
-            return RecoverableEntry.previewLine(from: md)
+        case .lostBlock(let l): return RecoverableEntry.previewLine(from: l.markdown)
         }
     }
 

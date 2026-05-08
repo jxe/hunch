@@ -326,14 +326,8 @@ final class WorkspaceWindow {
         }
 
         do {
-            // The recovery list now hands us stubs first and fills bodies in
-            // the background — at restore time the row's markdown is usually
-            // already on the entry, but if the user clicks before its body
-            // landed we resolve it synchronously off-actor here.
-            let populated = entry.markdown != nil ? entry : clamshell.loadLostBlockBody(entry)
-            guard let markdown = populated.markdown,
-                  let parsed = BlockParser.parse(markdown).first else {
-                workspace.error = "Couldn't read the recovered block from disk."
+            guard let parsed = BlockParser.parse(entry.markdown).first else {
+                workspace.error = "Couldn't parse the recovered block."
                 return false
             }
             let restored = parsed.withFreshIDs()
@@ -346,13 +340,13 @@ final class WorkspaceWindow {
                 doc = try workspace.loadDocument(at: target)
             }
 
-            // Climb the lost block's recorded parent chain in the pool until
-            // we find a hash that's currently live in the doc — append the
-            // restored block as a child of it. If we run out of ancestors,
-            // append at the top of the page.
+            // Climb the lost block's recorded parent chain in the recovery
+            // log until we find a hash that's currently live in the doc —
+            // append the restored block as a child of it. If we run out of
+            // ancestors, append at the top of the page.
             let parentID = await resolveLiveAncestor(
-                startingParentHash: populated.parentHash,
-                pageRel: populated.source,
+                startingParentHash: entry.parentHash,
+                pageRel: entry.source,
                 in: doc,
                 clamshell: clamshell
             )
@@ -398,7 +392,7 @@ final class WorkspaceWindow {
         var safety = 64
         while let hash = current, safety > 0 {
             if let id = findAtomicHash(hash, in: doc) { return id }
-            current = await clamshell.parentHash(forPool: pageRel, hash: hash)
+            current = await clamshell.parentHash(forPage: pageRel, hash: hash)
             safety -= 1
         }
         return nil

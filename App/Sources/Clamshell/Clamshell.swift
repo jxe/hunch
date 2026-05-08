@@ -6,10 +6,10 @@ import Editor
 /// On disk, a Clamshell is a folder:
 ///
 ///     <clamshell-root>/
-///       *.md                          live pages
-///       Trash/<relpath>.md            soft-deleted pages (mirrors source structure)
-///       .blocks/<relpath>/<hash>.md   per-page write-once block pool
-///       .clamshell.json               format metadata (home page pointer)
+///       *.md                                       live pages
+///       Trash/<relpath>.md                         soft-deleted pages (mirrors source structure)
+///       .history/<relpath>/<device-id>.jsonl       per-(device, page) append-only recovery log
+///       .clamshell.json                            format metadata (home page pointer)
 ///
 /// Located at relaunch via a security-scoped URL bookmark (see `WorkspaceBookmark`).
 /// The home page pointer travels with the folder — copy or sync the folder and the
@@ -40,7 +40,7 @@ public final class Clamshell {
     nonisolated private let files: FileStore
     nonisolated private let saver: DocumentSaveCoordinator
     nonisolated private let trash: TrashStore
-    nonisolated private let pool: BlockPool
+    nonisolated private let log: RecoveryLog
 
     public init(root: URL) {
         self.root = root
@@ -48,7 +48,7 @@ public final class Clamshell {
         self.files = files
         self.saver = DocumentSaveCoordinator(store: files)
         self.trash = TrashStore(workspaceRoot: root, store: files)
-        self.pool = BlockPool(workspaceRoot: root, store: files)
+        self.log = RecoveryLog(workspaceRoot: root, store: files)
 
         let metadataURL = Clamshell.metadataURL(forRoot: root)
         if let metadata = Clamshell.readMetadata(at: metadataURL) {
@@ -64,12 +64,12 @@ public final class Clamshell {
             self.homeRelativePath = nil
         }
 
-        // Lazy migration: the pre-pool builds left an append-only `.history/`
-        // log behind. We've replaced that with the `.blocks/` pool, so drop
-        // the directory the first time a pool-aware build opens this clamshell.
-        let historyDir = root.appendingPathComponent(FileStore.historyDirectoryName)
-        if FileManager.default.fileExists(atPath: historyDir.path) {
-            try? FileManager.default.removeItem(at: historyDir)
+        // Lazy migration: the previous (one-commit-old) build wrote per-block
+        // pool files to `.blocks/`. The recovery log replaces that — drop the
+        // pool dir on first open by a log-aware build.
+        let blocksDir = root.appendingPathComponent(".blocks")
+        if FileManager.default.fileExists(atPath: blocksDir.path) {
+            try? FileManager.default.removeItem(at: blocksDir)
         }
     }
 
@@ -129,8 +129,8 @@ public final class Clamshell {
     /// Coalesced async save (autosave path). Document is `@MainActor`-isolated,
     /// so we serialize on the calling actor (MainActor) before handing the
     /// String + URL across to the save coordinator. After the write lands,
-    /// fires a fire-and-forget `BlockPool.persist` so every block on the page
-    /// has a content-addressed copy in `.blocks/<rel>/`.
+    /// fires a fire-and-forget `RecoveryLog.record` so any new atomic block
+    /// content gets logged in our device's append-only log.
     @MainActor
     public func save(
         _ document: Document,
@@ -141,13 +141,13 @@ public final class Clamshell {
         let rel = relativePath(of: url)
         let blocks = document.children
         try await saver.save(url: url, contents: newText)
-        schedulePoolPersist(rel: rel, blocks: blocks)
+        scheduleRecord(rel: rel, blocks: blocks)
     }
 
     /// Synchronous full write — bypasses the coalescer. For modifications-as-a-unit
     /// (trashing a dirty open doc, appending to a subpage, restoring a lost block)
-    /// where the doc must be on disk before the next operation runs. Also persists
-    /// the document's blocks into the pool.
+    /// where the doc must be on disk before the next operation runs. Also schedules
+    /// a recovery-log append for any new atomic block content.
     @MainActor
     public func writeImmediately(
         _ document: Document,
@@ -157,7 +157,7 @@ public final class Clamshell {
         let rel = relativePath(of: document.url)
         let blocks = document.children
         try files.write(newText, to: document.url)
-        schedulePoolPersist(rel: rel, blocks: blocks)
+        scheduleRecord(rel: rel, blocks: blocks)
     }
 
     /// Awaits any in-flight + pending save for the URL.
@@ -166,18 +166,18 @@ public final class Clamshell {
     }
 
     @MainActor
-    private func schedulePoolPersist(rel: String, blocks: [Block]) {
-        Task { [pool] in
-            try? await pool.persist(page: rel, blocks: blocks)
+    private func scheduleRecord(rel: String, blocks: [Block]) {
+        Task { [log] in
+            try? await log.record(page: rel, blocks: blocks)
         }
     }
 
-    /// Force a pool snapshot of `blocks` for the page at `url`. Used by the
-    /// editor right before a destructive mutation so transient blocks that
-    /// never hit the autosave still land in the pool.
-    public func snapshotIntoPool(at url: URL, blocks: [Block]) {
+    /// Force a recovery-log snapshot of `blocks` for the page at `url`. Used
+    /// by the editor right before a destructive mutation so transient blocks
+    /// that never hit the autosave still land in the log.
+    public func snapshotIntoRecoveryLog(at url: URL, blocks: [Block]) {
         let rel = relativePath(of: url)
-        schedulePoolPersist(rel: rel, blocks: blocks)
+        scheduleRecord(rel: rel, blocks: blocks)
     }
 
     // MARK: - Pages: create
@@ -281,7 +281,8 @@ public final class Clamshell {
 
     /// Move a page to `Trash/`. If the page is the current home page, also clears
     /// `homeRelativePath` (the home pointer can't reference a trashed page).
-    /// The page's pool dir travels with it so restoration brings the blocks back.
+    /// The page's recovery log dir travels with it so restoration brings the
+    /// per-block log entries back too.
     @discardableResult
     public func moveToTrash(at url: URL) throws -> String {
         let rel = relativePath(of: url)
@@ -289,9 +290,8 @@ public final class Clamshell {
         if homeRelativePath == rel {
             homeRelativePath = nil
         }
-        let poolRel = result   // e.g. "Trash/foo.md"
-        Task { [pool, rel, poolRel] in
-            try? await pool.move(fromPage: rel, toPage: poolRel)
+        Task { [log, rel, result] in
+            try? await log.move(fromPage: rel, toPage: result)
         }
         return result
     }
@@ -304,100 +304,34 @@ public final class Clamshell {
     public func restorePage(_ entry: TrashEntry) async throws -> URL {
         let restoredURL = try await trash.restorePage(entry)
         let restoredRel = relativePath(of: restoredURL)
-        try? await pool.move(fromPage: entry.trashRelativePath, toPage: restoredRel)
+        try? await log.move(fromPage: entry.trashRelativePath, toPage: restoredRel)
         return restoredURL
     }
 
-    // MARK: - Lost blocks (pool-backed)
+    // MARK: - Lost blocks (recovery-log-backed)
 
-    /// Metadata-only stub list — fast first-paint for the Recover sheet. No
-    /// pool-file body reads. Each returned `LostBlock` has `markdown == nil`
-    /// and `parentHash == nil`; pair with `loadLostBlockBody(_:)` to fill.
-    /// Per-page work runs concurrently so iCloud per-page latencies overlap.
-    public func listLostBlockStubs(filter: LostBlocksFilter = .all) async -> [LostBlock] {
-        let metadataByPage: [String: [PoolEntryMetadata]]
+    /// Lost-block list. Each entry arrives fully populated: JSONL gives us
+    /// hash, parent hash, atomic markdown, and timestamp per line in one
+    /// pass — there's no cheaper "stub" mode the way the prior block-pool
+    /// design had.
+    public func listLostBlocks(filter: LostBlocksFilter = .all) async -> [LostBlock] {
         switch filter {
         case .page(let rel):
-            let pageMeta = await pool.enumerateMetadata(page: rel)
-            metadataByPage = pageMeta.isEmpty ? [:] : [rel: pageMeta]
+            return await log.enumerate(page: rel)
         case .all:
-            metadataByPage = await pool.enumerateAllMetadata()
+            return await log.enumerateAll()
         }
-        guard !metadataByPage.isEmpty else { return [] }
-
-        let rootURL = root
-        let files = self.files
-        let stubs = await withTaskGroup(of: [LostBlock].self) { group in
-            for (rel, metas) in metadataByPage {
-                let pageURL = rootURL.appendingPathComponent(rel).standardizedFileURL
-                group.addTask { [pageURL, metas, files] in
-                    let live = Clamshell.liveAtomicHashes(at: pageURL, files: files)
-                    return metas
-                        .filter { !live.contains($0.hash) }
-                        .map { LostBlock(stub: $0) }
-                }
-            }
-            var out: [LostBlock] = []
-            for await pageStubs in group {
-                out.append(contentsOf: pageStubs)
-            }
-            return out
-        }
-        return stubs.sorted { $0.recordedAt > $1.recordedAt }
-    }
-
-    /// Read one stub's body off disk and return a populated `LostBlock`.
-    /// Pass 2 of the Recover sheet — nonisolated so callers can fan reads out
-    /// without serializing on either Clamshell or BlockPool's actor.
-    nonisolated public func loadLostBlockBody(_ stub: LostBlock) -> LostBlock {
-        guard !stub.isLoaded else { return stub }
-        let meta = PoolEntryMetadata(
-            hash: stub.hash,
-            source: stub.source,
-            recordedAt: stub.recordedAt,
-            fileURL: stub.fileURL
-        )
-        guard let entry = try? pool.loadEntry(meta: meta) else { return stub }
-        return LostBlock(entry: entry)
-    }
-
-    /// Convenience: stubs + sequential body fill. Used by tests and any caller
-    /// that wants a fully-populated list in one await — for the live UI path
-    /// prefer the streaming `listLostBlockStubs` + `loadLostBlockBody`.
-    public func listLostBlocks(filter: LostBlocksFilter = .all) async throws -> [LostBlock] {
-        let stubs = await listLostBlockStubs(filter: filter)
-        return stubs.map { loadLostBlockBody($0) }
     }
 
     public func purgeLostBlock(_ entry: LostBlock) async throws {
-        try await pool.purge(page: entry.source, hash: entry.hash)
+        try await log.purge(page: entry.source, hash: entry.hash)
     }
 
-    /// Resolve a hash to its parent hash by reading the pool entry. Used by
-    /// the restore flow to climb the parent chain when the immediate parent
-    /// is no longer alive in the page.
-    public func parentHash(forPool page: String, hash: String) async -> String? {
-        guard let entry = try? await pool.read(page: page, hash: hash) else { return nil }
-        return entry.parentHash
-    }
-
-    nonisolated private func liveAtomicHashes(at url: URL) -> Set<String> {
-        Self.liveAtomicHashes(at: url, files: files)
-    }
-
-    nonisolated fileprivate static func liveAtomicHashes(at url: URL, files: FileStore) -> Set<String> {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let raw = try? files.read(url) else { return [] }
-        var out: Set<String> = []
-        collectAtomicHashes(BlockParser.parse(raw), into: &out)
-        return out
-    }
-
-    nonisolated private static func collectAtomicHashes(_ blocks: [Block], into out: inout Set<String>) {
-        for block in blocks {
-            out.insert(BlockFingerprint.atomicHash(block))
-            collectAtomicHashes(block.children, into: &out)
-        }
+    /// Resolve a hash to its recorded parent hash via the per-device recovery
+    /// log union. Used by the restore flow's ancestor climb when the
+    /// immediate parent isn't alive in the page anymore.
+    public func parentHash(forPage page: String, hash: String) async -> String? {
+        await log.parentHash(page: page, hash: hash)
     }
 
     // MARK: - Assets (pasted images)
