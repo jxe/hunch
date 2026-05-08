@@ -235,21 +235,19 @@ private struct EditorPage: View {
                 .accessibilityLabel("Search Pages")
             }
             ToolbarItem(placement: .primaryAction) {
-                if undoController?.undoManager.canUndo == true {
+                Button {
+                    undoController?.undoManager.undo()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .foregroundStyle(undoController?.undoManager.canUndo == true ? HierarchicalShapeStyle.primary : .tertiary)
+                }
+                .accessibilityLabel("Undo")
+                .contextMenu {
                     Button {
-                        undoController?.undoManager.undo()
+                        window.recoveryFilter = .page(relativePath: workspace.relativePath(of: url))
                     } label: {
-                        Image(systemName: "arrow.uturn.backward")
+                        Label("Recover…", systemImage: "clock.arrow.circlepath")
                     }
-                    .accessibilityLabel("Undo")
-                    .contextMenu { recoverMenuItem(for: url) }
-                } else {
-                    Menu {
-                        recoverMenuItem(for: url)
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .accessibilityLabel("More")
                 }
             }
             if undoController?.undoManager.canRedo == true {
@@ -289,17 +287,6 @@ private struct EditorPage: View {
         guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
         editorState.requestToggleVoiceRecording()
     }
-
-    #if os(iOS)
-    @ViewBuilder
-    private func recoverMenuItem(for url: URL) -> some View {
-        Button {
-            window.recoveryFilter = .page(relativePath: workspace.relativePath(of: url))
-        } label: {
-            Label("Recover…", systemImage: "clock.arrow.circlepath")
-        }
-    }
-    #endif
 }
 
 private struct WorkspacePickerView: View {
