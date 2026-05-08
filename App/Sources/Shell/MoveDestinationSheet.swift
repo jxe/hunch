@@ -4,12 +4,16 @@ import Editor
 /// Move-to picker. Shows two grouped sections:
 /// - "On this page" — `InDocMoveTarget`s the editor walked out of the
 ///   current document (headings + toggles, already filtered to legal drop
-///   targets). Indented by depth so the page outline is visible.
+///   targets). Indented by depth so the page outline is visible. Capped at
+///   `inDocCollapsedLimit` rows with a "Show more" reveal so the page list
+///   below stays reachable on tall documents.
 /// - "Pages" — every other workspace page (workspace's own search rank).
 ///
-/// One search field filters both pools. Arrow keys move a single cursor
-/// across both groups (in-doc first, in document order, then pages); Return
-/// or click commits.
+/// One search field filters both pools. Typing updates the highlighted row
+/// in real time (the cursor jumps to the top match on every query change),
+/// so Return commits the best match without taking the keyboard out of the
+/// search field. Arrow keys move the cursor across both groups (in-doc
+/// first, in document order, then pages).
 ///
 /// Mounted by `ContentView` over the move-request sheet binding. The general
 /// `SearchSheet` and `PagePickerView` stay untouched and are still used by
@@ -23,6 +27,7 @@ struct MoveDestinationSheet: View {
 
     @State private var query: String = ""
     @State private var cursor: CursorID?
+    @State private var inDocExpanded: Bool = false
 
     /// One-of cursor across both groups so arrow keys traverse the whole
     /// list seamlessly. Hashable so `List(selection:)` can use it directly.
@@ -31,30 +36,54 @@ struct MoveDestinationSheet: View {
         case page(String)
     }
 
+    /// Soft-cap for the "On this page" section before showing a "Show more"
+    /// reveal. Picked so the Pages section stays visible on first paint for
+    /// pages with up to a few-dozen sections.
+    private static let inDocCollapsedLimit = 5
+
     private var filteredInDoc: [InDocMoveTarget] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return inDocCandidates }
         return inDocCandidates.filter { $0.title.localizedCaseInsensitiveContains(q) }
     }
 
+    private var displayedInDoc: [InDocMoveTarget] {
+        if inDocExpanded { return filteredInDoc }
+        return Array(filteredInDoc.prefix(Self.inDocCollapsedLimit))
+    }
+
+    private var hiddenInDocCount: Int {
+        max(0, filteredInDoc.count - displayedInDoc.count)
+    }
+
     private var pages: [MentionItem] {
         workspace.pages(matching: query, excluding: excluding)
     }
 
+    /// Cursor traversal order (excludes the "Show more" disclosure row — that
+    /// is a control, not a destination).
     private var orderedCursorIDs: [CursorID] {
-        filteredInDoc.map { .block($0.id) } + pages.map { .page($0.id) }
+        displayedInDoc.map { .block($0.id) } + pages.map { .page($0.id) }
     }
 
     var body: some View {
         NavigationStack {
             List(selection: $cursor) {
-                if !filteredInDoc.isEmpty {
+                if !displayedInDoc.isEmpty {
                     Section("On this page") {
-                        ForEach(filteredInDoc) { target in
-                            InDocMoveTargetRow(target: target)
-                                .tag(CursorID.block(target.id))
-                                .contentShape(Rectangle())
-                                .onTapGesture { onActivate(.block(target.id)) }
+                        ForEach(displayedInDoc) { target in
+                            InDocMoveTargetRow(
+                                target: target,
+                                isHighlighted: cursor == .block(target.id)
+                            )
+                            .tag(CursorID.block(target.id))
+                            .contentShape(Rectangle())
+                            .onTapGesture { onActivate(.block(target.id)) }
+                        }
+                        if hiddenInDocCount > 0 {
+                            ShowMoreRow(remaining: hiddenInDocCount) {
+                                inDocExpanded = true
+                            }
                         }
                     }
                 }
@@ -66,10 +95,13 @@ struct MoveDestinationSheet: View {
                 } else if !pages.isEmpty {
                     Section("Pages") {
                         ForEach(pages) { item in
-                            MentionItemRow(item: item)
-                                .tag(CursorID.page(item.id))
-                                .contentShape(Rectangle())
-                                .onTapGesture { onActivate(.page(item.id)) }
+                            MentionItemRow(
+                                item: item,
+                                isHighlighted: cursor == .page(item.id)
+                            )
+                            .tag(CursorID.page(item.id))
+                            .contentShape(Rectangle())
+                            .onTapGesture { onActivate(.page(item.id)) }
                         }
                     }
                 }
@@ -126,6 +158,7 @@ struct MoveDestinationSheet: View {
 /// reads at a glance.
 private struct InDocMoveTargetRow: View {
     let target: InDocMoveTarget
+    var isHighlighted: Bool = false
 
     private static let indentPerLevel: CGFloat = 12
 
@@ -144,6 +177,7 @@ private struct InDocMoveTargetRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isHighlighted ? NotionStyle.linkForeground.opacity(0.18) : Color.clear)
         .contentShape(Rectangle())
     }
 
@@ -165,5 +199,33 @@ private struct InDocMoveTargetRow: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(NotionStyle.mutedForeground)
         }
+    }
+}
+
+/// Disclosure row that reveals the rest of the in-doc destinations when the
+/// list is capped. Tap to expand; not in the cursor traversal so arrow keys
+/// skip past it.
+private struct ShowMoreRow: View {
+    let remaining: Int
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .frame(width: 28, alignment: .center)
+                Text("Show \(remaining) more")
+                    .font(NotionStyle.body(size: 13))
+                    .foregroundStyle(NotionStyle.mutedForeground)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

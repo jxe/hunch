@@ -348,8 +348,16 @@ struct MacBlockTextEditor: NSViewRepresentable {
         view.wantsFocus = isFocused
         if isFocused {
             if let window = view.window, window.firstResponder !== view {
-                DispatchQueue.main.async {
-                    window.makeFirstResponder(view)
+                // Recheck inside the dispatch: the view can detach from this window
+                // (or move to another) between scheduling and firing — `Esc`, switching
+                // blocks, or a doc switch can unmount the row before the async runs.
+                // Calling makeFirstResponder on a view that's no longer in the captured
+                // window logs an AppKit error and nils out first responder.
+                DispatchQueue.main.async { [weak view, weak window] in
+                    guard let view, let window, view.window === window else { return }
+                    if window.firstResponder !== view {
+                        window.makeFirstResponder(view)
+                    }
                     view.applyPendingCursorPositionOrSeekToEnd()
                 }
             }
@@ -563,9 +571,14 @@ final class ContainedTextView: NSTextView {
             activeView?.view = self
         }
         if wantsFocus, let window = window, window.firstResponder !== self {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                window.makeFirstResponder(self)
+            // Same reasoning as updateNSView's async grab: the view can detach from
+            // this window between scheduling and firing — bail unless we're still
+            // hosted by the same window.
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window else { return }
+                if window.firstResponder !== self {
+                    window.makeFirstResponder(self)
+                }
                 self.applyPendingCursorPositionOrSeekToEnd()
             }
         }
