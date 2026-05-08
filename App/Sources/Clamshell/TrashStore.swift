@@ -1,8 +1,8 @@
 import Foundation
 import Editor
 
-/// Records and restores whole-page deletions inside `<workspace>/.Trash/`.
-/// Block-level deletions are recorded in `RecoveryStore`, not here.
+/// Records and restores whole-page deletions inside `<workspace>/Trash/`.
+/// Block-level deletions are recorded in `RecoveryLog`, not here.
 public actor TrashStore {
     private let workspaceRoot: URL
     private let store: FileStore

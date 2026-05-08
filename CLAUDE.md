@@ -25,23 +25,31 @@ user-picked workspace folder.
   navigation destination), Inter font registration, plus:
   - `App/Sources/Clamshell/` — **Clamshell** is Hunch's persistent
     markdown format and its API. On disk a Clamshell is a folder of
-    `*.md` plus `Trash/` (soft-deleted pages), `.history/<rel>.md.jsonl`
-    (append-only log of lost / edited blocks), and `.clamshell.json`
-    (format metadata — currently just the home page pointer).
-    `Clamshell` is the umbrella type — one per open directory, never
-    reconfigured. Composes `FileStore`, `DocumentSaveCoordinator` (per-URL
-    serial, snapshot-coalescing actor), `RecoveryStore` (the `.history/`
-    log), and `TrashStore` privately and exposes a single API:
+    `*.md` plus `Trash/` (soft-deleted pages), `.history/<rel>/<device-id>.jsonl`
+    (per-(device, page) append-only recovery log), `Assets/` (pasted
+    images), and `.clamshell.json` (format metadata — currently just the
+    home page pointer). `Clamshell` is the umbrella type — one per open
+    directory, never reconfigured. Composes `FileStore`,
+    `DocumentSaveCoordinator` (per-URL serial, snapshot-coalescing actor),
+    `RecoveryLog` (per-device JSONL appender + cross-device read union),
+    and `TrashStore` privately and exposes a single API:
     `scan / loadDocument / save / writeImmediately / flush / createPage /
-    moveToTrash / listTrashedPages / restorePage / recordDeletion /
-    listLostBlocks / purgeLostBlock`, plus `relativePath(of:)` and
-    `url(for:)` for path conversion. The format takes care of itself
-    where it can — every `save`/`writeImmediately` fires fire-and-forget
-    `recordEdits` against the lost-block log, and `moveToTrash` clears
-    `homeRelativePath` if it matched. Also where the markdown layer
-    lives: `BlockParser`, `BlockSerializer` (swift-markdown lives here,
-    not in the Editor), and `BlockFingerprint`. `WorkspaceBookmark`
+    moveToTrash / listTrashedPages / restorePage / snapshotIntoRecoveryLog /
+    listLostBlocks / purgeLostBlock / parentHash(forPage:hash:)`, plus
+    `relativePath(of:)` and `url(for:)` for path conversion. The format
+    takes care of itself where it can — every `save`/`writeImmediately`
+    fires fire-and-forget `RecoveryLog.record` (appends one JSONL line
+    per new atomic block content this device hasn't seen before), and
+    `moveToTrash` clears `homeRelativePath` if it matched and moves the
+    page's `.history/<rel>/` dir along with the `.md`. Also where the
+    markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown
+    lives here, not in the Editor), and `BlockFingerprint` (16-char
+    prefix for compact display, full SHA-256 for the recovery log's
+    `h` field). `DeviceID` mints + caches a per-install UUID in
+    `UserDefaults` to name this device's log file. `WorkspaceBookmark`
     persists the security-scoped URL of the user's chosen Clamshell.
+    See [`App/Sources/Clamshell/README.md`](App/Sources/Clamshell/README.md)
+    for the on-disk format, log record shape, and operation reference.
   - `App/Sources/Shell/` — `PageListView` (sidebar) and `RecoveryView`
     (unified "Recover" sheet over trash + lost blocks).
   - `App/Sources/Workspace.swift` — `WorkspaceEntry` (filesystem-flavoured

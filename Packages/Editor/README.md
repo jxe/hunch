@@ -300,8 +300,8 @@ so partially-wired hosts compile.
   [`App/Sources/Clamshell/`](../../App/Sources/Clamshell/) — `FileStore`
   + `DocumentSaveCoordinator` for I/O, `BlockParser` / `BlockSerializer`
   (built on [swift-markdown](https://github.com/swiftlang/swift-markdown))
-  for wire format, `RecoveryStore` / `TrashStore` for soft-delete and
-  the lost-block log.
+  for wire format, `RecoveryLog` (per-(device, page) JSONL) and
+  `TrashStore` for soft-delete and the recoverable-blocks log.
 - **No multi-page navigation.** The editor is single-page; the host
   manages the navigation stack and pushes/pops in response to
   `onSubpageTap` / `onNavigateBack`. Hunch uses

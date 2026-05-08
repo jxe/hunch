@@ -32,8 +32,11 @@ public final class Clamshell {
         }
     }
 
+    /// Scope for `listLostBlocks(filter:)`.
     public enum LostBlocksFilter: Sendable {
+        /// Every page in the workspace, including trashed ones.
         case all
+        /// One specific page only.
         case page(relativePath: String)
     }
 
@@ -310,10 +313,10 @@ public final class Clamshell {
 
     // MARK: - Lost blocks (recovery-log-backed)
 
-    /// Lost-block list. Each entry arrives fully populated: JSONL gives us
-    /// hash, parent hash, atomic markdown, and timestamp per line in one
-    /// pass — there's no cheaper "stub" mode the way the prior block-pool
-    /// design had.
+    /// Atomic blocks that were once recorded for a page but aren't in its
+    /// live `.md` right now (and aren't tombstoned). Each entry arrives
+    /// fully populated — JSONL gives us hash, parent hash, atomic
+    /// markdown, and timestamp per line. Sorted by recordedAt descending.
     public func listLostBlocks(filter: LostBlocksFilter = .all) async -> [LostBlock] {
         switch filter {
         case .page(let rel):
@@ -323,6 +326,10 @@ public final class Clamshell {
         }
     }
 
+    /// Append a tombstone for `entry` against its source page in this
+    /// device's log. Subsequent `listLostBlocks` calls (on this device
+    /// and on any other device that syncs the tombstone) will exclude
+    /// the entry's hash.
     public func purgeLostBlock(_ entry: LostBlock) async throws {
         try await log.purge(page: entry.source, hash: entry.hash)
     }

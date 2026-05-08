@@ -2,11 +2,12 @@ import SwiftUI
 import Editor
 
 /// Unified workspace-wide recovery sheet. Surfaces both deleted whole pages
-/// (from `TrashStore`) and lost blocks (from `RecoveryStore`) — anything that
+/// (from `TrashStore`) and lost blocks (from `RecoveryLog`) — anything that
 /// disappeared from a doc and can be brought back.
 ///
-/// `filter` is `.all` (everything) or `.page(rel)` (one source page only —
-/// used by the editor toolbar's clock button).
+/// `filter` is `.all` (everything) or `.page(rel)` (one source page only).
+/// Inside the sheet a segmented control lets the user flip between scopes
+/// without re-opening; on entry from a deeper page it defaults to that page.
 public struct RecoveryView: View {
     /// Seed value — the live filter is `@State` so the segmented control can
     /// flip between scopes without the sheet remounting.
