@@ -402,10 +402,19 @@ struct MacBlockTextEditor: NSViewRepresentable {
         /// distinguish "binding lagging because user typed" (skip reload) from
         /// "binding changed externally" (reload).
         var lastKnownBindingPlain: String?
+        /// True once textStorage has been edited since our last commit; cleared at
+        /// the end of `commitLiveText`. The "binding moved under us" guard relies
+        /// on the binding's getter changing after an external mutation, but
+        /// BlockRow's `textBinding` captures `block` by value and stays frozen
+        /// once the row swaps to read-only Text — so the post-split unmount
+        /// `textDidEndEditing` would otherwise re-write the stale textStorage
+        /// through that frozen binding and clobber the truncated head.
+        var textStorageDirty: Bool = false
         init(_ parent: MacBlockTextEditor) { self.parent = parent }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
+            textStorageDirty = true
             let isComposing = tv.hasMarkedText()
             let plain = tv.string
             if !isComposing {
@@ -437,6 +446,11 @@ struct MacBlockTextEditor: NSViewRepresentable {
         ///   Tab, Cmd-K, paste, etc.) so the model is current before `splitBlock` /
         ///   `deleteEmptyBlock` / `changeIndent` / `mutate(...)` run.
         func commitLiveText(_ tv: NSTextView) {
+            // Nothing has touched textStorage since our last sync — skip. Catches
+            // the unmount-driven duplicate commit after split / autotransform /
+            // Cmd-K, where the frozen textBinding would otherwise re-write stale
+            // textStorage back over the freshly-mutated model.
+            if !textStorageDirty { return }
             let nsAttr = tv.textStorage ?? NSTextStorage()
             let newText = InlineMarksBridge.toModel(nsAttr)
             let oldText = parent.text
@@ -449,6 +463,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
             // Reconcile our snapshot to what the model now holds and bail.
             if let last = lastKnownBindingPlain, oldPlain != last {
                 lastKnownBindingPlain = oldPlain
+                textStorageDirty = false
                 return
             }
             let newPlain = String(newText.characters)
@@ -459,6 +474,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
                 parent.text = newText
             }
             lastKnownBindingPlain = newPlain
+            textStorageDirty = false
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -1080,12 +1096,15 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         var accessoryHost: UIHostingController<KeyboardAccessoryBar>?
         /// See `MacBlockTextEditor.Coordinator.lastKnownBindingPlain` — same role on iOS.
         var lastKnownBindingPlain: String?
+        /// See `MacBlockTextEditor.Coordinator.textStorageDirty` — same role on iOS.
+        var textStorageDirty: Bool = false
 
         init(parent: IOSBlockTextEditorView) {
             self.parent = parent
         }
 
         func textViewDidChange(_ textView: UITextView) {
+            textStorageDirty = true
             // IME composition: skip autotransform. Live text remains in textStorage and
             // is committed on blur or just before a structural op fires.
             let composing = (textView.markedTextRange != nil)
@@ -1111,6 +1130,8 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         /// fires, and before structural BlockKeys (Enter/backspace-at-start/Tab/etc.)
         /// in `ContainedTextViewIOS`.
         func commitLiveText(_ textView: UITextView) {
+            // See macOS twin — early return when textStorage hasn't changed.
+            if !textStorageDirty { return }
             let newText = InlineMarksBridge.toModel(textView.textStorage)
             let oldText = parent.text
             let oldPlain = String(oldText.characters)
@@ -1120,6 +1141,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             // textStorage would clobber the new model state.
             if let last = lastKnownBindingPlain, oldPlain != last {
                 lastKnownBindingPlain = oldPlain
+                textStorageDirty = false
                 return
             }
             let newPlain = String(newText.characters)
@@ -1130,6 +1152,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
                 parent.text = newText
             }
             lastKnownBindingPlain = newPlain
+            textStorageDirty = false
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
