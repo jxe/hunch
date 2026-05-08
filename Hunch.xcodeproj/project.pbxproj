@@ -34,6 +34,7 @@
 		A4418A73643A27D33B0888AE /* LinkPreviewService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03A95B584DA472A6EEE3FB22 /* LinkPreviewService.swift */; };
 		ABB5134C045387553C506B47 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 5ECE6A64919F54162EC5473A /* README.md */; };
 		B155E1F04AA089441F43D8EA /* PagePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3403F91704D1B3970E4EB908 /* PagePickerView.swift */; };
+		B681767CB931D2A7DC39D806 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C4608B6FE43942A156484E8F /* PrivacyInfo.xcprivacy */; };
 		B707766C87877E8831F13530 /* Editor in Frameworks */ = {isa = PBXBuildFile; productRef = A20B9674903EEF8DEF6BB8DB /* Editor */; };
 		BF5E458EBAE96BAD9EA9B1D9 /* Clamshell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6089D3744533A5D4FAF49690 /* Clamshell.swift */; };
 		C1FCDFD59E1F87957A2AF622 /* Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 944DA3136290A9A3124F0973 /* Parser.swift */; };
@@ -102,6 +103,7 @@
 		BAC5EF536498D40451D461DD /* RoundTripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoundTripTests.swift; sourceTree = "<group>"; };
 		BBBF5AC98CF7B5213C676903 /* TrashStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashStore.swift; sourceTree = "<group>"; };
 		C40C5869BF914FA61B2FEC5D /* FileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileStore.swift; sourceTree = "<group>"; };
+		C4608B6FE43942A156484E8F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C60B591D585995CB7097A0DC /* InterVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = InterVariable.ttf; sourceTree = "<group>"; };
 		CAD5ADE397DACEA1B4A26BE8 /* Hunch.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Hunch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D954BA2A1FAF2CB0B575371F /* HunchUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HunchUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -254,6 +256,7 @@
 			children = (
 				154CE5820956BD4B16F03FB7 /* Fonts */,
 				F152EE3E8A4F7205FF247D87 /* Assets.xcassets */,
+				C4608B6FE43942A156484E8F /* PrivacyInfo.xcprivacy */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -396,6 +399,7 @@
 			files = (
 				23117D5233A97DD99B42A62E /* Assets.xcassets in Resources */,
 				05EDCEDBEF4C024F981312E2 /* InterVariable.ttf in Resources */,
+				B681767CB931D2A7DC39D806 /* PrivacyInfo.xcprivacy in Resources */,
 				ABB5134C045387553C506B47 /* README.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -578,7 +582,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joeedelman.console.unittests;
+				PRODUCT_BUNDLE_IDENTIFIER = org.nxhx.Hunch.unittests;
 				SDKROOT = macosx;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Hunch.app/Contents/MacOS/Hunch";
 			};
@@ -595,7 +599,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joeedelman.console.unittests;
+				PRODUCT_BUNDLE_IDENTIFIER = org.nxhx.Hunch.unittests;
 				SDKROOT = macosx;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Hunch.app/Contents/MacOS/Hunch";
 			};
@@ -674,7 +678,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joeedelman.console.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = org.nxhx.Hunch.uitests;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = Hunch;
@@ -691,7 +695,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joeedelman.console.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = org.nxhx.Hunch.uitests;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = Hunch;
@@ -712,7 +716,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joeedelman.console;
+				PRODUCT_BUNDLE_IDENTIFIER = org.nxhx.Hunch;
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
@@ -736,7 +740,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joeedelman.console;
+				PRODUCT_BUNDLE_IDENTIFIER = org.nxhx.Hunch;
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;

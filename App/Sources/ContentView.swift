@@ -281,6 +281,20 @@ private struct WorkspacePickerView: View {
             Image(systemName: "folder.badge.plus")
                 .font(.system(size: 64))
                 .foregroundStyle(NotionStyle.mutedForeground)
+            #if os(iOS)
+            Text("Choose a folder")
+                .font(NotionStyle.body(size: 18, weight: .semibold))
+                .foregroundStyle(NotionStyle.foreground)
+            Text("Pick the folder Hunch should use as your workspace.")
+                .font(NotionStyle.body(size: 14))
+                .foregroundStyle(NotionStyle.mutedForeground)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+            Button("Choose folder") {
+                showingPicker = true
+            }
+            .buttonStyle(.borderedProminent)
+            #else
             Text("Choose a key file")
                 .font(NotionStyle.body(size: 18, weight: .semibold))
                 .foregroundStyle(NotionStyle.foreground)
@@ -293,10 +307,27 @@ private struct WorkspacePickerView: View {
                 showingPicker = true
             }
             .buttonStyle(.borderedProminent)
+            #endif
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(NotionStyle.background)
+        #if os(iOS)
+        .fileImporter(
+            isPresented: $showingPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    workspace.setWorkspace(url)
+                }
+            case .failure(let error):
+                workspace.error = error.localizedDescription
+            }
+        }
+        #else
         .fileImporter(
             isPresented: $showingPicker,
             allowedContentTypes: [markdownFileType],
@@ -311,6 +342,7 @@ private struct WorkspacePickerView: View {
                 workspace.error = error.localizedDescription
             }
         }
+        #endif
     }
 }
 
@@ -424,7 +456,7 @@ private struct EmptyWorkspaceView: View {
         }
         .fileImporter(
             isPresented: $showingSwitchPicker,
-            allowedContentTypes: [markdownFileType],
+            allowedContentTypes: [.folder],
             allowsMultipleSelection: false
         ) { result in
             switch result {
@@ -432,7 +464,7 @@ private struct EmptyWorkspaceView: View {
                 if let url = urls.first {
                     window.reset()
                     workspace.switchWorkspace()
-                    workspace.setWorkspaceFromKeyFile(url)
+                    workspace.setWorkspace(url)
                 }
             case .failure(let error):
                 workspace.error = error.localizedDescription

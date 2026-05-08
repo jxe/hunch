@@ -1,9 +1,9 @@
 # Hunch — Claude working notes
 
-(Repo dir is `console`, target/scheme/binary are `Hunch`. The product display name is Hunch; the bundle id `com.joeedelman.console` predates the rename and stays for user-data continuity.)
+(Repo dir is `console`, target/scheme/binary are `Hunch`. The product display name is Hunch; bundle id is `org.nxhx.Hunch` — pre-TestFlight builds used `com.joeedelman.console`, so any local installs from before the rename are orphaned and won't share UserDefaults / workspace bookmark with the new id.)
 
 A native iOS 26 + macOS 26 markdown editor. Each block is its own row in a
-SwiftUI VStack — sidesteps the hardest problems of Notion-style editors
+SwiftUI `LazyVStack` — sidesteps the hardest problems of Notion-style editors
 (cross-block selection, cursor merge across types, hover-only floating UI
 that doesn't translate to touch). Source of truth: plain `.md` files in a
 user-picked workspace folder.
@@ -93,6 +93,16 @@ edit mode, not a peer mode. Invariant: a non-nil `gesture` only
 coexists with `mode == .navigating(...)`. Mutation goes through named
 methods (`enterEditMode`, `setReorderLift`, `setMentionMenu`, etc.) —
 `internal(set)` blocks external writes so the host can read but not write.
+
+**`@Observable` setters fire on every write, even same-value.** Writing
+`state.hoveredBlock = id` from inside `.onContinuousHover` /
+`.onHover` invalidates `EditorView.body` on every cursor tick AND every
+SwiftUI hover redispatch (which fires whenever layout shifts row
+frames). Combined with `LazyVStack`'s deeper per-row layout cost, this
+closes a feedback loop and pegs CPU. Guard the write at the call site:
+`if state.hoveredBlock != id { state.hoveredBlock = id }`. Same shape
+for any other `@Observable` field reachable from a hover/layout/geometry
+callback.
 
 **One `EditorView` per document.** The pair `(document, state)` is one
 editing session. The `EditorPage` wrapper view in `ContentView.swift`
