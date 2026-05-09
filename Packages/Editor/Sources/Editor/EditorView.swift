@@ -369,7 +369,26 @@ public struct EditorView: View {
             if let preview = linkPreviews[url] { dict[url] = preview }
         }
 
-        let content = BlockRowContent(
+        // Reorder gestures and "show action menu" fire from two anchors per row
+        // (the row body itself for whole-row drag / iOS swipe, and the drag
+        // handle overlay) — bind one closure each rather than allocating two
+        // identical closures per render.
+        let onReorderChanged: (DragGesture.Value) -> Void = { value in
+            tickReorderLift(
+                blockID: block.id,
+                at: value.location,
+                anchorAt: value.startLocation,
+                snapshot: document.children
+            )
+        }
+        let onReorderEnded: (DragGesture.Value) -> Void = { value in
+            endReorderLift(atY: value.location.y, snapshot: document.children)
+        }
+        let onShowActionSheet: () -> Void = {
+            actionSheet = BlockActionSheet(id: block.id)
+        }
+
+        BlockRow(
             block: block,
             onBlockChange: { newBlock in binding.wrappedValue = newBlock },
             depth: depth,
@@ -381,6 +400,14 @@ public struct EditorView: View {
             isExpanded: state.expandedToggles.contains(block.id) || state.expandedTemplates.contains(block.id),
             isDropTarget: state.dropOntoBlockID == block.id,
             isActionMenuTarget: isActionMenuTarget,
+            isActionMenuPresented: actionSheet?.id == block.id,
+            isPinching: pinchGestureActive,
+            reorderSourceOpacity: reorderSourceOpacity(for: block.id),
+            isReorderingThisBlock: state.reorderLift?.ids.contains(block.id) == true,
+            isHandleVisible: showHandleOverlay(for: block.id),
+            isMacDragSource: isMacDraggingFromRow(block.id),
+            accessibilityID: accessibilityIdentifier(for: block),
+            accessibilityLabelText: accessibilityLabel(for: block),
             onKey: { key in handleEditorKey(key, blockID: block.id) },
             onEdited: host.onEdited,
             onAutotransform: { transform, remainingText in
@@ -413,20 +440,7 @@ public struct EditorView: View {
             linkPreviews: relevantLinkPreviews,
             onLinkPreviewLoaded: { url, preview in linkPreviews[url] = preview },
             linkPreviewProvider: host.linkPreviewProvider,
-            consumeInitialCursor: { state.takePendingInitialCursor() }
-        )
-
-        BlockRow(
-            content: content,
-            isActionMenuPresented: actionSheet?.id == block.id,
-            isMentionMenuPresented: state.mentionMenu?.blockID == block.id,
-            isPinching: pinchGestureActive,
-            reorderSourceOpacity: reorderSourceOpacity(for: block.id),
-            isReorderingThisBlock: state.reorderLift?.ids.contains(block.id) == true,
-            isHandleVisible: showHandleOverlay(for: block.id),
-            isMacDragSource: isMacDraggingFromRow(block.id),
-            accessibilityID: accessibilityIdentifier(for: block),
-            accessibilityLabelText: accessibilityLabel(for: block),
+            consumeInitialCursor: { state.takePendingInitialCursor() },
             onTapOutsideText: {
                 if case .subpage(_, let path) = block.kind {
                     transferFocus(to: .nav(cursor: block.id))
@@ -437,17 +451,8 @@ public struct EditorView: View {
                 // position info, cursor lands at end via the editor's default behavior.
                 transferFocus(to: .editor(block.id, initialCursor: nil))
             },
-            onMacReorderChanged: { value in
-                tickReorderLift(
-                    blockID: block.id,
-                    at: value.location,
-                    anchorAt: value.startLocation,
-                    snapshot: document.children
-                )
-            },
-            onMacReorderEnded: { value in
-                endReorderLift(atY: value.location.y, snapshot: document.children)
-            },
+            onMacReorderChanged: onReorderChanged,
+            onMacReorderEnded: onReorderEnded,
             onActionMenuDismiss: {
                 if actionSheet != nil { actionSheet = nil }
             },
@@ -458,9 +463,7 @@ public struct EditorView: View {
                 deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
                 showActionToast("Deleted")
             },
-            onIOSShowMenu: {
-                actionSheet = BlockActionSheet(id: block.id)
-            },
+            onIOSShowMenu: onShowActionSheet,
             onHandleHover: { hovering in
                 // Guard against same-value writes — see the
                 // `macNearestRowHover` site for context.
@@ -472,20 +475,9 @@ public struct EditorView: View {
                     state.hoveredHandle = nil
                 }
             },
-            onHandleTap: {
-                actionSheet = BlockActionSheet(id: block.id)
-            },
-            onHandleReorderChanged: { value in
-                tickReorderLift(
-                    blockID: block.id,
-                    at: value.location,
-                    anchorAt: value.startLocation,
-                    snapshot: document.children
-                )
-            },
-            onHandleReorderEnded: { value in
-                endReorderLift(atY: value.location.y, snapshot: document.children)
-            },
+            onHandleTap: onShowActionSheet,
+            onHandleReorderChanged: onReorderChanged,
+            onHandleReorderEnded: onReorderEnded,
             actionMenuContent: { AnyView(blockActionMenuContent(for: block.id)) },
             mentionMenuContent: { AnyView(mentionMenuContent()) }
         )

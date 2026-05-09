@@ -56,15 +56,9 @@ extension EditorView {
     @ViewBuilder
     func reorderLiftView() -> some View {
         if let lift = state.reorderLift {
-            BlockRowContent(
+            BlockRowPreview(
                 block: lift.block,
-                onBlockChange: { _ in },
                 depth: 0,
-                editorFocused: $editorFocused,
-                isPageTitle: false,
-                numberingIndex: nil,
-                isSelected: false,
-                isEditing: false,
                 pageTitles: resolvePageTitles(for: lift.block, resolver: host.pageTitle)
             )
             .frame(width: lift.sourceFrame.width, height: lift.sourceFrame.height, alignment: .leading)

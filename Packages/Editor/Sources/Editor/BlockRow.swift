@@ -1,15 +1,20 @@
 import SwiftUI
 
-/// Visual content for a single block — the renderer for paragraph/heading/list/
-/// toggle/code/divider/subpage/etc., plus selection background, drop-target
-/// halo, and link-preview fetch task. Equatable on its inputs so `.equatable()`
-/// can gate body re-evaluation.
+/// One block in the page editor — content + the full interactive modifier
+/// chain (gestures, popovers, drag handle, accessibility). Equatable so
+/// `.equatable()` in `EditorView.body` gates the *whole* row, not just the
+/// content's body — that's what stops the modifier chain from re-walking on
+/// every parent re-render.
 ///
-/// Used standalone by the reorder lift overlay (which wants the visuals without
-/// any of the editor's interactive modifiers — gestures, popovers, drag handle
-/// — that would interfere with an in-flight drag). For the page editor case,
-/// `BlockRow` wraps this struct with the full interactive chain.
-public struct BlockRowContent: View, Equatable {
+/// Closures (gestures, popover content) are captured fresh each render but
+/// ignored in `==`. Safe because each callback either reads observable state
+/// through reference types (`state`, `host`, the underlying Document) at
+/// fire time, or captures only `block.id`/`block.kind` — which by definition
+/// match if the equality check passed.
+///
+/// Used only here for the page editor. The reorder lift overlay uses a slim
+/// read-only sibling, `BlockRowPreview`, which strips every editor closure.
+public struct BlockRow: View, Equatable {
     /// Block content as a value. Mutations route through `onBlockChange` —
     /// keeping the row free of `@Binding` lets `.equatable()` actually gate
     /// `body` (DynamicProperty wrappers like `@Binding` reset per parent
@@ -34,7 +39,27 @@ public struct BlockRowContent: View, Equatable {
     /// paints a ring around it so the popover's anchor block is unambiguous.
     public let isActionMenuTarget: Bool
 
-    nonisolated public static func == (lhs: BlockRowContent, rhs: BlockRowContent) -> Bool {
+    /// Action-menu popover is currently presenting against this row.
+    public let isActionMenuPresented: Bool
+    /// A page pinch gesture is in flight — disable iOS swipe affordances on
+    /// this row so the two gestures don't fight.
+    public let isPinching: Bool
+    /// Opacity to apply to the row — used to dim the source row of an
+    /// in-flight reorder lift.
+    public let reorderSourceOpacity: Double
+    /// True when this row is part of the in-flight reorder lift — surfaces
+    /// in accessibility as `reorder-source`.
+    public let isReorderingThisBlock: Bool
+    /// Drag handle should be visible (cursor hovering near, or this is the
+    /// top selected block in a multi-block selection).
+    public let isHandleVisible: Bool
+    /// Whether this row is the source of an in-flight macOS drag — keeps the
+    /// handle hit-testable / gesture mounted even if the cursor drifts off.
+    public let isMacDragSource: Bool
+    public let accessibilityID: String
+    public let accessibilityLabelText: String
+
+    nonisolated public static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
         lhs.block == rhs.block
             && lhs.depth == rhs.depth
             && lhs.isPageTitle == rhs.isPageTitle
@@ -47,6 +72,14 @@ public struct BlockRowContent: View, Equatable {
             && lhs.mentionActive == rhs.mentionActive
             && lhs.pageTitles == rhs.pageTitles
             && lhs.linkPreviews == rhs.linkPreviews
+            && lhs.isActionMenuPresented == rhs.isActionMenuPresented
+            && lhs.isPinching == rhs.isPinching
+            && lhs.reorderSourceOpacity == rhs.reorderSourceOpacity
+            && lhs.isReorderingThisBlock == rhs.isReorderingThisBlock
+            && lhs.isHandleVisible == rhs.isHandleVisible
+            && lhs.isMacDragSource == rhs.isMacDragSource
+            && lhs.accessibilityID == rhs.accessibilityID
+            && lhs.accessibilityLabelText == rhs.accessibilityLabelText
     }
     /// Plain-typed focus binding (NOT `@FocusState.Binding`). Same reason as
     /// `block` above — `@FocusState.Binding` is a DynamicProperty wrapper that
@@ -91,31 +124,66 @@ public struct BlockRowContent: View, Equatable {
     let onLinkPreviewLoaded: (URL, LinkPreview) -> Void
     let linkPreviewProvider: LinkPreviewProvider?
 
+    let onTapOutsideText: () -> Void
+    let onMacReorderChanged: (DragGesture.Value) -> Void
+    let onMacReorderEnded: (DragGesture.Value) -> Void
+    let onActionMenuDismiss: () -> Void
+    let onMentionMenuDismiss: () -> Void
+    let onIOSDelete: () -> Void
+    let onIOSShowMenu: () -> Void
+    let onHandleHover: (Bool) -> Void
+    let onHandleTap: () -> Void
+    let onHandleReorderChanged: (DragGesture.Value) -> Void
+    let onHandleReorderEnded: (DragGesture.Value) -> Void
+    let actionMenuContent: () -> AnyView
+    let mentionMenuContent: () -> AnyView
+
     public init(
         block: Block,
         onBlockChange: @escaping (Block) -> Void,
         depth: Int,
         editorFocused: FocusState<BlockID?>.Binding,
-        isPageTitle: Bool = false,
-        numberingIndex: Int? = nil,
-        isSelected: Bool = false,
-        isEditing: Bool = false,
-        isExpanded: Bool = false,
-        isDropTarget: Bool = false,
-        isActionMenuTarget: Bool = false,
-        onKey: @escaping (BlockKey) -> KeyPress.Result = { _ in .ignored },
-        onEdited: @escaping () -> Void = {},
-        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
-        onMentionTriggerChange: @escaping (MentionTrigger?) -> Void = { _ in },
-        mentionActive: Bool = false,
-        onClickAtPoint: @escaping (CGPoint) -> Void = { _ in },
-        onToggleExpansion: @escaping () -> Void = {},
-        onTemplateButtonPress: @escaping () -> Void = {},
-        pageTitles: [String: String] = [:],
-        linkPreviews: [URL: LinkPreview] = [:],
-        onLinkPreviewLoaded: @escaping (URL, LinkPreview) -> Void = { _, _ in },
-        linkPreviewProvider: LinkPreviewProvider? = nil,
-        consumeInitialCursor: @escaping () -> InitialCursorTarget? = { nil }
+        isPageTitle: Bool,
+        numberingIndex: Int?,
+        isSelected: Bool,
+        isEditing: Bool,
+        isExpanded: Bool,
+        isDropTarget: Bool,
+        isActionMenuTarget: Bool,
+        isActionMenuPresented: Bool,
+        isPinching: Bool,
+        reorderSourceOpacity: Double,
+        isReorderingThisBlock: Bool,
+        isHandleVisible: Bool,
+        isMacDragSource: Bool,
+        accessibilityID: String,
+        accessibilityLabelText: String,
+        onKey: @escaping (BlockKey) -> KeyPress.Result,
+        onEdited: @escaping () -> Void,
+        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void,
+        onMentionTriggerChange: @escaping (MentionTrigger?) -> Void,
+        mentionActive: Bool,
+        onClickAtPoint: @escaping (CGPoint) -> Void,
+        onToggleExpansion: @escaping () -> Void,
+        onTemplateButtonPress: @escaping () -> Void,
+        pageTitles: [String: String],
+        linkPreviews: [URL: LinkPreview],
+        onLinkPreviewLoaded: @escaping (URL, LinkPreview) -> Void,
+        linkPreviewProvider: LinkPreviewProvider?,
+        consumeInitialCursor: @escaping () -> InitialCursorTarget?,
+        onTapOutsideText: @escaping () -> Void,
+        onMacReorderChanged: @escaping (DragGesture.Value) -> Void,
+        onMacReorderEnded: @escaping (DragGesture.Value) -> Void,
+        onActionMenuDismiss: @escaping () -> Void,
+        onMentionMenuDismiss: @escaping () -> Void,
+        onIOSDelete: @escaping () -> Void,
+        onIOSShowMenu: @escaping () -> Void,
+        onHandleHover: @escaping (Bool) -> Void,
+        onHandleTap: @escaping () -> Void,
+        onHandleReorderChanged: @escaping (DragGesture.Value) -> Void,
+        onHandleReorderEnded: @escaping (DragGesture.Value) -> Void,
+        actionMenuContent: @escaping () -> AnyView,
+        mentionMenuContent: @escaping () -> AnyView
     ) {
         self.block = block
         self.onBlockChange = onBlockChange
@@ -127,6 +195,14 @@ public struct BlockRowContent: View, Equatable {
         self.isExpanded = isExpanded
         self.isDropTarget = isDropTarget
         self.isActionMenuTarget = isActionMenuTarget
+        self.isActionMenuPresented = isActionMenuPresented
+        self.isPinching = isPinching
+        self.reorderSourceOpacity = reorderSourceOpacity
+        self.isReorderingThisBlock = isReorderingThisBlock
+        self.isHandleVisible = isHandleVisible
+        self.isMacDragSource = isMacDragSource
+        self.accessibilityID = accessibilityID
+        self.accessibilityLabelText = accessibilityLabelText
         self.editorFocused = editorFocused
         self.onKey = onKey
         self.onEdited = onEdited
@@ -141,6 +217,19 @@ public struct BlockRowContent: View, Equatable {
         self.onLinkPreviewLoaded = onLinkPreviewLoaded
         self.linkPreviewProvider = linkPreviewProvider
         self.consumeInitialCursor = consumeInitialCursor
+        self.onTapOutsideText = onTapOutsideText
+        self.onMacReorderChanged = onMacReorderChanged
+        self.onMacReorderEnded = onMacReorderEnded
+        self.onActionMenuDismiss = onActionMenuDismiss
+        self.onMentionMenuDismiss = onMentionMenuDismiss
+        self.onIOSDelete = onIOSDelete
+        self.onIOSShowMenu = onIOSShowMenu
+        self.onHandleHover = onHandleHover
+        self.onHandleTap = onHandleTap
+        self.onHandleReorderChanged = onHandleReorderChanged
+        self.onHandleReorderEnded = onHandleReorderEnded
+        self.actionMenuContent = actionMenuContent
+        self.mentionMenuContent = mentionMenuContent
     }
 
     public var body: some View {
@@ -183,6 +272,60 @@ public struct BlockRowContent: View, Equatable {
                         .padding(.trailing, 4)
                         .allowsHitTesting(false)
                 }
+            }
+            .macRowReorder(
+                isEnabled: !isEditing,
+                onChanged: onMacReorderChanged,
+                onEnded: onMacReorderEnded
+            )
+            .blockActionPopover(
+                isPresented: Binding(
+                    get: { isActionMenuPresented },
+                    set: { if !$0 { onActionMenuDismiss() } }
+                )
+            ) {
+                actionMenuContent()
+            }
+            .blockActionPopover(
+                isPresented: Binding(
+                    get: { mentionActive },
+                    set: { if !$0 { onMentionMenuDismiss() } }
+                )
+            ) {
+                mentionMenuContent()
+            }
+            .opacity(reorderSourceOpacity)
+            .contentShape(Rectangle())
+            .iosBlockTouchActions(
+                isEnabled: !isEditing && !isPinching,
+                onDelete: onIOSDelete,
+                onShowMenu: onIOSShowMenu
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier(accessibilityID)
+            .accessibilityLabel(accessibilityLabelText)
+            .accessibilityValue(isReorderingThisBlock ? "reorder-source" : "")
+            .onTapGesture {
+                onTapOutsideText()
+            }
+            .overlay(alignment: .topLeading) {
+                DragHandle()
+                    .opacity(isHandleVisible && !isEditing ? 1 : 0)
+                    .offset(x: -DragHandle.gutterWidth, y: 2)
+                    .onHover(perform: onHandleHover)
+                    .onTapGesture(perform: onHandleTap)
+                    // Keep the handle hit-testable AND the gesture mounted for
+                    // the duration of an in-flight drag. As the cursor leaves
+                    // the source row, hoveredBlock shifts and `isHandleVisible`
+                    // flips false; without `allowsHitTesting` mirroring the
+                    // `isMacDragSource` condition, SwiftUI silently cancels the
+                    // gesture mid-drag and `.onEnded` never fires.
+                    .macRowReorder(
+                        isEnabled: (isHandleVisible || isMacDragSource) && !isEditing,
+                        onChanged: onHandleReorderChanged,
+                        onEnded: onHandleReorderEnded
+                    )
+                    .allowsHitTesting(isHandleVisible || isMacDragSource)
             }
     }
 
@@ -636,179 +779,219 @@ private func decodeFavicon(_ data: Data) -> Image? {
 }
 #endif
 
-/// Full interactive row for a single block in the page editor — `BlockRowContent`
-/// plus the editor's outer modifier chain (gestures, popovers, drag handle,
-/// accessibility, etc.). Equatable so `.equatable()` in `EditorView.body` can
-/// gate not just the inner content's body but the whole modifier chain — the
-/// previous layout stopped at `BlockRowContent.equatable()` and re-walked the
-/// outer modifiers every render, which compounded under sustained autorepeat.
-///
-/// Compares by value props only; closures (gestures, popover content) are
-/// captured fresh each render but ignored in `==`. That's safe because every
-/// callback either reads observable state through reference types (`state`,
-/// `host`, `_document`'s underlying class) at fire time, or captures only
-/// `block.id` / `block.kind`, which by definition match if the equality check
-/// passed (otherwise the row would have rerendered with fresh closures).
-public struct BlockRow: View, Equatable {
-    public let content: BlockRowContent
-
-    /// Action-menu popover is currently presenting against this row.
-    public let isActionMenuPresented: Bool
-    /// Mention popover is currently presenting against this row.
-    public let isMentionMenuPresented: Bool
-    /// A page pinch gesture is in flight — disable this row's iOS swipe
-    /// affordances so the two gestures don't fight.
-    public let isPinching: Bool
-    /// Opacity to apply to the row — used to dim the source row of an
-    /// in-flight reorder lift.
-    public let reorderSourceOpacity: Double
-    /// True when this row is part of the in-flight reorder lift — surfaces
-    /// in accessibility as `reorder-source`.
-    public let isReorderingThisBlock: Bool
-    /// Drag handle should be visible (cursor hovering near, or this is the
-    /// top selected block in a multi-block selection).
-    public let isHandleVisible: Bool
-    /// Whether this row is the source of an in-flight macOS drag — used to
-    /// keep the handle hit-testable / gesture mounted even if the cursor
-    /// drifts off the row.
-    public let isMacDragSource: Bool
-    public let accessibilityID: String
-    public let accessibilityLabelText: String
-
-    let onTapOutsideText: () -> Void
-    let onMacReorderChanged: (DragGesture.Value) -> Void
-    let onMacReorderEnded: (DragGesture.Value) -> Void
-    let onActionMenuDismiss: () -> Void
-    let onMentionMenuDismiss: () -> Void
-    let onIOSDelete: () -> Void
-    let onIOSShowMenu: () -> Void
-    let onHandleHover: (Bool) -> Void
-    let onHandleTap: () -> Void
-    let onHandleReorderChanged: (DragGesture.Value) -> Void
-    let onHandleReorderEnded: (DragGesture.Value) -> Void
-    let actionMenuContent: () -> AnyView
-    let mentionMenuContent: () -> AnyView
-
-    nonisolated public static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
-        lhs.content == rhs.content
-            && lhs.isActionMenuPresented == rhs.isActionMenuPresented
-            && lhs.isMentionMenuPresented == rhs.isMentionMenuPresented
-            && lhs.isPinching == rhs.isPinching
-            && lhs.reorderSourceOpacity == rhs.reorderSourceOpacity
-            && lhs.isReorderingThisBlock == rhs.isReorderingThisBlock
-            && lhs.isHandleVisible == rhs.isHandleVisible
-            && lhs.isMacDragSource == rhs.isMacDragSource
-            && lhs.accessibilityID == rhs.accessibilityID
-            && lhs.accessibilityLabelText == rhs.accessibilityLabelText
-    }
+/// Read-only block renderer used by the reorder lift overlay. The lift just
+/// shows what's being dragged — no editing, no gestures, no popovers, no
+/// link-preview fetching. So this view doesn't carry any of `BlockRowContent`'s
+/// editor closures (`onKey`, `onAutotransform`, `onMentionTriggerChange`,
+/// `editorFocused`, …) or hover/drop state. Equatable so the lift overlay can
+/// re-render cheaply if the dragged block's text or page-title resolution
+/// changes mid-drag.
+public struct BlockRowPreview: View, Equatable {
+    public let block: Block
+    public let depth: Int
+    public let isPageTitle: Bool
+    public let numberingIndex: Int?
+    public let isExpanded: Bool
+    public let pageTitles: [String: String]
+    public let linkPreviews: [URL: LinkPreview]
 
     public init(
-        content: BlockRowContent,
-        isActionMenuPresented: Bool,
-        isMentionMenuPresented: Bool,
-        isPinching: Bool,
-        reorderSourceOpacity: Double,
-        isReorderingThisBlock: Bool,
-        isHandleVisible: Bool,
-        isMacDragSource: Bool,
-        accessibilityID: String,
-        accessibilityLabelText: String,
-        onTapOutsideText: @escaping () -> Void,
-        onMacReorderChanged: @escaping (DragGesture.Value) -> Void,
-        onMacReorderEnded: @escaping (DragGesture.Value) -> Void,
-        onActionMenuDismiss: @escaping () -> Void,
-        onMentionMenuDismiss: @escaping () -> Void,
-        onIOSDelete: @escaping () -> Void,
-        onIOSShowMenu: @escaping () -> Void,
-        onHandleHover: @escaping (Bool) -> Void,
-        onHandleTap: @escaping () -> Void,
-        onHandleReorderChanged: @escaping (DragGesture.Value) -> Void,
-        onHandleReorderEnded: @escaping (DragGesture.Value) -> Void,
-        actionMenuContent: @escaping () -> AnyView,
-        mentionMenuContent: @escaping () -> AnyView
+        block: Block,
+        depth: Int,
+        isPageTitle: Bool = false,
+        numberingIndex: Int? = nil,
+        isExpanded: Bool = false,
+        pageTitles: [String: String] = [:],
+        linkPreviews: [URL: LinkPreview] = [:]
     ) {
-        self.content = content
-        self.isActionMenuPresented = isActionMenuPresented
-        self.isMentionMenuPresented = isMentionMenuPresented
-        self.isPinching = isPinching
-        self.reorderSourceOpacity = reorderSourceOpacity
-        self.isReorderingThisBlock = isReorderingThisBlock
-        self.isHandleVisible = isHandleVisible
-        self.isMacDragSource = isMacDragSource
-        self.accessibilityID = accessibilityID
-        self.accessibilityLabelText = accessibilityLabelText
-        self.onTapOutsideText = onTapOutsideText
-        self.onMacReorderChanged = onMacReorderChanged
-        self.onMacReorderEnded = onMacReorderEnded
-        self.onActionMenuDismiss = onActionMenuDismiss
-        self.onMentionMenuDismiss = onMentionMenuDismiss
-        self.onIOSDelete = onIOSDelete
-        self.onIOSShowMenu = onIOSShowMenu
-        self.onHandleHover = onHandleHover
-        self.onHandleTap = onHandleTap
-        self.onHandleReorderChanged = onHandleReorderChanged
-        self.onHandleReorderEnded = onHandleReorderEnded
-        self.actionMenuContent = actionMenuContent
-        self.mentionMenuContent = mentionMenuContent
+        self.block = block
+        self.depth = depth
+        self.isPageTitle = isPageTitle
+        self.numberingIndex = numberingIndex
+        self.isExpanded = isExpanded
+        self.pageTitles = pageTitles
+        self.linkPreviews = linkPreviews
     }
 
     public var body: some View {
         content
-            .macRowReorder(
-                isEnabled: !content.isEditing,
-                onChanged: onMacReorderChanged,
-                onEnded: onMacReorderEnded
+            .padding(.vertical, BlockSpacing.intrinsicVerticalPadding(block))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch block.kind {
+        case .paragraph:
+            text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+                .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+
+        case .heading(let level, _):
+            let size: CGFloat = (isPageTitle && level == .h1) ? NotionStyle.pageTitleSize
+                              : level == .h1 ? NotionStyle.h1Size
+                              : level == .h2 ? NotionStyle.h2Size
+                                             : NotionStyle.h3Size
+            let font = NotionStyle.body(size: size, weight: NotionStyle.headingWeight)
+            text(font: font, fontSize: size, bold: true, lineSpacing: NotionStyle.headingLineSpacing)
+                .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+
+        case .bullet:
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+                Circle()
+                    .foregroundStyle(NotionStyle.foreground)
+                    .frame(width: NotionStyle.bulletMarkerDiameter, height: NotionStyle.bulletMarkerDiameter)
+                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .alignmentGuide(.firstTextBaseline) { dimensions in
+                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    }
+                text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            }
+            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+
+        case .numbered:
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+                Text("\(numberingIndex ?? 1).")
+                    .font(NotionStyle.body())
+                    .foregroundStyle(NotionStyle.foreground)
+                    .frame(width: NotionStyle.numberedMarkerColumnWidth, alignment: .trailing)
+                text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            }
+            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+
+        case .todo(_, let done):
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+                Image(systemName: done ? "checkmark.square.fill" : "square")
+                    .font(.system(size: NotionStyle.todoCheckboxSize))
+                    .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                    .frame(width: NotionStyle.todoMarkerColumnWidth, alignment: .trailing)
+                text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing, strikethrough: done, muted: done)
+            }
+            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+
+        case .quote:
+            let quoteFontSize: CGFloat = 16 * 1.2
+            HStack(spacing: 14) {
+                Rectangle()
+                    .fill(NotionStyle.foreground)
+                    .frame(width: 3)
+                text(font: NotionStyle.body(size: quoteFontSize), fontSize: quoteFontSize, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            }
+            .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+
+        case .code(let source, let language):
+            VStack(alignment: .leading, spacing: 0) {
+                if let language, !language.isEmpty {
+                    Text(language)
+                        .font(NotionStyle.mono(size: 11))
+                        .foregroundStyle(NotionStyle.mutedForeground)
+                        .padding(.bottom, 8)
+                }
+                Text(source)
+                    .font(NotionStyle.mono())
+                    .foregroundStyle(NotionStyle.foreground)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 16)
+            .background(NotionStyle.codeBackground.opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+
+        case .divider:
+            Rectangle()
+                .fill(NotionStyle.dividerColor)
+                .frame(height: 1)
+                .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+
+        case .toggle:
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .foregroundStyle(NotionStyle.foreground)
+                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .alignmentGuide(.firstTextBaseline) { dimensions in
+                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    }
+                text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+
+        case .templateButton:
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .foregroundStyle(NotionStyle.foreground)
+                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .alignmentGuide(.firstTextBaseline) { dimensions in
+                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    }
+                HStack(spacing: 7) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageTitles[$0] }))
+                        .font(NotionStyle.body())
+                        .lineSpacing(NotionStyle.bodyLineSpacing)
+                }
+                .foregroundStyle(NotionStyle.foreground)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(NotionStyle.selectionBackground.opacity(0.75))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+
+        case .subpage(let title, let path):
+            let displayTitle = pageTitles[path] ?? title
+            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: NotionStyle.pageIconSize))
+                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .alignmentGuide(.firstTextBaseline) { dimensions in
+                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    }
+                Text(displayTitle)
+                    .font(NotionStyle.body(weight: .medium))
+                    .foregroundStyle(NotionStyle.foreground)
+                    .lineSpacing(NotionStyle.bodyLineSpacing)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+
+        case .image(let source, let alt):
+            ImageBlockView(source: source, alt: alt)
+                .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+        }
+    }
+
+    @ViewBuilder
+    private func text(font: Font, fontSize: CGFloat, bold: Bool, lineSpacing: CGFloat, strikethrough: Bool = false, muted: Bool = false) -> some View {
+        if String(block.text.characters).isEmpty {
+            Text(" ")
+                .font(font)
+                .lineSpacing(lineSpacing)
+                .opacity(0)
+                .accessibilityHidden(true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            decoratedText(
+                block.text,
+                baseFont: font,
+                boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
+                fontSize: fontSize,
+                pageTitles: pageTitles,
+                previews: linkPreviews
             )
-            .blockActionPopover(
-                isPresented: Binding(
-                    get: { isActionMenuPresented },
-                    set: { if !$0 { onActionMenuDismiss() } }
-                )
-            ) {
-                actionMenuContent()
-            }
-            .blockActionPopover(
-                isPresented: Binding(
-                    get: { isMentionMenuPresented },
-                    set: { if !$0 { onMentionMenuDismiss() } }
-                )
-            ) {
-                mentionMenuContent()
-            }
-            .opacity(reorderSourceOpacity)
-            .contentShape(Rectangle())
-            .iosBlockTouchActions(
-                isEnabled: !content.isEditing && !isPinching,
-                onDelete: onIOSDelete,
-                onShowMenu: onIOSShowMenu
-            )
-            .accessibilityElement(children: .ignore)
-            .accessibilityIdentifier(accessibilityID)
-            .accessibilityLabel(accessibilityLabelText)
-            .accessibilityValue(isReorderingThisBlock ? "reorder-source" : "")
-            .onTapGesture {
-                onTapOutsideText()
-            }
-            .overlay(alignment: .topLeading) {
-                DragHandle()
-                    .opacity(isHandleVisible && !content.isEditing ? 1 : 0)
-                    .offset(x: -DragHandle.gutterWidth, y: 2)
-                    .onHover(perform: onHandleHover)
-                    .onTapGesture(perform: onHandleTap)
-                    // Keep the handle hit-testable AND the gesture mounted for
-                    // the duration of an in-flight drag. As the cursor leaves
-                    // the source row, hoveredBlock shifts to a different row
-                    // and `isHandleVisible` flips false; without this override,
-                    // `allowsHitTesting(false)` would apply to the still-tracking
-                    // view and SwiftUI would silently cancel the gesture — no
-                    // `.onEnded` fires, lift gets stuck.
-                    .macRowReorder(
-                        isEnabled: (isHandleVisible || isMacDragSource) && !content.isEditing,
-                        onChanged: onHandleReorderChanged,
-                        onEnded: onHandleReorderEnded
-                    )
-                    .allowsHitTesting(isHandleVisible || isMacDragSource)
-            }
+                .font(font)
+                .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                .lineSpacing(lineSpacing)
+                .strikethrough(strikethrough)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
