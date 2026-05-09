@@ -387,6 +387,17 @@ public struct EditorView: View {
         let onShowActionSheet: () -> Void = {
             actionSheet = BlockActionSheet(id: block.id)
         }
+        // Drag-handle click on macOS: collapse selection to this row before opening
+        // the menu, so dismissing the sheet leaves the clicked row selected.
+        // `transferFocus` mutates `state.mode`, and `.onChange(of: state.mode)`
+        // would clear a synchronously-set `actionSheet`; deferring to the next
+        // runloop tick lets the change-handler run first.
+        let onHandleTap: () -> Void = {
+            transferFocus(to: .nav(cursor: block.id))
+            DispatchQueue.main.async {
+                actionSheet = BlockActionSheet(id: block.id)
+            }
+        }
 
         // Bundle of editor-only bindings/closures, present only on the row
         // currently being edited. Read-only rows pass `editor: nil` and avoid
@@ -485,7 +496,7 @@ public struct EditorView: View {
                     state.hoveredHandle = nil
                 }
             },
-            onHandleTap: onShowActionSheet,
+            onHandleTap: onHandleTap,
             onHandleReorderChanged: onReorderChanged,
             onHandleReorderEnded: onReorderEnded,
             actionMenuContent: { AnyView(blockActionMenuContent(for: block.id)) },
