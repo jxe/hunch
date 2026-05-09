@@ -21,6 +21,7 @@ public struct BlockRow: View, Equatable {
     /// re-render and force body to run regardless of `==`).
     public let block: Block
     public let onBlockChange: (Block) -> Void
+    public let onEdited: () -> Void
     /// Depth of this block in the document tree. Replaces the old per-case
     /// `indent` field — passed in by the visible-layout walk so the row
     /// renders the right leading inset without consulting the model directly.
@@ -28,7 +29,11 @@ public struct BlockRow: View, Equatable {
     public let isPageTitle: Bool
     public let numberingIndex: Int?
     public let isSelected: Bool
-    public let isEditing: Bool
+    /// nil → render this row read-only. Non-nil → swap in `BlockTextEditor`
+    /// for the text area and route key/autotransform/mention events through
+    /// these callbacks. At most one row per `EditorView` carries this non-nil
+    /// at a time (the row currently being edited).
+    public let editor: TextEditing?
     /// Toggle expansion is owned by the parent (EditorView) so the body blocks render as
     /// regular siblings in the page's block loop. Ignored for non-toggle blocks.
     public let isExpanded: Bool
@@ -65,11 +70,11 @@ public struct BlockRow: View, Equatable {
             && lhs.isPageTitle == rhs.isPageTitle
             && lhs.numberingIndex == rhs.numberingIndex
             && lhs.isSelected == rhs.isSelected
-            && lhs.isEditing == rhs.isEditing
+            && (lhs.editor == nil) == (rhs.editor == nil)
+            && lhs.editor?.mentionActive == rhs.editor?.mentionActive
             && lhs.isExpanded == rhs.isExpanded
             && lhs.isDropTarget == rhs.isDropTarget
             && lhs.isActionMenuTarget == rhs.isActionMenuTarget
-            && lhs.mentionActive == rhs.mentionActive
             && lhs.pageTitles == rhs.pageTitles
             && lhs.linkPreviews == rhs.linkPreviews
             && lhs.isActionMenuPresented == rhs.isActionMenuPresented
@@ -81,23 +86,49 @@ public struct BlockRow: View, Equatable {
             && lhs.accessibilityID == rhs.accessibilityID
             && lhs.accessibilityLabelText == rhs.accessibilityLabelText
     }
-    /// Plain-typed focus binding (NOT `@FocusState.Binding`). Same reason as
-    /// `block` above — `@FocusState.Binding` is a DynamicProperty wrapper that
-    /// would defeat `.equatable()`. Held by value here, only consulted inside
-    /// `BlockTextEditor` when `isEditing` is true.
-    let editorFocused: FocusState<BlockID?>.Binding
-    let onKey: (BlockKey) -> KeyPress.Result
-    let onEdited: () -> Void
-    let onAutotransform: (BlockTransform, AttributedString) -> Void
-    /// Forwarded to the editor — fires whenever the cursor sits after an in-progress
-    /// `@query` (or transitions out of one). EditorView holds the popover state.
-    let onMentionTriggerChange: (MentionTrigger?) -> Void
-    /// Forwarded to the editor — when true, ↑/↓/Return/Esc are diverted to menu-nav
-    /// events instead of intra-block / exit-edit.
-    let mentionActive: Bool
-    /// Called when the user clicks the editable text area while not editing — point is
-    /// in the editor area's local coordinate space (matches what `NSTextView`'s
-    /// `characterIndexForInsertion(at:)` expects).
+
+    /// Editor-only bindings/closures, present only on the row currently being
+    /// edited. Bundled together so `BlockRow` doesn't carry text-editor
+    /// plumbing for read-only rows (and so the lift's `BlockRowPreview`
+    /// sibling doesn't even exist as a temptation to add it back).
+    public struct TextEditing {
+        /// Plain-typed focus binding (NOT `@FocusState.Binding`). Held by value
+        /// so it doesn't defeat `BlockRow`'s `.equatable()` gating; only read
+        /// inside `BlockTextEditor`.
+        public let editorFocused: FocusState<BlockID?>.Binding
+        /// True when the `@`-mention popover is interacting with this row —
+        /// the only `TextEditing` field whose change has to invalidate body,
+        /// hence the only one compared in `BlockRow`'s `==`.
+        public let mentionActive: Bool
+        public let onKey: (BlockKey) -> KeyPress.Result
+        public let onAutotransform: (BlockTransform, AttributedString) -> Void
+        /// Fires whenever the cursor sits after an in-progress `@query` (or
+        /// transitions out of one). EditorView holds the popover state.
+        public let onMentionTriggerChange: (MentionTrigger?) -> Void
+        /// Called once on first mount to fetch the cursor target captured at
+        /// tap/split/merge time. EditorView's closure atomically reads and
+        /// clears `EditorState.pendingInitialCursor`.
+        public let consumeInitialCursor: () -> InitialCursorTarget?
+
+        public init(
+            editorFocused: FocusState<BlockID?>.Binding,
+            mentionActive: Bool,
+            onKey: @escaping (BlockKey) -> KeyPress.Result,
+            onAutotransform: @escaping (BlockTransform, AttributedString) -> Void,
+            onMentionTriggerChange: @escaping (MentionTrigger?) -> Void,
+            consumeInitialCursor: @escaping () -> InitialCursorTarget?
+        ) {
+            self.editorFocused = editorFocused
+            self.mentionActive = mentionActive
+            self.onKey = onKey
+            self.onAutotransform = onAutotransform
+            self.onMentionTriggerChange = onMentionTriggerChange
+            self.consumeInitialCursor = consumeInitialCursor
+        }
+    }
+
+    /// Called when the user clicks the read-only text area to enter edit
+    /// mode at a specific point (in editor-local coordinates).
     let onClickAtPoint: (CGPoint) -> Void
     /// Called when the toggle's chevron is tapped. No-op for non-toggle blocks.
     let onToggleExpansion: () -> Void
@@ -110,10 +141,6 @@ public struct BlockRow: View, Equatable {
     /// stores for subpages and what `.link` URLs' `absoluteString` carries for
     /// inline page links) to the resolved page title.
     let pageTitles: [String: String]
-    /// Forwarded to the BlockTextEditor — called once on its first mount to fetch
-    /// the cursor target captured at tap/split/merge time. EditorView constructs
-    /// this closure to atomically read-and-clear `EditorState.pendingInitialCursor`.
-    let consumeInitialCursor: () -> InitialCursorTarget?
 
     /// Subset of the host's link-preview cache relevant to this row. Filtered
     /// at the call site to just the URLs in `block.text`, so the dict stays
@@ -141,12 +168,12 @@ public struct BlockRow: View, Equatable {
     public init(
         block: Block,
         onBlockChange: @escaping (Block) -> Void,
+        onEdited: @escaping () -> Void,
         depth: Int,
-        editorFocused: FocusState<BlockID?>.Binding,
+        editor: TextEditing?,
         isPageTitle: Bool,
         numberingIndex: Int?,
         isSelected: Bool,
-        isEditing: Bool,
         isExpanded: Bool,
         isDropTarget: Bool,
         isActionMenuTarget: Bool,
@@ -158,11 +185,6 @@ public struct BlockRow: View, Equatable {
         isMacDragSource: Bool,
         accessibilityID: String,
         accessibilityLabelText: String,
-        onKey: @escaping (BlockKey) -> KeyPress.Result,
-        onEdited: @escaping () -> Void,
-        onAutotransform: @escaping (BlockTransform, AttributedString) -> Void,
-        onMentionTriggerChange: @escaping (MentionTrigger?) -> Void,
-        mentionActive: Bool,
         onClickAtPoint: @escaping (CGPoint) -> Void,
         onToggleExpansion: @escaping () -> Void,
         onTemplateButtonPress: @escaping () -> Void,
@@ -170,7 +192,6 @@ public struct BlockRow: View, Equatable {
         linkPreviews: [URL: LinkPreview],
         onLinkPreviewLoaded: @escaping (URL, LinkPreview) -> Void,
         linkPreviewProvider: LinkPreviewProvider?,
-        consumeInitialCursor: @escaping () -> InitialCursorTarget?,
         onTapOutsideText: @escaping () -> Void,
         onMacReorderChanged: @escaping (DragGesture.Value) -> Void,
         onMacReorderEnded: @escaping (DragGesture.Value) -> Void,
@@ -187,11 +208,12 @@ public struct BlockRow: View, Equatable {
     ) {
         self.block = block
         self.onBlockChange = onBlockChange
+        self.onEdited = onEdited
         self.depth = depth
+        self.editor = editor
         self.isPageTitle = isPageTitle
         self.numberingIndex = numberingIndex
         self.isSelected = isSelected
-        self.isEditing = isEditing
         self.isExpanded = isExpanded
         self.isDropTarget = isDropTarget
         self.isActionMenuTarget = isActionMenuTarget
@@ -203,12 +225,6 @@ public struct BlockRow: View, Equatable {
         self.isMacDragSource = isMacDragSource
         self.accessibilityID = accessibilityID
         self.accessibilityLabelText = accessibilityLabelText
-        self.editorFocused = editorFocused
-        self.onKey = onKey
-        self.onEdited = onEdited
-        self.onAutotransform = onAutotransform
-        self.onMentionTriggerChange = onMentionTriggerChange
-        self.mentionActive = mentionActive
         self.onClickAtPoint = onClickAtPoint
         self.onToggleExpansion = onToggleExpansion
         self.onTemplateButtonPress = onTemplateButtonPress
@@ -216,7 +232,6 @@ public struct BlockRow: View, Equatable {
         self.linkPreviews = linkPreviews
         self.onLinkPreviewLoaded = onLinkPreviewLoaded
         self.linkPreviewProvider = linkPreviewProvider
-        self.consumeInitialCursor = consumeInitialCursor
         self.onTapOutsideText = onTapOutsideText
         self.onMacReorderChanged = onMacReorderChanged
         self.onMacReorderEnded = onMacReorderEnded
@@ -231,6 +246,10 @@ public struct BlockRow: View, Equatable {
         self.actionMenuContent = actionMenuContent
         self.mentionMenuContent = mentionMenuContent
     }
+
+    /// Convenience: this row is in edit mode (its text area is hosting a
+    /// `BlockTextEditor` rather than a read-only renderer).
+    var isEditing: Bool { editor != nil }
 
     public var body: some View {
         let externalURLs = collectExternalURLs(in: block.text)
@@ -288,7 +307,7 @@ public struct BlockRow: View, Equatable {
             }
             .blockActionPopover(
                 isPresented: Binding(
-                    get: { mentionActive },
+                    get: { editor?.mentionActive == true },
                     set: { if !$0 { onMentionMenuDismiss() } }
                 )
             ) {
@@ -590,20 +609,20 @@ public struct BlockRow: View, Equatable {
 
     @ViewBuilder
     private func editableText(font: Font, fontSize: CGFloat, bold: Bool, lineSpacing: CGFloat, strikethrough: Bool = false, muted: Bool = false) -> some View {
-        if isEditing {
+        if let editor {
             BlockTextEditor(
                 text: textBinding,
                 font: font,
                 fontSize: fontSize,
                 bold: bold,
                 lineSpacing: lineSpacing,
-                focused: editorFocused,
+                focused: editor.editorFocused,
                 blockID: block.id,
-                onKey: onKey,
-                onAutotransform: onAutotransform,
-                onMentionTriggerChange: onMentionTriggerChange,
-                mentionActive: mentionActive,
-                consumeInitialCursor: consumeInitialCursor
+                onKey: editor.onKey,
+                onAutotransform: editor.onAutotransform,
+                onMentionTriggerChange: editor.onMentionTriggerChange,
+                mentionActive: editor.mentionActive,
+                consumeInitialCursor: editor.consumeInitialCursor
             )
             .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
             .strikethrough(strikethrough)

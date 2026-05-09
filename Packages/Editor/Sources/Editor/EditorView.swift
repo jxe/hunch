@@ -388,15 +388,35 @@ public struct EditorView: View {
             actionSheet = BlockActionSheet(id: block.id)
         }
 
+        // Bundle of editor-only bindings/closures, present only on the row
+        // currently being edited. Read-only rows pass `editor: nil` and avoid
+        // allocating any of this. (`onBlockChange` / `onEdited` stay at the
+        // top level — they're also fired by non-editor mutations like the
+        // todo-row checkbox toggle.)
+        let editing: BlockRow.TextEditing? = isEditing
+            ? BlockRow.TextEditing(
+                editorFocused: $editorFocused,
+                mentionActive: state.mentionMenu?.blockID == block.id,
+                onKey: { key in handleEditorKey(key, blockID: block.id) },
+                onAutotransform: { transform, remainingText in
+                    applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
+                },
+                onMentionTriggerChange: { trigger in
+                    handleMentionTriggerChange(trigger, blockID: block.id)
+                },
+                consumeInitialCursor: { state.takePendingInitialCursor() }
+            )
+            : nil
+
         BlockRow(
             block: block,
             onBlockChange: { newBlock in binding.wrappedValue = newBlock },
+            onEdited: host.onEdited,
             depth: depth,
-            editorFocused: $editorFocused,
+            editor: editing,
             isPageTitle: isPageTitleBlock(block, snapshot: snapshot),
             numberingIndex: numberingIndex,
             isSelected: isSelected,
-            isEditing: isEditing,
             isExpanded: state.expandedToggles.contains(block.id) || state.expandedTemplates.contains(block.id),
             isDropTarget: state.dropOntoBlockID == block.id,
             isActionMenuTarget: isActionMenuTarget,
@@ -408,15 +428,6 @@ public struct EditorView: View {
             isMacDragSource: isMacDraggingFromRow(block.id),
             accessibilityID: accessibilityIdentifier(for: block),
             accessibilityLabelText: accessibilityLabel(for: block),
-            onKey: { key in handleEditorKey(key, blockID: block.id) },
-            onEdited: host.onEdited,
-            onAutotransform: { transform, remainingText in
-                applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
-            },
-            onMentionTriggerChange: { trigger in
-                handleMentionTriggerChange(trigger, blockID: block.id)
-            },
-            mentionActive: state.mentionMenu?.blockID == block.id,
             onClickAtPoint: { point in
                 transferFocus(to: .editor(block.id, initialCursor: .point(point)))
             },
@@ -440,7 +451,6 @@ public struct EditorView: View {
             linkPreviews: relevantLinkPreviews,
             onLinkPreviewLoaded: { url, preview in linkPreviews[url] = preview },
             linkPreviewProvider: host.linkPreviewProvider,
-            consumeInitialCursor: { state.takePendingInitialCursor() },
             onTapOutsideText: {
                 if case .subpage(_, let path) = block.kind {
                     transferFocus(to: .nav(cursor: block.id))
