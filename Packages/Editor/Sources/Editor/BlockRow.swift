@@ -64,27 +64,70 @@ public struct BlockRow: View, Equatable {
     public let accessibilityID: String
     public let accessibilityLabelText: String
 
+    /// Render-relevant subset of `BlockRow`'s stored properties. Auto-derived
+    /// `Equatable` so the row's `==` is a one-liner instead of a 20-line
+    /// hand-written field-by-field check. Adding a new render-relevant
+    /// property to `BlockRow` requires adding it here too — but the compiler
+    /// catches the omission (the snapshot init fails to type-check), where
+    /// a hand-written `==` would silently keep returning `true`.
+    ///
+    /// Closures (`onClickAtPoint`, gesture/popover callbacks) deliberately
+    /// stay out of the snapshot. They're regenerated each render but read
+    /// live state at fire time, so excluding them from `==` is exactly what
+    /// lets `.equatable()` gating actually short-circuit. See the doc
+    /// comment on `BlockRow` for the full reasoning.
+    fileprivate struct EqualitySnapshot: Equatable {
+        let block: Block
+        let depth: Int
+        let isPageTitle: Bool
+        let numberingIndex: Int?
+        let isSelected: Bool
+        let isEditing: Bool                // (editor != nil)
+        let mentionActive: Bool            // editor?.mentionActive ?? false
+        let isExpanded: Bool
+        let isDropTarget: Bool
+        let isActionMenuTarget: Bool
+        let isActionMenuPresented: Bool
+        let isPinching: Bool
+        let reorderSourceOpacity: Double
+        let isReorderingThisBlock: Bool
+        let isHandleVisible: Bool
+        let isMacDragSource: Bool
+        let accessibilityID: String
+        let accessibilityLabelText: String
+        let pageTitles: [String: String]
+        let linkPreviews: [URL: LinkPreview]
+    }
+
+    fileprivate var equalitySnapshot: EqualitySnapshot {
+        EqualitySnapshot(
+            block: block,
+            depth: depth,
+            isPageTitle: isPageTitle,
+            numberingIndex: numberingIndex,
+            isSelected: isSelected,
+            isEditing: editor != nil,
+            mentionActive: editor?.mentionActive ?? false,
+            isExpanded: isExpanded,
+            isDropTarget: isDropTarget,
+            isActionMenuTarget: isActionMenuTarget,
+            isActionMenuPresented: isActionMenuPresented,
+            isPinching: isPinching,
+            reorderSourceOpacity: reorderSourceOpacity,
+            isReorderingThisBlock: isReorderingThisBlock,
+            isHandleVisible: isHandleVisible,
+            isMacDragSource: isMacDragSource,
+            accessibilityID: accessibilityID,
+            accessibilityLabelText: accessibilityLabelText,
+            pageTitles: pageTitles,
+            linkPreviews: linkPreviews
+        )
+    }
+
     nonisolated public static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
-        lhs.block == rhs.block
-            && lhs.depth == rhs.depth
-            && lhs.isPageTitle == rhs.isPageTitle
-            && lhs.numberingIndex == rhs.numberingIndex
-            && lhs.isSelected == rhs.isSelected
-            && (lhs.editor == nil) == (rhs.editor == nil)
-            && lhs.editor?.mentionActive == rhs.editor?.mentionActive
-            && lhs.isExpanded == rhs.isExpanded
-            && lhs.isDropTarget == rhs.isDropTarget
-            && lhs.isActionMenuTarget == rhs.isActionMenuTarget
-            && lhs.pageTitles == rhs.pageTitles
-            && lhs.linkPreviews == rhs.linkPreviews
-            && lhs.isActionMenuPresented == rhs.isActionMenuPresented
-            && lhs.isPinching == rhs.isPinching
-            && lhs.reorderSourceOpacity == rhs.reorderSourceOpacity
-            && lhs.isReorderingThisBlock == rhs.isReorderingThisBlock
-            && lhs.isHandleVisible == rhs.isHandleVisible
-            && lhs.isMacDragSource == rhs.isMacDragSource
-            && lhs.accessibilityID == rhs.accessibilityID
-            && lhs.accessibilityLabelText == rhs.accessibilityLabelText
+        MainActor.assumeIsolated {
+            lhs.equalitySnapshot == rhs.equalitySnapshot
+        }
     }
 
     /// Editor-only bindings/closures, present only on the row currently being

@@ -430,21 +430,17 @@ struct MacBlockTextEditor: NSViewRepresentable {
             if !isComposing {
                 let cursor = tv.selectedRange().location
                 if let result = detectPrefixAutotransform(text: AttributedString(plain), cursor: cursor) {
-                    // Autotransform replaces the block in `applyAutotransform` via
-                    // `mutate(...)`, which snapshots `document.blocks` for undo. We commit
-                    // live text first so that snapshot includes the user's typed prefix —
-                    // otherwise Cmd-Z'ing the autotransform would leave the user with the
-                    // pre-typing block, losing the prefix they typed.
-                    commitLiveText(tv)
+                    // Autotransform replaces the block via `mutate(...)`, which now
+                    // commits the active editor first — so the pre-mutation snapshot
+                    // captures the typed prefix and Cmd-Z restores it cleanly.
                     parent.onAutotransform(result.transform, result.remainingText)
                     return
                 }
             }
             // Otherwise: live text stays in NSTextView's textStorage. We do NOT write the
             // binding per keystroke — that would force a full `EditorView.body` re-eval per
-            // character. Commit happens on blur (`textDidEndEditing`) and just before any
-            // structural BlockKey emit (Enter, Backspace at start, Tab, etc.) in
-            // `ContainedTextView.keyDown`.
+            // character. Commit happens on blur (`textDidEndEditing`) and centrally in
+            // `EditorView.mutate(...)` via `commitActiveEditor` for any structural op.
             reportMentionTrigger(in: tv, composing: isComposing)
         }
 
@@ -651,30 +647,30 @@ final class ContainedTextView: NSTextView {
                     break
                 }
             }
+            // Live-text commits are handled centrally by `EditorView.mutate(...)`
+            // (which calls `commitActiveEditor?()` first) and by `transferFocus(...)`
+            // (same hook). Every BlockKey routed below either triggers a `mutate`
+            // (Enter/Backspace/Tab/Cmd-K → split/delete/indent/convert) or a
+            // `transferFocus` (Up/Down/Left/Right exit), so we don't need to
+            // commit explicitly here. Cmd-[ (navigateBack) is the exception —
+            // it doesn't mutate the model or change focus through transferFocus,
+            // so commit so the outgoing doc carries the typed text.
             switch event.keyCode {
             case 36, 76: // Return, numpad Enter
                 let range = selectedRange()
                 let selStart = range.location
                 let selEnd = range.location + range.length
-                // Sync live text into the binding before split — splitBlock reads
-                // `document.blocks[i].text` to derive head/tail.
-                coordinator?.commitLiveText(self)
                 if onKey(.enter(selectionStart: selStart, selectionEnd: selEnd)) == .handled { return }
             case 51: // Delete (backspace)
                 // Fire `.backspaceAtStart` whenever the cursor is at the very start
                 // of the row with no selection — the page handler decides what to do
                 // based on block type and whether the row is empty (unbullet, merge,
-                // delete-block). deleteEmptyBlock reads `block.text` for merge / preserve,
-                // so the binding must be current.
+                // delete-block).
                 let range = selectedRange()
                 if range.location == 0, range.length == 0 {
-                    coordinator?.commitLiveText(self)
                     if onKey(.backspaceAtStart) == .handled { return }
                 }
             case 48: // Tab
-                // Tab/Shift-Tab calls `mutate(...)` which snapshots `document.blocks` for
-                // undo. Stale text in the snapshot would leak into Cmd-Z behavior.
-                coordinator?.commitLiveText(self)
                 let shift = event.modifierFlags.contains(.shift)
                 if onKey(shift ? .shiftTab : .tab) == .handled { return }
             case 53: // Escape
@@ -687,7 +683,8 @@ final class ContainedTextView: NSTextView {
                     // into a freshly created row and presses Cmd-K, EditorView's
                     // `@Binding<Document>` snapshot is stale within this event handler
                     // (same pattern as the cmd-enter fix), so `convertBlockToSubpage`
-                    // can't recover the typed text from `document.blocks[i]`.
+                    // can't recover the typed text from `document.blocks[i]`. Read
+                    // it directly from the live NSTextView instead.
                     let preferred: String?
                     let range = selectedRange()
                     if range.length > 0, let textRange = Range(range, in: string) {
@@ -695,13 +692,13 @@ final class ContainedTextView: NSTextView {
                     } else {
                         preferred = string.isEmpty ? nil : string
                     }
-                    // Cmd-K converts the block to a subpage — mutates the model.
-                    coordinator?.commitLiveText(self)
                     if onKey(.cmdK(preferredTitle: preferred)) == .handled { return }
                 }
             case 33: // [ — Cmd-[ → navigate back
                 if event.modifierFlags.contains(.command) {
-                    // Navigate-back leaves the page; commit so the outgoing doc is current.
+                    // Navigate-back leaves the page; commit so the outgoing doc is
+                    // current. This path doesn't go through `mutate` or
+                    // `transferFocus`, so the central commit hook doesn't fire here.
                     coordinator?.commitLiveText(self)
                     if onKey(.navigateBack) == .handled { return }
                 }
@@ -728,18 +725,11 @@ final class ContainedTextView: NSTextView {
             case 126: // Up arrow
                 if !event.modifierFlags.contains([.shift, .option]),
                    cursorIsOnFirstLine() {
-                    // Exit-up/down only mutate state — they don't synchronously fire
-                    // textDidEndEditing. The blur happens later when SwiftUI tears down
-                    // the BlockTextEditor (after the state change), and a binding write
-                    // during teardown doesn't reliably propagate to the freshly-rendered
-                    // read-only Text. Commit synchronously *before* the state mutation.
-                    coordinator?.commitLiveText(self)
                     if onKey(.exitEditUp) == .handled { return }
                 }
             case 125: // Down arrow
                 if !event.modifierFlags.contains([.shift, .option]),
                    cursorIsOnLastLine() {
-                    coordinator?.commitLiveText(self)
                     if onKey(.exitEditDown) == .handled { return }
                 }
             case 123: // Left arrow
@@ -749,7 +739,6 @@ final class ContainedTextView: NSTextView {
                 if event.modifierFlags.isDisjoint(with: [.shift, .option, .command, .control]) {
                     let range = selectedRange()
                     if range.location == 0, range.length == 0 {
-                        coordinator?.commitLiveText(self)
                         if onKey(.exitEditLeft) == .handled { return }
                     }
                 }
@@ -758,7 +747,6 @@ final class ContainedTextView: NSTextView {
                     let range = selectedRange()
                     let length = textStorage?.length ?? 0
                     if range.location == length, range.length == 0 {
-                        coordinator?.commitLiveText(self)
                         if onKey(.exitEditRight) == .handled { return }
                     }
                 }
@@ -830,21 +818,17 @@ final class ContainedTextView: NSTextView {
         if let onKey = coordinator?.parent.onKey {
             // Image-on-pasteboard takes precedence over text. Cmd-Shift-4 puts a PNG/TIFF
             // representation alongside no string at all; copying an image from a browser
-            // puts both — in both cases the user expects an image, not the URL.
+            // puts both — in both cases the user expects an image, not the URL. Live-text
+            // commit happens centrally in `EditorView.mutate(...)` if the paste splices
+            // blocks; single-paragraph string paste returns `.ignored` and falls through
+            // to native paste (no model snapshot, binding stays stale until blur as usual).
             let images = readPasteboardImages(NSPasteboard.general)
             if !images.isEmpty {
-                coordinator?.commitLiveText(self)
                 if onKey(.imagesPasted(images)) == .handled {
                     return
                 }
             }
             if let str = NSPasteboard.general.string(forType: .string) {
-                // Multi-block paste calls `mutate(...)` which snapshots `document.blocks`. If
-                // the editing block's binding is stale, that snapshot loses the typed text.
-                // Single-paragraph paste returns `.ignored` and falls through to native paste,
-                // which inserts into NSTextView — fine, the binding stays stale until blur as
-                // usual.
-                coordinator?.commitLiveText(self)
                 if onKey(.paste(str)) == .handled {
                     return
                 }
@@ -1063,15 +1047,13 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     }
 
     private func makeAccessoryBar(for tv: ContainedTextViewIOS) -> KeyboardAccessoryBar {
+        // Live-text commits flow through `EditorView.mutate(...)` (for ops that
+        // change the model) and `transferFocus(...)` (for Esc → nav). The
+        // accessory bar's actions all hit one of those paths through `onKey`,
+        // so explicit commits aren't needed here.
         KeyboardAccessoryBar(
-            onShiftTab: {
-                tv.coordinator?.commitLiveText(tv)
-                _ = onKey(.shiftTab)
-            },
-            onTab: {
-                tv.coordinator?.commitLiveText(tv)
-                _ = onKey(.tab)
-            },
+            onShiftTab: { _ = onKey(.shiftTab) },
+            onTab: { _ = onKey(.tab) },
             onToggleMark: { mark in bridge.toggleMark(mark) },
             onCmdK: {
                 let range = tv.selectedRange
@@ -1085,13 +1067,9 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
                     let full = ns as String
                     return full.isEmpty ? nil : full
                 }()
-                tv.coordinator?.commitLiveText(tv)
                 _ = onKey(.cmdK(preferredTitle: preferred))
             },
             onDismiss: {
-                // Commit synchronously before the state-mutating onKey(.escape) so the
-                // binding is current before SwiftUI tears down BlockTextEditor.
-                tv.coordinator?.commitLiveText(tv)
                 tv.resignFirstResponder()
                 _ = onKey(.escape)
             }
@@ -1138,17 +1116,16 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) {
             textStorageDirty = true
             // IME composition: skip autotransform. Live text remains in textStorage and
-            // is committed on blur or just before a structural op fires.
+            // is committed on blur or centrally in `EditorView.mutate(...)`.
             let composing = (textView.markedTextRange != nil)
             let plain = textView.text ?? ""
 
             if !composing {
                 let cursor = textView.selectedRange.location
                 if let result = detectPrefixAutotransform(text: AttributedString(plain), cursor: cursor) {
-                    // Sync live text into the binding so the autotransform's `mutate(...)`
-                    // snapshot includes the typed prefix — Cmd-Z'ing the autotransform
-                    // restores the user's typed text rather than the pre-typing block.
-                    commitLiveText(textView)
+                    // Autotransform replaces the block via `mutate(...)`, which commits
+                    // the active editor first — so the pre-mutation snapshot captures
+                    // the typed prefix and Cmd-Z restores it cleanly.
                     parent.onAutotransform(result.transform, result.remainingText)
                     return
                 }
@@ -1294,11 +1271,10 @@ final class ContainedTextViewIOS: UITextView {
 
     override func deleteBackward() {
         // Backspace at the very start of the row (cursor at offset 0, no selection)
-        // fires `.backspaceAtStart`. The page-level handler reads `block.text` for
-        // merge / preserve, so commit live text into the binding first.
+        // fires `.backspaceAtStart`. Live-text commit happens centrally in
+        // `EditorView.mutate(...)` if the page-level handler ends up mutating.
         if selectedRange.location == 0, selectedRange.length == 0,
            let coordinator {
-            coordinator.commitLiveText(self)
             if coordinator.parent.onKey(.backspaceAtStart) == .handled {
                 return
             }
@@ -1313,18 +1289,17 @@ final class ContainedTextViewIOS: UITextView {
     /// native undo behavior stay correct.
     override func paste(_ sender: Any?) {
         if let coordinator {
+            // Live-text commit happens centrally in `EditorView.mutate(...)` for
+            // multi-block paste. Single-paragraph paste returns `.ignored` and
+            // falls through to UITextView's native paste; binding stays stale
+            // until blur, as usual.
             let images = readPasteboardImages(UIPasteboard.general)
             if !images.isEmpty {
-                coordinator.commitLiveText(self)
                 if coordinator.parent.onKey(.imagesPasted(images)) == .handled {
                     return
                 }
             }
             if let str = UIPasteboard.general.string {
-                // Multi-block paste runs `mutate(...)` and snapshots `document.blocks`;
-                // commit so the snapshot has live text. Single-paragraph paste returns
-                // `.ignored` and falls through — the binding stays stale until blur.
-                coordinator.commitLiveText(self)
                 if coordinator.parent.onKey(.paste(str)) == .handled {
                     return
                 }
@@ -1342,14 +1317,13 @@ final class ContainedTextViewIOS: UITextView {
                coordinator.parent.onKey(.mentionCommit) == .handled {
                 return
             }
-            // Soft-keyboard return: split the block at the current selection. splitBlock
-            // reads `block.text` to derive head/tail — commit live text first. When the
-            // selection is non-empty, the split deletes its contents (Return-over-
-            // selection mirrors typing a `\n`).
+            // Soft-keyboard return: split the block at the current selection. Live-text
+            // commit happens centrally in `EditorView.mutate(...)` inside `splitBlock`.
+            // When the selection is non-empty, the split deletes its contents
+            // (Return-over-selection mirrors typing a `\n`).
             let range = selectedRange
             let selStart = range.location
             let selEnd = range.location + range.length
-            coordinator.commitLiveText(self)
             if coordinator.parent.onKey(.enter(selectionStart: selStart, selectionEnd: selEnd)) == .handled {
                 return
             }

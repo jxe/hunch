@@ -70,37 +70,94 @@ public final class Document: @MainActor Identifiable {
         children = snapshot
     }
 
+    // MARK: - Generic preorder walkers
+    //
+    // Read-only walks share `walk(_:visit:)`; mutating ops (mutate / remove /
+    // replace) share `mutateFirst(in:id:transform:)`. Together these subsume
+    // what used to be 8 near-identical recursive helpers. Public lookups
+    // (find / documentOrder / path / preorderPredecessor / subtreeIDs / walk)
+    // and the mutation primitives below all build on this pair.
+
+    /// Per-visit signal returned by the read-only walker.
+    /// - `continue`: visit children, then continue with the next sibling.
+    /// - `skip`: don't visit children of the current block; continue with the next sibling.
+    /// - `stop`: terminate the walk immediately.
+    enum WalkAction { case `continue`, skip, stop }
+
+    /// Generic preorder walker with early-exit semantics. Returns `true` iff
+    /// the walk was stopped (`.stop` returned by `visit`); `false` if it
+    /// completed naturally.
+    @discardableResult
+    private static func walk(
+        _ blocks: [Block],
+        depth: Int = 0,
+        parent: BlockID? = nil,
+        visit: (Block, Int, BlockID?) -> WalkAction
+    ) -> Bool {
+        for block in blocks {
+            switch visit(block, depth, parent) {
+            case .stop:
+                return true
+            case .skip:
+                continue
+            case .continue:
+                if walk(block.children, depth: depth + 1, parent: block.id, visit: visit) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Find the first node with `id` and run `transform` against its enclosing
+    /// `siblings` array and `index`. Returns `true` on a match. Used by the
+    /// in-place mutation primitives below (`mutate`, `removeSubtree`,
+    /// `replaceSubtree`).
+    @discardableResult
+    private static func mutateFirst(
+        in blocks: inout [Block],
+        id: BlockID,
+        transform: (_ siblings: inout [Block], _ index: Int) -> Void
+    ) -> Bool {
+        for i in blocks.indices {
+            if blocks[i].id == id {
+                transform(&blocks, i)
+                return true
+            }
+            if mutateFirst(in: &blocks[i].children, id: id, transform: transform) {
+                return true
+            }
+        }
+        return false
+    }
+
     // MARK: - Find / walk
 
     /// Returns the block with the given id, anywhere in the tree.
     public func find(_ blockID: BlockID) -> Block? {
-        Self.findRecursive(in: children, id: blockID)
-    }
-
-    private static func findRecursive(in blocks: [Block], id: BlockID) -> Block? {
-        for block in blocks {
-            if block.id == id { return block }
-            if let found = findRecursive(in: block.children, id: id) { return found }
+        var found: Block?
+        Self.walk(children) { block, _, _ in
+            if block.id == blockID {
+                found = block
+                return .stop
+            }
+            return .continue
         }
-        return nil
+        return found
     }
 
     /// IndexPath from the root. `[0]` is the first top-level block; `[2, 1]`
     /// is `children[2].children[1]`.
     public func path(to blockID: BlockID) -> IndexPath? {
-        var stack = IndexPath()
-        if Self.searchPath(in: children, id: blockID, stack: &stack) { return stack }
-        return nil
-    }
-
-    private static func searchPath(in blocks: [Block], id: BlockID, stack: inout IndexPath) -> Bool {
-        for (i, block) in blocks.enumerated() {
-            stack.append(i)
-            if block.id == id { return true }
-            if searchPath(in: block.children, id: id, stack: &stack) { return true }
-            stack.removeLast()
+        var found: IndexPath?
+        Self.walkWithIndices(children) { block, indices in
+            if block.id == blockID {
+                found = IndexPath(indexes: indices)
+                return .stop
+            }
+            return .continue
         }
-        return false
+        return found
     }
 
     /// Returns the BlockID of `blockID`'s direct parent, or `nil` if it's a
@@ -113,48 +170,38 @@ public final class Document: @MainActor Identifiable {
     private func ensureParentCache() {
         if _parentCache != nil { return }
         var cache: [BlockID: BlockID] = [:]
-        Self.fillParents(in: children, parent: nil, into: &cache)
-        _parentCache = cache
-    }
-
-    private static func fillParents(in blocks: [Block], parent: BlockID?, into cache: inout [BlockID: BlockID]) {
-        for block in blocks {
+        Self.walk(children) { block, _, parent in
             if let parent { cache[block.id] = parent }
-            fillParents(in: block.children, parent: block.id, into: &cache)
+            return .continue
         }
+        _parentCache = cache
     }
 
     /// All ids in `blockID`'s subtree, including `blockID` itself.
     public func subtreeIDs(of blockID: BlockID) -> Set<BlockID> {
+        guard let block = find(blockID) else { return [] }
         var out: Set<BlockID> = []
-        if let block = find(blockID) {
-            collectIDs(of: block, into: &out)
+        Self.walk([block]) { b, _, _ in
+            out.insert(b.id)
+            return .continue
         }
         return out
-    }
-
-    private func collectIDs(of block: Block, into out: inout Set<BlockID>) {
-        out.insert(block.id)
-        for child in block.children { collectIDs(of: child, into: &out) }
     }
 
     /// Preorder document-order index of `blockID` (0 = first top-level block).
     /// Used to sort selections that span subtrees.
     public func documentOrder(of blockID: BlockID) -> Int? {
-        var index = 0
-        if let order = Self.preorderIndex(in: children, id: blockID, counter: &index) {
-            return order
-        }
-        return nil
-    }
-
-    private static func preorderIndex(in blocks: [Block], id: BlockID, counter: inout Int) -> Int? {
-        for block in blocks {
-            if block.id == id { return counter }
+        var counter = 0
+        var found: Int?
+        Self.walk(children) { block, _, _ in
+            if block.id == blockID {
+                found = counter
+                return .stop
+            }
             counter += 1
-            if let order = preorderIndex(in: block.children, id: id, counter: &counter) { return order }
+            return .continue
         }
-        return nil
+        return found
     }
 
     /// The block immediately preceding `blockID` in preorder traversal — i.e.
@@ -163,23 +210,49 @@ public final class Document: @MainActor Identifiable {
     public func preorderPredecessor(of blockID: BlockID) -> BlockID? {
         var previous: BlockID?
         var found: BlockID?
-        Self.walkPreorder(in: children) { block, _, _ in
-            if block.id == blockID { found = previous }
+        Self.walk(children) { block, _, _ in
+            if block.id == blockID {
+                found = previous
+                return .stop
+            }
             previous = block.id
+            return .continue
         }
-        return found ?? nil
+        return found
     }
 
     /// Preorder walk yielding (block, depth, parentID?) for every node.
     public func walk(_ visit: (_ block: Block, _ depth: Int, _ parent: BlockID?) -> Void) {
-        Self.walkPreorder(in: children, depth: 0, parent: nil, visit: visit)
+        Self.walk(children) { block, depth, parent in
+            visit(block, depth, parent)
+            return .continue
+        }
     }
 
-    private static func walkPreorder(in blocks: [Block], depth: Int = 0, parent: BlockID? = nil, visit: (Block, Int, BlockID?) -> Void) {
-        for block in blocks {
-            visit(block, depth, parent)
-            walkPreorder(in: block.children, depth: depth + 1, parent: block.id, visit: visit)
+    /// Internal walker variant that exposes the `[Int]` child-index stack so
+    /// `path(to:)` can reconstruct an `IndexPath`. Kept fileprivate — the
+    /// public `walk(_:)` and the `WalkAction`-returning `walk(_:visit:)` are
+    /// the two ergonomic surfaces.
+    @discardableResult
+    private static func walkWithIndices(
+        _ blocks: [Block],
+        indices: [Int] = [],
+        visit: (Block, [Int]) -> WalkAction
+    ) -> Bool {
+        for (i, block) in blocks.enumerated() {
+            let here = indices + [i]
+            switch visit(block, here) {
+            case .stop:
+                return true
+            case .skip:
+                continue
+            case .continue:
+                if walkWithIndices(block.children, indices: here, visit: visit) {
+                    return true
+                }
+            }
         }
+        return false
     }
 
     // MARK: - Mutation primitives
@@ -189,22 +262,11 @@ public final class Document: @MainActor Identifiable {
     /// an `inout Block` so callers can patch `kind` and/or `children`.
     @discardableResult
     public func mutate(_ blockID: BlockID, _ transform: (inout Block) -> Void) -> Bool {
-        var didMutate = false
-        Self.mutateRecursive(in: &children, id: blockID, transform: transform, didMutate: &didMutate)
+        let didMutate = Self.mutateFirst(in: &children, id: blockID) { siblings, i in
+            transform(&siblings[i])
+        }
         if didMutate { _parentCache = nil }
         return didMutate
-    }
-
-    private static func mutateRecursive(in blocks: inout [Block], id: BlockID, transform: (inout Block) -> Void, didMutate: inout Bool) {
-        for i in blocks.indices {
-            if blocks[i].id == id {
-                transform(&blocks[i])
-                didMutate = true
-                return
-            }
-            mutateRecursive(in: &blocks[i].children, id: id, transform: transform, didMutate: &didMutate)
-            if didMutate { return }
-        }
     }
 
     /// Convenience: replace the text on `blockID` (uses `Block.withText`).
@@ -218,20 +280,11 @@ public final class Document: @MainActor Identifiable {
     @discardableResult
     public func removeSubtree(_ blockID: BlockID) -> Block? {
         var removed: Block?
-        Self.removeRecursive(in: &children, id: blockID, removed: &removed)
+        Self.mutateFirst(in: &children, id: blockID) { siblings, i in
+            removed = siblings.remove(at: i)
+        }
         if removed != nil { _parentCache = nil }
         return removed
-    }
-
-    private static func removeRecursive(in blocks: inout [Block], id: BlockID, removed: inout Block?) {
-        for i in blocks.indices {
-            if blocks[i].id == id {
-                removed = blocks.remove(at: i)
-                return
-            }
-            removeRecursive(in: &blocks[i].children, id: id, removed: &removed)
-            if removed != nil { return }
-        }
     }
 
     /// Insert a subtree at the given drop path. Returns `false` if the parent
@@ -265,22 +318,11 @@ public final class Document: @MainActor Identifiable {
     /// commit, autotransforms, and turn-into.
     @discardableResult
     public func replaceSubtree(_ blockID: BlockID, with replacements: [Block]) -> Bool {
-        var success = false
-        Self.replaceRecursive(in: &children, id: blockID, with: replacements, success: &success)
+        let success = Self.mutateFirst(in: &children, id: blockID) { siblings, i in
+            siblings.replaceSubrange(i...i, with: replacements)
+        }
         if success { _parentCache = nil }
         return success
-    }
-
-    private static func replaceRecursive(in blocks: inout [Block], id: BlockID, with replacements: [Block], success: inout Bool) {
-        for i in blocks.indices {
-            if blocks[i].id == id {
-                blocks.replaceSubrange(i...i, with: replacements)
-                success = true
-                return
-            }
-            replaceRecursive(in: &blocks[i].children, id: id, with: replacements, success: &success)
-            if success { return }
-        }
     }
 
     // MARK: - Selection helpers
@@ -292,8 +334,9 @@ public final class Document: @MainActor Identifiable {
         var coveredDescendants: Set<BlockID> = []
         for id in ids {
             guard let block = find(id) else { continue }
-            for child in block.children {
-                collectIDs(of: child, into: &coveredDescendants)
+            Self.walk(block.children) { b, _, _ in
+                coveredDescendants.insert(b.id)
+                return .continue
             }
         }
         let roots = ids.subtracting(coveredDescendants)

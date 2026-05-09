@@ -59,6 +59,68 @@ struct DocumentMutationTests {
         #expect(doc.parent(of: doc.children[0].id) == nil)
     }
 
+    @Test func pathToTopLevelIsSingleIndex() {
+        let doc = makeDoc()
+        let id = doc.children[2].id
+        #expect(doc.path(to: id) == IndexPath(indexes: [2]))
+    }
+
+    @Test func pathToNestedIsTwoIndices() {
+        let doc = makeDoc()
+        let nestedID = doc.children[1].children[0].id
+        #expect(doc.path(to: nestedID) == IndexPath(indexes: [1, 0]))
+    }
+
+    @Test func pathToMissingIsNil() {
+        let doc = makeDoc()
+        #expect(doc.path(to: BlockID()) == nil)
+    }
+
+    @Test func documentOrderIsPreorder() {
+        let doc = makeDoc()
+        // Tree: [paragraph(0), bullet a(1) [bullet b(2)], heading(3)]
+        #expect(doc.documentOrder(of: doc.children[0].id) == 0)
+        #expect(doc.documentOrder(of: doc.children[1].id) == 1)
+        #expect(doc.documentOrder(of: doc.children[1].children[0].id) == 2)
+        #expect(doc.documentOrder(of: doc.children[2].id) == 3)
+    }
+
+    @Test func preorderPredecessorOfFirstIsNil() {
+        let doc = makeDoc()
+        #expect(doc.preorderPredecessor(of: doc.children[0].id) == nil)
+    }
+
+    @Test func preorderPredecessorCrossesIntoSubtree() {
+        let doc = makeDoc()
+        // The heading at index 2 follows bullet "b" (last descendant of bullet "a").
+        let bulletB = doc.children[1].children[0].id
+        #expect(doc.preorderPredecessor(of: doc.children[2].id) == bulletB)
+    }
+
+    @Test func subtreeIDsIncludesSelfAndDescendants() {
+        let doc = makeDoc()
+        let bulletA = doc.children[1]
+        let ids = doc.subtreeIDs(of: bulletA.id)
+        #expect(ids == Set([bulletA.id, bulletA.children[0].id]))
+    }
+
+    @Test func subtreeIDsOfMissingIsEmpty() {
+        let doc = makeDoc()
+        #expect(doc.subtreeIDs(of: BlockID()).isEmpty)
+    }
+
+    @Test func walkVisitsEveryBlockInPreorder() {
+        let doc = makeDoc()
+        var visited: [BlockID] = []
+        doc.walk { block, _, _ in visited.append(block.id) }
+        #expect(visited == [
+            doc.children[0].id,
+            doc.children[1].id,
+            doc.children[1].children[0].id,
+            doc.children[2].id
+        ])
+    }
+
     @Test func removeSubtreeYanksNestedBlockOut() {
         let doc = makeDoc()
         let nestedID = doc.children[1].children[0].id

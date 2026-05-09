@@ -24,7 +24,12 @@ public final class EditorCommands {
 /// Every void-returning command exposed to the menu bar. New shortcuts add a
 /// case here, a switch arm in `EditorView.wireEditorCommands()`, and a menu
 /// button in `HunchApp.swift` — three touch-points, all compile-checked.
-public enum EditorAction: Sendable {
+///
+/// Some cases are nav-mode only (page-focused, no editor mounted) — they're
+/// dispatched both from the menu bar and from `EditorView.handleNavKeyPress`'s
+/// binding table. They no-op safely when fired in edit mode.
+public enum EditorAction: Sendable, Equatable {
+    // Surfaces from the menu bar AND nav-mode keyboard. Same in both contexts.
     case openBlockActionMenu
     case openMoveTo
     case toggleLinkOrSubpage
@@ -34,6 +39,19 @@ public enum EditorAction: Sendable {
     case newBlockBelow
     case moveBlockUp
     case moveBlockDown
+
+    // Nav-mode keyboard only (the menu bar uses the system equivalents directly).
+    case copySelection
+    case pasteFromPasteboard
+    case cutSelection
+    case deleteSelection
+    case escape
+    case navigateBack
+    case moveCursor(delta: Int)
+    case extendSelection(delta: Int)
+    case enterEditOrOpenSubpage
+    case navRightArrow
+    case navLeftArrow
 }
 
 /// Predicates the menu uses to gray out items when the action wouldn't apply

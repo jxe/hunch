@@ -46,6 +46,13 @@ public struct EditorView: View {
     /// Drives the page container's focusability for nav-mode key handling. Written only
     /// from `.onChange(of: state.mode)` (and once on first appear).
     @FocusState var pageFocused: Bool
+    /// Bumped by `forcePageFocusGrab()` to request a re-grab of page focus.
+    /// A `.onChange(of: pageFocusToken)` in body runs the false→true flip on
+    /// the next runloop tick. Using a token (rather than writing `pageFocused`
+    /// directly from each call site) means a same-value re-grab — needed when
+    /// `pageFocused` is already `true` but SwiftUI dropped first-responder
+    /// during a layout reset — fires reliably on every bump.
+    @State var pageFocusToken: Int = 0
     #if os(macOS)
     /// Single-slot weak handle to the currently-mounted NSTextView. Only one editor
     /// mounts at a time (gated by `isEditing`), so `transferFocus(to: .editor(id))`
@@ -273,6 +280,16 @@ public struct EditorView: View {
                 if actionSheet != nil { actionSheet = nil }
                 handleModeChange(from: oldMode, to: newMode)
             }
+            // Single home for the focus-pump dance. `forcePageFocusGrab()`
+            // bumps `pageFocusToken`, which lands here and flips
+            // `pageFocused` `false → true` across two runloop ticks (a
+            // same-value `@FocusState` write is a no-op, so the flip is
+            // load-bearing). Replaces five sites that each ran the same
+            // double-`DispatchQueue.main.async` directly.
+            .onChange(of: pageFocusToken) { _, _ in
+                pageFocused = false
+                DispatchQueue.main.async { pageFocused = true }
+            }
             #if os(iOS)
             // On iOS the user can lose editor focus without touching `state.mode`
             // (tap outside the editor, keyboard dismiss). `editorFocused` going nil is
@@ -313,7 +330,7 @@ public struct EditorView: View {
         }
     }
 
-    private func handleEscapeKey() {
+    func handleEscapeKey() {
         if actionSheet != nil {
             actionSheet = nil
             return
@@ -505,7 +522,7 @@ public struct EditorView: View {
         .equatable()
     }
 
-    private func topSelectedBlockID() -> BlockID? {
+    func topSelectedBlockID() -> BlockID? {
         // First-in-document-order id within the selection.
         var best: (id: BlockID, order: Int)?
         for id in state.selection {
@@ -737,115 +754,95 @@ public struct EditorView: View {
 
     // MARK: - Undo
 
-    /// Top-level key handler routed from `.onKeyPress` in the body. Extracted
-    /// from the body so SwiftUI's body type-checker doesn't have to swallow
-    /// the whole switch in one go.
+    /// Top-level nav-mode key handler routed from `.onKeyPress` in the body.
+    /// Looks the press up in `Self.navBindings` (declarative table mapping
+    /// (key, modifiers) → `EditorAction`) and dispatches via `editorCommands`.
+    /// Returns `.ignored` if no binding matches so SwiftUI can pass the press
+    /// through to other handlers.
     func handleNavKeyPress(_ press: KeyPress) -> KeyPress.Result {
         guard state.editingBlock == nil else { return .ignored }
-        let modifiers = press.modifiers
-
-        if press.key == KeyEquivalent("["), modifiers.contains(.command) {
-            host.onNavigateBack()
-            return .handled
-        }
-
-        if press.key == KeyEquivalent("c"), modifiers.contains(.command) {
-            return copySelectionToPasteboard() ? .handled : .ignored
-        }
-
-        if press.key == KeyEquivalent("v"), modifiers.contains(.command) {
-            return pasteFromPasteboard() ? .handled : .ignored
-        }
-
-        if press.key == KeyEquivalent("x"), modifiers.contains(.command) {
-            return cutSelectionToPasteboard() ? .handled : .ignored
-        }
-
-        if press.key == KeyEquivalent("s"), modifiers.contains([.command, .shift]) {
-            return toggleStrikethroughOnSelection() ? .handled : .ignored
-        }
-
-        if press.key == KeyEquivalent("b"), modifiers.contains(.command), !modifiers.contains(.shift) {
-            return toggleBoldOnSelection() ? .handled : .ignored
-        }
-
-        if press.key == KeyEquivalent("i"), modifiers.contains(.command), !modifiers.contains(.shift) {
-            return toggleItalicOnSelection() ? .handled : .ignored
-        }
-
-        if press.key == KeyEquivalent("/"), modifiers.contains(.command) {
-            guard let id = topSelectedBlockID() else { return .ignored }
-            actionSheet = BlockActionSheet(id: id)
-            return .handled
-        }
-
-        if press.key == .return, modifiers.contains(.command) {
-            return createEmptySiblingAndEdit() ? .handled : .ignored
-        }
-
-        if press.key == .delete || press.key == KeyEquivalent("\u{8}") || press.key == KeyEquivalent("\u{7F}") {
-            deleteSelection()
-            return .handled
-        }
-        // Shift+Tab arrives as a distinct character (BackTab, U+0019), not as
-        // .tab + shift modifier — SwiftUI's `.onKeyPress(.tab)` won't match it.
-        if press.key == KeyEquivalent("\u{19}") {
-            indentSelection(by: -1)
-            return .handled
-        }
-
-        switch press.key {
-        case .upArrow:
-            if modifiers.contains(.option) {
-                moveSelectionInDocument(by: -1)
-            } else if modifiers.contains(.shift) {
-                extendSelection(by: -1)
-            } else {
-                moveCursor(by: -1)
-            }
-            return .handled
-        case .downArrow:
-            if modifiers.contains(.option) {
-                moveSelectionInDocument(by: +1)
-            } else if modifiers.contains(.shift) {
-                extendSelection(by: +1)
-            } else {
-                moveCursor(by: +1)
-            }
-            return .handled
-        case .rightArrow:
-            return handleNavRightArrow() ? .handled : .ignored
-        case .leftArrow:
-            return handleNavLeftArrow() ? .handled : .ignored
-        case .tab:
-            indentSelection(by: modifiers.contains(.shift) ? -1 : +1)
-            return .handled
-        case .return:
-            if let id = state.cursor, state.selection.count == 1 {
-                if navigateIntoSubpage(id) {
-                    return .handled
-                }
-                transferFocus(to: .editor(id, initialCursor: nil))
-            }
-            return .handled
-        case .escape:
-            handleEscapeKey()
-            return .handled
-        default:
-            if press.key == KeyEquivalent("k"), modifiers.contains(.command) {
-                guard let id = state.cursor, state.selection.count == 1 else { return .ignored }
-                return convertBlockToSubpage(blockID: id, preferredTitle: nil)
-            }
+        guard let action = Self.navAction(for: press.key, modifiers: press.modifiers) else {
             return .ignored
         }
+        editorCommands.perform(action)
+        return .handled
     }
+
+    /// Pure-function lookup against `Self.navBindings`. Tests dispatch to
+    /// this directly — `KeyPress` has no public init, so the per-press
+    /// matcher takes the (key, modifiers) pair instead.
+    static func navAction(for key: KeyEquivalent, modifiers: EventModifiers) -> EditorAction? {
+        for binding in navBindings where binding.key == key && binding.modifiers == modifiers {
+            return binding.action
+        }
+        return nil
+    }
+
+    /// `(KeyEquivalent, EventModifiers) → EditorAction` row.
+    /// `modifiers` is matched exactly (not via `contains`), so Cmd-B does NOT
+    /// fire a binding declared for Cmd-Shift-B.
+    struct NavKeyBinding {
+        let key: KeyEquivalent
+        let modifiers: EventModifiers
+        let action: EditorAction
+    }
+
+    /// All keyboard chords handled in nav mode. Order doesn't matter — each
+    /// key+modifier combo is unique. To wire a new shortcut: add a row here,
+    /// an `EditorAction` case, and a switch arm in `wireEditorCommands`.
+    static let navBindings: [NavKeyBinding] = [
+        // Cmd shortcuts
+        .init(key: "[", modifiers: .command, action: .navigateBack),
+        .init(key: "c", modifiers: .command, action: .copySelection),
+        .init(key: "v", modifiers: .command, action: .pasteFromPasteboard),
+        .init(key: "x", modifiers: .command, action: .cutSelection),
+        .init(key: "b", modifiers: .command, action: .toggleInlineMark(.bold)),
+        .init(key: "i", modifiers: .command, action: .toggleInlineMark(.italic)),
+        .init(key: "s", modifiers: [.command, .shift], action: .toggleInlineMark(.strikethrough)),
+        .init(key: "/", modifiers: .command, action: .openBlockActionMenu),
+        .init(key: "k", modifiers: .command, action: .toggleLinkOrSubpage),
+        .init(key: .return, modifiers: .command, action: .newBlockBelow),
+
+        // Delete (forward-delete + macOS backspace + iOS DEL)
+        .init(key: .delete, modifiers: [], action: .deleteSelection),
+        .init(key: KeyEquivalent("\u{8}"), modifiers: [], action: .deleteSelection),
+        .init(key: KeyEquivalent("\u{7F}"), modifiers: [], action: .deleteSelection),
+
+        // Tab — indent / outdent. Shift+Tab arrives as a distinct character
+        // (BackTab, U+0019), not as .tab + .shift, so it gets its own row.
+        .init(key: .tab, modifiers: [], action: .indent),
+        .init(key: KeyEquivalent("\u{19}"), modifiers: [], action: .outdent),
+
+        // Arrows — modifier-aware action.
+        .init(key: .upArrow, modifiers: [], action: .moveCursor(delta: -1)),
+        .init(key: .upArrow, modifiers: .shift, action: .extendSelection(delta: -1)),
+        .init(key: .upArrow, modifiers: .option, action: .moveBlockUp),
+        .init(key: .downArrow, modifiers: [], action: .moveCursor(delta: +1)),
+        .init(key: .downArrow, modifiers: .shift, action: .extendSelection(delta: +1)),
+        .init(key: .downArrow, modifiers: .option, action: .moveBlockDown),
+        .init(key: .leftArrow, modifiers: [], action: .navLeftArrow),
+        .init(key: .rightArrow, modifiers: [], action: .navRightArrow),
+
+        // Single keys
+        .init(key: .return, modifiers: [], action: .enterEditOrOpenSubpage),
+        .init(key: .escape, modifiers: [], action: .escape),
+    ]
 
     /// Wrap a structural mutation so its inverse is registered with `undoController`.
     /// Callers must only call `mutate` when actually changing something — the helper
     /// doesn't equality-check. Snapshots the document tree before the change, runs
     /// the change, then registers the previous snapshot as the undo. Redo is
     /// re-registered by the apply closure during `isUndoing`.
+    ///
+    /// Always commits the active editor's live text into the binding first.
+    /// Many structural ops (split, merge, autotransform, paste, etc.) read
+    /// `block.text` from the model immediately after, so any in-flight typing
+    /// in NSTextView/UITextView has to land in the binding before the snapshot
+    /// is taken. Centralizing the commit here means individual call sites
+    /// (`splitBlock`, `applyAutotransform`, `convertBlockToSubpage`, …) don't
+    /// each have to remember to call `commitLiveText` first.
     func mutate(_ name: String, _ change: () -> Void) {
+        undoController.commitActiveEditor?()
         let before = document.snapshot()
         change()
         // Re-apply heading containment after every structural mutation. This
@@ -870,165 +867,8 @@ public struct EditorView: View {
         }
     }
 
-    private func wireEditorCommands() {
-        editorCommands.perform = { action in
-            switch action {
-            case .openBlockActionMenu:
-                guard let id = topSelectedBlockID() else { return }
-                actionSheet = BlockActionSheet(id: id)
-
-            case .openMoveTo:
-                guard let id = topSelectedBlockID() else { return }
-                let targetIDs = menuTargetIDs(anchorID: id)
-                let inDoc = inDocMoveCandidates(excluding: targetIDs)
-                host.onRequestMoveDestination(targetIDs, inDoc) { destination in
-                    switch destination {
-                    case .page(let pageID):
-                        moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
-                    case .block(let parentID):
-                        moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
-                    case nil:
-                        break
-                    }
-                }
-
-            case .toggleLinkOrSubpage:
-                guard let id = state.cursor, state.selection.count == 1 else { return }
-                // The Cmd-K menu shortcut wins over NSTextView's keyDown, so the
-                // live-text capture path in BlockTextEditor's keyDown never runs.
-                // Mirror it here: capture the selected substring (or full string)
-                // before committing, so a freshly-typed row whose binding is still
-                // empty still gets its typed text used as the new page's title.
-                var preferred: String? = nil
-                #if os(macOS)
-                if let view = activeContainedTextView() {
-                    let range = view.selectedRange()
-                    let str = view.string
-                    if range.length > 0, let r = Range(range, in: str) {
-                        preferred = String(str[r])
-                    } else if !str.isEmpty {
-                        preferred = str
-                    }
-                    view.coordinator?.commitLiveText(view)
-                }
-                #endif
-                _ = convertBlockToSubpage(blockID: id, preferredTitle: preferred)
-
-            case .toggleInlineMark(let mark):
-                #if os(macOS)
-                if let view = activeContainedTextView() {
-                    view.toggleInlineMark(mark)
-                    return
-                }
-                #endif
-                switch mark {
-                case .bold: _ = toggleBoldOnSelection()
-                case .italic: _ = toggleItalicOnSelection()
-                case .strikethrough: _ = toggleStrikethroughOnSelection()
-                case .code: break
-                }
-
-            case .indent:
-                runDualMode(
-                    edit: { bid in _ = changeIndent(bid, by: +1) },
-                    nav: { indentSelection(by: 1) }
-                )
-            case .outdent:
-                runDualMode(
-                    edit: { bid in _ = changeIndent(bid, by: -1) },
-                    nav: { indentSelection(by: -1) }
-                )
-            case .newBlockBelow:
-                runDualMode(
-                    edit: { bid in _ = insertEmptySiblingAfter(bid) },
-                    nav: { _ = createEmptySiblingAndEdit() }
-                )
-            case .moveBlockUp:
-                runDualMode(
-                    edit: { bid in moveBlocksInDocument(Set([bid]), by: -1) },
-                    nav: { moveSelectionInDocument(by: -1) }
-                )
-            case .moveBlockDown:
-                runDualMode(
-                    edit: { bid in moveBlocksInDocument(Set([bid]), by: +1) },
-                    nav: { moveSelectionInDocument(by: +1) }
-                )
-            }
-        }
-
-        editorCommands.can = { predicate in
-            switch predicate {
-            case .canIndent:
-                if let bid = state.editingBlock {
-                    return document.canIndent(bid)
-                }
-                let roots = document.selectionSubtreeRoots(state.selection)
-                return !roots.isEmpty && roots.allSatisfy { document.canIndent($0) }
-            case .canOutdent:
-                if let bid = state.editingBlock {
-                    return document.canOutdent(bid)
-                }
-                let roots = document.selectionSubtreeRoots(state.selection)
-                return !roots.isEmpty && roots.allSatisfy { document.canOutdent($0) }
-            }
-        }
-    }
-
-    /// The active NSTextView when one's frontmost — wraps the macOS-only
-    /// firstResponder probe so callers don't need their own `#if os(macOS)`.
-    #if os(macOS)
-    private func activeContainedTextView() -> ContainedTextView? {
-        NSApp.keyWindow?.firstResponder as? ContainedTextView
-    }
-    #endif
-
-    /// Most editor commands have two shapes: one when an NSTextView is active
-    /// (commit live text first, then act on `state.editingBlock`), and one
-    /// when no editor is mounted (act on the nav selection). This helper
-    /// picks the right path so each switch arm in `wireEditorCommands` stays
-    /// a single line.
-    private func runDualMode(
-        edit: (BlockID) -> Void,
-        nav: () -> Void
-    ) {
-        #if os(macOS)
-        if let view = activeContainedTextView(), let bid = state.editingBlock {
-            view.coordinator?.commitLiveText(view)
-            edit(bid)
-            return
-        }
-        #endif
-        nav()
-    }
-
-    /// Install the closure that the undo controller calls on Cmd-Z (and on redo).
-    /// Restores the document tree and fixes up cursor/selection against the new
-    /// block set. Re-registers the inverse so redo works.
-    private func installUndoApply() {
-        undoController.apply = { newBlocks in
-            let beforeRedo = document.snapshot()
-            document.restore(newBlocks)
-
-            // Validate cursor/selection/edit-mode against the new tree — drops
-            // invalid IDs from the navigating selection, falls back to nav mode
-            // if the editing block disappeared.
-            var validIDs: Set<BlockID> = []
-            document.walk { block, _, _ in validIDs.insert(block.id) }
-            state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
-
-            // Re-register inverse — when this runs during isUndoing, UndoManager pushes
-            // it to the redo stack; during isRedoing, it goes back on the undo stack.
-            undoController.register(beforeRedo, name: undoController.undoManager.undoActionName)
-            host.onEdited()
-        }
-        undoController.applyTextChange = { blockID, oldText in
-            guard let block = document.find(blockID) else { return }
-            let beforeRedoText = block.text
-            document.setText(blockID, oldText)
-            undoController.registerTextChange(blockID: blockID, oldText: beforeRedoText)
-            host.onEdited()
-        }
-    }
+    // Command and undo wiring (`wireEditorCommands`, `installUndoApply`,
+    // `activeContainedTextView`, `runDualMode`) lives in EditorView+Wiring.swift.
 
     // MARK: - Selection state helpers
 
@@ -1125,23 +965,19 @@ public struct EditorView: View {
         }
     }
 
-    /// Force SwiftUI to re-assert focus on the page VStack via a `false → true` flip
-    /// on the next runloop. A same-value setter is a no-op in SwiftUI focus state, so
-    /// this is the only way to reliably re-grab page focus after edit mode releases it
-    /// (or on first appear).
+    /// Request a re-grab of page focus. Bumps a token that the body's
+    /// `.onChange(of: pageFocusToken)` observes; the actual `false → true`
+    /// flip on the next runloop tick happens there. Using a token instead
+    /// of writing `pageFocused` directly means a same-value re-grab still
+    /// fires (a same-value `@FocusState` write is a no-op).
     private func forcePageFocusGrab() {
-        DispatchQueue.main.async {
-            pageFocused = false
-            DispatchQueue.main.async {
-                pageFocused = true
-            }
-        }
+        pageFocusToken &+= 1
     }
 
     /// Nav-mode →: check todos in the selection, otherwise enter a selected subpage
     /// or open the collapsible section under the cursor.
     @discardableResult
-    private func handleNavRightArrow() -> Bool {
+    func handleNavRightArrow() -> Bool {
         if setTodoDoneOnSelection(true) { return true }
         guard let id = state.cursor, state.selection.count == 1 else { return false }
         if navigateIntoSubpage(id) { return true }
@@ -1161,7 +997,7 @@ public struct EditorView: View {
     /// expanded, otherwise close the innermost enclosing collapsible section and move the
     /// selection there.
     @discardableResult
-    private func handleNavLeftArrow() -> Bool {
+    func handleNavLeftArrow() -> Bool {
         if setTodoDoneOnSelection(false) { return true }
         guard let id = state.cursor, state.selection.count == 1 else { return false }
         guard let cursorBlock = document.find(id) else { return false }
@@ -1189,7 +1025,7 @@ public struct EditorView: View {
     /// are already fully struck, remove strikethrough; otherwise add it uniformly. Skips
     /// blocks without an `AttributedString` body (code/divider/subpage) and template
     /// buttons (whose `withText` flattens formatting). Returns `true` if it acted.
-    private func toggleStrikethroughOnSelection() -> Bool {
+    func toggleStrikethroughOnSelection() -> Bool {
         toggleInlineMarkOnSelection(
             attribute: InlineAttributes.StrikethroughAttribute.self,
             setLabel: "Strikethrough",
@@ -1200,7 +1036,7 @@ public struct EditorView: View {
     /// Toggle bold across every text-bearing block the user has explicitly selected.
     /// Parent-only — does not expand to section children. See
     /// `toggleStrikethroughOnSelection` for the shared semantics.
-    private func toggleBoldOnSelection() -> Bool {
+    func toggleBoldOnSelection() -> Bool {
         toggleInlineMarkOnSelection(
             attribute: InlineAttributes.BoldAttribute.self,
             setLabel: "Bold",
@@ -1210,7 +1046,7 @@ public struct EditorView: View {
 
     /// Toggle italic across every text-bearing block the user has explicitly selected.
     /// Parent-only — does not expand to section children.
-    private func toggleItalicOnSelection() -> Bool {
+    func toggleItalicOnSelection() -> Bool {
         toggleInlineMarkOnSelection(
             attribute: InlineAttributes.ItalicAttribute.self,
             setLabel: "Italic",
@@ -1541,7 +1377,7 @@ public struct EditorView: View {
 
     /// Move the cursor by `delta` rows; collapse to a single-block selection at the new cursor.
     /// Skips blocks hidden inside collapsed toggles.
-    private func moveCursor(by delta: Int) {
+    func moveCursor(by delta: Int) {
         let blocks = preorderFlat()
         guard !blocks.isEmpty else { return }
         let hidden = hiddenBlockIDs(in: document.children)
@@ -1555,7 +1391,7 @@ public struct EditorView: View {
     /// Extend the selection in the direction of `delta`. The anchor stays put; the cursor
     /// moves by outline sections so extending over a parent consumes its descendants as
     /// real selection.
-    private func extendSelection(by delta: Int) {
+    func extendSelection(by delta: Int) {
         let blocks = preorderFlat()
         guard !blocks.isEmpty else { return }
 
@@ -1667,7 +1503,7 @@ public struct EditorView: View {
     /// parents carry their descendants, so top-level blocks hop over whole sections.
     /// Tree analog: requires every selected subtree-root to share one parent;
     /// otherwise no-op.
-    private func moveSelectionInDocument(by delta: Int) {
+    func moveSelectionInDocument(by delta: Int) {
         moveBlocksInDocument(state.selection, by: delta)
     }
 
@@ -1675,29 +1511,26 @@ public struct EditorView: View {
     /// The menu's Move Block Up/Down items use this with `{state.editingBlock}`
     /// when the active editor is in edit mode, since `state.selection` may not
     /// reflect the editing block.
-    private func moveBlocksInDocument(_ ids: Set<BlockID>, by delta: Int) {
+    func moveBlocksInDocument(_ ids: Set<BlockID>, by delta: Int) {
         let roots = document.selectionSubtreeRoots(ids)
         guard !roots.isEmpty else { return }
-        // Snapshot pre-mutation so `mutate` registers an undo iff we actually
-        // changed something.
-        let canMove = document.slideSiblings(Set(roots), by: delta)
-        guard canMove else { return }
-        // Roll back the move so `mutate` can record it as one undo entry; then
-        // re-apply inside the mutation closure.
-        // (`slideSiblings` already mutated; treat the trial as the mutation.)
-        // Since slideSiblings has been called above, the doc is already moved.
-        // Register the inverse by snapshotting the pre-move state — but we
-        // already lost that. Reconstruct via inverse direction.
-        _ = document.slideSiblings(Set(roots), by: -delta)
-        mutate("Move Block") {
-            _ = document.slideSiblings(Set(roots), by: delta)
-        }
+        // `slideSiblings` is its own validity check + mutation: it returns false
+        // and leaves the doc untouched if the slab isn't a valid contiguous
+        // same-parent set. Snapshot before, run once, register the snapshot as
+        // the undo entry. Replaces a previous three-call dance (forward to test,
+        // backward to roll back, forward again inside `mutate`).
+        undoController.commitActiveEditor?()
+        let before = document.snapshot()
+        guard document.slideSiblings(Set(roots), by: delta) else { return }
+        document.enforceHeadingContainment()
+        undoController.register(before, name: "Move Block")
+        host.onEdited()
         revealHiddenBlocks(ids)
     }
 
     /// Delete every block in the current selection. No-op if the selection
     /// covers every top-level block.
-    private func deleteSelection() {
+    func deleteSelection() {
         deleteBlocks(ids: Array(state.selection), actionName: "Delete")
     }
 
@@ -1767,7 +1600,7 @@ public struct EditorView: View {
     /// Apply Tab / Shift-Tab indent change to the effective selection. Each
     /// subtree-root indents/outdents independently — selection across parents
     /// is allowed; ops that aren't valid for some roots no-op for those.
-    private func indentSelection(by delta: Int) {
+    func indentSelection(by delta: Int) {
         let roots = document.selectionSubtreeRoots(state.selection)
         guard !roots.isEmpty else { return }
         guard canChangeIndent(ids: roots, by: delta) else { return }
@@ -1783,13 +1616,13 @@ public struct EditorView: View {
         revealHiddenBlocks(state.selection)
     }
 
-    private func copySelectionToPasteboard() -> Bool {
+    func copySelectionToPasteboard() -> Bool {
         copyBlocksToPasteboard(ids: state.selection)
     }
 
     /// Cut: copy the selection to the pasteboard, then delete it as a single undo entry.
     /// Mirrors the `deleteSelection` guard against deleting the entire document.
-    private func cutSelectionToPasteboard() -> Bool {
+    func cutSelectionToPasteboard() -> Bool {
         let roots = document.selectionSubtreeRoots(state.selection)
         guard !roots.isEmpty else { return false }
         // Don't allow cutting every top-level block.
@@ -1826,7 +1659,7 @@ public struct EditorView: View {
     /// cursor at the cursor's own indent. With no cursor, append at end of doc, indent 0.
     /// The host is expected to return blocks normalized to indent 0; we shift each by the
     /// chosen base.
-    private func pasteFromPasteboard() -> Bool {
+    func pasteFromPasteboard() -> Bool {
         // Image-on-pasteboard takes precedence over text — same rule as the
         // editor's `paste(_:)` override.
         #if os(macOS)
@@ -2084,7 +1917,7 @@ public struct EditorView: View {
         return .handled
     }
 
-    private func navigateIntoSubpage(_ blockID: BlockID) -> Bool {
+    func navigateIntoSubpage(_ blockID: BlockID) -> Bool {
         guard let block = document.find(blockID),
               case .subpage(_, let path) = block.kind else {
             return false
@@ -2135,12 +1968,12 @@ public struct EditorView: View {
 
     /// Nav-mode Cmd+Return: create an empty sibling of the same kind directly
     /// after the selected block and enter edit mode on it.
-    private func createEmptySiblingAndEdit() -> Bool {
+    func createEmptySiblingAndEdit() -> Bool {
         guard let id = state.cursor, state.selection.count == 1 else { return false }
         return insertEmptySiblingAfter(id)
     }
 
-    private func insertEmptySiblingAfter(_ id: BlockID) -> Bool {
+    func insertEmptySiblingAfter(_ id: BlockID) -> Bool {
         guard let source = document.find(id) else { return false }
         let newBlock = followUpBlock(after: source, withText: "")
         // Always insert as the next sibling under the source's parent — even
