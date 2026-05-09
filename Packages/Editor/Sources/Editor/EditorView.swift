@@ -188,8 +188,7 @@ public struct EditorView: View {
     }
 
     public var body: some View {
-        let _ = Self._printChanges()
-        return GeometryReader { geometry in
+        GeometryReader { geometry in
             let numbering = NumberingContext.compute(document.children)
             let snapshot = document.children
             let hidden = hiddenBlockIDs(in: snapshot)
@@ -225,7 +224,19 @@ public struct EditorView: View {
                         rowView(for: bindingForBlock(id: block.id), depth: row.depth, snapshot: snapshot, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
                             .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
                             .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
-                            .background(rowFrameReporter(id: block.id))
+                            // Per-row geometry observation. Replaces a previous
+                            // GeometryReader+PreferenceKey per row; that pattern's
+                            // O(N) reduce step across siblings dominated layout when
+                            // the document was big enough to fall behind a held
+                            // arrow key, sending SwiftUI into a layout-pass spin
+                            // that wouldn't terminate. `onGeometryChange` writes
+                            // each row's frame directly into `rowFrames` (a non-
+                            // observable reference type) and skips the reduce.
+                            .onGeometryChange(for: CGRect.self) { proxy in
+                                proxy.frame(in: .named(PageHoverCoordinateSpace.name))
+                            } action: { newValue in
+                                rowFrames.frames[block.id] = newValue
+                            }
                     }
                     let trailingPinchGap = pinchExtraGap(forIndex: trailingSlot)
                     let trailingReorderGap = reorderDriftGap(at: trailingSlot, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
@@ -236,9 +247,6 @@ public struct EditorView: View {
                 .padding(.horizontal, horizontalPadding)
                 .padding(.top, 32)
                 .frame(maxWidth: .infinity, alignment: .center)
-                .onPreferenceChange(RowFramePreferenceKey.self) { frames in
-                    rowFrames.frames = frames
-                }
                 .iosPageReorder(
                     isEnabled: !pinchGestureActive,
                     rowFrames: rowFrames
@@ -510,7 +518,7 @@ public struct EditorView: View {
             .blockActionPopover(
                 isPresented: Binding(
                     get: { actionSheet?.id == block.id },
-                    set: { if !$0 { actionSheet = nil } }
+                    set: { if !$0 && actionSheet != nil { actionSheet = nil } }
                 )
             ) {
                 blockActionMenuContent(for: block.id)
@@ -518,7 +526,7 @@ public struct EditorView: View {
             .blockActionPopover(
                 isPresented: Binding(
                     get: { state.mentionMenu?.blockID == block.id },
-                    set: { if !$0 { state.closeMentionMenu() } }
+                    set: { if !$0 && state.mentionMenu != nil { state.closeMentionMenu() } }
                 )
             ) {
                 mentionMenuContent()
@@ -607,15 +615,6 @@ public struct EditorView: View {
             return id == topSelectedBlockID()
         }
         return state.hoveredBlock == id || state.hoveredHandle == id
-    }
-
-    private func rowFrameReporter(id: BlockID) -> some View {
-        GeometryReader { proxy in
-            Color.clear.preference(
-                key: RowFramePreferenceKey.self,
-                value: [id: proxy.frame(in: .named(PageHoverCoordinateSpace.name))]
-            )
-        }
     }
 
     /// In-document destinations for the Move-to picker: every heading/toggle
@@ -1060,6 +1059,39 @@ public struct EditorView: View {
             }
             let roots = document.selectionSubtreeRoots(state.selection)
             return !roots.isEmpty && roots.allSatisfy { document.canOutdent($0) }
+        }
+        editorCommands.newBlockBelow = {
+            #if os(macOS)
+            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
+               let bid = state.editingBlock {
+                view.coordinator?.commitLiveText(view)
+                _ = insertEmptySiblingAfter(bid)
+                return
+            }
+            #endif
+            _ = createEmptySiblingAndEdit()
+        }
+        editorCommands.moveBlockUp = {
+            #if os(macOS)
+            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
+               let bid = state.editingBlock {
+                view.coordinator?.commitLiveText(view)
+                moveBlocksInDocument(Set([bid]), by: -1)
+                return
+            }
+            #endif
+            moveSelectionInDocument(by: -1)
+        }
+        editorCommands.moveBlockDown = {
+            #if os(macOS)
+            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
+               let bid = state.editingBlock {
+                view.coordinator?.commitLiveText(view)
+                moveBlocksInDocument(Set([bid]), by: +1)
+                return
+            }
+            #endif
+            moveSelectionInDocument(by: +1)
         }
     }
 
@@ -1730,7 +1762,15 @@ public struct EditorView: View {
     /// Tree analog: requires every selected subtree-root to share one parent;
     /// otherwise no-op.
     private func moveSelectionInDocument(by delta: Int) {
-        let roots = document.selectionSubtreeRoots(state.selection)
+        moveBlocksInDocument(state.selection, by: delta)
+    }
+
+    /// Same as `moveSelectionInDocument` but slides an explicit set of block IDs.
+    /// The menu's Move Block Up/Down items use this with `{state.editingBlock}`
+    /// when the active editor is in edit mode, since `state.selection` may not
+    /// reflect the editing block.
+    private func moveBlocksInDocument(_ ids: Set<BlockID>, by delta: Int) {
+        let roots = document.selectionSubtreeRoots(ids)
         guard !roots.isEmpty else { return }
         // Snapshot pre-mutation so `mutate` registers an undo iff we actually
         // changed something.
@@ -1746,7 +1786,7 @@ public struct EditorView: View {
         mutate("Move Block") {
             _ = document.slideSiblings(Set(roots), by: delta)
         }
-        revealHiddenBlocks(state.selection)
+        revealHiddenBlocks(ids)
     }
 
     /// Delete every block in the current selection. No-op if the selection
@@ -2191,6 +2231,10 @@ public struct EditorView: View {
     /// after the selected block and enter edit mode on it.
     private func createEmptySiblingAndEdit() -> Bool {
         guard let id = state.cursor, state.selection.count == 1 else { return false }
+        return insertEmptySiblingAfter(id)
+    }
+
+    private func insertEmptySiblingAfter(_ id: BlockID) -> Bool {
         guard let source = document.find(id) else { return false }
         let newBlock = followUpBlock(after: source, withText: "")
         // Always insert as the next sibling under the source's parent — even

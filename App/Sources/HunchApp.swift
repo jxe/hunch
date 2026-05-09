@@ -132,6 +132,7 @@ private struct EditorBlockMenuItems: View {
     var body: some View {
         EditorCommandButton(title: "Turn Into…", key: "/") { $0.openBlockActionMenu() }
         EditorCommandButton(title: "Make Subpage / Link…", key: "k") { $0.toggleLinkOrSubpage() }
+        EditorCommandButton(title: "New Block Below", key: .return) { $0.newBlockBelow() }
         // ⇧⌘M to dodge the system Window > Minimize on plain ⌘M — that
         // collision made the shortcut not display in the menu and not fire
         // outside the popover (which has its own .keyboardShortcut binding).
@@ -155,6 +156,9 @@ private struct EditorBlockMenuItems: View {
             modifiers: .shift,
             enabled: { $0.canOutdent() }
         ) { $0.outdent() }
+        Divider()
+        EditorCommandButton(title: "Move Block Up", key: .upArrow, modifiers: .option) { $0.moveBlockUp() }
+        EditorCommandButton(title: "Move Block Down", key: .downArrow, modifiers: .option) { $0.moveBlockDown() }
     }
 }
 

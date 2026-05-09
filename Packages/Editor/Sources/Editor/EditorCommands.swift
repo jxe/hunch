@@ -17,6 +17,9 @@ public final class EditorCommands {
     public var openMoveTo: () -> Void = {}
     public var indent: () -> Void = {}
     public var outdent: () -> Void = {}
+    public var newBlockBelow: () -> Void = {}
+    public var moveBlockUp: () -> Void = {}
+    public var moveBlockDown: () -> Void = {}
 
     /// Validity predicates for gray-out. The menu bar reads these to disable
     /// `Indent` / `Outdent` items when no candidate block could perform the

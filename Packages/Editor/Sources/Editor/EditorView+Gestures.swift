@@ -232,13 +232,11 @@ struct PagePinchValue {
     var spreadDelta: CGFloat
 }
 
-/// Live row-frame store. Same reasoning as `PageScrollMetrics`: SwiftUI emits
-/// fresh `RowFramePreferenceKey` values every scroll frame (rows' frames in
-/// `PageHoverCoordinateSpace` shift as scroll content moves), and writing
-/// those into `@State` invalidates `EditorView.body`. Storing the dict on a
-/// reference type lets the preference handler mutate without re-firing body,
-/// while reorder/hover gesture handlers still see the latest frames through
-/// the same instance.
+/// Live row-frame store. Each row writes its own frame here from an
+/// `.onGeometryChange` modifier in `EditorView.body`. Reference type so
+/// per-scroll-tick mutations don't reassign EditorView's `@State`-held value
+/// and invalidate `body`; reorder/hover gesture handlers read through the
+/// same live instance.
 @MainActor
 final class RowFramesStore {
     var frames: [BlockID: CGRect] = [:]
@@ -270,14 +268,6 @@ final class PageScrollMetrics {
 
 enum PageHoverCoordinateSpace {
     static let name = "EditorView.hover"
-}
-
-struct RowFramePreferenceKey: PreferenceKey {
-    static let defaultValue: [BlockID: CGRect] = [:]
-
-    static func reduce(value: inout [BlockID: CGRect], nextValue: () -> [BlockID: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
 }
 
 func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> BlockID? {
