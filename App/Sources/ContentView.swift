@@ -166,8 +166,7 @@ private struct EditorPage: View {
     @FocusedValue(\.documentUndoController) private var undoController
 
     var body: some View {
-        let _ = Self._printChanges()
-        return EditorView(
+        EditorView(
             document: Binding(
                 get: { window.documentForPage(url: url) ?? document },
                 set: { window.updateDocumentForPage($0) }
