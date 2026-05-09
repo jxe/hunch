@@ -1575,6 +1575,31 @@ public struct EditorView: View {
         return out
     }
 
+    /// Hop into the previous (delta < 0) or next (delta > 0) editable block in
+    /// preorder, skipping non-text-bearing kinds. Lands the cursor at end of the
+    /// previous block when going left, offset 0 when going right.
+    private func exitEditHorizontal(_ blockID: BlockID, by delta: Int) -> KeyPress.Result {
+        let blocks = preorderFlat()
+        let hidden = hiddenBlockIDs(in: document.children)
+        let visible = blocks.filter { !hidden.contains($0.id) }
+        guard let start = visible.firstIndex(where: { $0.id == blockID }) else { return .ignored }
+        var i = start + delta
+        while i >= 0, i < visible.count {
+            let candidate = visible[i]
+            switch candidate.kind {
+            case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
+                let cursor: InitialCursorTarget = (delta < 0)
+                    ? .offset(candidate.text.characters.count)
+                    : .offset(0)
+                transferFocus(to: .editor(candidate.id, initialCursor: cursor))
+                return .handled
+            case .code, .divider, .subpage, .templateButton, .image:
+                i += delta
+            }
+        }
+        return .ignored
+    }
+
     /// Move the cursor by `delta` rows; collapse to a single-block selection at the new cursor.
     /// Skips blocks hidden inside collapsed toggles.
     private func moveCursor(by delta: Int) {
@@ -1944,8 +1969,8 @@ public struct EditorView: View {
 
     private func handleEditorKey(_ key: BlockKey, blockID: BlockID) -> KeyPress.Result {
         switch key {
-        case .enter(let cursorOffset):
-            return splitBlock(blockID, at: cursorOffset)
+        case .enter(let selectionStart, let selectionEnd):
+            return splitBlock(blockID, selectionStart: selectionStart, selectionEnd: selectionEnd)
         case .backspaceAtStart:
             return deleteEmptyBlock(blockID)
         case .tab:
@@ -1968,6 +1993,10 @@ public struct EditorView: View {
             transferFocus(to: .nav(cursor: state.editingBlock))
             DispatchQueue.main.async { moveCursor(by: +1) }
             return .handled
+        case .exitEditLeft:
+            return exitEditHorizontal(blockID, by: -1)
+        case .exitEditRight:
+            return exitEditHorizontal(blockID, by: +1)
         case .mentionUp:
             return moveMentionSelection(by: -1)
         case .mentionDown:
@@ -2020,13 +2049,18 @@ public struct EditorView: View {
     }
 
 
-    private func splitBlock(_ blockID: BlockID, at cursorOffset: Int) -> KeyPress.Result {
+    private func splitBlock(_ blockID: BlockID, selectionStart: Int, selectionEnd: Int) -> KeyPress.Result {
         guard let block = document.find(blockID) else { return .ignored }
         let plain = String(block.text.characters)
-        let safeOffset = max(0, min(cursorOffset, plain.count))
-        let splitIndex = plain.index(plain.startIndex, offsetBy: safeOffset)
-        let head = String(plain[..<splitIndex])
-        let tail = String(plain[splitIndex...])
+        // Return over a selection deletes the selected range as part of the split:
+        // head ends at the selection's start, tail begins after its end. Empty
+        // selection collapses to the standard cursor split.
+        let safeStart = max(0, min(selectionStart, plain.count))
+        let safeEnd = max(safeStart, min(selectionEnd, plain.count))
+        let startIdx = plain.index(plain.startIndex, offsetBy: safeStart)
+        let endIdx = plain.index(plain.startIndex, offsetBy: safeEnd)
+        let head = String(plain[..<startIdx])
+        let tail = String(plain[endIdx...])
 
         // Enter-triggered autotransforms (`---`, ` ``` `) only fire when the cursor is at
         // the end of the row (tail empty) and the head matches a whole-row trigger.

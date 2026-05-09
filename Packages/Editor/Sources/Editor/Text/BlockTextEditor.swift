@@ -62,7 +62,11 @@ extension EnvironmentValues {
 
 /// Block-level keyboard events the page-level handler reacts to.
 public enum BlockKey: Sendable, Equatable {
-    case enter(cursorOffset: Int)
+    /// Return pressed. Carries the full selection at the time of press so
+    /// `splitBlock` can delete any selected range as part of the split (Return
+    /// over a selection behaves like inserting `\n`: the selection is replaced).
+    /// `selectionStart == selectionEnd` is the no-selection / cursor case.
+    case enter(selectionStart: Int, selectionEnd: Int)
     case backspaceAtStart
     case tab
     case shiftTab
@@ -74,6 +78,12 @@ public enum BlockKey: Sendable, Equatable {
     case exitEditUp
     /// Down arrow pressed while the cursor is on the editor's last line.
     case exitEditDown
+    /// Left arrow pressed at the very start of the row with no selection. EditorView
+    /// hops into the previous editable block and lands the cursor at its end.
+    case exitEditLeft
+    /// Right arrow pressed at the very end of the row with no selection. EditorView
+    /// hops into the next editable block and lands the cursor at offset 0.
+    case exitEditRight
     // The mention popover (@-menu) is open over the active editor; the editor
     // forwards these unconditionally so EditorView can drive menu navigation
     // without taking focus away from the text.
@@ -643,11 +653,13 @@ final class ContainedTextView: NSTextView {
             }
             switch event.keyCode {
             case 36, 76: // Return, numpad Enter
-                let cursor = (selectedRange().location)
+                let range = selectedRange()
+                let selStart = range.location
+                let selEnd = range.location + range.length
                 // Sync live text into the binding before split — splitBlock reads
                 // `document.blocks[i].text` to derive head/tail.
                 coordinator?.commitLiveText(self)
-                if onKey(.enter(cursorOffset: cursor)) == .handled { return }
+                if onKey(.enter(selectionStart: selStart, selectionEnd: selEnd)) == .handled { return }
             case 51: // Delete (backspace)
                 // Fire `.backspaceAtStart` whenever the cursor is at the very start
                 // of the row with no selection — the page handler decides what to do
@@ -729,6 +741,26 @@ final class ContainedTextView: NSTextView {
                    cursorIsOnLastLine() {
                     coordinator?.commitLiveText(self)
                     if onKey(.exitEditDown) == .handled { return }
+                }
+            case 123: // Left arrow
+                // Plain Left at offset 0 with no selection hops to the end of the
+                // previous editable block. Any modifier (shift/option/cmd/ctrl)
+                // means selection-extension or word/line nav — let NSTextView handle.
+                if event.modifierFlags.isDisjoint(with: [.shift, .option, .command, .control]) {
+                    let range = selectedRange()
+                    if range.location == 0, range.length == 0 {
+                        coordinator?.commitLiveText(self)
+                        if onKey(.exitEditLeft) == .handled { return }
+                    }
+                }
+            case 124: // Right arrow
+                if event.modifierFlags.isDisjoint(with: [.shift, .option, .command, .control]) {
+                    let range = selectedRange()
+                    let length = textStorage?.length ?? 0
+                    if range.location == length, range.length == 0 {
+                        coordinator?.commitLiveText(self)
+                        if onKey(.exitEditRight) == .handled { return }
+                    }
                 }
             default:
                 break
@@ -1310,11 +1342,15 @@ final class ContainedTextViewIOS: UITextView {
                coordinator.parent.onKey(.mentionCommit) == .handled {
                 return
             }
-            // Soft-keyboard return: split the block at the current cursor. splitBlock
-            // reads `block.text` to derive head/tail — commit live text first.
-            let cursor = selectedRange.location
+            // Soft-keyboard return: split the block at the current selection. splitBlock
+            // reads `block.text` to derive head/tail — commit live text first. When the
+            // selection is non-empty, the split deletes its contents (Return-over-
+            // selection mirrors typing a `\n`).
+            let range = selectedRange
+            let selStart = range.location
+            let selEnd = range.location + range.length
             coordinator.commitLiveText(self)
-            if coordinator.parent.onKey(.enter(cursorOffset: cursor)) == .handled {
+            if coordinator.parent.onKey(.enter(selectionStart: selStart, selectionEnd: selEnd)) == .handled {
                 return
             }
         }

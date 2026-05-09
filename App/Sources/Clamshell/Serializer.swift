@@ -241,11 +241,30 @@ public enum BlockSerializer {
             let body = "`" + s + "`"
             return wrapLink(body, link: marks.link)
         }
-        var body = s
+        // CommonMark won't recognize `**foo **` or `* foo*` as emphasis —
+        // the closing/opening delimiter must be adjacent to a non-whitespace
+        // character. Peel any whitespace off the run and re-attach it outside
+        // the emphasis (and outside the link wrapper, so the bracket text
+        // doesn't gain semantically meaningless trailing space either).
+        let (leading, core, trailing) = splitEdgeWhitespace(s)
+        if core.isEmpty { return s }
+        var body = core
         if marks.strike { body = "~~" + body + "~~" }
         if marks.italic { body = "*" + body + "*" }
         if marks.bold { body = "**" + body + "**" }
-        return wrapLink(body, link: marks.link)
+        return leading + wrapLink(body, link: marks.link) + trailing
+    }
+
+    private static func splitEdgeWhitespace(_ s: String) -> (leading: String, core: String, trailing: String) {
+        let scalars = Array(s.unicodeScalars)
+        var start = 0
+        while start < scalars.count, scalars[start].properties.isWhitespace { start += 1 }
+        var end = scalars.count
+        while end > start, scalars[end - 1].properties.isWhitespace { end -= 1 }
+        let leading = String(String.UnicodeScalarView(scalars[0..<start]))
+        let core = String(String.UnicodeScalarView(scalars[start..<end]))
+        let trailing = String(String.UnicodeScalarView(scalars[end..<scalars.count]))
+        return (leading, core, trailing)
     }
 
     private static func wrapLink(_ s: String, link: URL?) -> String {

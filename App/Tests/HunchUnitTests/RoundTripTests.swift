@@ -60,6 +60,34 @@ struct RoundTripTests {
         assertIdempotent("[Other Page](other.md)\n")
     }
 
+    /// Regression: a bold run that includes its trailing whitespace must
+    /// serialize with the whitespace OUTSIDE the `**` delimiters, otherwise
+    /// CommonMark won't recognize the closing `**` as right-flanking and the
+    /// markdown round-trips as literal asterisks.
+    @Test func boldRunWithTrailingSpaceRoundTrips() {
+        var bold = AttributeContainer()
+        bold.inlineBold = true
+        var s = AttributedString("But there's so many things that are unknown: ")
+        s.mergeAttributes(bold)
+        let blocks = [Block.paragraph(text: s)]
+        let serialized = BlockSerializer.serialize(blocks)
+        #expect(serialized == "**But there's so many things that are unknown:** \n")
+
+        // The serialized form should re-parse as a single bold run.
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 1)
+        guard case .paragraph(let text) = reparsed[0].kind else {
+            Issue.record("expected paragraph")
+            return
+        }
+        let runs = Array(text.runs)
+        // Either a single bold run (with the trailing space outside merged in)
+        // or two runs (bold + trailing space). Either way the bold word must
+        // carry the bold attribute.
+        let bolded = runs.filter { $0[InlineAttributes.BoldAttribute.self] == true }
+        #expect(!bolded.isEmpty, "bold attribute lost on round-trip")
+    }
+
     // MARK: - Heading containment (new tree semantics)
 
     @Test func h1OwnsTrailingParagraph() {
