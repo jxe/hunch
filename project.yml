@@ -51,6 +51,7 @@ targets:
         NSHumanReadableCopyright: "© 2026 Joe Edelman"
         NSMicrophoneUsageDescription: Hunch records audio so it can append a transcript to the current page.
         NSSpeechRecognitionUsageDescription: Hunch transcribes recorded audio so it can append the text to the current page.
+        UIBackgroundModes: [audio]
         ITSAppUsesNonExemptEncryption: false
     settings:
       base:

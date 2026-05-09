@@ -167,6 +167,25 @@ in-flight + pending-snapshot coalesce). Triggers: 600ms debounce, blur,
 `scenePhase != .active`, 30s backstop. `flushAndClose()` waits on
 pending writes at document switch / app suspend.
 
+**Structural mutations route through `EditorView.mutate(name:_:)`.**
+It commits the active editor's live text first (`commitActiveEditor`),
+snapshots `document.children`, runs the change closure, re-applies
+heading containment, registers the snapshot as the undo entry, and
+fires `host.onEdited()`. New ops: write through `mutate` and you get
+all five for free — no need to call `commitLiveText` manually before
+reading `block.text`. The exceptions are paths that don't mutate the
+document (Cmd-[ navigate-back, Esc) and the blur-time commit on
+`textDidEndEditing`; those stay explicit.
+
+**Nav-mode keyboard goes through `EditorCommands`.**
+`handleNavKeyPress` looks the press up in `EditorView.navBindings`
+(`(KeyEquivalent, EventModifiers) → EditorAction`) and dispatches via
+`editorCommands.perform(...)`. Wiring lives in
+`EditorView+Wiring.swift`. To add a shortcut: append a row to
+`navBindings`, an `EditorAction` case, and a switch arm in
+`wireEditorCommands`. Modifiers match exactly — Cmd-B does NOT trigger
+a binding declared for Cmd-Shift-B.
+
 ## macOS NSTextView footguns (load-bearing)
 
 Stock `TextEditor` on macOS bakes in `textContainerInset = (5, 0)` and
@@ -185,8 +204,11 @@ Three load-bearing focus details:
    to call `window?.makeFirstResponder(nil)` first — without this,
    SwiftUI can't re-bind the page container after the editor unmounts,
    and arrow nav breaks post-Esc.
-3. `exitEditMode` toggles `pageFocused = false` then `true` on the next
-   runloop tick. A same-value setter is a no-op in SwiftUI focus state.
+3. Re-grabbing page focus needs a `false → true` flip across two
+   runloop ticks (a same-value `@FocusState` write is a no-op).
+   `forcePageFocusGrab()` bumps `pageFocusToken`; one
+   `.onChange(of: pageFocusToken)` in body owns the dispatch dance.
+   Don't write `pageFocused` directly from call sites — bump the token.
 
 `.onKeyPress` on macOS doesn't reliably intercept keys NSTextView
 consumes. Override `keyDown(_:)` on a custom NSTextView subclass instead

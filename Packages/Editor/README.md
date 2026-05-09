@@ -1,11 +1,12 @@
 # Editor
 
 A single-page block editor for iOS 26 / macOS 26, written in SwiftUI. The
-host owns two model types per editing session: a `Document` (the persisted
-content — a list of `Block` cases) and an `EditorState` (the volatile
-session state — selection, edit mode, gestures, expanded toggles).
-**No opinion on serialization, persistence, or navigation.** The host
-wires those up.
+host owns three things per editing session: a `Document` (the persisted
+content — a tree of `Block`s), an `EditorState` (the volatile session
+state — selection, edit mode, gestures, expanded toggles), and an
+`EditorHost` conforming class (file I/O, navigation, paste serialization,
+@-mention candidate source). **No opinion on serialization, persistence,
+or navigation.** The host wires those up.
 
 Built for [Hunch](https://github.com/joeedelman/hunch). Designed to be
 embeddable in other apps that want Notion-flavoured block editing without
@@ -68,9 +69,9 @@ Type these at the start of a paragraph; they fire on the trailing space:
 Enter triggers (on an empty-tail row): `---` → divider, ` ``` ` → code fence.
 
 **@-mention popover**
-Type `@` followed by a query. The host's `suggestPages(query:)` callback
-returns up to 8 `MentionItem`s. ↑/↓ navigates, Return inserts a subpage
-block, Esc dismisses.
+Type `@` followed by a query. The host's `suggestPages(_:)` returns up
+to 8 `MentionItem`s. ↑/↓ navigates, Return inserts a subpage block,
+Esc dismisses.
 
 **Turn Into**
 Cmd-/ in nav mode (on a single block) opens a 3-column grid: H1/H2/H3,
@@ -85,8 +86,9 @@ into a new empty paragraph at that index.
 
 **Copy / paste**
 The editor reads/writes the system pasteboard. The host owns the wire
-format via `serializeBlocksForPasteboard` and `parseBlocksFromPasteboard`
-callbacks (Hunch wires these to its markdown parser/serializer).
+format via `EditorHost.serializeBlocksForPasteboard` and
+`parseBlocksFromPasteboard` (Hunch wires these to its markdown
+parser/serializer).
 
 **Drag and drop**
 In-app block drag uses a custom `BlockDragPayload` UTType — no host wiring
@@ -114,38 +116,57 @@ drag-drop) alongside NSTextView's typing-undo on the same shared
 
 ## Quickstart
 
+`EditorView` takes three things: a `Document` binding, an `EditorState`,
+and a host conforming to `EditorHost`. The host is class-bound and held
+by reference; keep one stable instance per editor (e.g. `@State` on a
+parent view) rather than constructing a fresh one each render — the
+editor's row-level `.equatable()` gating relies on the host's identity
+staying put.
+
 ```swift
 import SwiftUI
 import Editor
+
+@MainActor
+final class MyHost: EditorHost {
+    func suggestPages(_ query: String) -> [MentionItem] { [] }
+    func onSubpageTap(_ pageID: String) {}
+    func pageTitle(_ pageID: String) -> String? { nil }
+    func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? { nil }
+    func onLoadSubpage(_ pageID: String) -> [Block]? { nil }
+    func onAbsorbSubpage(_ pageID: String) -> Bool { false }
+    func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) -> Bool { false }
+    func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) {}
+    func onNavigateBack() {}
+    func onEdited() {}
+    func onBlur() {}
+    func onRecordBlockDeletion(_ indices: [Int], _ blocks: [Block], _ actionName: String) {}
+    func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
+    func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
+    func onSaveImages(_ items: [PastedImage]) -> [String] { [] }
+    var linkPreviewProvider: LinkPreviewProvider? { nil }
+    var imageURLResolver: ImageURLResolver? { nil }
+}
 
 struct ContentView: View {
     @State var document = Document(
         url: URL(fileURLWithPath: "/dev/null"),
         title: "Untitled",
-        blocks: [.paragraph(text: AttributedString(""))]
+        children: [.paragraph(text: AttributedString(""))]
     )
     @State var editorState = EditorState()
+    @State var host = MyHost()
 
     var body: some View {
-        EditorView(document: $document, state: editorState)
+        EditorView(document: $document, state: editorState, host: host)
     }
 }
 ```
 
-That's a working editor. No serialization, no navigation, no @-mention —
-all defaults. Add callbacks as you need features:
-
-```swift
-EditorView(
-    document: $document,
-    state: editorState,
-    suggestPages: { query in myCatalog.search(query) },
-    onSubpageTap: { pageID in router.push(pageID) },
-    pageTitle: { pageID in myCatalog.title(for: pageID) },
-    serializeBlocksForPasteboard: { blocks in myMarkdown.serialize(blocks) },
-    parseBlocksFromPasteboard: { string in myMarkdown.parse(string) }
-)
-```
+That's a working editor. Most methods can be no-ops in early integration
+— the editor degrades gracefully (paste is single-paragraph-only, @-mention
+shows nothing, subpage taps are silent). Wire each method as you add the
+corresponding feature.
 
 **One `EditorView` per document.** The pair `(document, state)` is one
 editing session — the editor caches focus, undo, and gesture state
@@ -158,40 +179,103 @@ wrapper view that owns the state via `@State`.
 
 ## The Block model
 
+A `Block` is a value-typed tree node: identity (`BlockID`), payload
+(`BlockKind`), and children (`[Block]`). Depth is structural — there's
+no per-block `indent` field; whether a block lives nested inside another
+is the same fact as "is in that block's `children` array".
+
 ```swift
-public enum Block: Identifiable, Equatable, Sendable {
-    case paragraph(id: BlockID, text: AttributedString, indent: Int)
-    case heading(id: BlockID, level: Int, text: AttributedString, indent: Int)
-    case bullet(id: BlockID, text: AttributedString, indent: Int)
-    case numbered(id: BlockID, text: AttributedString, indent: Int)
-    case todo(id: BlockID, text: AttributedString, done: Bool, indent: Int)
-    case quote(id: BlockID, text: AttributedString, indent: Int)
-    case code(id: BlockID, source: String, language: String?, indent: Int)
-    case divider(id: BlockID, indent: Int)
-    case toggle(id: BlockID, title: AttributedString, indent: Int)
-    case templateButton(id: BlockID, label: String, indent: Int)
-    case subpage(id: BlockID, title: String, pageID: String, indent: Int)
+public struct Block: Identifiable, Equatable, Sendable {
+    public let id: BlockID
+    public var kind: BlockKind
+    public var children: [Block]
+}
+
+public enum BlockKind: Equatable, Sendable {
+    case paragraph(text: AttributedString)
+    case heading(level: HeadingLevel, text: AttributedString)
+    case bullet(text: AttributedString)
+    case numbered(text: AttributedString)
+    case todo(text: AttributedString, done: Bool)
+    case quote(text: AttributedString)
+    case code(source: String, language: String?)
+    case divider
+    case toggle(title: AttributedString)
+    case templateButton(label: String)
+    case subpage(title: String, pageID: String)
+    case image(source: String, alt: String)
+}
+
+public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
+    case h1 = 1, h2 = 2, h3 = 3
 }
 ```
 
-- **`BlockID`** is a UUID wrapper (Hashable, Codable, Sendable).
-- **`indent: Int`** is 0–5. Indent is structural (a heading at indent 1 is
-  a child of the previous heading-at-indent-0); rendering reflects that.
-- **`Block.text: AttributedString`** carries inline marks via the
-  `InlineAttributes` keys exported from this package. The host's serializer
-  translates these to whatever surface syntax (markdown `**bold**`, HTML
-  `<b>`, etc.).
-- **`Block.subpage`'s `pageID: String`** is opaque to the editor — whatever
-  identifier the host uses (relative path, UUID, database key). The editor
-  echoes it back unchanged in `onSubpageTap`, `onLoadSubpage`,
+- **`BlockID`** is a `UUID` wrapper (`Hashable`, `Codable`, `Sendable`).
+- **One static factory per kind**: `Block.paragraph(text:)`,
+  `Block.heading(level:text:)`, `Block.bullet(text:)`, etc. Each takes
+  optional `id:` and `children:` parameters; defaults are a fresh
+  `BlockID()` and an empty array.
+- **Containment is enforced.** `Block.canContain(_:)` describes which
+  kinds may hold which children: headings, toggles, list items, and
+  template buttons accept children; paragraphs / quotes / code /
+  dividers / subpages / images do not. A heading at level L can contain
+  any block except headings at level ≤ L (Notion-style heading scope).
+- **`Block.text: AttributedString`** projects the underlying kind's text
+  payload (paragraph/heading/bullet/numbered/todo/quote/toggle title) for
+  uniform read access; `Block.withText(_:)` returns a copy with the text
+  replaced. Inline marks are stored on `AttributedString` via the
+  `InlineAttributes` keys exported from this package
+  (`BoldAttribute`, `ItalicAttribute`, `CodeAttribute`,
+  `StrikethroughAttribute`). The host's serializer translates these to
+  surface syntax (markdown `**bold**`, HTML `<b>`, etc.).
+- **`Block.subpage`'s `pageID: String`** is opaque to the editor —
+  whatever identifier the host uses (relative path, UUID, database key).
+  The editor echoes it back unchanged in `onSubpageTap`, `onLoadSubpage`,
   `onAbsorbSubpage`, `onAppendToSubpage`.
 - **`Block.subpage`'s `title: String`** is a fallback hint. The editor
-  prefers `pageTitle(pageID)` from the host; falls back to this when the
-  callback returns nil.
+  prefers `host.pageTitle(pageID)`; falls back to this when the host
+  returns nil.
 
-`Document` carries `url: URL`, `title: String`, `blocks: [Block]`,
-`modificationDate: Date?`. The `url` field is host-meaningful only —
-the editor doesn't read or write to it.
+### Document
+
+```swift
+@Observable @MainActor
+public final class Document {
+    public let url: URL
+    public var title: String
+    public var children: [Block]   // root-level siblings
+    public var modificationDate: Date?
+
+    public init(url: URL, title: String, children: [Block], modificationDate: Date? = nil)
+
+    // Read access
+    public func snapshot() -> [Block]
+    public func find(_ blockID: BlockID) -> Block?
+    public func parent(of blockID: BlockID) -> BlockID?
+    public func subtreeIDs(of blockID: BlockID) -> Set<BlockID>
+    public func documentOrder(of blockID: BlockID) -> Int?
+    public func walk(_ visit: (Block, Int, BlockID?) -> Void)
+
+    // Mutation (used by the editor; hosts rarely need these directly)
+    public func mutate(_ blockID: BlockID, _ transform: (inout Block) -> Void) -> Bool
+    public func setText(_ blockID: BlockID, _ newText: AttributedString) -> Bool
+    public func removeSubtree(_ blockID: BlockID) -> Block?
+    public func insertSubtree(_ block: Block, at path: DropPath) -> Bool
+    public func replaceSubtree(_ blockID: BlockID, with replacements: [Block]) -> Bool
+    public func enforceHeadingContainment()
+    // ... plus indent/outdent/slideSiblings/moveSubtrees/canDrop ...
+}
+```
+
+- **`children` is the source of truth.** `@Observable` so SwiftUI
+  subscribes to mutations; `Block` stays a value type so undo snapshots
+  are cheap (the spine is array-shallow-copied; payloads are COW).
+- **`url` is host-meaningful only.** The editor doesn't read or write to
+  it; pass any stable URL (`/dev/null` for ephemeral cases works).
+- **Hosts mostly read**: typically `children` (to serialize on save) and
+  `title` (sidebar, window title). Mutation goes through the editor,
+  which calls into the methods above.
 
 ---
 
@@ -207,70 +291,90 @@ external writes.
 The state space is two orthogonal axes plus ambient annotations:
 
 ```swift
-public struct EditorState {
-    public internal(set) var mode: Mode
-    public internal(set) var gesture: Gesture?
+@Observable @MainActor
+public final class EditorState {
+    // Two orthogonal axes
+    public internal(set) var mode: Mode               // .navigating | .editing
+    public internal(set) var gesture: Gesture?        // .reordering | .pinchOpening | nil
 
     // Ambient — coexist with any (mode, gesture)
     public internal(set) var hoveredBlock: BlockID?
     public internal(set) var hoveredHandle: BlockID?
-    public internal(set) var dropHoverIndex: Int?
-    public internal(set) var dropOntoBlockID: BlockID?
     public internal(set) var currentDropTarget: DropTarget?
     public internal(set) var expandedToggles: Set<BlockID>
     public internal(set) var expandedTemplates: Set<BlockID>
     public internal(set) var actionToast: String?
 }
 
-public enum Mode {
+public enum Mode: Equatable, Sendable {
     case navigating(Selection)
     case editing(BlockID, overlay: Overlay?)
 }
 
-public enum Overlay { case mention(MentionMenuState) }
+public enum Overlay: Equatable, Sendable {
+    case mention(MentionMenuState)
+}
 
-public enum Gesture {
+public enum Gesture: Equatable, Sendable {
     case reordering(ReorderLift)
     case pinchOpening(PinchPreviewState)
 }
 ```
 
 - `mode` — what the user is fundamentally doing. `.navigating` carries
-  block-level selection (set, anchor, cursor); `.editing` names the
-  block whose text is mounted in a live editor, with an optional
-  modal overlay (currently the @-mention popover).
+  block-level selection (`blocks: Set<BlockID>`, `anchor`, `cursor`);
+  `.editing` names the block whose text is mounted in a live editor,
+  with an optional modal overlay (currently the @-mention popover).
 - `gesture` — a transient manipulation riding on top of nav mode.
   Invariant: a non-nil `gesture` only coexists with `mode == .navigating`
   — beginning a gesture commits or cancels any active edit first.
 - Ambient state coexists with any `(mode, gesture)` combination.
 
-Convenience read accessors flatten the cases back to individual
-properties: `state.selection`, `state.cursor`, `state.anchor`,
-`state.editingBlock`, `state.mentionMenu`, `state.reorderLift`,
-`state.pinchPreview`. These are derived from `mode` and `gesture`.
+**Computed read accessors** flatten the cases back to flat properties so
+hosts that only want one axis don't have to switch on `mode`/`gesture`:
+`state.selection`, `state.cursor`, `state.anchor`, `state.editingBlock`,
+`state.mentionMenu`, `state.reorderLift`, `state.pinchPreview`,
+`state.dropHoverPath` (the insertion-path projection of
+`currentDropTarget`), `state.dropOntoBlockID` (the row-id projection).
+
+**Mutation flows through named methods inside the package**
+(`enterEditMode`, `setReorderLift`, `setMentionMenu`, etc.). Public
+properties are `internal(set)` so the host can read but not write —
+all transitions are funneled through methods that maintain invariants.
+
+**`appendBlocks(_:actionName:)`** is the one externally-mutating method
+exposed to hosts: a buffered append that the editor consumes via an
+`.onChange` ticket. Used for things like a voice-transcription pipeline
+where the host wants to append new content while honoring undo.
 
 ---
 
-## Callback contract
+## Host protocol
 
-Every `EditorView` callback has a sensible default (no-op or pass-through)
-so partially-wired hosts compile.
+Hosts conform to `EditorHost` (class-bound, `@MainActor`). Each method
+is one extension point. There are no defaults — the protocol is small
+enough that explicit no-op stubs in your host class read cleanly and
+make it obvious which extension points you've left unwired.
 
-| Callback | Type | When it fires | Return semantics |
-|----------|------|---------------|------------------|
-| `suggestPages` | `(query: String) -> [MentionItem]` | While the @-mention popover is visible, on every render. The query is whatever the user has typed after `@`. | Up to 8 items shown; host owns ranking/filtering. Empty array shows "No matching pages". |
-| `pageTitle` | `(pageID: String) -> String?` | Whenever a subpage row needs a display title (rendering a `.subpage` block, an @-mention popover row). | nil falls back to the cached `title` on the Block / MentionItem. |
-| `onSubpageTap` | `(pageID: String) -> Void` | User clicks/taps a subpage row, or hits Return / → on a selected subpage block. | Host pushes the child page onto its navigation stack. |
-| `onCreateSubpage` | `(title: String, requestedID: String?, initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's indent-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id. nil falls back to `requestedID` or a default. |
-| `onLoadSubpage` | `(pageID: String) -> [Block]?` | Expand Subpage (inline this child's content here, **keep the file**). | Host returns the child page's blocks. nil makes the action a no-op. |
-| `onAbsorbSubpage` | `(pageID: String) -> Bool` | Turn Into a non-page block on a subpage row (inline content **and trash the source file**). Always paired with `onLoadSubpage` first. | true = file trashed (proceed with inlining); false = abort. |
-| `onAppendToSubpage` | `(pageID: String, [Block]) -> Bool` | User drops blocks onto a subpage row. | true = host wrote them to the child file. false = no-op. |
-| `onNavigateBack` | `() -> Void` | Cmd-[ in nav mode. | Host pops its navigation stack. |
+| Method | Signature | When it fires | Return semantics |
+|--------|-----------|---------------|------------------|
+| `suggestPages` | `(_ query: String) -> [MentionItem]` | While the @-mention popover is visible, on every render. The query is whatever the user has typed after `@`. | Up to 8 items shown; host owns ranking/filtering. Empty array shows "No matching pages". |
+| `pageTitle` | `(_ pageID: String) -> String?` | Whenever a subpage row needs a display title (rendering a `.subpage` block, an inline `[text](path.md)` link, an @-mention popover row). | nil falls back to the cached `title` on the Block / MentionItem. |
+| `onSubpageTap` | `(_ pageID: String) -> Void` | User clicks/taps a subpage row, or hits Return / → on a selected subpage block. | Host pushes the child page onto its navigation stack. |
+| `onCreateSubpage` | `(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id. nil falls back to `requestedID` or a default. |
+| `onLoadSubpage` | `(_ pageID: String) -> [Block]?` | Expand Subpage (inline this child's content here, **keep the file**). | Host returns the child page's blocks. nil makes the action a no-op. |
+| `onAbsorbSubpage` | `(_ pageID: String) -> Bool` | Turn Into a non-page block on a subpage row (inline content **and trash the source file**). Always paired with `onLoadSubpage` first. | true = file trashed (proceed with inlining); false = abort. |
+| `onAppendToSubpage` | `(_ pageID: String, _ blocks: [Block]) -> Bool` | User drops blocks onto a subpage row. | true = host wrote them to the child file. false = no-op. |
+| `onRequestMoveDestination` | `(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) -> Void` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, calls `pick` with a `MoveDestination` (`.page` or `.block`) or nil to cancel. | Move performed asynchronously via the `pick` continuation. |
+| `onNavigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |
 | `onEdited` | `() -> Void` | After every mutation that changes the document. | Host marks dirty, kicks debounced save. |
 | `onBlur` | `() -> Void` | Editor loses focus (window/key/scene transitions, document switch). | Host should flush any pending save. |
-| `onRecordBlockDeletion` | `([Int], [Block], String) -> Void` | Right before a block-level deletion mutates the document. The host has the document's relative path; the editor supplies the indices, the about-to-be-deleted blocks, and a friendly action name. | Host writes a trash record so the deletion is restorable. |
-| `serializeBlocksForPasteboard` | `([Block]) -> String` | User cuts or copies. | Host returns a string for the system pasteboard (markdown, RTF, plain — host's choice). Empty string cancels the copy. |
-| `parseBlocksFromPasteboard` | `(String) -> [Block]?` | User pastes. | Host returns blocks parsed from the pasteboard string. nil cancels the paste. |
+| `onRecordBlockDeletion` | `(_ indices: [Int], _ blocks: [Block], _ actionName: String) -> Void` | Right before a block-level deletion mutates the document. The host has the document's relative path; the editor supplies preorder indices, the about-to-be-deleted blocks (in flat preorder), and a friendly action name. | Host writes a trash record so the deletion is restorable. |
+| `serializeBlocksForPasteboard` | `(_ blocks: [Block]) -> String` | User cuts or copies. | Host returns a string for the system pasteboard (markdown, RTF, plain — host's choice). Empty string cancels the copy. |
+| `parseBlocksFromPasteboard` | `(_ string: String) -> [Block]?` | User pastes. | Host returns blocks parsed from the pasteboard string. nil cancels the paste. |
+| `onSaveImages` | `(_ items: [PastedImage]) -> [String]` | User pastes one or more images (or image URLs from another app). | Host writes them to disk; returns relative paths suitable for `BlockKind.image.source`. Empty / shorter array cancels the paste. |
+| `linkPreviewProvider` | `var: LinkPreviewProvider?` (`@Sendable (URL) async -> LinkPreview?`) | Editor calls this once per external `http`/`https` link in a rendered (read-only) row to fetch favicon + page title. | nil → links render undecorated, no fetching. |
+| `imageURLResolver` | `var: ImageURLResolver?` | Resolve an image block's `source` to a file URL the renderer can load. | nil → renderer shows a missing-image placeholder. |
 
 ---
 
@@ -319,5 +423,6 @@ so partially-wired hosts compile.
 swift test --package-path Packages/Editor
 ```
 
-Covers autotransforms, document mutations, mention-trigger detection, and
-the reorder drop resolver. Headless, fast.
+Covers autotransforms, document tree mutations + walker semantics,
+mention-trigger detection, the reorder drop resolver, and the nav-mode
+key binding table. Headless, fast.
