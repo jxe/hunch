@@ -108,30 +108,35 @@ private struct EditorCommandButton: View {
     let title: LocalizedStringKey
     let key: KeyEquivalent
     var modifiers: EventModifiers = .command
-    /// Optional validity predicate. Returns true to enable the menu item;
-    /// nil means "always enabled when an editor is focused" (the default).
-    var enabled: ((EditorCommands) -> Bool)? = nil
-    let action: (EditorCommands) -> Void
+    /// Optional validity predicate. Menu item grays out when this is set and
+    /// `commands.can(predicate)` returns false. Nil means "always enabled
+    /// when an editor is focused."
+    var requires: EditorPredicate? = nil
+    let action: EditorAction
     @FocusedValue(\.editorCommands) private var commands
 
     var body: some View {
-        Button(title) { commands.map(action) }
+        Button(title) { commands?.perform(action) }
             .keyboardShortcut(key, modifiers: modifiers)
-            .disabled(commands == nil || (enabled.map { check in
-                if let c = commands { return !check(c) } else { return false }
-            } ?? false))
+            .disabled(isDisabled)
+    }
+
+    private var isDisabled: Bool {
+        guard let commands else { return true }
+        if let requires, !commands.can(requires) { return true }
+        return false
     }
 }
 
 private struct EditorBlockMenuItems: View {
     var body: some View {
-        EditorCommandButton(title: "Turn Into…", key: "/") { $0.openBlockActionMenu() }
-        EditorCommandButton(title: "Make Subpage / Link…", key: "k") { $0.toggleLinkOrSubpage() }
-        EditorCommandButton(title: "New Block Below", key: .return) { $0.newBlockBelow() }
+        EditorCommandButton(title: "Turn Into…", key: "/", action: .openBlockActionMenu)
+        EditorCommandButton(title: "Make Subpage / Link…", key: "k", action: .toggleLinkOrSubpage)
+        EditorCommandButton(title: "New Block Below", key: .return, action: .newBlockBelow)
         // ⇧⌘M to dodge the system Window > Minimize on plain ⌘M — that
         // collision made the shortcut not display in the menu and not fire
         // outside the popover (which has its own .keyboardShortcut binding).
-        EditorCommandButton(title: "Move to Page…", key: "m", modifiers: [.command, .shift]) { $0.openMoveTo() }
+        EditorCommandButton(title: "Move to Page…", key: "m", modifiers: [.command, .shift], action: .openMoveTo)
         Divider()
         // Tab / Shift+Tab are the editor's real indent shortcuts; registering them
         // here surfaces them in the menu without intercepting Tab elsewhere — a
@@ -139,30 +144,20 @@ private struct EditorBlockMenuItems: View {
         // The enabled-predicates gray out the items when no candidate block can
         // perform the op (root-level first child, etc.), driven by the tree
         // model's `canIndent` / `canOutdent` predicates.
-        EditorCommandButton(
-            title: "Indent",
-            key: .tab,
-            modifiers: [],
-            enabled: { $0.canIndent() }
-        ) { $0.indent() }
-        EditorCommandButton(
-            title: "Outdent",
-            key: .tab,
-            modifiers: .shift,
-            enabled: { $0.canOutdent() }
-        ) { $0.outdent() }
+        EditorCommandButton(title: "Indent", key: .tab, modifiers: [], requires: .canIndent, action: .indent)
+        EditorCommandButton(title: "Outdent", key: .tab, modifiers: .shift, requires: .canOutdent, action: .outdent)
         Divider()
-        EditorCommandButton(title: "Move Block Up", key: .upArrow, modifiers: .option) { $0.moveBlockUp() }
-        EditorCommandButton(title: "Move Block Down", key: .downArrow, modifiers: .option) { $0.moveBlockDown() }
+        EditorCommandButton(title: "Move Block Up", key: .upArrow, modifiers: .option, action: .moveBlockUp)
+        EditorCommandButton(title: "Move Block Down", key: .downArrow, modifiers: .option, action: .moveBlockDown)
     }
 }
 
 private struct EditorFormatMenuItems: View {
     var body: some View {
-        EditorCommandButton(title: "Bold", key: "b") { $0.toggleInlineMark(.bold) }
-        EditorCommandButton(title: "Italic", key: "i") { $0.toggleInlineMark(.italic) }
-        EditorCommandButton(title: "Inline Code", key: "e") { $0.toggleInlineMark(.code) }
-        EditorCommandButton(title: "Strikethrough", key: "s", modifiers: [.command, .shift]) { $0.toggleInlineMark(.strikethrough) }
+        EditorCommandButton(title: "Bold", key: "b", action: .toggleInlineMark(.bold))
+        EditorCommandButton(title: "Italic", key: "i", action: .toggleInlineMark(.italic))
+        EditorCommandButton(title: "Inline Code", key: "e", action: .toggleInlineMark(.code))
+        EditorCommandButton(title: "Strikethrough", key: "s", modifiers: [.command, .shift], action: .toggleInlineMark(.strikethrough))
     }
 }
 

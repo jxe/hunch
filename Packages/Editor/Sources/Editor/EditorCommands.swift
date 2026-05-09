@@ -2,33 +2,45 @@ import SwiftUI
 
 /// Bridge for the host's menu bar (and any other out-of-editor surface) to call
 /// into the currently-focused `EditorView`. EditorView creates one instance,
-/// fills in the closures with handlers that dispatch to its private state, and
-/// publishes via `.focusedSceneValue(\.editorCommands, ...)`. Menu items read
-/// the focused value and call closures — no-op when no editor is focused.
+/// installs its `perform` / `can` handlers, and publishes via
+/// `.focusedSceneValue(\.editorCommands, ...)`. Menu items read the focused
+/// value and dispatch via `commands.perform(.someAction)` — no-op when no
+/// editor is focused.
 ///
 /// Mirrors the `DocumentUndoController` pattern: a class instance lets menu
 /// commands act on whichever editor is frontmost without us having to plumb
 /// per-window references everywhere.
 @MainActor
 public final class EditorCommands {
-    public var toggleInlineMark: (InlineMark) -> Void = { _ in }
-    public var toggleLinkOrSubpage: () -> Void = {}
-    public var openBlockActionMenu: () -> Void = {}
-    public var openMoveTo: () -> Void = {}
-    public var indent: () -> Void = {}
-    public var outdent: () -> Void = {}
-    public var newBlockBelow: () -> Void = {}
-    public var moveBlockUp: () -> Void = {}
-    public var moveBlockDown: () -> Void = {}
-
-    /// Validity predicates for gray-out. The menu bar reads these to disable
-    /// `Indent` / `Outdent` items when no candidate block could perform the
-    /// op (e.g. selection is at the document root with no previous sibling).
-    /// Defaults return `true` so menus stay enabled when no editor is focused.
-    public var canIndent: () -> Bool = { true }
-    public var canOutdent: () -> Bool = { true }
+    public var perform: (EditorAction) -> Void = { _ in }
+    /// Validity predicates for menu gray-out — defaults to `true` so menus
+    /// stay enabled when no editor is focused (the menu item itself is
+    /// disabled when `commands` is nil).
+    public var can: (EditorPredicate) -> Bool = { _ in true }
 
     public init() {}
+}
+
+/// Every void-returning command exposed to the menu bar. New shortcuts add a
+/// case here, a switch arm in `EditorView.wireEditorCommands()`, and a menu
+/// button in `HunchApp.swift` — three touch-points, all compile-checked.
+public enum EditorAction: Sendable {
+    case openBlockActionMenu
+    case openMoveTo
+    case toggleLinkOrSubpage
+    case toggleInlineMark(InlineMark)
+    case indent
+    case outdent
+    case newBlockBelow
+    case moveBlockUp
+    case moveBlockDown
+}
+
+/// Predicates the menu uses to gray out items when the action wouldn't apply
+/// (e.g. Indent on the first child of the document root).
+public enum EditorPredicate: Sendable {
+    case canIndent
+    case canOutdent
 }
 
 public struct EditorCommandsFocusKey: FocusedValueKey {

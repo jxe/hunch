@@ -964,135 +964,134 @@ public struct EditorView: View {
     }
 
     private func wireEditorCommands() {
-        editorCommands.openBlockActionMenu = {
-            guard let id = topSelectedBlockID() else { return }
-            actionSheet = BlockActionSheet(id: id)
-        }
-        editorCommands.openMoveTo = {
-            guard let id = topSelectedBlockID() else { return }
-            let targetIDs = menuTargetIDs(anchorID: id)
-            let inDoc = inDocMoveCandidates(excluding: targetIDs)
-            onRequestMoveDestination(targetIDs, inDoc) { destination in
-                switch destination {
-                case .page(let pageID):
-                    moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
-                case .block(let parentID):
-                    moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
-                case nil:
-                    break
+        editorCommands.perform = { action in
+            switch action {
+            case .openBlockActionMenu:
+                guard let id = topSelectedBlockID() else { return }
+                actionSheet = BlockActionSheet(id: id)
+
+            case .openMoveTo:
+                guard let id = topSelectedBlockID() else { return }
+                let targetIDs = menuTargetIDs(anchorID: id)
+                let inDoc = inDocMoveCandidates(excluding: targetIDs)
+                onRequestMoveDestination(targetIDs, inDoc) { destination in
+                    switch destination {
+                    case .page(let pageID):
+                        moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
+                    case .block(let parentID):
+                        moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
+                    case nil:
+                        break
+                    }
                 }
-            }
-        }
-        editorCommands.indent = {
-            #if os(macOS)
-            // In edit mode, the active text view's keyDown commits live text before
-            // calling the same `changeIndent` helper; the menu path skips keyDown,
-            // so do the commit ourselves before changing the model.
-            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
-               let bid = state.editingBlock {
-                view.coordinator?.commitLiveText(view)
-                _ = changeIndent(bid, by: +1)
-                return
-            }
-            #endif
-            indentSelection(by: 1)
-        }
-        editorCommands.outdent = {
-            #if os(macOS)
-            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
-               let bid = state.editingBlock {
-                view.coordinator?.commitLiveText(view)
-                _ = changeIndent(bid, by: -1)
-                return
-            }
-            #endif
-            indentSelection(by: -1)
-        }
-        editorCommands.toggleLinkOrSubpage = {
-            guard let id = state.cursor, state.selection.count == 1 else { return }
-            // The Cmd-K menu shortcut wins over NSTextView's keyDown, so the
-            // live-text capture path in BlockTextEditor's keyDown never runs.
-            // Mirror it here: capture the selected substring (or full string)
-            // before committing, so a freshly-typed row whose binding is still
-            // empty still gets its typed text used as the new page's title.
-            var preferred: String? = nil
-            #if os(macOS)
-            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView {
-                let range = view.selectedRange()
-                let str = view.string
-                if range.length > 0, let r = Range(range, in: str) {
-                    preferred = String(str[r])
-                } else if !str.isEmpty {
-                    preferred = str
+
+            case .toggleLinkOrSubpage:
+                guard let id = state.cursor, state.selection.count == 1 else { return }
+                // The Cmd-K menu shortcut wins over NSTextView's keyDown, so the
+                // live-text capture path in BlockTextEditor's keyDown never runs.
+                // Mirror it here: capture the selected substring (or full string)
+                // before committing, so a freshly-typed row whose binding is still
+                // empty still gets its typed text used as the new page's title.
+                var preferred: String? = nil
+                #if os(macOS)
+                if let view = activeContainedTextView() {
+                    let range = view.selectedRange()
+                    let str = view.string
+                    if range.length > 0, let r = Range(range, in: str) {
+                        preferred = String(str[r])
+                    } else if !str.isEmpty {
+                        preferred = str
+                    }
+                    view.coordinator?.commitLiveText(view)
                 }
-                view.coordinator?.commitLiveText(view)
+                #endif
+                _ = convertBlockToSubpage(blockID: id, preferredTitle: preferred)
+
+            case .toggleInlineMark(let mark):
+                #if os(macOS)
+                if let view = activeContainedTextView() {
+                    view.toggleInlineMark(mark)
+                    return
+                }
+                #endif
+                switch mark {
+                case .bold: _ = toggleBoldOnSelection()
+                case .italic: _ = toggleItalicOnSelection()
+                case .strikethrough: _ = toggleStrikethroughOnSelection()
+                case .code: break
+                }
+
+            case .indent:
+                runDualMode(
+                    edit: { bid in _ = changeIndent(bid, by: +1) },
+                    nav: { indentSelection(by: 1) }
+                )
+            case .outdent:
+                runDualMode(
+                    edit: { bid in _ = changeIndent(bid, by: -1) },
+                    nav: { indentSelection(by: -1) }
+                )
+            case .newBlockBelow:
+                runDualMode(
+                    edit: { bid in _ = insertEmptySiblingAfter(bid) },
+                    nav: { _ = createEmptySiblingAndEdit() }
+                )
+            case .moveBlockUp:
+                runDualMode(
+                    edit: { bid in moveBlocksInDocument(Set([bid]), by: -1) },
+                    nav: { moveSelectionInDocument(by: -1) }
+                )
+            case .moveBlockDown:
+                runDualMode(
+                    edit: { bid in moveBlocksInDocument(Set([bid]), by: +1) },
+                    nav: { moveSelectionInDocument(by: +1) }
+                )
             }
-            #endif
-            _ = convertBlockToSubpage(blockID: id, preferredTitle: preferred)
         }
-        editorCommands.toggleInlineMark = { mark in
-            #if os(macOS)
-            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView {
-                view.toggleInlineMark(mark)
-                return
-            }
-            #endif
-            switch mark {
-            case .bold: _ = toggleBoldOnSelection()
-            case .italic: _ = toggleItalicOnSelection()
-            case .strikethrough: _ = toggleStrikethroughOnSelection()
-            case .code: break
+
+        editorCommands.can = { predicate in
+            switch predicate {
+            case .canIndent:
+                if let bid = state.editingBlock {
+                    return document.canIndent(bid)
+                }
+                let roots = document.selectionSubtreeRoots(state.selection)
+                return !roots.isEmpty && roots.allSatisfy { document.canIndent($0) }
+            case .canOutdent:
+                if let bid = state.editingBlock {
+                    return document.canOutdent(bid)
+                }
+                let roots = document.selectionSubtreeRoots(state.selection)
+                return !roots.isEmpty && roots.allSatisfy { document.canOutdent($0) }
             }
         }
-        editorCommands.canIndent = {
-            // Use the editing block when one's mounted; otherwise use the
-            // current selection's subtree-roots.
-            if let bid = state.editingBlock {
-                return document.canIndent(bid)
-            }
-            let roots = document.selectionSubtreeRoots(state.selection)
-            return !roots.isEmpty && roots.allSatisfy { document.canIndent($0) }
+    }
+
+    /// The active NSTextView when one's frontmost — wraps the macOS-only
+    /// firstResponder probe so callers don't need their own `#if os(macOS)`.
+    #if os(macOS)
+    private func activeContainedTextView() -> ContainedTextView? {
+        NSApp.keyWindow?.firstResponder as? ContainedTextView
+    }
+    #endif
+
+    /// Most editor commands have two shapes: one when an NSTextView is active
+    /// (commit live text first, then act on `state.editingBlock`), and one
+    /// when no editor is mounted (act on the nav selection). This helper
+    /// picks the right path so each switch arm in `wireEditorCommands` stays
+    /// a single line.
+    private func runDualMode(
+        edit: (BlockID) -> Void,
+        nav: () -> Void
+    ) {
+        #if os(macOS)
+        if let view = activeContainedTextView(), let bid = state.editingBlock {
+            view.coordinator?.commitLiveText(view)
+            edit(bid)
+            return
         }
-        editorCommands.canOutdent = {
-            if let bid = state.editingBlock {
-                return document.canOutdent(bid)
-            }
-            let roots = document.selectionSubtreeRoots(state.selection)
-            return !roots.isEmpty && roots.allSatisfy { document.canOutdent($0) }
-        }
-        editorCommands.newBlockBelow = {
-            #if os(macOS)
-            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
-               let bid = state.editingBlock {
-                view.coordinator?.commitLiveText(view)
-                _ = insertEmptySiblingAfter(bid)
-                return
-            }
-            #endif
-            _ = createEmptySiblingAndEdit()
-        }
-        editorCommands.moveBlockUp = {
-            #if os(macOS)
-            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
-               let bid = state.editingBlock {
-                view.coordinator?.commitLiveText(view)
-                moveBlocksInDocument(Set([bid]), by: -1)
-                return
-            }
-            #endif
-            moveSelectionInDocument(by: -1)
-        }
-        editorCommands.moveBlockDown = {
-            #if os(macOS)
-            if let view = NSApp.keyWindow?.firstResponder as? ContainedTextView,
-               let bid = state.editingBlock {
-                view.coordinator?.commitLiveText(view)
-                moveBlocksInDocument(Set([bid]), by: +1)
-                return
-            }
-            #endif
-            moveSelectionInDocument(by: +1)
-        }
+        #endif
+        nav()
     }
 
     /// Install the closure that the undo controller calls on Cmd-Z (and on redo).
