@@ -1,6 +1,15 @@
 import SwiftUI
 
-public struct BlockRow: View, Equatable {
+/// Visual content for a single block — the renderer for paragraph/heading/list/
+/// toggle/code/divider/subpage/etc., plus selection background, drop-target
+/// halo, and link-preview fetch task. Equatable on its inputs so `.equatable()`
+/// can gate body re-evaluation.
+///
+/// Used standalone by the reorder lift overlay (which wants the visuals without
+/// any of the editor's interactive modifiers — gestures, popovers, drag handle
+/// — that would interfere with an in-flight drag). For the page editor case,
+/// `BlockRow` wraps this struct with the full interactive chain.
+public struct BlockRowContent: View, Equatable {
     /// Block content as a value. Mutations route through `onBlockChange` —
     /// keeping the row free of `@Binding` lets `.equatable()` actually gate
     /// `body` (DynamicProperty wrappers like `@Binding` reset per parent
@@ -25,7 +34,7 @@ public struct BlockRow: View, Equatable {
     /// paints a ring around it so the popover's anchor block is unambiguous.
     public let isActionMenuTarget: Bool
 
-    nonisolated public static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
+    nonisolated public static func == (lhs: BlockRowContent, rhs: BlockRowContent) -> Bool {
         lhs.block == rhs.block
             && lhs.depth == rhs.depth
             && lhs.isPageTitle == rhs.isPageTitle
@@ -626,6 +635,182 @@ private func decodeFavicon(_ data: Data) -> Image? {
     return Image(uiImage: uiImage)
 }
 #endif
+
+/// Full interactive row for a single block in the page editor — `BlockRowContent`
+/// plus the editor's outer modifier chain (gestures, popovers, drag handle,
+/// accessibility, etc.). Equatable so `.equatable()` in `EditorView.body` can
+/// gate not just the inner content's body but the whole modifier chain — the
+/// previous layout stopped at `BlockRowContent.equatable()` and re-walked the
+/// outer modifiers every render, which compounded under sustained autorepeat.
+///
+/// Compares by value props only; closures (gestures, popover content) are
+/// captured fresh each render but ignored in `==`. That's safe because every
+/// callback either reads observable state through reference types (`state`,
+/// `host`, `_document`'s underlying class) at fire time, or captures only
+/// `block.id` / `block.kind`, which by definition match if the equality check
+/// passed (otherwise the row would have rerendered with fresh closures).
+public struct BlockRow: View, Equatable {
+    public let content: BlockRowContent
+
+    /// Action-menu popover is currently presenting against this row.
+    public let isActionMenuPresented: Bool
+    /// Mention popover is currently presenting against this row.
+    public let isMentionMenuPresented: Bool
+    /// A page pinch gesture is in flight — disable this row's iOS swipe
+    /// affordances so the two gestures don't fight.
+    public let isPinching: Bool
+    /// Opacity to apply to the row — used to dim the source row of an
+    /// in-flight reorder lift.
+    public let reorderSourceOpacity: Double
+    /// True when this row is part of the in-flight reorder lift — surfaces
+    /// in accessibility as `reorder-source`.
+    public let isReorderingThisBlock: Bool
+    /// Drag handle should be visible (cursor hovering near, or this is the
+    /// top selected block in a multi-block selection).
+    public let isHandleVisible: Bool
+    /// Whether this row is the source of an in-flight macOS drag — used to
+    /// keep the handle hit-testable / gesture mounted even if the cursor
+    /// drifts off the row.
+    public let isMacDragSource: Bool
+    public let accessibilityID: String
+    public let accessibilityLabelText: String
+
+    let onTapOutsideText: () -> Void
+    let onMacReorderChanged: (DragGesture.Value) -> Void
+    let onMacReorderEnded: (DragGesture.Value) -> Void
+    let onActionMenuDismiss: () -> Void
+    let onMentionMenuDismiss: () -> Void
+    let onIOSDelete: () -> Void
+    let onIOSShowMenu: () -> Void
+    let onHandleHover: (Bool) -> Void
+    let onHandleTap: () -> Void
+    let onHandleReorderChanged: (DragGesture.Value) -> Void
+    let onHandleReorderEnded: (DragGesture.Value) -> Void
+    let actionMenuContent: () -> AnyView
+    let mentionMenuContent: () -> AnyView
+
+    nonisolated public static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
+        lhs.content == rhs.content
+            && lhs.isActionMenuPresented == rhs.isActionMenuPresented
+            && lhs.isMentionMenuPresented == rhs.isMentionMenuPresented
+            && lhs.isPinching == rhs.isPinching
+            && lhs.reorderSourceOpacity == rhs.reorderSourceOpacity
+            && lhs.isReorderingThisBlock == rhs.isReorderingThisBlock
+            && lhs.isHandleVisible == rhs.isHandleVisible
+            && lhs.isMacDragSource == rhs.isMacDragSource
+            && lhs.accessibilityID == rhs.accessibilityID
+            && lhs.accessibilityLabelText == rhs.accessibilityLabelText
+    }
+
+    public init(
+        content: BlockRowContent,
+        isActionMenuPresented: Bool,
+        isMentionMenuPresented: Bool,
+        isPinching: Bool,
+        reorderSourceOpacity: Double,
+        isReorderingThisBlock: Bool,
+        isHandleVisible: Bool,
+        isMacDragSource: Bool,
+        accessibilityID: String,
+        accessibilityLabelText: String,
+        onTapOutsideText: @escaping () -> Void,
+        onMacReorderChanged: @escaping (DragGesture.Value) -> Void,
+        onMacReorderEnded: @escaping (DragGesture.Value) -> Void,
+        onActionMenuDismiss: @escaping () -> Void,
+        onMentionMenuDismiss: @escaping () -> Void,
+        onIOSDelete: @escaping () -> Void,
+        onIOSShowMenu: @escaping () -> Void,
+        onHandleHover: @escaping (Bool) -> Void,
+        onHandleTap: @escaping () -> Void,
+        onHandleReorderChanged: @escaping (DragGesture.Value) -> Void,
+        onHandleReorderEnded: @escaping (DragGesture.Value) -> Void,
+        actionMenuContent: @escaping () -> AnyView,
+        mentionMenuContent: @escaping () -> AnyView
+    ) {
+        self.content = content
+        self.isActionMenuPresented = isActionMenuPresented
+        self.isMentionMenuPresented = isMentionMenuPresented
+        self.isPinching = isPinching
+        self.reorderSourceOpacity = reorderSourceOpacity
+        self.isReorderingThisBlock = isReorderingThisBlock
+        self.isHandleVisible = isHandleVisible
+        self.isMacDragSource = isMacDragSource
+        self.accessibilityID = accessibilityID
+        self.accessibilityLabelText = accessibilityLabelText
+        self.onTapOutsideText = onTapOutsideText
+        self.onMacReorderChanged = onMacReorderChanged
+        self.onMacReorderEnded = onMacReorderEnded
+        self.onActionMenuDismiss = onActionMenuDismiss
+        self.onMentionMenuDismiss = onMentionMenuDismiss
+        self.onIOSDelete = onIOSDelete
+        self.onIOSShowMenu = onIOSShowMenu
+        self.onHandleHover = onHandleHover
+        self.onHandleTap = onHandleTap
+        self.onHandleReorderChanged = onHandleReorderChanged
+        self.onHandleReorderEnded = onHandleReorderEnded
+        self.actionMenuContent = actionMenuContent
+        self.mentionMenuContent = mentionMenuContent
+    }
+
+    public var body: some View {
+        content
+            .macRowReorder(
+                isEnabled: !content.isEditing,
+                onChanged: onMacReorderChanged,
+                onEnded: onMacReorderEnded
+            )
+            .blockActionPopover(
+                isPresented: Binding(
+                    get: { isActionMenuPresented },
+                    set: { if !$0 { onActionMenuDismiss() } }
+                )
+            ) {
+                actionMenuContent()
+            }
+            .blockActionPopover(
+                isPresented: Binding(
+                    get: { isMentionMenuPresented },
+                    set: { if !$0 { onMentionMenuDismiss() } }
+                )
+            ) {
+                mentionMenuContent()
+            }
+            .opacity(reorderSourceOpacity)
+            .contentShape(Rectangle())
+            .iosBlockTouchActions(
+                isEnabled: !content.isEditing && !isPinching,
+                onDelete: onIOSDelete,
+                onShowMenu: onIOSShowMenu
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier(accessibilityID)
+            .accessibilityLabel(accessibilityLabelText)
+            .accessibilityValue(isReorderingThisBlock ? "reorder-source" : "")
+            .onTapGesture {
+                onTapOutsideText()
+            }
+            .overlay(alignment: .topLeading) {
+                DragHandle()
+                    .opacity(isHandleVisible && !content.isEditing ? 1 : 0)
+                    .offset(x: -DragHandle.gutterWidth, y: 2)
+                    .onHover(perform: onHandleHover)
+                    .onTapGesture(perform: onHandleTap)
+                    // Keep the handle hit-testable AND the gesture mounted for
+                    // the duration of an in-flight drag. As the cursor leaves
+                    // the source row, hoveredBlock shifts to a different row
+                    // and `isHandleVisible` flips false; without this override,
+                    // `allowsHitTesting(false)` would apply to the still-tracking
+                    // view and SwiftUI would silently cancel the gesture — no
+                    // `.onEnded` fires, lift gets stuck.
+                    .macRowReorder(
+                        isEnabled: (isHandleVisible || isMacDragSource) && !content.isEditing,
+                        onChanged: onHandleReorderChanged,
+                        onEnded: onHandleReorderEnded
+                    )
+                    .allowsHitTesting(isHandleVisible || isMacDragSource)
+            }
+    }
+}
 
 func attributedStringMarksEqual(_ a: AttributedString, _ b: AttributedString) -> Bool {
     let aRuns = Array(a.runs)

@@ -125,7 +125,7 @@ extension EditorView {
         // editor just hands over the body blocks (or nil when empty).
         let initialContent: [Block]? = block.children.isEmpty ? nil : block.children
 
-        let pageID = onCreateSubpage(title, requestedPath, initialContent)
+        let pageID = host.onCreateSubpage(title, requestedPath, initialContent)
             ?? requestedPath
             ?? defaultSubpagePath(for: title)
 
@@ -144,7 +144,7 @@ extension EditorView {
     func expandSubpage(blockID: BlockID) -> KeyPress.Result {
         guard let block = document.find(blockID),
               case .subpage(_, let path) = block.kind else { return .ignored }
-        guard let loaded = onLoadSubpage(path), !loaded.isEmpty else { return .ignored }
+        guard let loaded = host.onLoadSubpage(path), !loaded.isEmpty else { return .ignored }
 
         // Loaded subtrees inline at the subpage's tree position — no indent
         // math needed; the tree itself encodes depth.
@@ -250,13 +250,13 @@ extension EditorView {
         guard target != .page else { return .ignored }
         guard let block = document.find(blockID),
               case .subpage(let title, let path) = block.kind else { return .ignored }
-        guard var loaded = onLoadSubpage(path) else { return .ignored }
+        guard var loaded = host.onLoadSubpage(path) else { return .ignored }
         if let first = loaded.first,
            case .heading(.h1, let leadingText) = first.kind,
            String(leadingText.characters).trimmingCharacters(in: .whitespacesAndNewlines) == title {
             loaded.removeFirst()
         }
-        guard onAbsorbSubpage(path) else { return .ignored }
+        guard host.onAbsorbSubpage(path) else { return .ignored }
 
         // The subpage's loaded blocks become the children of the new container
         // (toggle / templateButton / list item etc.). For non-container kinds
@@ -409,7 +409,7 @@ extension EditorView {
                             keyboardShortcutLabel: "⇧⌘M"
                         ) {
                             let inDoc = inDocMoveCandidates(excluding: targetIDs)
-                            onRequestMoveDestination(targetIDs, inDoc) { destination in
+                            host.onRequestMoveDestination(targetIDs, inDoc) { destination in
                                 switch destination {
                                 case .page(let pageID):
                                     moveBlocks(ids: targetIDs, intoSubpagePath: pageID)

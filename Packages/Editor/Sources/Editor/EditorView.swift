@@ -26,65 +26,12 @@ public struct EditorView: View {
     /// view) so sibling UI can observe what the user is doing. Mutation flows
     /// through named methods inside the package; the host can read but not write.
     public var state: EditorState
-    /// Host callback that provides `@`-mention candidates for the given query string.
-    /// The editor renders up to the first 8 results; the host owns filtering/ranking.
-    public let suggestPages: (_ query: String) -> [MentionItem]
-    public let onSubpageTap: (_ pageID: String) -> Void
-    public let pageTitle: (_ pageID: String) -> String?
-    /// Persist a new subpage. `initialContent` is the body the editor wants the new
-    /// page to start with (descendants of the source block); the host serializes it
-    /// and prepends a title heading. Returns the host-assigned page id.
-    public let onCreateSubpage: (_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String?
-    /// Read the page at `pageID` and return its blocks. `nil` means the page couldn't
-    /// be loaded; the calling action becomes a no-op. Used by Expand Subpage — the
-    /// source page stays put.
-    public let onLoadSubpage: (_ pageID: String) -> [Block]?
-    /// Absorb a subpage's content into the parent (Turn Into a non-page block):
-    /// the editor inlines the loaded blocks at the subpage row's position and the
-    /// host trashes the original file. Returns `true` if the host trashed it.
-    public let onAbsorbSubpage: (_ pageID: String) -> Bool
-    /// Append blocks to the end of the page at `pageID`. Returns `true` on success.
-    /// Used by drop-on-subpage to move dragged blocks into a child page.
-    public let onAppendToSubpage: (_ pageID: String, _ blocks: [Block]) -> Bool
-    /// Ask the host to present its picker for a "Move to" action. The editor
-    /// passes the moving block ids plus a list of in-document destinations
-    /// (headings + toggles already filtered to legal drop targets); the host
-    /// merges those with the workspace page list, presents its picker, and
-    /// calls back with a `MoveDestination` — `.page(...)` for cross-page,
-    /// `.block(...)` for in-doc — or `nil` if the user cancelled. The editor
-    /// then performs the move.
-    public let onRequestMoveDestination: (
-        _ blockIDs: [BlockID],
-        _ inDocCandidates: [InDocMoveTarget],
-        _ pick: @escaping (MoveDestination?) -> Void
-    ) -> Void
-    public let onNavigateBack: () -> Void
-    public let onEdited: () -> Void
-    public let onBlur: () -> Void
-    /// Capture a block-level deletion before mutation so it can be restored from the
-    /// recently-deleted view. The host model knows the document's relative path —
-    /// the editor just supplies the indices, blocks, and a friendly action name.
-    public let onRecordBlockDeletion: (_ indices: [Int], _ blocks: [Block], _ actionName: String) -> Void
-    /// Serialize blocks into a string the editor will write to the system pasteboard
-    /// on copy/cut. The host chooses the format (markdown, plain text, etc.). Default
-    /// is empty — copy is a no-op until the host wires this up.
-    public let serializeBlocksForPasteboard: (_ blocks: [Block]) -> String
-    /// Parse a string from the system pasteboard back into blocks the editor will
-    /// insert on paste. Returning nil cancels the paste. Default returns nil.
-    public let parseBlocksFromPasteboard: (_ string: String) -> [Block]?
-    /// Host-provided async fetcher for external-URL preview metadata (favicon +
-    /// page title). The editor calls this for every external `http`/`https`
-    /// link in a rendered (read-only) row and decorates the inline link with
-    /// the result. Default is `nil` — no fetching happens, links render as today.
-    public let linkPreviewProvider: LinkPreviewProvider?
-    /// Persist pasted image bytes. Returns relative paths suitable for
-    /// `Block.image.source` (one per input, in order). Returning an empty
-    /// array, or fewer paths than inputs, cancels the paste.
-    public let onSaveImages: (_ items: [PastedImage]) -> [String]
-    /// Resolve an image block's `source` to a file URL the renderer can load.
-    /// Nil → renderer shows a missing-image placeholder. Same callback is
-    /// also published into the Environment for `ImageBlockView`.
-    public let imageURLResolver: ImageURLResolver?
+    /// Host integration — file I/O, navigation, paste/copy serialization, etc.
+    /// Held by reference (the protocol is class-bound) so this `EditorView`
+    /// struct's identity stays stable across host re-renders, which is what
+    /// lets `.equatable()` gating actually work for the row wrapper. See
+    /// `EditorHost`.
+    public let host: any EditorHost
 
     // View-shaped @State that doesn't move into EditorState because it's tied to
     // SwiftUI/UIKit lifecycle (FocusState must live on a View; row-frame cache
@@ -144,47 +91,11 @@ public struct EditorView: View {
     public init(
         document: Binding<Document>,
         state: EditorState,
-        suggestPages: @escaping (_ query: String) -> [MentionItem] = { _ in [] },
-        onSubpageTap: @escaping (_ pageID: String) -> Void = { _ in },
-        pageTitle: @escaping (_ pageID: String) -> String? = { _ in nil },
-        onCreateSubpage: @escaping (_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? = { _, requestedID, _ in requestedID },
-        onLoadSubpage: @escaping (_ pageID: String) -> [Block]? = { _ in nil },
-        onAbsorbSubpage: @escaping (_ pageID: String) -> Bool = { _ in true },
-        onAppendToSubpage: @escaping (_ pageID: String, _ blocks: [Block]) -> Bool = { _, _ in false },
-        onRequestMoveDestination: @escaping (
-            _ blockIDs: [BlockID],
-            _ inDocCandidates: [InDocMoveTarget],
-            _ pick: @escaping (MoveDestination?) -> Void
-        ) -> Void = { _, _, pick in pick(nil) },
-        onNavigateBack: @escaping () -> Void = {},
-        onEdited: @escaping () -> Void = {},
-        onBlur: @escaping () -> Void = {},
-        onRecordBlockDeletion: @escaping (_ indices: [Int], _ blocks: [Block], _ actionName: String) -> Void = { _, _, _ in },
-        serializeBlocksForPasteboard: @escaping (_ blocks: [Block]) -> String = { _ in "" },
-        parseBlocksFromPasteboard: @escaping (_ string: String) -> [Block]? = { _ in nil },
-        linkPreviewProvider: LinkPreviewProvider? = nil,
-        onSaveImages: @escaping (_ items: [PastedImage]) -> [String] = { _ in [] },
-        imageURLResolver: ImageURLResolver? = nil
+        host: any EditorHost
     ) {
         self._document = document
         self.state = state
-        self.suggestPages = suggestPages
-        self.onSubpageTap = onSubpageTap
-        self.pageTitle = pageTitle
-        self.onCreateSubpage = onCreateSubpage
-        self.onLoadSubpage = onLoadSubpage
-        self.onAbsorbSubpage = onAbsorbSubpage
-        self.onAppendToSubpage = onAppendToSubpage
-        self.onRequestMoveDestination = onRequestMoveDestination
-        self.onNavigateBack = onNavigateBack
-        self.onEdited = onEdited
-        self.onBlur = onBlur
-        self.onRecordBlockDeletion = onRecordBlockDeletion
-        self.serializeBlocksForPasteboard = serializeBlocksForPasteboard
-        self.parseBlocksFromPasteboard = parseBlocksFromPasteboard
-        self.linkPreviewProvider = linkPreviewProvider
-        self.onSaveImages = onSaveImages
-        self.imageURLResolver = imageURLResolver
+        self.host = host
     }
 
     public var body: some View {
@@ -251,16 +162,22 @@ public struct EditorView: View {
                     isEnabled: !pinchGestureActive,
                     rowFrames: rowFrames
                 ) { blockID, location in
-                    preliftReorder(blockID: blockID, snapshot: snapshot)
+                    // Read `document.children` at gesture-fire time rather than
+                    // capturing the body-eval-time `snapshot` constant. The row
+                    // wrapper that hosts these closures gets EquatableView gating
+                    // (see `EquatableEditorRow` below); when the row is "equal"
+                    // and SwiftUI keeps the cached view, the closures retained
+                    // alongside it must still see fresh document state.
+                    preliftReorder(blockID: blockID, snapshot: document.children)
                     // Re-anchor immediately to the touch point so the lift sits under
                     // the finger from frame one (no center-then-snap).
-                    tickReorderLift(blockID: blockID, at: location, anchorAt: location, snapshot: snapshot)
+                    tickReorderLift(blockID: blockID, at: location, anchorAt: location, snapshot: document.children)
                     Haptics.light()
                 } onChanged: { location in
                     guard let id = state.reorderLift?.ids.first else { return }
-                    tickReorderLift(blockID: id, at: location, anchorAt: location, snapshot: snapshot)
+                    tickReorderLift(blockID: id, at: location, anchorAt: location, snapshot: document.children)
                 } onEnded: { location in
-                    endReorderLift(atY: location.y, snapshot: snapshot)
+                    endReorderLift(atY: location.y, snapshot: document.children)
                 } onCancelled: {
                     cancelReorderLift()
                 }
@@ -280,10 +197,10 @@ public struct EditorView: View {
             .coordinateSpace(name: PageHoverCoordinateSpace.name)
             .iosPageBlockDropTarget(
                 onUpdate: { y in
-                    applyDropTarget(at: y, snapshot: snapshot)
+                    applyDropTarget(at: y, snapshot: document.children)
                 },
                 onDrop: { payload, y in
-                    performPayloadDrop(payload, atY: y, snapshot: snapshot)
+                    performPayloadDrop(payload, atY: y, snapshot: document.children)
                 },
                 onCancel: {
                     state.currentDropTarget = nil
@@ -327,8 +244,8 @@ public struct EditorView: View {
             // shared timeline.
             .environment(\.documentUndoManager, undoController.undoManager)
             .environment(\.documentUndoController, undoController)
-            .environment(\.linkPreviewProvider, linkPreviewProvider)
-            .environment(\.imageURLResolver, imageURLResolver)
+            .environment(\.linkPreviewProvider, host.linkPreviewProvider)
+            .environment(\.imageURLResolver, host.imageURLResolver)
             #if os(macOS)
             .environment(\.macActiveTextView, macActiveTextView)
             #endif
@@ -364,7 +281,7 @@ public struct EditorView: View {
             // which `handleModeChange` already wires to onBlur.
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
-                    onBlur()
+                    host.onBlur()
                 }
             }
             #endif
@@ -451,7 +368,8 @@ public struct EditorView: View {
         let relevantLinkPreviews: [URL: LinkPreview] = blockExternalURLs.reduce(into: [:]) { dict, url in
             if let preview = linkPreviews[url] { dict[url] = preview }
         }
-        BlockRow(
+
+        let content = BlockRowContent(
             block: block,
             onBlockChange: { newBlock in binding.wrappedValue = newBlock },
             depth: depth,
@@ -464,7 +382,7 @@ public struct EditorView: View {
             isDropTarget: state.dropOntoBlockID == block.id,
             isActionMenuTarget: isActionMenuTarget,
             onKey: { key in handleEditorKey(key, blockID: block.id) },
-            onEdited: onEdited,
+            onEdited: host.onEdited,
             onAutotransform: { transform, remainingText in
                 applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
             },
@@ -491,111 +409,87 @@ public struct EditorView: View {
             onTemplateButtonPress: {
                 instantiateTemplateButton(blockID: block.id)
             },
-            pageTitles: resolvePageTitles(for: block, resolver: pageTitle),
+            pageTitles: resolvePageTitles(for: block, resolver: host.pageTitle),
             linkPreviews: relevantLinkPreviews,
             onLinkPreviewLoaded: { url, preview in linkPreviews[url] = preview },
-            linkPreviewProvider: linkPreviewProvider,
+            linkPreviewProvider: host.linkPreviewProvider,
             consumeInitialCursor: { state.takePendingInitialCursor() }
         )
-            .equatable()
-            // Whole-row reorder on macOS. Coexists with click-to-edit
-            // (.onTapGesture below) because of the 4pt minimumDistance: a
-            // click without movement enters edit mode; movement past 4pt
-            // starts a drag instead. isEditing gates the drag off so the
-            // editor's own selection gestures aren't shadowed.
-            .macRowReorder(
-                isEnabled: !isEditing,
-                onChanged: { value in
-                    tickReorderLift(
-                        blockID: block.id,
-                        at: value.location,
-                        anchorAt: value.startLocation,
-                        snapshot: snapshot
-                    )
-                },
-                onEnded: { value in endReorderLift(atY: value.location.y, snapshot: snapshot) }
-            )
-            .blockActionPopover(
-                isPresented: Binding(
-                    get: { actionSheet?.id == block.id },
-                    set: { if !$0 && actionSheet != nil { actionSheet = nil } }
-                )
-            ) {
-                blockActionMenuContent(for: block.id)
-            }
-            .blockActionPopover(
-                isPresented: Binding(
-                    get: { state.mentionMenu?.blockID == block.id },
-                    set: { if !$0 && state.mentionMenu != nil { state.closeMentionMenu() } }
-                )
-            ) {
-                mentionMenuContent()
-            }
-            .opacity(reorderSourceOpacity(for: block.id))
-            .contentShape(Rectangle())
-            .iosBlockTouchActions(
-                isEnabled: !isEditing && !pinchGestureActive,
-                onDelete: {
-                    deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
-                    showActionToast("Deleted")
-                },
-                onShowMenu: {
-                    actionSheet = BlockActionSheet(id: block.id)
-                }
-            )
-            .accessibilityElement(children: .ignore)
-            .accessibilityIdentifier(accessibilityIdentifier(for: block))
-            .accessibilityLabel(accessibilityLabel(for: block))
-            .accessibilityValue(state.reorderLift?.ids.contains(block.id) == true ? "reorder-source" : "")
-            .onTapGesture {
+
+        BlockRow(
+            content: content,
+            isActionMenuPresented: actionSheet?.id == block.id,
+            isMentionMenuPresented: state.mentionMenu?.blockID == block.id,
+            isPinching: pinchGestureActive,
+            reorderSourceOpacity: reorderSourceOpacity(for: block.id),
+            isReorderingThisBlock: state.reorderLift?.ids.contains(block.id) == true,
+            isHandleVisible: showHandleOverlay(for: block.id),
+            isMacDragSource: isMacDraggingFromRow(block.id),
+            accessibilityID: accessibilityIdentifier(for: block),
+            accessibilityLabelText: accessibilityLabel(for: block),
+            onTapOutsideText: {
                 if case .subpage(_, let path) = block.kind {
                     transferFocus(to: .nav(cursor: block.id))
-                    onSubpageTap(path)
+                    host.onSubpageTap(path)
                     return
                 }
                 // Clicks outside the editable text region (markers, paddings) — no
                 // position info, cursor lands at end via the editor's default behavior.
                 transferFocus(to: .editor(block.id, initialCursor: nil))
-            }
-            .overlay(alignment: .topLeading) {
-                DragHandle()
-                    .opacity(showHandleOverlay(for: block.id) && !isEditing ? 1 : 0)
-                    .offset(x: -DragHandle.gutterWidth, y: 2)
-                    .onHover { hovering in
-                        // Guard against same-value writes — see the
-                        // `macNearestRowHover` site for context.
-                        if hovering {
-                            if state.hoveredHandle != block.id {
-                                state.hoveredHandle = block.id
-                            }
-                        } else if state.hoveredHandle == block.id {
-                            state.hoveredHandle = nil
-                        }
+            },
+            onMacReorderChanged: { value in
+                tickReorderLift(
+                    blockID: block.id,
+                    at: value.location,
+                    anchorAt: value.startLocation,
+                    snapshot: document.children
+                )
+            },
+            onMacReorderEnded: { value in
+                endReorderLift(atY: value.location.y, snapshot: document.children)
+            },
+            onActionMenuDismiss: {
+                if actionSheet != nil { actionSheet = nil }
+            },
+            onMentionMenuDismiss: {
+                if state.mentionMenu != nil { state.closeMentionMenu() }
+            },
+            onIOSDelete: {
+                deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
+                showActionToast("Deleted")
+            },
+            onIOSShowMenu: {
+                actionSheet = BlockActionSheet(id: block.id)
+            },
+            onHandleHover: { hovering in
+                // Guard against same-value writes — see the
+                // `macNearestRowHover` site for context.
+                if hovering {
+                    if state.hoveredHandle != block.id {
+                        state.hoveredHandle = block.id
                     }
-                    .onTapGesture {
-                        actionSheet = BlockActionSheet(id: block.id)
-                    }
-                    // Keep the handle hit-testable AND the gesture mounted for
-                    // the duration of an in-flight drag. As the cursor leaves
-                    // the source row, hoveredBlockID shifts to a different row
-                    // and showHandleOverlay(source) flips false; without this
-                    // override, allowsHitTesting(false) gets applied to the
-                    // still-tracking view and SwiftUI cancels the gesture
-                    // silently — no .onEnded fires, lift gets stuck.
-                    .macRowReorder(
-                        isEnabled: (showHandleOverlay(for: block.id) || isMacDraggingFromRow(block.id)) && !isEditing,
-                        onChanged: { value in
-                            tickReorderLift(
-                                blockID: block.id,
-                                at: value.location,
-                                anchorAt: value.startLocation,
-                                snapshot: snapshot
-                            )
-                        },
-                        onEnded: { value in endReorderLift(atY: value.location.y, snapshot: snapshot) }
-                    )
-                    .allowsHitTesting(showHandleOverlay(for: block.id) || isMacDraggingFromRow(block.id))
-            }
+                } else if state.hoveredHandle == block.id {
+                    state.hoveredHandle = nil
+                }
+            },
+            onHandleTap: {
+                actionSheet = BlockActionSheet(id: block.id)
+            },
+            onHandleReorderChanged: { value in
+                tickReorderLift(
+                    blockID: block.id,
+                    at: value.location,
+                    anchorAt: value.startLocation,
+                    snapshot: document.children
+                )
+            },
+            onHandleReorderEnded: { value in
+                endReorderLift(atY: value.location.y, snapshot: document.children)
+            },
+            actionMenuContent: { AnyView(blockActionMenuContent(for: block.id)) },
+            mentionMenuContent: { AnyView(mentionMenuContent()) }
+        )
+        .equatable()
     }
 
     private func topSelectedBlockID() -> BlockID? {
@@ -838,7 +732,7 @@ public struct EditorView: View {
         let modifiers = press.modifiers
 
         if press.key == KeyEquivalent("["), modifiers.contains(.command) {
-            onNavigateBack()
+            host.onNavigateBack()
             return .handled
         }
 
@@ -947,7 +841,7 @@ public struct EditorView: View {
         // it under the heading. Idempotent on already-valid trees.
         document.enforceHeadingContainment()
         undoController.register(before, name: name)
-        onEdited()
+        host.onEdited()
     }
 
     /// Consume a host-supplied append payload (via `EditorState.appendBlocks`).
@@ -974,7 +868,7 @@ public struct EditorView: View {
                 guard let id = topSelectedBlockID() else { return }
                 let targetIDs = menuTargetIDs(anchorID: id)
                 let inDoc = inDocMoveCandidates(excluding: targetIDs)
-                onRequestMoveDestination(targetIDs, inDoc) { destination in
+                host.onRequestMoveDestination(targetIDs, inDoc) { destination in
                     switch destination {
                     case .page(let pageID):
                         moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
@@ -1112,14 +1006,14 @@ public struct EditorView: View {
             // Re-register inverse — when this runs during isUndoing, UndoManager pushes
             // it to the redo stack; during isRedoing, it goes back on the undo stack.
             undoController.register(beforeRedo, name: undoController.undoManager.undoActionName)
-            onEdited()
+            host.onEdited()
         }
         undoController.applyTextChange = { blockID, oldText in
             guard let block = document.find(blockID) else { return }
             let beforeRedoText = block.text
             document.setText(blockID, oldText)
             undoController.registerTextChange(blockID: blockID, oldText: beforeRedoText)
-            onEdited()
+            host.onEdited()
         }
     }
 
@@ -1213,7 +1107,7 @@ public struct EditorView: View {
             // re-grabbing every time would steal focus from menus and sheets.
             if wasEditing {
                 forcePageFocusGrab()
-                onBlur()
+                host.onBlur()
             }
         }
     }
@@ -1813,7 +1707,7 @@ public struct EditorView: View {
                 appendPreorder(block, into: &removedFlat)
             }
         }
-        onRecordBlockDeletion(indicesFlat, removedFlat, actionName)
+        host.onRecordBlockDeletion(indicesFlat, removedFlat, actionName)
 
         let cursorTarget = nearestCursorAfterRemoval(of: roots)
         mutate(actionName) {
@@ -1928,7 +1822,7 @@ public struct EditorView: View {
         let images = readPasteboardImages(UIPasteboard.general)
         #endif
         if !images.isEmpty {
-            let paths = onSaveImages(images)
+            let paths = host.onSaveImages(images)
             guard !paths.isEmpty else { return true }
             let blocks: [Block] = paths.map { .image(source: $0, alt: "") }
             return spliceParsedBlocksAfter(state.cursor, parsed: blocks, focusLast: false)
@@ -1942,7 +1836,7 @@ public struct EditorView: View {
         guard let str = UIPasteboard.general.string else { return false }
         pasted = str
         #endif
-        guard let parsed = parseBlocksFromPasteboard(pasted), !parsed.isEmpty else { return false }
+        guard let parsed = host.parseBlocksFromPasteboard(pasted), !parsed.isEmpty else { return false }
         return spliceParsedBlocksAfter(state.cursor, parsed: parsed, focusLast: false)
     }
 
@@ -1993,7 +1887,7 @@ public struct EditorView: View {
         let roots = document.selectionSubtreeRoots(Set(ids))
         guard !roots.isEmpty else { return false }
         let blocks = roots.compactMap { document.find($0) }
-        let serialized = serializeBlocksForPasteboard(blocks)
+        let serialized = host.serializeBlocksForPasteboard(blocks)
         guard !serialized.isEmpty else { return false }
 
         #if os(macOS)
@@ -2023,7 +1917,7 @@ public struct EditorView: View {
         case .cmdK(let preferredTitle):
             return convertBlockToSubpage(blockID: blockID, preferredTitle: preferredTitle)
         case .navigateBack:
-            onNavigateBack()
+            host.onNavigateBack()
             return .handled
         case .exitEditUp:
             transferFocus(to: .nav(cursor: state.editingBlock))
@@ -2060,7 +1954,7 @@ public struct EditorView: View {
     /// platform text view doesn't ALSO try to paste a string fallback.
     private func handleEditorImagePaste(_ images: [PastedImage], blockID: BlockID) -> KeyPress.Result {
         guard !images.isEmpty else { return .handled }
-        let paths = onSaveImages(images)
+        let paths = host.onSaveImages(images)
         guard !paths.isEmpty else { return .handled }
         let blocks: [Block] = paths.map { .image(source: $0, alt: "") }
         spliceParsedBlocksAfter(blockID, parsed: blocks, focusLast: false)
@@ -2078,7 +1972,7 @@ public struct EditorView: View {
     ///   splice the parsed blocks immediately below the row's section and
     ///   move focus to the last one.
     private func handleEditorPaste(_ str: String, blockID: BlockID) -> KeyPress.Result {
-        guard let parsed = parseBlocksFromPasteboard(str), !parsed.isEmpty else {
+        guard let parsed = host.parseBlocksFromPasteboard(str), !parsed.isEmpty else {
             return .ignored
         }
         if parsed.count == 1, case .paragraph = parsed[0].kind {
@@ -2183,7 +2077,7 @@ public struct EditorView: View {
             return false
         }
         transferFocus(to: .nav(cursor: blockID))
-        onSubpageTap(path)
+        host.onSubpageTap(path)
         return true
     }
 

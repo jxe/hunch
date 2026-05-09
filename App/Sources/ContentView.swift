@@ -163,7 +163,18 @@ private struct EditorPage: View {
     @Bindable var window: WorkspaceWindow
 
     @State private var editorState = EditorState()
+    @State private var coordinator: EditorPageCoordinator
     @FocusedValue(\.documentUndoController) private var undoController
+
+    init(url: URL, document: Document, workspace: Workspace, window: WorkspaceWindow) {
+        self.url = url
+        self.document = document
+        self._workspace = Bindable(workspace)
+        self._window = Bindable(window)
+        self._coordinator = State(
+            initialValue: EditorPageCoordinator(url: url, document: document, workspace: workspace, window: window)
+        )
+    }
 
     var body: some View {
         EditorView(
@@ -172,60 +183,7 @@ private struct EditorPage: View {
                 set: { window.updateDocumentForPage($0) }
             ),
             state: editorState,
-            suggestPages: { query in
-                workspace.pages(matching: query, excluding: window.openDocument?.url)
-            },
-            onSubpageTap: { pageID in
-                window.openSubpage(relativePath: pageID)
-            },
-            pageTitle: { pageID in
-                workspace.pageTitle(for: pageID)
-            },
-            onCreateSubpage: { title, requestedID, initialContent in
-                workspace.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
-            },
-            onLoadSubpage: { pageID in
-                workspace.loadSubpage(relativePath: pageID)
-            },
-            onAbsorbSubpage: { pageID in
-                workspace.moveSubpageToTrash(relativePath: pageID)
-            },
-            onAppendToSubpage: { pageID, blocks in
-                window.appendToSubpage(relativePath: pageID, blocks: blocks)
-            },
-            onRequestMoveDestination: { blockIDs, inDocCandidates, completion in
-                window.requestMoveDestination(
-                    blockIDs: blockIDs,
-                    inDocCandidates: inDocCandidates,
-                    completion: completion
-                )
-            },
-            onNavigateBack: {
-                window.goBack()
-            },
-            onEdited: {
-                window.markEdited()
-            },
-            onBlur: {
-                Task { await window.saveNow() }
-            },
-            onRecordBlockDeletion: { indices, blocks, actionName in
-                window.recordBlockDeletion(indices: indices, blocks: blocks, actionName: actionName)
-            },
-            serializeBlocksForPasteboard: { blocks in
-                BlockSerializer.serialize(blocks)
-            },
-            parseBlocksFromPasteboard: { string in
-                let blocks = BlockParser.parse(string)
-                return blocks.isEmpty ? nil : blocks
-            },
-            linkPreviewProvider: workspace.linkPreviewService.provider(),
-            onSaveImages: { items in
-                workspace.saveImages(items)
-            },
-            imageURLResolver: { source in
-                workspace.imageURL(for: source)
-            }
+            host: coordinator
         )
         .toolbar {
             #if os(iOS)

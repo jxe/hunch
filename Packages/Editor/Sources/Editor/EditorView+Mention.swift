@@ -5,7 +5,7 @@ extension EditorView {
     /// the editor just renders whatever it gets back.
     fileprivate var mentionMatches: [MentionItem] {
         guard let menu = state.mentionMenu else { return [] }
-        return Array(suggestPages(menu.trigger.query).prefix(8))
+        return Array(host.suggestPages(menu.trigger.query).prefix(8))
     }
 
     func handleMentionTriggerChange(_ trigger: MentionTrigger?, blockID: BlockID) {
@@ -21,7 +21,7 @@ extension EditorView {
             // selectedIndex against the new query's match count before publishing
             // so observers fire once instead of twice.
             existing.trigger = trigger
-            let count = suggestPages(trigger.query).prefix(8).count
+            let count = host.suggestPages(trigger.query).prefix(8).count
             if count == 0 {
                 existing.selectedIndex = 0
             } else if existing.selectedIndex >= count {

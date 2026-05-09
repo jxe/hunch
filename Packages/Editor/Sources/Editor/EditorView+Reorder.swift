@@ -56,7 +56,7 @@ extension EditorView {
     @ViewBuilder
     func reorderLiftView() -> some View {
         if let lift = state.reorderLift {
-            BlockRow(
+            BlockRowContent(
                 block: lift.block,
                 onBlockChange: { _ in },
                 depth: 0,
@@ -65,7 +65,7 @@ extension EditorView {
                 numberingIndex: nil,
                 isSelected: false,
                 isEditing: false,
-                pageTitles: resolvePageTitles(for: lift.block, resolver: pageTitle)
+                pageTitles: resolvePageTitles(for: lift.block, resolver: host.pageTitle)
             )
             .frame(width: lift.sourceFrame.width, height: lift.sourceFrame.height, alignment: .leading)
             .overlay(alignment: .topLeading) {
@@ -642,7 +642,7 @@ extension EditorView {
         let movingBlocks = ordered.compactMap { document.find($0) }
         guard !movingBlocks.isEmpty else { return }
 
-        guard onAppendToSubpage(path, movingBlocks) else { return }
+        guard host.onAppendToSubpage(path, movingBlocks) else { return }
 
         // Capture a cursor target near the source BEFORE removing the blocks,
         // so the nav cursor stays where the user moved from rather than
