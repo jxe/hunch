@@ -177,9 +177,11 @@ final class WorkspaceWindow {
 
     func updateDocumentForPage(_ document: Document) {
         let updated = documentWithCurrentTitle(document)
-        documentCache[updated.url] = updated
+        if documentCache[updated.url] !== updated {
+            documentCache[updated.url] = updated
+        }
         let titleChanged = workspace.refreshTitleCache(from: updated)
-        if openDocument?.url == updated.url {
+        if openDocument?.url == updated.url, openDocument !== updated {
             openDocument = updated
         }
         if titleChanged {
@@ -193,7 +195,10 @@ final class WorkspaceWindow {
     @discardableResult
     private func documentWithCurrentTitle(_ document: Document) -> Document {
         let fallback = document.url.deletingPathExtension().lastPathComponent
-        document.title = Document.deriveTitle(from: document.children, fallback: fallback)
+        let derived = Document.deriveTitle(from: document.children, fallback: fallback)
+        if document.title != derived {
+            document.title = derived
+        }
         return document
     }
 
@@ -491,7 +496,9 @@ final class WorkspaceWindow {
 
     private func cacheOpenDocument() {
         guard let openDocument else { return }
-        documentCache[openDocument.url] = openDocument
+        if documentCache[openDocument.url] !== openDocument {
+            documentCache[openDocument.url] = openDocument
+        }
         workspace.refreshTitleCache(from: openDocument)
     }
 

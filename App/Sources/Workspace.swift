@@ -224,19 +224,25 @@ final class Workspace {
     @discardableResult
     func refreshTitleCache(from document: Document) -> Bool {
         let updated = documentWithCurrentTitle(document)
-        let previousTitle = titleCache[updated.url]?.title
-        titleCache[updated.url] = CachedTitle(title: updated.title, modificationDate: updated.modificationDate)
-        return previousTitle != updated.title
+        let previous = titleCache[updated.url]
+        let titleChanged = previous?.title != updated.title
+        if titleChanged || previous?.modificationDate != updated.modificationDate {
+            titleCache[updated.url] = CachedTitle(title: updated.title, modificationDate: updated.modificationDate)
+        }
+        return titleChanged
     }
 
     func refreshEntriesFromTitleCache() {
-        entries = entries.map { entry in
+        let updated = entries.map { entry in
             WorkspaceEntry(
                 url: entry.url,
                 relativePath: entry.relativePath,
                 title: titleCache[entry.url]?.title ?? entry.title,
                 modificationDate: entry.modificationDate
             )
+        }
+        if updated != entries {
+            entries = updated
         }
     }
 
@@ -250,7 +256,10 @@ final class Workspace {
     @discardableResult
     private func documentWithCurrentTitle(_ document: Document) -> Document {
         let fallback = document.url.deletingPathExtension().lastPathComponent
-        document.title = Document.deriveTitle(from: document.children, fallback: fallback)
+        let derived = Document.deriveTitle(from: document.children, fallback: fallback)
+        if document.title != derived {
+            document.title = derived
+        }
         return document
     }
 
@@ -279,7 +288,12 @@ final class Workspace {
 
     private func applyRefreshedTitles(_ refreshed: [URL: CachedTitle], workspaceURL: URL) {
         guard self.workspaceURL == workspaceURL, !refreshed.isEmpty else { return }
-        titleCache.merge(refreshed) { _, new in new }
+        let truly = refreshed.filter { url, new in
+            let prev = titleCache[url]
+            return prev?.title != new.title || prev?.modificationDate != new.modificationDate
+        }
+        guard !truly.isEmpty else { return }
+        titleCache.merge(truly) { _, new in new }
         refreshEntriesFromTitleCache()
     }
 

@@ -9,6 +9,11 @@ struct HunchApp: App {
     @State private var workspace = Workspace()
 
     init() {
+        // Unbuffer stdout so _printChanges() output in EditorView/EditorPage
+        // lands in the redirected log immediately, even if the main thread is
+        // pegged in a SwiftUI invalidation loop. Without this, print() block-
+        // buffers when stdout is a file and we lose the last few KB on hang.
+        setvbuf(stdout, nil, _IONBF, 0)
         FontRegistration.registerInter()
         #if os(macOS)
         EscapeKeyMonitor.install()

@@ -188,7 +188,8 @@ public struct EditorView: View {
     }
 
     public var body: some View {
-        GeometryReader { geometry in
+        let _ = Self._printChanges()
+        return GeometryReader { geometry in
             let numbering = NumberingContext.compute(document.children)
             let snapshot = document.children
             let hidden = hiddenBlockIDs(in: snapshot)
@@ -344,7 +345,7 @@ public struct EditorView: View {
                 handleDropHoverChange(newValue?.position)
             }
             .onChange(of: state.mode) { oldMode, newMode in
-                actionSheet = nil
+                if actionSheet != nil { actionSheet = nil }
                 handleModeChange(from: oldMode, to: newMode)
             }
             #if os(iOS)
