@@ -287,6 +287,24 @@ public final class Document: @MainActor Identifiable {
         return removed
     }
 
+    /// Remove the block at `blockID` and splice its children into its place
+    /// in the parent's children array. Returns the removed block with its
+    /// children stripped (so callers recording a deletion don't double-count
+    /// the lifted body). Returns `nil` if the id isn't found.
+    @discardableResult
+    public func removeBlockLiftingChildren(_ blockID: BlockID) -> Block? {
+        var husk: Block?
+        Self.mutateFirst(in: &children, id: blockID) { siblings, i in
+            var removed = siblings.remove(at: i)
+            let lifted = removed.children
+            removed.children = []
+            siblings.insert(contentsOf: lifted, at: i)
+            husk = removed
+        }
+        if husk != nil { _parentCache = nil }
+        return husk
+    }
+
     /// Insert a subtree at the given drop path. Returns `false` if the parent
     /// id is unknown or the position is out of range.
     @discardableResult

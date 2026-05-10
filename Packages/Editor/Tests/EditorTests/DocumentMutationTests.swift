@@ -130,6 +130,45 @@ struct DocumentMutationTests {
         #expect(doc.find(nestedID) == nil)
     }
 
+    @Test func removeBlockLiftingChildrenPromotesChildrenToSiblings() {
+        let bodyA = Block.paragraph(text: AttributedString("a"))
+        let bodyB = Block.paragraph(text: AttributedString("b"))
+        let heading = Block.heading(level: .h1, text: AttributedString("H"), children: [bodyA, bodyB])
+        let trailing = Block.paragraph(text: AttributedString("after"))
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            title: "Test",
+            children: [heading, trailing]
+        )
+
+        let husk = doc.removeBlockLiftingChildren(heading.id)
+
+        #expect(husk?.id == heading.id)
+        #expect(husk?.children.isEmpty == true)
+        #expect(doc.children.map(\.id) == [bodyA.id, bodyB.id, trailing.id])
+        #expect(doc.find(heading.id) == nil)
+    }
+
+    @Test func removeBlockLiftingChildrenWorksOnNestedBlock() {
+        let leaf = Block.paragraph(text: AttributedString("leaf"))
+        let inner = Block.heading(level: .h2, text: AttributedString("inner"), children: [leaf])
+        let outer = Block.toggle(title: AttributedString("outer"), children: [inner])
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            title: "Test",
+            children: [outer]
+        )
+
+        _ = doc.removeBlockLiftingChildren(inner.id)
+
+        #expect(doc.children[0].children.map(\.id) == [leaf.id])
+    }
+
+    @Test func removeBlockLiftingChildrenReturnsNilForMissing() {
+        let doc = makeDoc()
+        #expect(doc.removeBlockLiftingChildren(BlockID()) == nil)
+    }
+
     @Test func replaceSubtreeSwapsAtTopLevel() {
         let doc = makeDoc()
         let target = doc.children[0].id

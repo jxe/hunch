@@ -498,7 +498,12 @@ public struct EditorView: View {
                 if state.mentionMenu != nil { state.closeMentionMenu() }
             },
             onIOSDelete: {
-                deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
+                let isMultiSelect = state.selection.contains(block.id) && state.selection.count > 1
+                if !isMultiSelect, let blk = document.find(block.id), blk.isHeading {
+                    deleteHeadingKeepingChildren(blk.id)
+                } else {
+                    deleteBlocks(ids: dragIDs(for: block.id), actionName: "Delete")
+                }
                 showActionToast("Deleted")
             },
             onIOSShowMenu: onShowActionSheet,
@@ -1532,6 +1537,31 @@ public struct EditorView: View {
     /// covers every top-level block.
     func deleteSelection() {
         deleteBlocks(ids: Array(state.selection), actionName: "Delete")
+    }
+
+    /// Swipe-delete on a heading is an exception to the usual rule: it removes
+    /// only the heading row, lifting its body content to siblings. The post-
+    /// mutation `enforceHeadingContainment()` re-folds those siblings into a
+    /// preceding heading at the same scope if one exists.
+    private func deleteHeadingKeepingChildren(_ id: BlockID) {
+        guard let heading = document.find(id), heading.isHeading else { return }
+        // Don't strand the document with no top-level blocks.
+        if document.parent(of: id) == nil,
+           document.children.count == 1,
+           heading.children.isEmpty {
+            return
+        }
+
+        let order = document.documentOrder(of: id) ?? 0
+        var husk = heading
+        husk.children = []
+        host.onRecordBlockDeletion([order], [husk], "Delete")
+
+        let cursorTarget = nearestCursorAfterRemoval(of: [id])
+        mutate("Delete") {
+            document.removeBlockLiftingChildren(id)
+        }
+        if let target = cursorTarget { setCursor(target) }
     }
 
     private func deleteBlocks(ids: [BlockID], actionName: String) {
