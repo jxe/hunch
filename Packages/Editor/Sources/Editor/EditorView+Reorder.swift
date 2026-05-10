@@ -349,8 +349,7 @@ extension EditorView {
         // nested rows; iterating the legacy flat preorder of `snapshot`
         // would double-count blocks that also live inside their parent's
         // `children` array.
-        let layout = computeVisibleLayout(snapshot: document.children, hidden: hidden)
-        let rows = layout.rows
+        let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden)
 
         // Hit-test for "drop on closed parent" / "drop onto subpage". Edge
         // band keeps the gap above/below the row reachable for between-rows

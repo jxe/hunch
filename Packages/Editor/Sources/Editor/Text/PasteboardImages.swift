@@ -56,6 +56,33 @@ private extension Data {
         return rep.representation(using: .png, properties: [:])
     }
 }
+
+/// Read the richest text representation off `pasteboard`. Order: RTFD
+/// (carries inline images, but we don't extract them here — only the
+/// text + marks), then RTF, then HTML. Returns nil when only plain
+/// text is on the board so callers can fall through to the platform's
+/// native plain-text paste.
+func readPasteboardRichText(_ pasteboard: NSPasteboard) -> NSAttributedString? {
+    if let data = pasteboard.data(forType: .rtfd),
+       let attr = NSAttributedString(rtfd: data, documentAttributes: nil) {
+        return attr
+    }
+    if let data = pasteboard.data(forType: .rtf),
+       let attr = NSAttributedString(rtf: data, documentAttributes: nil) {
+        return attr
+    }
+    if let data = pasteboard.data(forType: .html),
+       let attr = try? NSAttributedString(
+           data: data,
+           options: [
+               .documentType: NSAttributedString.DocumentType.html,
+               .characterEncoding: String.Encoding.utf8.rawValue
+           ],
+           documentAttributes: nil) {
+        return attr
+    }
+    return nil
+}
 #else
 /// Pull image bytes (or image file URLs) off a UIPasteboard. UIPasteboard's
 /// `images` covers the common case (Photos, browser image-copy). For file
@@ -84,5 +111,35 @@ func readPasteboardImages(_ pasteboard: UIPasteboard) -> [PastedImage] {
     }
 
     return out
+}
+
+/// iOS twin of the macOS reader. UTI strings rather than `UIPasteboard.PasteboardType`
+/// because UTType constants for RTFD/RTF/HTML aren't surfaced as enum cases.
+func readPasteboardRichText(_ pasteboard: UIPasteboard) -> NSAttributedString? {
+    if let data = pasteboard.data(forPasteboardType: "com.apple.flat-rtfd"),
+       let attr = try? NSAttributedString(
+           data: data,
+           options: [.documentType: NSAttributedString.DocumentType.rtfd],
+           documentAttributes: nil) {
+        return attr
+    }
+    if let data = pasteboard.data(forPasteboardType: "public.rtf"),
+       let attr = try? NSAttributedString(
+           data: data,
+           options: [.documentType: NSAttributedString.DocumentType.rtf],
+           documentAttributes: nil) {
+        return attr
+    }
+    if let data = pasteboard.data(forPasteboardType: "public.html"),
+       let attr = try? NSAttributedString(
+           data: data,
+           options: [
+               .documentType: NSAttributedString.DocumentType.html,
+               .characterEncoding: String.Encoding.utf8.rawValue
+           ],
+           documentAttributes: nil) {
+        return attr
+    }
+    return nil
 }
 #endif

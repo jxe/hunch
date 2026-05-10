@@ -111,11 +111,13 @@ public struct EditorView: View {
             let snapshot = document.children
             let hidden = hiddenBlockIDs(in: snapshot)
             // Tree-aware visible-row layout walk — yields one VisibleRow per
-            // displayed block with its depth and prev-sibling reference.
-            let layout = computeVisibleLayout(snapshot: snapshot, hidden: hidden)
-            let visibleRows = layout.rows
-            let prevVisibleBlocks = layout.prevVisible
-            let prevDepths = layout.prevDepths
+            // displayed block, each carrying its slot, depth, and prev-sibling
+            // reference so the ForEach below can iterate over the rows array
+            // directly (no `Array(...enumerated())` allocation per body eval —
+            // a fresh enumerated wrapper would defeat LazyVStack's identity
+            // diff and force the whole visible list through `placeSubviews`
+            // on every transaction).
+            let visibleRows = computeVisibleLayout(snapshot: snapshot, hidden: hidden)
             // Translate the (tree-aware) drop hover and lift footprint into the
             // visible-row slot space the gap renderers operate in. Both gestures
             // render gaps against the body's `ForEach` enumeration index `k`, so
@@ -132,11 +134,10 @@ public struct EditorView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(visibleRows.enumerated()), id: \.element.block.id) { (k, row) in
+                    ForEach(visibleRows, id: \.block.id) { row in
+                        let k = row.slot
                         let block = row.block
-                        let prev = prevVisibleBlocks[k]
-                        let prevDepth = prevDepths[k]
-                        let gap = BlockSpacing.gap(before: block, depth: row.depth, after: prev, prevDepth: prevDepth)
+                        let gap = BlockSpacing.gap(before: block, depth: row.depth, after: row.prev, prevDepth: row.prevDepth)
                         let pinchExtraTopGap = pinchExtraGap(forIndex: k)
                         let reorderExtraTopGap = reorderDriftGap(at: k, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
                         rowView(for: bindingForBlock(id: block.id), depth: row.depth, snapshot: snapshot, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
@@ -765,11 +766,15 @@ public struct EditorView: View {
     /// Returns `.ignored` if no binding matches so SwiftUI can pass the press
     /// through to other handlers.
     func handleNavKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        NSLog("[NAVKEY] press key=\(press.key) modifiers=\(press.modifiers.rawValue) cursor=\(String(describing: state.cursor)) selection=\(state.selection.count) editing=\(String(describing: state.editingBlock))")
         guard state.editingBlock == nil else { return .ignored }
         guard let action = Self.navAction(for: press.key, modifiers: press.modifiers) else {
+            NSLog("[NAVKEY] no action matched")
             return .ignored
         }
+        NSLog("[NAVKEY] dispatching action=\(action)")
         editorCommands.perform(action)
+        NSLog("[NAVKEY] after dispatch cursor=\(String(describing: state.cursor)) selection=\(state.selection.count)")
         return .handled
     }
 
@@ -955,6 +960,7 @@ public struct EditorView: View {
     /// remember to flip `pageFocused`.
     func handleModeChange(from oldMode: Mode, to newMode: Mode) {
         let wasEditing: Bool = { if case .editing = oldMode { return true } else { return false } }()
+        NSLog("[MODE] from=\(oldMode) to=\(newMode)")
 
         switch newMode {
         case .editing(let id, _):
@@ -1285,24 +1291,21 @@ public struct EditorView: View {
         let depth: Int
         let parentID: BlockID?
         let preorderIndex: Int
+        let slot: Int
+        let prev: Block?
+        let prevDepth: Int
     }
 
-    func computeVisibleLayout(snapshot: [Block], hidden: Set<BlockID>)
-        -> (rows: [VisibleRow], prevVisible: [Block?], prevDepths: [Int])
-    {
+    func computeVisibleLayout(snapshot: [Block], hidden: Set<BlockID>) -> [VisibleRow] {
         var rows: [VisibleRow] = []
-        var prevVisible: [Block?] = []
-        var prevDepths: [Int] = []
         rows.reserveCapacity(snapshot.count)
-        prevVisible.reserveCapacity(snapshot.count)
-        prevDepths.reserveCapacity(snapshot.count)
         var lastVisible: Block? = nil
         var lastDepth: Int = 0
         var preorderCounter = 0
         appendVisible(in: document.children, depth: 0, parentID: nil, hidden: hidden,
-                      rows: &rows, prevVisible: &prevVisible, prevDepths: &prevDepths,
+                      rows: &rows,
                       lastVisible: &lastVisible, lastDepth: &lastDepth, preorderCounter: &preorderCounter)
-        return (rows, prevVisible, prevDepths)
+        return rows
     }
 
     private func appendVisible(
@@ -1311,8 +1314,6 @@ public struct EditorView: View {
         parentID: BlockID?,
         hidden: Set<BlockID>,
         rows: inout [VisibleRow],
-        prevVisible: inout [Block?],
-        prevDepths: inout [Int],
         lastVisible: inout Block?,
         lastDepth: inout Int,
         preorderCounter: inout Int
@@ -1324,9 +1325,10 @@ public struct EditorView: View {
             // `hidden` set is populated by `hiddenBlockIDs` which marks every
             // descendant of a closed container.
             if !hidden.contains(block.id) {
-                rows.append(VisibleRow(block: block, depth: depth, parentID: parentID, preorderIndex: myIndex))
-                prevVisible.append(lastVisible)
-                prevDepths.append(lastDepth)
+                rows.append(VisibleRow(
+                    block: block, depth: depth, parentID: parentID, preorderIndex: myIndex,
+                    slot: rows.count, prev: lastVisible, prevDepth: lastDepth
+                ))
                 lastVisible = block
                 lastDepth = depth
             }
@@ -1338,7 +1340,7 @@ public struct EditorView: View {
             if !isCollapsedSection(block) {
                 let childDepth = block.isHeading ? depth : depth + 1
                 appendVisible(in: block.children, depth: childDepth, parentID: block.id, hidden: hidden,
-                              rows: &rows, prevVisible: &prevVisible, prevDepths: &prevDepths,
+                              rows: &rows,
                               lastVisible: &lastVisible, lastDepth: &lastDepth, preorderCounter: &preorderCounter)
             } else {
                 // Still bump the preorder counter for the hidden subtree so
@@ -1621,15 +1623,34 @@ public struct EditorView: View {
         }
     }
 
-    /// Pick a cursor target after removing the given subtree-roots. Tries the
-    /// preorder-predecessor of the first root; falls back to the first
-    /// remaining top-level block.
+    /// Pick a cursor target after removing the given subtree-roots. Prefer
+    /// the block that visually slides up to take the deleted area's place —
+    /// the first non-deleted block AFTER the deleted range in preorder.
+    /// Falls back to the last non-deleted block BEFORE the deleted range
+    /// (when the deletion includes the document's tail).
     func nearestCursorAfterRemoval(of roots: [BlockID]) -> BlockID? {
-        guard let first = roots.first else { return nil }
-        if let predecessor = document.preorderPredecessor(of: first) {
-            return predecessor
+        guard !roots.isEmpty else { return nil }
+        var deleted: Set<BlockID> = []
+        for id in roots {
+            deleted.formUnion(document.subtreeIDs(of: id))
         }
-        return document.children.first(where: { !roots.contains($0.id) })?.id
+        let orders = roots.compactMap { document.documentOrder(of: $0) }
+        guard let minOrder = orders.min(), let maxOrder = orders.max() else { return nil }
+
+        var lastBefore: BlockID?
+        var firstAfter: BlockID?
+        var index = 0
+        document.walk { block, _, _ in
+            let i = index
+            index += 1
+            if deleted.contains(block.id) { return }
+            if i < minOrder {
+                lastBefore = block.id
+            } else if i > maxOrder, firstAfter == nil {
+                firstAfter = block.id
+            }
+        }
+        return firstAfter ?? lastBefore
     }
 
     private func indentByOne(blockID: BlockID) {
@@ -1904,6 +1925,23 @@ public struct EditorView: View {
         if head.isEmpty, tail.isEmpty, document.parent(of: blockID) != nil {
             let result = changeIndent(blockID, by: -1)
             if result == .handled { return result }
+        }
+
+        // Return at the START of a parent block with children: keep the head
+        // row (and its sub-bullets) intact and insert a fresh empty sibling
+        // of the same kind ABOVE it. Without this, the default split below
+        // would wipe the head text and reattach it as a sibling AFTER the
+        // children, orphaning the sub-bullets under an empty row.
+        if head.isEmpty, !tail.isEmpty, !block.children.isEmpty {
+            let newBlock = followUpBlock(after: block, withText: "")
+            let parentID = document.parent(of: blockID)
+            let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+            let i = siblings.firstIndex(where: { $0.id == blockID }) ?? siblings.count
+            mutate("Split Block") {
+                document.insertSubtree(newBlock, at: DropPath(parent: parentID, position: i))
+            }
+            transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
+            return .handled
         }
 
         // Enter at end of a block that has children: add a child instead of a

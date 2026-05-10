@@ -116,7 +116,7 @@ extension EditorView {
             // Resolve the visible slot to a tree DropPath, with the visible-row
             // above/below at that slot as neighbour context for kind inference.
             let hidden = hiddenBlockIDs(in: document.children)
-            let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden).rows
+            let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden)
             let path = dropPath(forVisibleSlot: slot, rows: rows)
             let above: Block? = (slot - 1 >= 0 && slot - 1 < rows.count) ? rows[slot - 1].block : nil
             let below: Block? = (slot >= 0 && slot < rows.count) ? rows[slot].block : nil
@@ -219,7 +219,7 @@ extension EditorView {
     /// reorder gesture.
     fileprivate func pinchInsertIndex(for point: CGPoint) -> Int {
         let hidden = hiddenBlockIDs(in: document.children)
-        let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden).rows
+        let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden)
         return resolveDropSlot(forY: point.y, in: rows)
     }
 }

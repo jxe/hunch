@@ -151,6 +151,16 @@ enum InlineMarksBridge {
         return result
     }
 
+    /// Strip every attribute that doesn't round-trip to markdown (bold/italic/code/
+    /// strike/link survive; font, size, color, background, paragraph style do not),
+    /// then re-render with the row's typography so pasted text matches the surrounding
+    /// block. `toModel` already discards everything but the four custom mark keys and
+    /// `.link`; `toNS` re-applies Inter / NotionStyle colors.
+    static func sanitize(_ source: NSAttributedString, baseFontSize: CGFloat, baseBold: Bool, lineSpacing: CGFloat) -> NSAttributedString {
+        let model = toModel(source)
+        return toNS(model, baseFontSize: baseFontSize, baseBold: baseBold, lineSpacing: lineSpacing)
+    }
+
     /// Toggle a single inline mark on the given range of an NSTextStorage. After this
     /// returns, the textStorage's `didChangeText()` should be called by the caller so
     /// SwiftUI sees the update.

@@ -808,6 +808,18 @@ final class ContainedTextView: NSTextView {
         invalidateIntrinsicContentSize()
     }
 
+    /// NSTextView's default paste validation rejects pasteboards that carry only
+    /// image data (PNG/TIFF/file URLs) — its `readablePasteboardTypes` covers
+    /// strings/RTF/RTFD/HTML, not images. Without this override, Cmd-V over an
+    /// image-only pasteboard beeps and our `paste(_:)` override never runs.
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(NSText.paste(_:)),
+           !readPasteboardImages(NSPasteboard.general).isEmpty {
+            return true
+        }
+        return super.validateMenuItem(menuItem)
+    }
+
     /// Intercept Cmd-V / paste action. NSTextView routes both the menu item and the
     /// keyboard shortcut through `paste(_:)`. We hand the raw pasteboard string up to
     /// EditorView via the `.paste` BlockKey; if it splices multi-block content it
@@ -821,7 +833,8 @@ final class ContainedTextView: NSTextView {
             // puts both — in both cases the user expects an image, not the URL. Live-text
             // commit happens centrally in `EditorView.mutate(...)` if the paste splices
             // blocks; single-paragraph string paste returns `.ignored` and falls through
-            // to native paste (no model snapshot, binding stays stale until blur as usual).
+            // to the rich-text sanitize path (no model snapshot, binding stays stale
+            // until blur as usual).
             let images = readPasteboardImages(NSPasteboard.general)
             if !images.isEmpty {
                 if onKey(.imagesPasted(images)) == .handled {
@@ -833,6 +846,21 @@ final class ContainedTextView: NSTextView {
                     return
                 }
             }
+        }
+        // Single-paragraph fallthrough. If the pasteboard carries a rich representation
+        // (RTF/HTML — common for browser, Pages, Notion, Mail copies), strip every
+        // attribute that doesn't round-trip to markdown and re-render in the row's
+        // typography before insertion. Plain-text-only pastes go to super.paste, which
+        // inserts using the row's typingAttributes.
+        if let parent = coordinator?.parent,
+           let rich = readPasteboardRichText(NSPasteboard.general) {
+            let sanitized = InlineMarksBridge.sanitize(
+                rich,
+                baseFontSize: parent.fontSize,
+                baseBold: parent.bold,
+                lineSpacing: parent.lineSpacing)
+            insertText(sanitized, replacementRange: selectedRange())
+            return
         }
         super.paste(sender)
     }
@@ -1291,7 +1319,7 @@ final class ContainedTextViewIOS: UITextView {
         if let coordinator {
             // Live-text commit happens centrally in `EditorView.mutate(...)` for
             // multi-block paste. Single-paragraph paste returns `.ignored` and
-            // falls through to UITextView's native paste; binding stays stale
+            // falls through to the rich-text sanitize path; binding stays stale
             // until blur, as usual.
             let images = readPasteboardImages(UIPasteboard.general)
             if !images.isEmpty {
@@ -1304,6 +1332,26 @@ final class ContainedTextViewIOS: UITextView {
                     return
                 }
             }
+        }
+        // Single-paragraph fallthrough — see the macOS twin in ContainedTextView.paste.
+        if let coordinator,
+           let rich = readPasteboardRichText(UIPasteboard.general) {
+            let parent = coordinator.parent
+            let sanitized = InlineMarksBridge.sanitize(
+                rich,
+                baseFontSize: parent.fontSize,
+                baseBold: parent.bold,
+                lineSpacing: parent.lineSpacing)
+            let target = selectedRange
+            textStorage.beginEditing()
+            textStorage.replaceCharacters(in: target, with: sanitized)
+            textStorage.endEditing()
+            selectedRange = NSRange(location: target.location + sanitized.length, length: 0)
+            // Direct textStorage edits don't fire textViewDidChange; nudge it so the
+            // coordinator marks textStorageDirty (commit-on-blur picks up the new text)
+            // and the autotransform/mention pipeline re-evaluates.
+            delegate?.textViewDidChange?(self)
+            return
         }
         super.paste(sender)
     }
