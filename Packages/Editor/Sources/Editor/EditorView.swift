@@ -776,8 +776,17 @@ public struct EditorView: View {
     /// Pure-function lookup against `Self.navBindings`. Tests dispatch to
     /// this directly — `KeyPress` has no public init, so the per-press
     /// matcher takes the (key, modifiers) pair instead.
+    ///
+    /// Only Shift/Control/Option/Command are matched. `.numericPad` and
+    /// `.function` come pre-set on macOS arrow / function keys (rawValue
+    /// 96 = .function | .numericPad on every arrow press), and `.capsLock`
+    /// reflects keyboard state, not user intent — leaving any of those in
+    /// the comparison breaks every arrow binding because they're declared
+    /// with `modifiers: []`.
     static func navAction(for key: KeyEquivalent, modifiers: EventModifiers) -> EditorAction? {
-        for binding in navBindings where binding.key == key && binding.modifiers == modifiers {
+        let userModifiers: EventModifiers = [.shift, .control, .option, .command]
+        let pressModifiers = modifiers.intersection(userModifiers)
+        for binding in navBindings where binding.key == key && binding.modifiers == pressModifiers {
             return binding.action
         }
         return nil
@@ -1778,6 +1787,14 @@ public struct EditorView: View {
     // MARK: - Editor-side keyboard handling (delegated from the active BlockTextEditor)
 
     private func handleEditorKey(_ key: BlockKey, blockID: BlockID) -> KeyPress.Result {
+        // Sync live text into the binding before dispatching. Structural ops
+        // (splitBlock, deleteEmptyBlock, changeIndent, convertBlockToSubpage,
+        // …) all read `block.text` from the model *before* invoking
+        // `mutate(...)` and `mutate`'s own `commitActiveEditor` would fire
+        // too late — the read would have already used the stale binding.
+        // Idempotent (`textStorageDirty == false` short-circuits), so the
+        // mention/escape cases that don't actually need a commit pay nothing.
+        undoController.commitActiveEditor?()
         switch key {
         case .enter(let selectionStart, let selectionEnd):
             return splitBlock(blockID, selectionStart: selectionStart, selectionEnd: selectionEnd)
