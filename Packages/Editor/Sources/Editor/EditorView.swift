@@ -60,6 +60,16 @@ public struct EditorView: View {
     /// synchronously instead of waiting for the NSTextView's own async self-grab.
     @State var macActiveTextView = MacActiveTextView()
     #endif
+    #if os(iOS)
+    /// One-tick overlap during inter-block focus transfer: when `state.mode` flips
+    /// from `.editing(oldID, _)` to `.editing(newID, _)`, we keep `oldID` here for
+    /// one runloop. The old row's `BlockTextEditor` stays mounted during that tick,
+    /// so when SwiftUI mounts the new row's UITextView and `didMoveToWindow` calls
+    /// `becomeFirstResponder`, the old UITextView is still in the window hierarchy.
+    /// UIKit transfers first responder synchronously and the soft keyboard stays
+    /// up — without this, splitting on Return makes the keyboard hide+show.
+    @State var iosTransitioningEditorID: BlockID?
+    #endif
     /// Document-level undo coordinator. Owns the shared `UndoManager` that NSTextView
     /// typing-undo and structural ops (split/merge/indent/slide/delete/autotransform/
     /// drag-drop) all register against. Recreated implicitly when EditorView's identity
@@ -86,6 +96,18 @@ public struct EditorView: View {
     @State var pinchAutoScrollVelocity: CGFloat = 0
     @State var reorderAutoScrollTask: Task<Void, Never>?
     @State var reorderAutoScrollVelocity: CGFloat = 0
+    #if os(macOS)
+    /// NSEvent local+global monitors installed for the duration of an active
+    /// reorder lift on macOS. Backstop for the SwiftUI `DragGesture.onEnded`
+    /// callback, which is destroyed without firing if the gesture's host row
+    /// (a `BlockRow` inside the `LazyVStack`) is recycled mid-drag — typical
+    /// when the autoscroll edge band scrolls the source row out of view.
+    /// Without this, `state.reorderLift` would survive the release, and the
+    /// autoscroll task it left armed would peg the main thread re-targeting
+    /// `.animation(value: dropHoverPath)` every frame.
+    @State var macReorderMouseUpLocalMonitor: Any?
+    @State var macReorderMouseUpGlobalMonitor: Any?
+    #endif
 
     /// Drives the compact block action popover. On iOS this is opened by a
     /// leading row swipe; on macOS by clicking the drag handle or Cmd-/ in nav mode.
@@ -277,6 +299,15 @@ public struct EditorView: View {
             .onChange(of: state.dropHoverPath) { _, newValue in
                 handleDropHoverChange(newValue?.position)
             }
+            #if os(macOS)
+            .onChange(of: state.reorderLift != nil) { _, isActive in
+                if isActive {
+                    installMacReorderMouseUpBackstop()
+                } else {
+                    removeMacReorderMouseUpBackstop()
+                }
+            }
+            #endif
             .onChange(of: state.mode) { oldMode, newMode in
                 if actionSheet != nil { actionSheet = nil }
                 handleModeChange(from: oldMode, to: newMode)
@@ -372,7 +403,15 @@ public struct EditorView: View {
         #else
         let isSelected = selectedIDs.contains(block.id)
         #endif
+        #if os(iOS)
+        // Treat the just-transitioned-away block as still editing for one runloop
+        // tick — see `iosTransitioningEditorID`. The row stays mounted but is no
+        // longer focused (`editorFocused` already points at the new block), so its
+        // `BlockTextEditor` won't fight for first responder.
+        let isEditing = state.editingBlock == block.id || iosTransitioningEditorID == block.id
+        #else
         let isEditing = state.editingBlock == block.id
+        #endif
         // The macOS action menu opens in nav mode, where the block is already painted with
         // the blue nav-selection tint — a second ring would just duplicate it. iOS has no
         // nav-mode multi-select (always one anchor block), so the ring is the only marker.
@@ -425,6 +464,7 @@ public struct EditorView: View {
         let editing: BlockRow.TextEditing? = isEditing
             ? BlockRow.TextEditing(
                 editorFocused: $editorFocused,
+                isActive: state.editingBlock == block.id,
                 mentionActive: state.mentionMenu?.blockID == block.id,
                 onKey: { key in handleEditorKey(key, blockID: block.id) },
                 onAutotransform: { transform, remainingText in
@@ -972,6 +1012,18 @@ public struct EditorView: View {
             // row hasn't mounted yet (new-block insertion), this is a no-op and the
             // NSTextView's `viewDidMoveToWindow` `wantsFocus` async path takes over.
             macActiveTextView.makeFirstResponder(for: id)
+            #endif
+            #if os(iOS)
+            // Inter-block transfer (e.g. Return → split, Backspace → merge): the old
+            // row's BlockTextEditor would unmount before SwiftUI inserts/mounts the
+            // new row's UITextView, opening a one-tick gap where no UITextView is
+            // first responder and the soft keyboard begins its hide animation. Keep
+            // the old row mounted for one runloop so the new view's `didMoveToWindow`
+            // grabs first responder while the old UITextView is still in the window.
+            if case .editing(let oldID, _) = oldMode, oldID != id {
+                iosTransitioningEditorID = oldID
+                DispatchQueue.main.async { iosTransitioningEditorID = nil }
+            }
             #endif
         case .navigating:
             editorFocused = nil

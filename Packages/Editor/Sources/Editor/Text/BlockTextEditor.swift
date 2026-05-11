@@ -130,6 +130,13 @@ public struct BlockTextEditor: View {
     let bold: Bool
     let lineSpacing: CGFloat
     @FocusState.Binding var focused: BlockID?
+    /// True for the actively-edited block. False on iOS only, for one tick, when
+    /// the row stays mounted during an inter-block focus transfer so the new
+    /// row's UITextView can grab first responder while this one is still in the
+    /// window (keeps the soft keyboard up across splits/merges). When false, the
+    /// underlying UITextView's `wantsFocus` is `false` and it doesn't fight the
+    /// new editor for first responder. See `iosTransitioningEditorID` in EditorView.
+    let isActive: Bool
     let blockID: BlockID
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
@@ -166,6 +173,7 @@ public struct BlockTextEditor: View {
         bold: Bool = false,
         lineSpacing: CGFloat,
         focused: FocusState<BlockID?>.Binding,
+        isActive: Bool = true,
         blockID: BlockID,
         onKey: @escaping (BlockKey) -> KeyPress.Result,
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
@@ -179,6 +187,7 @@ public struct BlockTextEditor: View {
         self.bold = bold
         self.lineSpacing = lineSpacing
         self._focused = focused
+        self.isActive = isActive
         self.blockID = blockID
         self.onKey = onKey
         self.onAutotransform = onAutotransform
@@ -228,16 +237,18 @@ public struct BlockTextEditor: View {
             focused = blockID
         }
         #else
-        // Mirrors the macOS path: the view only mounts when this row is the
-        // active editor (EditorView gates via `isEditing`), so request focus
-        // unconditionally on mount. `onFocusChange` reflects the UITextView's
-        // first-responder state back into SwiftUI's `@FocusState`.
+        // Mirrors the macOS path: when this row is the active editor we request
+        // focus unconditionally so the initial-mount grab in `didMoveToWindow`
+        // works (the `@FocusState` write from `enterEditMode` doesn't reliably
+        // propagate in time). During the one-tick inter-block transfer overlap,
+        // `isActive` is false on the just-vacated row so its UITextView doesn't
+        // fight the freshly-mounted one for first responder.
         IOSBlockTextEditorView(
             text: $text,
             fontSize: fontSize,
             bold: bold,
             lineSpacing: lineSpacing,
-            isFocused: true,
+            isFocused: isActive,
             onFocusChange: { newFocused in
                 if newFocused {
                     focused = blockID

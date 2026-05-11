@@ -333,6 +333,55 @@ extension EditorView {
         reorderAutoScrollTask = nil
     }
 
+    #if os(macOS)
+    /// Backstop for SwiftUI `DragGesture.onEnded`, which is silently dropped
+    /// when the gesture's host row gets recycled by `LazyVStack` mid-drag
+    /// (autoscroll moves the source row out of view → row unmounts → gesture
+    /// destroyed). The deferred dispatch lets a surviving `onEnded` race us —
+    /// if it fires first and clears `state.reorderLift`, our handler bails
+    /// via the `state.reorderLift != nil` guard.
+    ///
+    /// Local vs. global differ in what the user intended:
+    /// - **Local** (release inside our app, even over the sidebar). The lift
+    ///   overlay stays painted at `lift.location` regardless of row
+    ///   recycling, so the user is releasing where they *see* the lift —
+    ///   commit a real drop at that y. Note `lift.location` may be stale
+    ///   relative to the cursor's actual final position (the gesture stopped
+    ///   firing `onChanged` when the source row recycled), but the visible
+    ///   lift is the contract.
+    /// - **Global** (release over another app — typically post cmd-tab or
+    ///   Mission Control). No drop intent — just cancel.
+    func installMacReorderMouseUpBackstop() {
+        if macReorderMouseUpLocalMonitor == nil {
+            macReorderMouseUpLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp]) { event in
+                DispatchQueue.main.async {
+                    guard let lift = state.reorderLift else { return }
+                    endReorderLift(atY: lift.location.y, snapshot: document.children)
+                }
+                return event
+            }
+        }
+        if macReorderMouseUpGlobalMonitor == nil {
+            macReorderMouseUpGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { _ in
+                DispatchQueue.main.async {
+                    if state.reorderLift != nil { cancelReorderLift() }
+                }
+            }
+        }
+    }
+
+    func removeMacReorderMouseUpBackstop() {
+        if let monitor = macReorderMouseUpLocalMonitor {
+            NSEvent.removeMonitor(monitor)
+            macReorderMouseUpLocalMonitor = nil
+        }
+        if let monitor = macReorderMouseUpGlobalMonitor {
+            NSEvent.removeMonitor(monitor)
+            macReorderMouseUpGlobalMonitor = nil
+        }
+    }
+    #endif
+
     /// Update `currentDropTarget` based on the live drop point. Source rows
     /// (the lift itself) are excluded from the drop-on hit-test so you can't
     /// drop onto your own collapsed parent.

@@ -83,6 +83,7 @@ public struct BlockRow: View, Equatable {
         let numberingIndex: Int?
         let isSelected: Bool
         let isEditing: Bool                // (editor != nil)
+        let isActiveEditor: Bool           // editor?.isActive ?? false
         let mentionActive: Bool            // editor?.mentionActive ?? false
         let isExpanded: Bool
         let isDropTarget: Bool
@@ -107,6 +108,7 @@ public struct BlockRow: View, Equatable {
             numberingIndex: numberingIndex,
             isSelected: isSelected,
             isEditing: editor != nil,
+            isActiveEditor: editor?.isActive ?? false,
             mentionActive: editor?.mentionActive ?? false,
             isExpanded: isExpanded,
             isDropTarget: isDropTarget,
@@ -139,6 +141,14 @@ public struct BlockRow: View, Equatable {
         /// so it doesn't defeat `BlockRow`'s `.equatable()` gating; only read
         /// inside `BlockTextEditor`.
         public let editorFocused: FocusState<BlockID?>.Binding
+        /// True when this row is the actively-edited block (i.e. the one that
+        /// should hold first responder). False during the iOS one-tick overlap
+        /// where the just-vacated row stays mounted so the new row's UITextView
+        /// can grab first responder while the old one is still in the window —
+        /// see `iosTransitioningEditorID` in EditorView. The transitioning row's
+        /// `BlockTextEditor` reads this to set `wantsFocus = false` and avoid
+        /// fighting the new editor for first responder.
+        public let isActive: Bool
         /// True when the `@`-mention popover is interacting with this row —
         /// the only `TextEditing` field whose change has to invalidate body,
         /// hence the only one compared in `BlockRow`'s `==`.
@@ -155,6 +165,7 @@ public struct BlockRow: View, Equatable {
 
         public init(
             editorFocused: FocusState<BlockID?>.Binding,
+            isActive: Bool = true,
             mentionActive: Bool,
             onKey: @escaping (BlockKey) -> KeyPress.Result,
             onAutotransform: @escaping (BlockTransform, AttributedString) -> Void,
@@ -162,6 +173,7 @@ public struct BlockRow: View, Equatable {
             consumeInitialCursor: @escaping () -> InitialCursorTarget?
         ) {
             self.editorFocused = editorFocused
+            self.isActive = isActive
             self.mentionActive = mentionActive
             self.onKey = onKey
             self.onAutotransform = onAutotransform
@@ -660,6 +672,7 @@ public struct BlockRow: View, Equatable {
                 bold: bold,
                 lineSpacing: lineSpacing,
                 focused: editor.editorFocused,
+                isActive: editor.isActive,
                 blockID: block.id,
                 onKey: editor.onKey,
                 onAutotransform: editor.onAutotransform,
