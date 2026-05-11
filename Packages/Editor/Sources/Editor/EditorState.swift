@@ -36,8 +36,23 @@ public final class EditorState {
     public internal(set) var pendingInitialCursor: InitialCursorTarget? = nil
 
     // Hover — visible across all modes/gestures, drives drag-handle reveal.
-    public internal(set) var hoveredBlock: BlockID? = nil
-    public internal(set) var hoveredHandle: BlockID? = nil
+    //
+    // Set ONLY via `setHoveredBlock` / `setHoveredHandle`: those setters no-op
+    // on same-value writes, which protects against a hover→write→invalidate
+    // →layout→hover-redispatch feedback loop. `@Observable` invalidates on
+    // every setter call regardless of whether the value changed, and SwiftUI
+    // redispatches hover whenever layout shifts row frames, so an unguarded
+    // write reachable from `.onContinuousHover` / `.onHover` closes the loop.
+    public private(set) var hoveredBlock: BlockID? = nil
+    public private(set) var hoveredHandle: BlockID? = nil
+
+    public func setHoveredBlock(_ id: BlockID?) {
+        if hoveredBlock != id { hoveredBlock = id }
+    }
+
+    public func setHoveredHandle(_ id: BlockID?) {
+        if hoveredHandle != id { hoveredHandle = id }
+    }
 
     // Drop target visualization. Updated during both in-app reorder and external
     // file drops. `currentDropTarget` is the source of truth; `dropHoverIndex`

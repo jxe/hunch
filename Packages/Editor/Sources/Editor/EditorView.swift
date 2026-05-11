@@ -240,12 +240,12 @@ public struct EditorView: View {
             )
             .macScrollMetrics(scrollMetrics)
             .macScrollPosition($scrollPosition)
-            // Guard against same-value writes: `@Observable` invalidates body on
-            // every setter call, and SwiftUI redispatches hover whenever layout
-            // shifts row frames — without the guard this closes a feedback loop
-            // with the LazyVStack layout pass and pegs CPU at idle.
+            // `setHoveredBlock` guards same-value writes (see EditorState).
+            // The read is intentionally NOT in `EditorView.body` — it lives on
+            // `BlockRow` so a hover write only invalidates the rows that read
+            // it, not the whole `LazyVStack`.
             .macNearestRowHover(rowFrames: rowFrames) { id in
-                if state.hoveredBlock != id { state.hoveredBlock = id }
+                state.setHoveredBlock(id)
             }
             .background(NotionStyle.background)
             .tapBelowRows {
@@ -481,6 +481,7 @@ public struct EditorView: View {
 
         BlockRow(
             block: block,
+            state: state,
             onBlockChange: { newBlock in binding.wrappedValue = newBlock },
             onEdited: host.onEdited,
             depth: depth,
@@ -495,7 +496,7 @@ public struct EditorView: View {
             isPinching: pinchGestureActive,
             reorderSourceOpacity: reorderSourceOpacity(for: block.id),
             isReorderingThisBlock: state.reorderLift?.ids.contains(block.id) == true,
-            isHandleVisible: showHandleOverlay(for: block.id),
+            isSelectionHandleRow: isSelectionHandleRow(for: block.id),
             isMacDragSource: isMacDraggingFromRow(block.id),
             accessibilityID: accessibilityIdentifier(for: block),
             accessibilityLabelText: accessibilityLabel(for: block),
@@ -551,14 +552,10 @@ public struct EditorView: View {
             },
             onIOSShowMenu: onShowActionSheet,
             onHandleHover: { hovering in
-                // Guard against same-value writes — see the
-                // `macNearestRowHover` site for context.
                 if hovering {
-                    if state.hoveredHandle != block.id {
-                        state.hoveredHandle = block.id
-                    }
+                    state.setHoveredHandle(block.id)
                 } else if state.hoveredHandle == block.id {
-                    state.hoveredHandle = nil
+                    state.setHoveredHandle(nil)
                 }
             },
             onHandleTap: onHandleTap,
@@ -582,11 +579,13 @@ public struct EditorView: View {
         return best?.id
     }
 
-    private func showHandleOverlay(for id: BlockID) -> Bool {
-        if state.selection.count > 1 {
-            return id == topSelectedBlockID()
-        }
-        return state.hoveredBlock == id || state.hoveredHandle == id
+    /// Multi-select drag-handle anchor: in a multi-block selection, the handle
+    /// appears on the topmost-in-document row only. Single-select / no-select
+    /// rows return false here; the hover-driven handle reveal is computed
+    /// inside `BlockRow` so hover writes don't invalidate `EditorView.body`.
+    private func isSelectionHandleRow(for id: BlockID) -> Bool {
+        guard state.selection.count > 1 else { return false }
+        return id == topSelectedBlockID()
     }
 
     /// In-document destinations for the Move-to picker: every heading/toggle

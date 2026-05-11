@@ -20,6 +20,15 @@ public struct BlockRow: View, Equatable {
     /// `body` (DynamicProperty wrappers like `@Binding` reset per parent
     /// re-render and force body to run regardless of `==`).
     public let block: Block
+    /// Editor session state. Held as a plain `let` (NOT `@Bindable`) so it
+    /// doesn't defeat `BlockRow`'s `.equatable()` gating. Read inside `body`
+    /// for fields that should drive a *row-local* invalidation rather than
+    /// invalidating `EditorView.body` — currently `hoveredBlock` and
+    /// `hoveredHandle`, which drive the drag-handle reveal. Hover writes thus
+    /// re-evaluate only the rows that observed the change, leaving the
+    /// `LazyVStack` layout untouched — a structural guard against the
+    /// hover→write→invalidate→layout→hover-redispatch feedback loop.
+    public let state: EditorState
     public let onBlockChange: (Block) -> Void
     public let onEdited: () -> Void
     /// Depth of this block in the document tree. Replaces the old per-case
@@ -55,9 +64,11 @@ public struct BlockRow: View, Equatable {
     /// True when this row is part of the in-flight reorder lift — surfaces
     /// in accessibility as `reorder-source`.
     public let isReorderingThisBlock: Bool
-    /// Drag handle should be visible (cursor hovering near, or this is the
-    /// top selected block in a multi-block selection).
-    public let isHandleVisible: Bool
+    /// True when this row is the multi-select drag-handle anchor (topmost
+    /// row in a multi-block selection). The hover-driven side of handle
+    /// visibility is read from `state` inside `body` so hover writes don't
+    /// invalidate `EditorView.body`.
+    public let isSelectionHandleRow: Bool
     /// Whether this row is the source of an in-flight macOS drag — keeps the
     /// handle hit-testable / gesture mounted even if the cursor drifts off.
     public let isMacDragSource: Bool
@@ -92,12 +103,16 @@ public struct BlockRow: View, Equatable {
         let isPinching: Bool
         let reorderSourceOpacity: Double
         let isReorderingThisBlock: Bool
-        let isHandleVisible: Bool
+        let isSelectionHandleRow: Bool
         let isMacDragSource: Bool
         let accessibilityID: String
         let accessibilityLabelText: String
         let pageTitles: [String: String]
         let linkPreviews: [URL: LinkPreview]
+        // `state` is intentionally NOT in the snapshot — the reference is
+        // stable for the editor session, and the per-row reads of
+        // `state.hoveredBlock` / `state.hoveredHandle` inside `body` set up
+        // their own @Observable invalidation channel.
     }
 
     fileprivate var equalitySnapshot: EqualitySnapshot {
@@ -117,7 +132,7 @@ public struct BlockRow: View, Equatable {
             isPinching: isPinching,
             reorderSourceOpacity: reorderSourceOpacity,
             isReorderingThisBlock: isReorderingThisBlock,
-            isHandleVisible: isHandleVisible,
+            isSelectionHandleRow: isSelectionHandleRow,
             isMacDragSource: isMacDragSource,
             accessibilityID: accessibilityID,
             accessibilityLabelText: accessibilityLabelText,
@@ -222,6 +237,7 @@ public struct BlockRow: View, Equatable {
 
     public init(
         block: Block,
+        state: EditorState,
         onBlockChange: @escaping (Block) -> Void,
         onEdited: @escaping () -> Void,
         depth: Int,
@@ -236,7 +252,7 @@ public struct BlockRow: View, Equatable {
         isPinching: Bool,
         reorderSourceOpacity: Double,
         isReorderingThisBlock: Bool,
-        isHandleVisible: Bool,
+        isSelectionHandleRow: Bool,
         isMacDragSource: Bool,
         accessibilityID: String,
         accessibilityLabelText: String,
@@ -262,6 +278,7 @@ public struct BlockRow: View, Equatable {
         mentionMenuContent: @escaping () -> AnyView
     ) {
         self.block = block
+        self.state = state
         self.onBlockChange = onBlockChange
         self.onEdited = onEdited
         self.depth = depth
@@ -276,7 +293,7 @@ public struct BlockRow: View, Equatable {
         self.isPinching = isPinching
         self.reorderSourceOpacity = reorderSourceOpacity
         self.isReorderingThisBlock = isReorderingThisBlock
-        self.isHandleVisible = isHandleVisible
+        self.isSelectionHandleRow = isSelectionHandleRow
         self.isMacDragSource = isMacDragSource
         self.accessibilityID = accessibilityID
         self.accessibilityLabelText = accessibilityLabelText
@@ -305,6 +322,17 @@ public struct BlockRow: View, Equatable {
     /// Convenience: this row is in edit mode (its text area is hosting a
     /// `BlockTextEditor` rather than a read-only renderer).
     var isEditing: Bool { editor != nil }
+
+    /// Combined drag-handle visibility: the multi-select-anchor case (passed
+    /// in from `EditorView`) plus the hover-driven case (read from `state`
+    /// here, so a hover write invalidates this row's body and *only* this
+    /// row's — not `EditorView.body` and therefore not the `LazyVStack`'s
+    /// layout pass).
+    var isHandleVisible: Bool {
+        isSelectionHandleRow
+            || state.hoveredBlock == block.id
+            || state.hoveredHandle == block.id
+    }
 
     public var body: some View {
         let externalURLs = collectExternalURLs(in: block.text)
