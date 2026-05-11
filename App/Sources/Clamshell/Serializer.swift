@@ -77,14 +77,16 @@ public enum BlockSerializer {
             return line
 
         case .bullet(let text):
-            return listItemLine(marker: "- ", prefix: prefix, text: text, children: block.children, depth: depth, titleForPath: titleForPath)
+            return listItemLine(marker: "- ", contentColumn: 2, prefix: prefix, text: text, children: block.children, titleForPath: titleForPath)
 
         case .numbered(let text):
-            return listItemLine(marker: "1. ", prefix: prefix, text: text, children: block.children, depth: depth, titleForPath: titleForPath)
+            return listItemLine(marker: "1. ", contentColumn: 3, prefix: prefix, text: text, children: block.children, titleForPath: titleForPath)
 
         case .todo(let text, let done):
+            // The `[ ]` / `[x]` is content per GFM — the actual list marker is
+            // just `- `, so children indent to column 2, not column 6.
             let mark = "- [" + (done ? "x" : " ") + "] "
-            return listItemLine(marker: mark, prefix: prefix, text: text, children: block.children, depth: depth, titleForPath: titleForPath)
+            return listItemLine(marker: mark, contentColumn: 2, prefix: prefix, text: text, children: block.children, titleForPath: titleForPath)
 
         case .quote(let text):
             return prefix + "> " + inlineString(text) + "\n\n"
@@ -143,13 +145,33 @@ public enum BlockSerializer {
     }
 
     /// List items terminate with `\n` (not `\n\n`) so successive siblings stay
-    /// in the same list; nested children are emitted at depth + 1 underneath.
-    private static func listItemLine(marker: String, prefix: String, text: AttributedString, children: [Block], depth: Int, titleForPath: (String) -> String?) -> String {
-        var out = prefix + marker + inlineString(text) + "\n"
-        if !children.isEmpty {
-            out += serializeContainerBody(children, depth: depth + 1, titleForPath: titleForPath)
-        }
-        return out
+    /// in the same list. When the item has children, two things have to be
+    /// right for CommonMark to keep the body inside the item on reparse:
+    ///
+    /// 1. The body is separated from the marker line by a blank line. Without
+    ///    it, an indented non-list child (paragraph, subpage link, quote, …)
+    ///    folds into the leading paragraph via lazy continuation and the
+    ///    nested-child structure is lost.
+    /// 2. The body indents to the marker's *content column* — `prefix.count +
+    ///    marker.count` spaces. That's 2 for a bullet, 3 for `1. `, 6 for a
+    ///    todo's `- [ ] `. A shallower indent ends the list on reparse and the
+    ///    child becomes a sibling block.
+    ///
+    /// We serialize the body at depth 0 and prefix every non-empty line with
+    /// the content-column indent — same approach `templateButton` uses for its
+    /// fenced body. `contentColumn` is the offset of the list-syntax content
+    /// position from the item's start; the printed marker (`marker`) may be
+    /// wider (todos render `- [ ] ` but the GFM list marker is just `- `).
+    private static func listItemLine(marker: String, contentColumn: Int, prefix: String, text: AttributedString, children: [Block], titleForPath: (String) -> String?) -> String {
+        let line = prefix + marker + inlineString(text) + "\n"
+        if children.isEmpty { return line }
+        let body = serializeContainerBody(children, depth: 0, titleForPath: titleForPath)
+        let childIndent = String(repeating: " ", count: prefix.count + contentColumn)
+        let indented = body
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.isEmpty ? "" : childIndent + $0 }
+            .joined(separator: "\n")
+        return line + "\n" + indented
     }
 
     /// Escape `]`, `\`, and newlines inside the alt text so the bracket pair

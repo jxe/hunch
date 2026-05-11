@@ -109,6 +109,41 @@ struct PrefixAutotransformTests {
         #expect(detect("hello", cursor: 5) == nil)
         #expect(detect("", cursor: 0) == nil)
     }
+
+    // MARK: - Inline-mark preservation
+
+    @Test func preservesBoldInRemaining() {
+        // Type "hello", bold "hello", then prefix with "* " → bullet autotransform.
+        // The bolded "hello" must ride through to the new block's text.
+        var attr = AttributedString("* hello")
+        let boldStart = attr.index(attr.startIndex, offsetByCharacters: 2)
+        attr[boldStart..<attr.endIndex][InlineAttributes.BoldAttribute.self] = true
+        let r = detectPrefixAutotransform(text: attr, cursor: 2)
+        #expect(r?.transform == .bullet)
+        #expect(plain(r) == "hello")
+        let hasBold = r?.remainingText.runs.contains { $0[InlineAttributes.BoldAttribute.self] == true } ?? false
+        #expect(hasBold)
+    }
+
+    @Test func preservesItalicInRemaining() {
+        var attr = AttributedString("# heading")
+        let italicStart = attr.index(attr.startIndex, offsetByCharacters: 2)
+        attr[italicStart..<attr.endIndex][InlineAttributes.ItalicAttribute.self] = true
+        let r = detectPrefixAutotransform(text: attr, cursor: 2)
+        #expect(r?.transform == .heading(level: 1))
+        let hasItalic = r?.remainingText.runs.contains { $0[InlineAttributes.ItalicAttribute.self] == true } ?? false
+        #expect(hasItalic)
+    }
+
+    @Test func preservesLinkInRemaining() {
+        var attr = AttributedString("- see docs")
+        let linkStart = attr.index(attr.startIndex, offsetByCharacters: 6)
+        attr[linkStart..<attr.endIndex].link = URL(string: "https://example.com")
+        let r = detectPrefixAutotransform(text: attr, cursor: 2)
+        #expect(r?.transform == .bullet)
+        let hasLink = r?.remainingText.runs.contains { $0.link?.absoluteString == "https://example.com" } ?? false
+        #expect(hasLink)
+    }
 }
 
 @Suite("Markdown autotransforms — Enter detection")

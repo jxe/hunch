@@ -448,10 +448,13 @@ struct MacBlockTextEditor: NSViewRepresentable {
             guard let tv = notification.object as? NSTextView else { return }
             textStorageDirty = true
             let isComposing = tv.hasMarkedText()
-            let plain = tv.string
             if !isComposing {
                 let cursor = tv.selectedRange().location
-                if let result = detectPrefixAutotransform(text: AttributedString(plain), cursor: cursor) {
+                // Build the attributed snapshot from textStorage (not `tv.string`) so
+                // marks the user applied earlier in this edit — bold/italic/code etc. —
+                // survive the autotransform. Same fix shape as splitBlock.
+                let attrSnapshot = InlineMarksBridge.toModel(tv.textStorage ?? NSTextStorage())
+                if let result = detectPrefixAutotransform(text: attrSnapshot, cursor: cursor) {
                     // Autotransform replaces the block via `mutate(...)`, which now
                     // commits the active editor first — so the pre-mutation snapshot
                     // captures the typed prefix and Cmd-Z restores it cleanly.
@@ -1174,11 +1177,13 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             // IME composition: skip autotransform. Live text remains in textStorage and
             // is committed on blur or centrally in `EditorView.mutate(...)`.
             let composing = (textView.markedTextRange != nil)
-            let plain = textView.text ?? ""
 
             if !composing {
                 let cursor = textView.selectedRange.location
-                if let result = detectPrefixAutotransform(text: AttributedString(plain), cursor: cursor) {
+                // Snapshot the marked text from textStorage so any inline marks the
+                // user applied earlier in this edit survive the autotransform.
+                let attrSnapshot = InlineMarksBridge.toModel(textView.textStorage)
+                if let result = detectPrefixAutotransform(text: attrSnapshot, cursor: cursor) {
                     // Autotransform replaces the block via `mutate(...)`, which commits
                     // the active editor first — so the pre-mutation snapshot captures
                     // the typed prefix and Cmd-Z restores it cleanly.

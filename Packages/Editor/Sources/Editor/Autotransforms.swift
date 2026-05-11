@@ -85,8 +85,12 @@ public func detectPrefixAutotransform(text: AttributedString, cursor: Int) -> Au
     for (prefix, transform) in prefixTriggers {
         guard cursor == prefix.count else { continue }
         guard plain.hasPrefix(prefix) else { continue }
-        let remaining = String(plain.dropFirst(prefix.count))
-        return AutotransformResult(transform: transform, remainingText: AttributedString(remaining))
+        // Slice the AttributedString (not the plain String) so any inline marks
+        // the user applied earlier in the edit — bold/italic/code/strike/link —
+        // ride through into the transformed block.
+        let cutIdx = text.index(text.startIndex, offsetByCharacters: prefix.count)
+        let remaining = AttributedString(text[cutIdx..<text.endIndex])
+        return AutotransformResult(transform: transform, remainingText: remaining)
     }
     return nil
 }

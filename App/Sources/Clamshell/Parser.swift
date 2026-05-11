@@ -407,7 +407,15 @@ public enum BlockParser {
         var nested: [Block] = []
         for child in item.children {
             if let p = child as? Paragraph, leadingText.characters.isEmpty {
-                leadingText = inlineToAttributed(Array(p.inlineChildren))
+                var inlines = Array(p.inlineChildren)
+                // Heal pre-fix files: serializers before the blank-line fix
+                // emitted `- text\n  [Sub](sub.md)\n`, which CommonMark folds
+                // into one paragraph via softbreak. Peel a trailing softbreak +
+                // `.md` link off and restore it as a `.subpage` child.
+                if let recovered = peelTrailingSubpage(&inlines) {
+                    nested.append(recovered)
+                }
+                leadingText = inlineToAttributed(inlines)
             } else if let nestedList = child as? UnorderedList {
                 nested.append(contentsOf: convertList(nestedList, ordered: false))
             } else if let nestedList = child as? OrderedList {
@@ -514,6 +522,23 @@ public enum BlockParser {
     }
 
     // MARK: - Subpage detection
+
+    /// Pop a trailing `<softbreak | linebreak><[…](path.md)>` pair off the end
+    /// of a list-item's leading paragraph and return it as a `.subpage` block.
+    /// Used to recover bullet+subpage structure from files written by the
+    /// pre-blank-line serializer, where the indented subpage line got folded
+    /// into the bullet's paragraph via CommonMark lazy continuation.
+    private static func peelTrailingSubpage(_ inlines: inout [any InlineMarkup]) -> Block? {
+        guard inlines.count >= 2,
+              inlines[inlines.count - 2] is SoftBreak || inlines[inlines.count - 2] is LineBreak,
+              let link = inlines.last as? Markdown.Link,
+              let dest = link.destination, dest.hasSuffix(".md")
+        else { return nil }
+        let titleParts: [String] = Array(link.inlineChildren).compactMap { ($0 as? Markdown.Text)?.string }
+        let title = titleParts.joined()
+        inlines.removeLast(2)
+        return .subpage(title: title.isEmpty ? dest : title, pageID: dest)
+    }
 
     private static func detectSubpage(_ inlines: [any InlineMarkup]) -> Block? {
         // A paragraph is treated as a subpage if it contains exactly one link whose

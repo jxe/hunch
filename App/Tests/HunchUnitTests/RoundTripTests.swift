@@ -71,7 +71,7 @@ struct RoundTripTests {
         s.mergeAttributes(bold)
         let blocks = [Block.paragraph(text: s)]
         let serialized = BlockSerializer.serialize(blocks)
-        #expect(serialized == "**But there's so many things that are unknown:** \n")
+        #expect(serialized == "**But there's so many things that are unknown:** \n\n")
 
         // The serialized form should re-parse as a single bold run.
         let reparsed = BlockParser.parse(serialized)
@@ -190,5 +190,107 @@ struct RoundTripTests {
 
     @Test func headingWithBulletListIdempotent() {
         assertIdempotent("# Section\n\n- item\n- item\n  - nested\n\nbelow\n")
+    }
+
+    // MARK: - List item with non-list child (bullet+subpage and friends)
+
+    /// Bullet with a `.subpage` child must survive serialize → parse with the
+    /// nested-child structure intact. The serializer puts a blank line between
+    /// the marker line and the child so CommonMark doesn't fold the indented
+    /// link into the bullet's paragraph.
+    @Test func bulletWithSubpageChildRoundTripsTree() {
+        let tree = [Block.bullet(
+            text: AttributedString("Foo bullet"),
+            children: [.subpage(title: "Subpage", pageID: "Subpage.md")]
+        )]
+        let serialized = BlockSerializer.serialize(tree)
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 1)
+        guard case .bullet(let text) = reparsed[0].kind else {
+            Issue.record("expected .bullet root, got \(reparsed[0].kind)")
+            return
+        }
+        #expect(String(text.characters) == "Foo bullet")
+        #expect(reparsed[0].children.count == 1)
+        guard case .subpage(_, let pageID) = reparsed[0].children[0].kind else {
+            Issue.record("expected .subpage child, got \(reparsed[0].children[0].kind)")
+            return
+        }
+        #expect(pageID == "Subpage.md")
+    }
+
+    @Test func bulletWithSubpageChildIdempotent() {
+        assertIdempotent("- Foo bullet\n\n  [Subpage](Subpage.md)\n")
+    }
+
+    /// Backward-compat: files written by the pre-blank-line serializer have
+    /// the subpage line fused into the bullet via CommonMark lazy continuation.
+    /// The parser peels a trailing softbreak + `.md` link off the leading
+    /// paragraph and restores it as a `.subpage` child.
+    @Test func bulletWithSubpageChildHealsPreFixFormat() {
+        let blocks = BlockParser.parse("- Foo bullet\n  [Subpage](Subpage.md)\n")
+        #expect(blocks.count == 1)
+        guard case .bullet(let text) = blocks[0].kind else {
+            Issue.record("expected .bullet root, got \(blocks[0].kind)")
+            return
+        }
+        #expect(String(text.characters) == "Foo bullet")
+        #expect(blocks[0].children.count == 1)
+        guard case .subpage(_, let pageID) = blocks[0].children[0].kind else {
+            Issue.record("expected .subpage child, got \(blocks[0].children[0].kind)")
+            return
+        }
+        #expect(pageID == "Subpage.md")
+    }
+
+    /// Numbered items have a 3-char marker (`1. `), so children indent to
+    /// column 3 — same content-column rule that keeps bullets working.
+    @Test func numberedWithSubpageChildRoundTripsTree() {
+        let tree = [Block.numbered(
+            text: AttributedString("Foo"),
+            children: [.subpage(title: "Sub", pageID: "sub.md")]
+        )]
+        let reparsed = BlockParser.parse(BlockSerializer.serialize(tree))
+        #expect(reparsed.count == 1)
+        guard case .numbered = reparsed[0].kind else {
+            Issue.record("expected .numbered root, got \(reparsed[0].kind)")
+            return
+        }
+        #expect(reparsed[0].children.count == 1)
+        if case .subpage(_, let pageID) = reparsed[0].children[0].kind {
+            #expect(pageID == "sub.md")
+        } else {
+            Issue.record("expected .subpage child")
+        }
+    }
+
+    @Test func numberedWithSubpageChildIdempotent() {
+        assertIdempotent("1. Foo\n\n   [Sub](sub.md)\n")
+    }
+
+    /// Todos render `- [ ] ` but in GFM the list marker itself is just `- ` —
+    /// the `[ ]` is content. Children indent to column 2, same as a bullet.
+    @Test func todoWithSubpageChildRoundTripsTree() {
+        let tree = [Block.todo(
+            text: AttributedString("Foo"),
+            done: false,
+            children: [.subpage(title: "Sub", pageID: "sub.md")]
+        )]
+        let reparsed = BlockParser.parse(BlockSerializer.serialize(tree))
+        #expect(reparsed.count == 1)
+        guard case .todo = reparsed[0].kind else {
+            Issue.record("expected .todo root, got \(reparsed[0].kind)")
+            return
+        }
+        #expect(reparsed[0].children.count == 1)
+        if case .subpage(_, let pageID) = reparsed[0].children[0].kind {
+            #expect(pageID == "sub.md")
+        } else {
+            Issue.record("expected .subpage child")
+        }
+    }
+
+    @Test func todoWithSubpageChildIdempotent() {
+        assertIdempotent("- [ ] Foo\n\n  [Sub](sub.md)\n")
     }
 }
