@@ -387,7 +387,10 @@ extension EditorView {
     /// drop onto your own collapsed parent.
     func applyDropTarget(at y: CGFloat, snapshot: [Block]) {
         let hidden = hiddenBlockIDs(in: snapshot)
-        state.currentDropTarget = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        let target = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        if state.currentDropTarget != target {
+            state.currentDropTarget = target
+        }
     }
 
     fileprivate func resolveDropTarget(atY y: CGFloat, snapshot: [Block], hidden: Set<BlockID>) -> DropTarget {
@@ -398,7 +401,7 @@ extension EditorView {
         // nested rows; iterating the legacy flat preorder of `snapshot`
         // would double-count blocks that also live inside their parent's
         // `children` array.
-        let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden)
+        let rows = computeVisibleLayout(snapshot: snapshot, hidden: hidden)
 
         // Hit-test for "drop on closed parent" / "drop onto subpage". Edge
         // band keeps the gap above/below the row reachable for between-rows

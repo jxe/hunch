@@ -233,7 +233,9 @@ public struct EditorView: View {
                     performPayloadDrop(payload, atY: y, snapshot: document.children)
                 },
                 onCancel: {
-                    state.currentDropTarget = nil
+                    if state.currentDropTarget != nil {
+                        state.currentDropTarget = nil
+                    }
                 }
             )
             .macScrollMetrics(scrollMetrics)
@@ -1354,7 +1356,7 @@ public struct EditorView: View {
         var lastVisible: Block? = nil
         var lastDepth: Int = 0
         var preorderCounter = 0
-        appendVisible(in: document.children, depth: 0, parentID: nil, hidden: hidden,
+        appendVisible(in: snapshot, depth: 0, parentID: nil, hidden: hidden,
                       rows: &rows,
                       lastVisible: &lastVisible, lastDepth: &lastDepth, preorderCounter: &preorderCounter)
         return rows
@@ -1951,21 +1953,26 @@ public struct EditorView: View {
 
     private func splitBlock(_ blockID: BlockID, selectionStart: Int, selectionEnd: Int) -> KeyPress.Result {
         guard let block = document.find(blockID) else { return .ignored }
-        let plain = String(block.text.characters)
+        let attr = block.text
+        let total = attr.characters.count
         // Return over a selection deletes the selected range as part of the split:
         // head ends at the selection's start, tail begins after its end. Empty
-        // selection collapses to the standard cursor split.
-        let safeStart = max(0, min(selectionStart, plain.count))
-        let safeEnd = max(safeStart, min(selectionEnd, plain.count))
-        let startIdx = plain.index(plain.startIndex, offsetBy: safeStart)
-        let endIdx = plain.index(plain.startIndex, offsetBy: safeEnd)
-        let head = String(plain[..<startIdx])
-        let tail = String(plain[endIdx...])
+        // selection collapses to the standard cursor split. Slice on the
+        // AttributedString directly so bold/italic/code/strike/link survive — a
+        // round-trip through `String(attr.characters)` would strip every mark.
+        let safeStart = max(0, min(selectionStart, total))
+        let safeEnd = max(safeStart, min(selectionEnd, total))
+        let startIdx = attr.index(attr.startIndex, offsetByCharacters: safeStart)
+        let endIdx = attr.index(attr.startIndex, offsetByCharacters: safeEnd)
+        let headAttr = AttributedString(attr[attr.startIndex..<startIdx])
+        let tailAttr = AttributedString(attr[endIdx..<attr.endIndex])
+        let headEmpty = headAttr.characters.isEmpty
+        let tailEmpty = tailAttr.characters.isEmpty
 
         // Enter-triggered autotransforms (`---`, ` ``` `) only fire when the cursor is at
         // the end of the row (tail empty) and the head matches a whole-row trigger.
-        if tail.isEmpty,
-           let result = detectEnterAutotransform(text: AttributedString(head)) {
+        if tailEmpty,
+           let result = detectEnterAutotransform(text: headAttr) {
             applyAutotransform(result.transform, remainingText: result.remainingText, blockID: blockID)
             return .handled
         }
@@ -1974,7 +1981,7 @@ public struct EditorView: View {
         // refused (e.g. parent is a heading — heading-containment forbids
         // outdent there), fall through to the convert-to-paragraph or split
         // path so the user gets SOMETHING useful instead of a no-op.
-        if head.isEmpty, tail.isEmpty, document.parent(of: blockID) != nil {
+        if headEmpty, tailEmpty, document.parent(of: blockID) != nil {
             let result = changeIndent(blockID, by: -1)
             if result == .handled { return result }
         }
@@ -1984,8 +1991,8 @@ public struct EditorView: View {
         // of the same kind ABOVE it. Without this, the default split below
         // would wipe the head text and reattach it as a sibling AFTER the
         // children, orphaning the sub-bullets under an empty row.
-        if head.isEmpty, !tail.isEmpty, !block.children.isEmpty {
-            let newBlock = followUpBlock(after: block, withText: "")
+        if headEmpty, !tailEmpty, !block.children.isEmpty {
+            let newBlock = followUpBlock(after: block, withText: AttributedString())
             let parentID = document.parent(of: blockID)
             let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
             let i = siblings.firstIndex(where: { $0.id == blockID }) ?? siblings.count
@@ -2002,12 +2009,12 @@ public struct EditorView: View {
         //     sibling AFTER the whole collapsed section instead.
         //   * Anything else with children — insert a new FIRST child of the
         //     same kind as the existing first child.
-        if tail.isEmpty, !block.children.isEmpty {
+        if tailEmpty, !block.children.isEmpty {
             if isCollapsedSection(block) {
                 let parentID = document.parent(of: blockID)
                 let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
                 let i = siblings.firstIndex(where: { $0.id == blockID }) ?? siblings.count - 1
-                let newBlock = followUpBlock(after: block, withText: "")
+                let newBlock = followUpBlock(after: block, withText: AttributedString())
                 mutate("Split Block") {
                     document.insertSubtree(newBlock, at: DropPath(parent: parentID, position: i + 1))
                 }
@@ -2015,7 +2022,7 @@ public struct EditorView: View {
                 return .handled
             } else {
                 let firstChild = block.children[0]
-                let newBlock = followUpBlock(after: firstChild, withText: "")
+                let newBlock = followUpBlock(after: firstChild, withText: AttributedString())
                 mutate("Split Block") {
                     document.insertSubtree(newBlock, at: DropPath(parent: blockID, position: 0))
                 }
@@ -2027,7 +2034,7 @@ public struct EditorView: View {
         // Empty list item + Enter exits the list: convert to paragraph in place.
         // Reached only when the block has no children (handled above) and the
         // row is fully empty.
-        if head.isEmpty && tail.isEmpty {
+        if headEmpty && tailEmpty {
             switch block.kind {
             case .bullet, .numbered, .todo:
                 mutate("Convert to Paragraph") {
@@ -2041,13 +2048,13 @@ public struct EditorView: View {
             }
         }
 
-        let newBlock = followUpBlock(after: block, withText: tail)
+        let newBlock = followUpBlock(after: block, withText: tailAttr)
         let parentID = document.parent(of: blockID)
         let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
         let i = siblings.firstIndex(where: { $0.id == blockID }) ?? siblings.count - 1
 
         mutate("Split Block") {
-            document.setText(blockID, AttributedString(head))
+            document.setText(blockID, headAttr)
             document.insertSubtree(newBlock, at: DropPath(parent: parentID, position: i + 1))
         }
         transferFocus(to: .editor(newBlock.id, initialCursor: .offset(0)))
@@ -2112,7 +2119,7 @@ public struct EditorView: View {
 
     func insertEmptySiblingAfter(_ id: BlockID) -> Bool {
         guard let source = document.find(id) else { return false }
-        let newBlock = followUpBlock(after: source, withText: "")
+        let newBlock = followUpBlock(after: source, withText: AttributedString())
         // Always insert as the next sibling under the source's parent — even
         // containers with children (toggles, lists) get a peer below, not a
         // nested first-child. Headings auto-refold their body via
@@ -2130,19 +2137,18 @@ public struct EditorView: View {
         return true
     }
 
-    private func followUpBlock(after block: Block, withText text: String) -> Block {
-        let attr = AttributedString(text)
+    private func followUpBlock(after block: Block, withText text: AttributedString) -> Block {
         switch block.kind {
         case .bullet:
-            return .bullet(text: attr)
+            return .bullet(text: text)
         case .numbered:
-            return .numbered(text: attr)
+            return .numbered(text: text)
         case .todo:
-            return .todo(text: attr, done: false)
+            return .todo(text: text, done: false)
         case .quote:
-            return .quote(text: attr)
+            return .quote(text: text)
         case .heading, .paragraph, .toggle, .templateButton, .code, .divider, .subpage, .image:
-            return .paragraph(text: attr)
+            return .paragraph(text: text)
         }
     }
 
@@ -2262,4 +2268,3 @@ public struct EditorView: View {
         return false
     }
 }
-

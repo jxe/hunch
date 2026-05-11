@@ -397,4 +397,77 @@ struct DocumentMutationTests {
         #expect(!para.isContainer)
         #expect(bullet.isContainer)
     }
+
+    // MARK: - Split-preserves-marks invariants
+    //
+    // EditorView.splitBlock isn't directly callable from tests (it's view-private),
+    // but the underlying invariant is: slicing an AttributedString with bolded /
+    // italicized / linked runs and feeding the slices back through
+    // `Document.setText` (head) and a fresh paragraph block (tail) must preserve
+    // every inline mark. A regression to plain-`String` slicing would fail these.
+
+    private func boldedHello() -> AttributedString {
+        // "hello world" with "hello" bolded.
+        var attr = AttributedString("hello world")
+        let end = attr.index(attr.startIndex, offsetByCharacters: 5)
+        attr[attr.startIndex..<end][InlineAttributes.BoldAttribute.self] = true
+        return attr
+    }
+
+    private func sliceMimickingSplit(_ attr: AttributedString, at offset: Int) -> (AttributedString, AttributedString) {
+        let idx = attr.index(attr.startIndex, offsetByCharacters: offset)
+        let head = AttributedString(attr[attr.startIndex..<idx])
+        let tail = AttributedString(attr[idx..<attr.endIndex])
+        return (head, tail)
+    }
+
+    private func runHasBold(_ s: AttributedString) -> Bool {
+        s.runs.contains { $0[InlineAttributes.BoldAttribute.self] == true }
+    }
+
+    @Test func splitPreservesBoldOnHead() {
+        let attr = boldedHello()
+        let (head, _) = sliceMimickingSplit(attr, at: attr.characters.count)
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            title: "Test",
+            children: [.paragraph(text: attr)]
+        )
+        let id = doc.children[0].id
+        _ = doc.setText(id, head)
+        guard case .paragraph(let updated) = doc.find(id)?.kind else {
+            Issue.record("expected paragraph"); return
+        }
+        #expect(String(updated.characters) == "hello world")
+        #expect(runHasBold(updated))
+    }
+
+    @Test func splitPreservesBoldOnTail() {
+        // Split before the bold: tail keeps the bolded "hello".
+        var attr = AttributedString("xx hello")
+        let boldStart = attr.index(attr.startIndex, offsetByCharacters: 3)
+        attr[boldStart..<attr.endIndex][InlineAttributes.BoldAttribute.self] = true
+        let (_, tail) = sliceMimickingSplit(attr, at: 3)
+        #expect(String(tail.characters) == "hello")
+        #expect(runHasBold(tail))
+    }
+
+    @Test func splitPreservesItalic() {
+        var attr = AttributedString("italic word")
+        let end = attr.index(attr.startIndex, offsetByCharacters: 6)
+        attr[attr.startIndex..<end][InlineAttributes.ItalicAttribute.self] = true
+        let (head, _) = sliceMimickingSplit(attr, at: attr.characters.count)
+        let hasItalic = head.runs.contains { $0[InlineAttributes.ItalicAttribute.self] == true }
+        #expect(hasItalic)
+    }
+
+    @Test func splitPreservesLink() {
+        var attr = AttributedString("see docs")
+        let linkStart = attr.index(attr.startIndex, offsetByCharacters: 4)
+        attr[linkStart..<attr.endIndex].link = URL(string: "https://example.com/docs")
+        let (head, tail) = sliceMimickingSplit(attr, at: 4)
+        // head: "see " — no link. tail: "docs" — link preserved.
+        #expect(head.runs.allSatisfy { $0.link == nil })
+        #expect(tail.runs.contains { $0.link?.absoluteString == "https://example.com/docs" })
+    }
 }

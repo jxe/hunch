@@ -342,6 +342,17 @@ struct MacBlockTextEditor: NSViewRepresentable {
         context.coordinator.lastKnownBindingPlain = String(text.characters)
         view.wantsFocus = isFocused
         view.pendingInitialCursor = consumeInitialCursor()
+        // Wire the synchronous-commit closure eagerly at mount, not in
+        // `textDidBeginEditing`. NSTextView only fires the begin-editing delegate
+        // when characters are inserted — programmatic attribute changes
+        // (Cmd-B / Cmd-I / Cmd-E via `didChangeText()`) do NOT trigger it. Without
+        // eager wiring, a Cmd-B → Esc flow leaves `commitActiveEditor` nil and the
+        // formatting never reaches the model. `[weak coordinator, weak view]` so
+        // unmounting the row cleans up.
+        documentUndoController?.commitActiveEditor = { [weak coordinator = context.coordinator, weak view] in
+            guard let coordinator, let view else { return }
+            coordinator.commitLiveText(view)
+        }
         return view
     }
 
@@ -529,16 +540,12 @@ struct MacBlockTextEditor: NSViewRepresentable {
             // clicking into block B should not merge into one undo entry. Defer the
             // SwiftUI focus write: NSTextView fires this delegate synchronously from
             // `makeFirstResponder` calls that may originate inside a view-update pass.
+            //
+            // `commitActiveEditor` is wired eagerly in `makeNSView`, not here —
+            // this delegate doesn't fire for programmatic attribute changes
+            // (Cmd-B / Cmd-I via `didChangeText()`), so a Cmd-B-then-Esc with no
+            // intervening typing would otherwise leave the commit hook nil.
             parent.documentUndoController?.breakTextCoalescing()
-            // Publish a synchronous-commit closure that EditorView calls before any
-            // state mutation that would unmount this editor. See `commitActiveEditor`
-            // on DocumentUndoController for the rationale.
-            if let tv = notification.object as? NSTextView {
-                parent.documentUndoController?.commitActiveEditor = { [weak self, weak tv] in
-                    guard let self, let tv else { return }
-                    self.commitLiveText(tv)
-                }
-            }
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(true)
             }
@@ -551,7 +558,11 @@ struct MacBlockTextEditor: NSViewRepresentable {
             if let tv = notification.object as? NSTextView {
                 commitLiveText(tv)
             }
-            parent.documentUndoController?.commitActiveEditor = nil
+            // Don't clear `commitActiveEditor` here. In fullscreen mode the Esc-notification
+            // path (HunchApp's NSEvent monitor → `handleEscapeKey` → `transferFocus(.nav)`)
+            // commits AFTER first responder resigns — clearing the closure here would
+            // turn that commit into a no-op. The closure captures coordinator + view
+            // weakly, so unmounting the row still cleans it up.
             parent.documentUndoController?.breakTextCoalescing()
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(false)
@@ -891,14 +902,14 @@ final class ContainedTextView: NSTextView {
             // editor focused — don't resign first responder.
             return
         }
-        // Commit BEFORE resigning first responder. textDidEndEditing also calls
-        // commitLiveText, but in some paths that fires during SwiftUI's view teardown
-        // and the binding write doesn't reliably reach the read-only Text that's about
-        // to take this row's slot. Calling synchronously here guarantees the model is
-        // current before any state mutation kicks off the unmount.
-        coordinator?.commitLiveText(self)
-        window?.makeFirstResponder(nil)
+        // Order matters: let `.escape` run while this view is still first responder
+        // and `commitActiveEditor` is still wired. `handleEditorKey(.escape)` calls
+        // `commitActiveEditor` to flush live text (with marks) into the binding,
+        // then transitions to nav mode. Only after that do we resign — resigning
+        // first would synchronously fire `textDidEndEditing` and re-renders may
+        // race the commit.
         if let onKey = coordinator?.parent.onKey, onKey(.escape) == .handled {
+            window?.makeFirstResponder(nil)
             return
         }
         super.cancelOperation(sender)
@@ -1016,6 +1027,12 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         bridge.textView = tv
         bridge.fontSize = fontSize
         bridge.bold = bold
+        // See macOS twin: wire eagerly at mount, not in `textViewDidBeginEditing` —
+        // formatting changes via `IOSEditorBridge` don't fire begin-editing.
+        documentUndoController?.commitActiveEditor = { [weak coordinator = context.coordinator, weak tv] in
+            guard let coordinator, let tv else { return }
+            coordinator.commitLiveText(tv)
+        }
         // Build the keyboard accessory bar and host it on the UITextView. UIKit
         // shows this above the keyboard. SwiftUI's `.toolbar(placement: .keyboard)`
         // doesn't reach a UIViewRepresentable, so we set it directly.
@@ -1234,12 +1251,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
 
         func textViewDidBeginEditing(_ textView: UITextView) {
             parent.documentUndoController?.breakTextCoalescing()
-            // See Mac twin: publish a sync-commit closure for EditorView to call before
-            // any state mutation that would unmount this editor.
-            parent.documentUndoController?.commitActiveEditor = { [weak self, weak textView] in
-                guard let self, let textView else { return }
-                self.commitLiveText(textView)
-            }
+            // `commitActiveEditor` wired eagerly in `makeUIView` — see macOS twin.
             // Defer the @FocusState write — this delegate fires synchronously
             // from `updateUIView`'s own `becomeFirstResponder`, which runs
             // inside a SwiftUI view-update pass. A synchronous write triggers
@@ -1252,7 +1264,9 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         func textViewDidEndEditing(_ textView: UITextView) {
             // Single coarse commit on session end — see Mac twin for rationale.
             commitLiveText(textView)
-            parent.documentUndoController?.commitActiveEditor = nil
+            // Don't clear `commitActiveEditor` — keep the hook wired for late
+            // commits (e.g. mode-change paths that fire after first responder
+            // resigns). Weak refs in the closure clean up on unmount.
             parent.documentUndoController?.breakTextCoalescing()
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(false)
