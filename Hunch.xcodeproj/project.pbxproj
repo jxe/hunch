@@ -36,7 +36,6 @@
 		ABB5134C045387553C506B47 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 5ECE6A64919F54162EC5473A /* README.md */; };
 		B155E1F04AA089441F43D8EA /* PagePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3403F91704D1B3970E4EB908 /* PagePickerView.swift */; };
 		B681767CB931D2A7DC39D806 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C4608B6FE43942A156484E8F /* PrivacyInfo.xcprivacy */; };
-		B707766C87877E8831F13530 /* Editor in Frameworks */ = {isa = PBXBuildFile; productRef = A20B9674903EEF8DEF6BB8DB /* Editor */; };
 		BF5E458EBAE96BAD9EA9B1D9 /* Clamshell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6089D3744533A5D4FAF49690 /* Clamshell.swift */; };
 		C1FCDFD59E1F87957A2AF622 /* Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 944DA3136290A9A3124F0973 /* Parser.swift */; };
 		C8DC2CA143C6DAABBBE43AB2 /* WorkspaceBookmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0D5BC6AC3A24FE2C74A0EC1 /* WorkspaceBookmarkTests.swift */; };
@@ -125,14 +124,6 @@
 			files = (
 				D474865E25285B0A3054E20C /* Editor in Frameworks */,
 				7C8E5BD992CE032FCAC3E4E9 /* Markdown in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		583D81ED7020015715D93C0F /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				B707766C87877E8831F13530 /* Editor in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -312,7 +303,6 @@
 			buildConfigurationList = 680CB3D6942428F934A12EE0 /* Build configuration list for PBXNativeTarget "HunchUnitTests" */;
 			buildPhases = (
 				6AC9848EC43B3ECB77000248 /* Sources */,
-				583D81ED7020015715D93C0F /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -321,7 +311,6 @@
 			);
 			name = HunchUnitTests;
 			packageProductDependencies = (
-				A20B9674903EEF8DEF6BB8DB /* Editor */,
 			);
 			productName = HunchUnitTests;
 			productReference = 1A36F3EF17F37B4CA8209B53 /* HunchUnitTests.xctest */;
@@ -430,7 +419,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"$PLATFORM_NAME\" != \"macosx\" ]; then\n    exit 0\nfi\nDEST=\"$HOME/Applications/Hunch.app\"\nmkdir -p \"$HOME/Applications\"\nrm -rf \"$DEST\"\ncp -R \"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app\" \"$DEST\"\ncodesign --force --sign - --deep \"$DEST\" >/dev/null 2>&1 || true\n";
+			shellScript = "if [ \"$PLATFORM_NAME\" != \"macosx\" ]; then\n    exit 0\nfi\nDEST=\"$HOME/Applications/Hunch.app\"\nmkdir -p \"$HOME/Applications\"\nrm -rf \"$DEST\"\ncp -R \"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app\" \"$DEST\"\n# xcodebuild test injects HunchUnitTests.xctest into PlugIns/\n# for the test run; strip it so the install copy carries only\n# the app itself. Also keeps codesign from tripping on the\n# xctest's malformed bundle format mid-traversal.\nrm -rf \"$DEST/Contents/PlugIns\"\n# Sign bottom-up: nested dylibs first, then the bundle.\n# --deep is deprecated and bails on the first unreadable\n# subcomponent, which previously left Hunch.debug.dylib with\n# its old Apple Development signature while the main binary\n# got re-signed ad-hoc — dyld then rejected the launch with a\n# Team-ID mismatch.\nfor dylib in \"$DEST\"/Contents/MacOS/*.dylib; do\n    [ -e \"$dylib\" ] || continue\n    codesign --force --sign - \"$dylib\" >/dev/null 2>&1 \\\n        || echo \"warning: ad-hoc re-sign of $dylib failed\" >&2\ndone\ncodesign --force --sign - \"$DEST\" >/dev/null 2>&1 \\\n    || echo \"warning: ad-hoc re-sign of $DEST failed\" >&2\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -824,10 +813,6 @@
 			productName = Markdown;
 		};
 		958167F9196AF3C05B22D091 /* Editor */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = Editor;
-		};
-		A20B9674903EEF8DEF6BB8DB /* Editor */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = Editor;
 		};

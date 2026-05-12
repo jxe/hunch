@@ -57,8 +57,11 @@ user-picked workspace folder.
     editor boundary).
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
   storage + parser/serializer (formerly SPM tests under `CoreTests/`).
-  Compiles fine; `xcodebuild test` may need extra signing config to load
-  the Editor framework into the test process.
+  The test target depends only on the `Hunch` app target — Editor's
+  symbols come through `BUNDLE_LOADER` (the test bundle's host is
+  `Hunch.app/Contents/MacOS/Hunch`, which statically links Editor), so
+  the test target must not list Editor as a direct dep or it would link
+  a second copy.
 - `project.yml` — XcodeGen spec. **Don't hand-edit the `.xcodeproj`** —
   it's generated, gitignored, overwritten by `xcodegen generate`.
 - `References/typography/` — real Notion screenshots; see its README.

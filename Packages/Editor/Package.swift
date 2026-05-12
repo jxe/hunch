@@ -8,7 +8,7 @@ let package = Package(
         .macOS(.v26)
     ],
     products: [
-        .library(name: "Editor", targets: ["Editor"])
+        .library(name: "Editor", type: .static, targets: ["Editor"])
     ],
     targets: [
         .target(

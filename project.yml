@@ -90,7 +90,24 @@ targets:
           mkdir -p "$HOME/Applications"
           rm -rf "$DEST"
           cp -R "$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app" "$DEST"
-          codesign --force --sign - --deep "$DEST" >/dev/null 2>&1 || true
+          # xcodebuild test injects HunchUnitTests.xctest into PlugIns/
+          # for the test run; strip it so the install copy carries only
+          # the app itself. Also keeps codesign from tripping on the
+          # xctest's malformed bundle format mid-traversal.
+          rm -rf "$DEST/Contents/PlugIns"
+          # Sign bottom-up: nested dylibs first, then the bundle.
+          # --deep is deprecated and bails on the first unreadable
+          # subcomponent, which previously left Hunch.debug.dylib with
+          # its old Apple Development signature while the main binary
+          # got re-signed ad-hoc — dyld then rejected the launch with a
+          # Team-ID mismatch.
+          for dylib in "$DEST"/Contents/MacOS/*.dylib; do
+              [ -e "$dylib" ] || continue
+              codesign --force --sign - "$dylib" >/dev/null 2>&1 \
+                  || echo "warning: ad-hoc re-sign of $dylib failed" >&2
+          done
+          codesign --force --sign - "$DEST" >/dev/null 2>&1 \
+              || echo "warning: ad-hoc re-sign of $DEST failed" >&2
   HunchUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -110,7 +127,6 @@ targets:
       - path: App/Tests/HunchUnitTests
     dependencies:
       - target: Hunch
-      - package: Editor
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.nxhx.Hunch.unittests

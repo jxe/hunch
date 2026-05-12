@@ -30,7 +30,13 @@ sleep 0.3
 # reversible. The dylibs alongside Hunch (Hunch.debug.dylib, __preview.dylib)
 # are load-bearing — the main binary @rpath-loads the debug dylib — so we
 # re-sign in place rather than stripping anything.
-codesign --force --sign - --deep "$installed" >/dev/null 2>&1 || {
+for dylib in "$installed"/Contents/MacOS/*.dylib; do
+  [[ -e "$dylib" ]] || continue
+  codesign --force --sign - "$dylib" >/dev/null 2>&1 || {
+    echo "warning: ad-hoc re-sign of $dylib failed; launch may be blocked by Gatekeeper" >&2
+  }
+done
+codesign --force --sign - "$installed" >/dev/null 2>&1 || {
   echo "warning: ad-hoc re-sign of $installed failed; launch may be blocked by Gatekeeper" >&2
 }
 
