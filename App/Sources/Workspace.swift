@@ -230,16 +230,13 @@ final class Workspace {
 
     // MARK: - Read queries
 
-    func pageTitle(for relativePath: String) -> String? {
-        guard relativePath.hasSuffix(".md") else { return nil }
-        guard let clamshell else { return nil }
+    func lookupPage(_ relativePath: String) -> PageLookup {
+        guard relativePath.hasSuffix(".md"), let clamshell else { return .missing }
         let url = clamshell.url(for: relativePath)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
         let mtime = modificationDate(for: url)
-        if let cached = titleCache[url], cached.modificationDate == mtime {
-            return cached.title
-        }
-        return nil
+        let cachedTitle = (titleCache[url]?.modificationDate == mtime) ? titleCache[url]?.title : nil
+        return .present(title: cachedTitle)
     }
 
     /// Filter + rank pages for any picker surface. `excluding` typically the

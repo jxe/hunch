@@ -28,8 +28,8 @@ final class EditorPageCoordinator: EditorHost {
         window.openSubpage(relativePath: pageID)
     }
 
-    func pageTitle(_ pageID: String) -> String? {
-        workspace.pageTitle(for: pageID)
+    func lookupPage(_ pageID: String) -> PageLookup {
+        workspace.lookupPage(pageID)
     }
 
     func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? {

@@ -519,14 +519,13 @@ public struct EditorView: View {
             onTemplateButtonPress: {
                 instantiateTemplateButton(blockID: block.id)
             },
-            pageTitles: resolvePageTitles(for: block, resolver: host.pageTitle),
+            pageLookups: resolvePageLookups(for: block, resolver: host.lookupPage),
             linkPreviews: relevantLinkPreviews,
             onLinkPreviewLoaded: { url, preview in linkPreviews[url] = preview },
             linkPreviewProvider: host.linkPreviewProvider,
             onTapOutsideText: {
-                if case .subpage(_, let path) = block.kind {
-                    transferFocus(to: .nav(cursor: block.id))
-                    host.onSubpageTap(path)
+                if case .subpage = block.kind {
+                    _ = navigateIntoSubpage(block.id)
                     return
                 }
                 // Clicks outside the editable text region (markers, paddings) — no
@@ -2065,6 +2064,10 @@ public struct EditorView: View {
               case .subpage(_, let path) = block.kind else {
             return false
         }
+        // Silently swallow the action if the target file is gone. The row
+        // already renders in its broken state; navigating would wedge the
+        // nav stack on a load that's going to fail.
+        guard !host.lookupPage(path).isMissing else { return true }
         transferFocus(to: .nav(cursor: blockID))
         host.onSubpageTap(path)
         return true

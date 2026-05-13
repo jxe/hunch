@@ -107,7 +107,7 @@ public struct BlockRow: View, Equatable {
         let isMacDragSource: Bool
         let accessibilityID: String
         let accessibilityLabelText: String
-        let pageTitles: [String: String]
+        let pageLookups: [String: PageLookup]
         let linkPreviews: [URL: LinkPreview]
         // `state` is intentionally NOT in the snapshot — the reference is
         // stable for the editor session, and the per-row reads of
@@ -136,7 +136,7 @@ public struct BlockRow: View, Equatable {
             isMacDragSource: isMacDragSource,
             accessibilityID: accessibilityID,
             accessibilityLabelText: accessibilityLabelText,
-            pageTitles: pageTitles,
+            pageLookups: pageLookups,
             linkPreviews: linkPreviews
         )
     }
@@ -203,14 +203,15 @@ public struct BlockRow: View, Equatable {
     /// Called when the toggle's chevron is tapped. No-op for non-toggle blocks.
     let onToggleExpansion: () -> Void
     let onTemplateButtonPress: () -> Void
-    /// Resolved titles for every `.md` page reference this row needs to render —
-    /// the subpage path for `.subpage` blocks, plus inline page links inside
-    /// `block.text`. Pre-resolved at the call site so page renames invalidate
-    /// the row's `Equatable` `==` (the parent `pageTitle` closure isn't itself
-    /// comparable). Map from the link's `path.md` (matching what `block.kind`
-    /// stores for subpages and what `.link` URLs' `absoluteString` carries for
-    /// inline page links) to the resolved page title.
-    let pageTitles: [String: String]
+    /// Resolved existence + titles for every `.md` page reference this row
+    /// needs to render — the subpage path for `.subpage` blocks, plus inline
+    /// page links inside `block.text`. Pre-resolved at the call site so page
+    /// renames / deletes invalidate the row's `Equatable` `==` (the parent
+    /// `lookupPage` closure isn't itself comparable). Map from the link's
+    /// `path.md` (matching what `block.kind` stores for subpages and what
+    /// `.link` URLs' `absoluteString` carries for inline page links) to the
+    /// page's lookup result.
+    let pageLookups: [String: PageLookup]
 
     /// Subset of the host's link-preview cache relevant to this row. Filtered
     /// at the call site to just the URLs in `block.text`, so the dict stays
@@ -259,7 +260,7 @@ public struct BlockRow: View, Equatable {
         onClickAtPoint: @escaping (CGPoint) -> Void,
         onToggleExpansion: @escaping () -> Void,
         onTemplateButtonPress: @escaping () -> Void,
-        pageTitles: [String: String],
+        pageLookups: [String: PageLookup],
         linkPreviews: [URL: LinkPreview],
         onLinkPreviewLoaded: @escaping (URL, LinkPreview) -> Void,
         linkPreviewProvider: LinkPreviewProvider?,
@@ -300,7 +301,7 @@ public struct BlockRow: View, Equatable {
         self.onClickAtPoint = onClickAtPoint
         self.onToggleExpansion = onToggleExpansion
         self.onTemplateButtonPress = onTemplateButtonPress
-        self.pageTitles = pageTitles
+        self.pageLookups = pageLookups
         self.linkPreviews = linkPreviews
         self.onLinkPreviewLoaded = onLinkPreviewLoaded
         self.linkPreviewProvider = linkPreviewProvider
@@ -480,7 +481,8 @@ public struct BlockRow: View, Equatable {
             templateButtonRow()
 
         case .subpage(let title, let path):
-            subpageRow(title: pageTitles[path] ?? title)
+            let lookup = pageLookups[path]
+            subpageRow(title: lookup?.title ?? title, missing: lookup?.isMissing == true)
 
         case .image(let source, let alt):
             imageRow(source: source, alt: alt)
@@ -647,7 +649,7 @@ public struct BlockRow: View, Equatable {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageTitles[$0] }))
+                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageLookups[$0]?.title }))
                         .font(NotionStyle.body())
                         .lineSpacing(NotionStyle.bodyLineSpacing)
                 }
@@ -666,20 +668,27 @@ public struct BlockRow: View, Equatable {
         .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
     }
 
-    private func subpageRow(title: String) -> some View {
+    private func subpageRow(title: String, missing: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-            Image(systemName: "doc.text")
+            Image(systemName: missing ? "doc.badge.exclamationmark" : "doc.text")
                 .font(.system(size: NotionStyle.pageIconSize))
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
                 .alignmentGuide(.firstTextBaseline) { dimensions in
                     dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                 }
-            Text(title)
-                .font(NotionStyle.body(weight: .medium))
-                .foregroundStyle(NotionStyle.foreground)
-                .lineSpacing(NotionStyle.bodyLineSpacing)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(NotionStyle.body(weight: .medium))
+                    .foregroundStyle(missing ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                    .lineSpacing(NotionStyle.bodyLineSpacing)
+                if missing {
+                    Text("(missing)")
+                        .font(NotionStyle.body())
+                        .foregroundStyle(NotionStyle.mutedForeground)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
@@ -729,7 +738,7 @@ public struct BlockRow: View, Equatable {
                     baseFont: font,
                     boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
                     fontSize: fontSize,
-                    pageTitles: pageTitles,
+                    pageLookups: pageLookups,
                     previews: linkPreviews
                 )
                     .font(font)
@@ -746,22 +755,23 @@ public struct BlockRow: View, Equatable {
     }
 }
 
-/// Pre-resolve every `.md` page title this row needs to render: the subpage
-/// path for `.subpage` blocks plus every inline page-link URL inside the
-/// block's text. The result is the value `BlockRow` stores as `pageTitles` and
-/// compares in `==`, so a rename of any referenced page changes the map for
-/// the rows that mention it (and only those rows) — letting `.equatable()`
-/// short-circuit the rest while keeping link titles correct.
-func resolvePageTitles(for block: Block, resolver: (String) -> String?) -> [String: String] {
-    var result: [String: String] = [:]
-    if case .subpage(_, let path) = block.kind, let resolved = resolver(path) {
-        result[path] = resolved
+/// Pre-resolve every `.md` page reference this row needs to render: the
+/// subpage path for `.subpage` blocks plus every inline page-link URL inside
+/// the block's text. The result is the value `BlockRow` stores as
+/// `pageLookups` and compares in `==`, so a rename or delete of any
+/// referenced page changes the map for the rows that mention it (and only
+/// those rows) — letting `.equatable()` short-circuit the rest while keeping
+/// link titles correct and broken-subpage indicators in sync.
+func resolvePageLookups(for block: Block, resolver: (String) -> PageLookup) -> [String: PageLookup] {
+    var result: [String: PageLookup] = [:]
+    if case .subpage(_, let path) = block.kind {
+        result[path] = resolver(path)
     }
     for run in block.text.runs {
         guard let url = run.link, !isExternalLinkURL(url), url.absoluteString.hasSuffix(".md") else { continue }
         let key = url.absoluteString
-        if result[key] == nil, let resolved = resolver(key) {
-            result[key] = resolved
+        if result[key] == nil {
+            result[key] = resolver(key)
         }
     }
     return result
@@ -769,7 +779,7 @@ func resolvePageTitles(for block: Block, resolver: (String) -> String?) -> [Stri
 
 /// Walk an `AttributedString` and gather every `http`/`https` URL referenced
 /// by an inline `.link` run. Internal `.md` page links don't go through link
-/// previews — they have their own subpage-resolution path (`pageTitles`).
+/// previews — they have their own subpage-resolution path (`pageLookups`).
 func collectExternalURLs(in text: AttributedString) -> Set<URL> {
     var set: Set<URL> = []
     for run in text.runs {
@@ -791,7 +801,7 @@ private func decoratedText(
     baseFont: Font,
     boldFont: Font,
     fontSize: CGFloat,
-    pageTitles: [String: String],
+    pageLookups: [String: PageLookup],
     previews: [URL: LinkPreview]
 ) -> Text {
     var output = Text("")
@@ -807,7 +817,7 @@ private func decoratedText(
         var displayText = runText
         if let url = link {
             if !isExternalLinkURL(url), url.absoluteString.hasSuffix(".md"),
-               let resolved = pageTitles[url.absoluteString] {
+               let resolved = pageLookups[url.absoluteString]?.title {
                 displayText = resolved
             } else if isExternalLinkURL(url),
                       let preview = previews[url],
@@ -895,7 +905,7 @@ public struct BlockRowPreview: View, Equatable {
     public let isPageTitle: Bool
     public let numberingIndex: Int?
     public let isExpanded: Bool
-    public let pageTitles: [String: String]
+    public let pageLookups: [String: PageLookup]
     public let linkPreviews: [URL: LinkPreview]
 
     public init(
@@ -904,7 +914,7 @@ public struct BlockRowPreview: View, Equatable {
         isPageTitle: Bool = false,
         numberingIndex: Int? = nil,
         isExpanded: Bool = false,
-        pageTitles: [String: String] = [:],
+        pageLookups: [String: PageLookup] = [:],
         linkPreviews: [URL: LinkPreview] = [:]
     ) {
         self.block = block
@@ -912,7 +922,7 @@ public struct BlockRowPreview: View, Equatable {
         self.isPageTitle = isPageTitle
         self.numberingIndex = numberingIndex
         self.isExpanded = isExpanded
-        self.pageTitles = pageTitles
+        self.pageLookups = pageLookups
         self.linkPreviews = linkPreviews
     }
 
@@ -1033,7 +1043,7 @@ public struct BlockRowPreview: View, Equatable {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageTitles[$0] }))
+                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageLookups[$0]?.title }))
                         .font(NotionStyle.body())
                         .lineSpacing(NotionStyle.bodyLineSpacing)
                 }
@@ -1047,20 +1057,29 @@ public struct BlockRowPreview: View, Equatable {
             .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
 
         case .subpage(let title, let path):
-            let displayTitle = pageTitles[path] ?? title
+            let lookup = pageLookups[path]
+            let displayTitle = lookup?.title ?? title
+            let missing = lookup?.isMissing == true
             HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-                Image(systemName: "doc.text")
+                Image(systemName: missing ? "doc.badge.exclamationmark" : "doc.text")
                     .font(.system(size: NotionStyle.pageIconSize))
                     .foregroundStyle(NotionStyle.mutedForeground)
                     .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
                     .alignmentGuide(.firstTextBaseline) { dimensions in
                         dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                     }
-                Text(displayTitle)
-                    .font(NotionStyle.body(weight: .medium))
-                    .foregroundStyle(NotionStyle.foreground)
-                    .lineSpacing(NotionStyle.bodyLineSpacing)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    Text(displayTitle)
+                        .font(NotionStyle.body(weight: .medium))
+                        .foregroundStyle(missing ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                        .lineSpacing(NotionStyle.bodyLineSpacing)
+                    if missing {
+                        Text("(missing)")
+                            .font(NotionStyle.body())
+                            .foregroundStyle(NotionStyle.mutedForeground)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
@@ -1086,7 +1105,7 @@ public struct BlockRowPreview: View, Equatable {
                 baseFont: font,
                 boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
                 fontSize: fontSize,
-                pageTitles: pageTitles,
+                pageLookups: pageLookups,
                 previews: linkPreviews
             )
                 .font(font)

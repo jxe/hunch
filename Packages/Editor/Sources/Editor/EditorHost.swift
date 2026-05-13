@@ -1,5 +1,31 @@
 import Foundation
 
+/// Existence + title resolution for a `*.md` page id. Returned by
+/// `EditorHost.lookupPage(_:)`. The three states a page can be in:
+///   - `.missing` — file not on disk (trashed, renamed, or never created).
+///     Subpage rows render distinctly and don't navigate on tap.
+///   - `.present(title: "…")` — file exists and the host has its title cached.
+///   - `.present(title: nil)` — file exists but the host hasn't resolved the
+///     title yet (cache miss). Render normally; call sites fall back to the
+///     block-stored title.
+public enum PageLookup: Equatable, Hashable, Sendable {
+    case missing
+    case present(title: String?)
+}
+
+extension PageLookup {
+    /// The resolved page title if known; nil for `.missing` and for
+    /// `.present` whose title hasn't been cached yet.
+    public var title: String? {
+        if case .present(let t) = self { return t }
+        return nil
+    }
+    public var isMissing: Bool {
+        if case .missing = self { return true }
+        return false
+    }
+}
+
 /// Host integration for `EditorView`. The host owns the document layer (file
 /// I/O, the workspace page list, persistence) and exposes the operations the
 /// editor needs as method calls. Supplied by reference so its identity is
@@ -15,9 +41,10 @@ public protocol EditorHost: AnyObject {
     /// User tapped an inline subpage row — host pushes the page onto its nav stack.
     func onSubpageTap(_ pageID: String)
 
-    /// Resolve a `*.md` page id to its current title. Used by inline-link and
-    /// subpage rows; nil means "page missing or not yet loaded".
-    func pageTitle(_ pageID: String) -> String?
+    /// Resolve a `*.md` page id to its existence + title. Used by inline-link
+    /// and subpage rows for display, and by the editor to gate navigation
+    /// into broken subpage rows.
+    func lookupPage(_ pageID: String) -> PageLookup
 
     /// Persist a new subpage. `initialContent` is the body the editor wants the
     /// new page to start with (descendants of the source block); the host
