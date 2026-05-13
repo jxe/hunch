@@ -41,7 +41,23 @@ final class EditorPageCoordinator: EditorHost {
     }
 
     func onAbsorbSubpage(_ pageID: String) -> Bool {
-        workspace.moveSubpageToTrash(relativePath: pageID)
+        // The editor calls this immediately after the inline-content mutation
+        // and relies on the host to durably persist the parent doc before the
+        // source file is trashed. Without the force-save here, the autosave is
+        // still debounced — and a crash in that window would leave the source
+        // gone and the inlined content unpersisted.
+        guard let clamshell = workspace.clamshell else { return false }
+        let target = clamshell.url(for: pageID)
+        guard FileManager.default.fileExists(atPath: target.path) else { return false }
+        Task { @MainActor [window, workspace] in
+            let saved = await window.saveNow(force: true)
+            guard saved else {
+                NSLog("[onAbsorbSubpage] force-save failed; skipping trash of \(pageID) to avoid data loss")
+                return
+            }
+            workspace.moveSubpageToTrash(relativePath: pageID)
+        }
+        return true
     }
 
     func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) -> Bool {

@@ -215,11 +215,12 @@ final class WorkspaceWindow {
         }
     }
 
-    func saveNow(force: Bool = false) async {
+    @discardableResult
+    func saveNow(force: Bool = false) async -> Bool {
         debounceTask?.cancel()
         debounceTask = nil
-        guard let doc = openDocument, let clamshell = workspace.clamshell else { return }
-        guard force || isDirty else { return }
+        guard let doc = openDocument, let clamshell = workspace.clamshell else { return true }
+        guard force || isDirty else { return true }
         do {
             isSaving = true
             defer { isSaving = false }
@@ -238,8 +239,10 @@ final class WorkspaceWindow {
             }
             isDirty = false
             workspace.rescan()
+            return true
         } catch {
             workspace.error = "Save failed: \(error.localizedDescription)"
+            return false
         }
     }
 
