@@ -69,7 +69,7 @@ final class EditorPageCoordinator: EditorHost {
     }
 
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {
-        BlockSerializer.serialize(blocks)
+        BlockSerializer.serialize(blocks, consecutiveNumbering: true)
     }
 
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? {

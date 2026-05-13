@@ -293,4 +293,65 @@ struct RoundTripTests {
     @Test func todoWithSubpageChildIdempotent() {
         assertIdempotent("- [ ] Foo\n\n  [Sub](sub.md)\n")
     }
+
+    // MARK: - Consecutive numbering (pasteboard path)
+
+    /// Default flag preserves the on-disk `1. 1. 1.` form — load-bearing
+    /// for minimal git diffs on insert/delete in the middle of a list.
+    /// Same-depth siblings get a blank line separator (loose-list form).
+    @Test func numberedListDefaultStaysAtOne() {
+        let tree = [
+            Block.numbered(text: AttributedString("a")),
+            Block.numbered(text: AttributedString("b")),
+            Block.numbered(text: AttributedString("c")),
+        ]
+        #expect(BlockSerializer.serialize(tree) == "1. a\n\n1. b\n\n1. c\n")
+    }
+
+    /// Pasteboard flag renumbers a run of consecutive `.numbered` siblings
+    /// so external markdown / plain-text consumers render `1. 2. 3.`.
+    @Test func numberedListConsecutiveFlagRenumbers() {
+        let tree = [
+            Block.numbered(text: AttributedString("a")),
+            Block.numbered(text: AttributedString("b")),
+            Block.numbered(text: AttributedString("c")),
+        ]
+        #expect(BlockSerializer.serialize(tree, consecutiveNumbering: true) == "1. a\n\n2. b\n\n3. c\n")
+    }
+
+    /// A non-numbered block between runs resets the counter.
+    @Test func numberedListInterleavedResetsCounter() {
+        let tree: [Block] = [
+            .numbered(text: AttributedString("a")),
+            .numbered(text: AttributedString("b")),
+            .paragraph(text: AttributedString("break")),
+            .numbered(text: AttributedString("c")),
+            .numbered(text: AttributedString("d")),
+        ]
+        let out = BlockSerializer.serialize(tree, consecutiveNumbering: true)
+        #expect(out == "1. a\n\n2. b\n\nbreak\n\n1. c\n\n2. d\n")
+    }
+
+    /// Double-digit indices need their child indent to widen to the
+    /// marker width so a nested block stays inside the list item on
+    /// re-parse. Build 10 numbered items where #10 has a paragraph child;
+    /// re-parse must preserve the child relationship.
+    @Test func numberedListDoubleDigitChildIndents() {
+        var tree: [Block] = []
+        for i in 1...9 {
+            tree.append(.numbered(text: AttributedString("item \(i)")))
+        }
+        tree.append(.numbered(
+            text: AttributedString("item 10"),
+            children: [.paragraph(text: AttributedString("nested"))]
+        ))
+        let serialized = BlockSerializer.serialize(tree, consecutiveNumbering: true)
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 10)
+        guard case .numbered = reparsed[9].kind else {
+            Issue.record("expected .numbered as item 10, got \(reparsed[9].kind)")
+            return
+        }
+        #expect(reparsed[9].children.count == 1, "item 10 should retain its nested paragraph; got \(reparsed[9].children.count) children — child indent likely under-counted for `10. `")
+    }
 }

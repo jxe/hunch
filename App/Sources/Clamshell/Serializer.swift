@@ -8,9 +8,9 @@ public enum BlockSerializer {
     /// children; templates wrap children in `:::{template-button}` fences;
     /// headings emit their hash-prefix line and recurse into children at the
     /// same depth (heading containment is purely a parser concern).
-    public static func serialize(_ blocks: [Block], resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }) -> String {
+    public static func serialize(_ blocks: [Block], resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }, consecutiveNumbering: Bool = false) -> String {
         var out = ""
-        serializeChildren(blocks, depth: 0, into: &out, titleForPath: titleForPath, isTopLevel: true)
+        serializeChildren(blocks, depth: 0, into: &out, titleForPath: titleForPath, isTopLevel: true, consecutiveNumbering: consecutiveNumbering)
         if !out.hasSuffix("\n") { out += "\n" }
         return out
     }
@@ -22,12 +22,18 @@ public enum BlockSerializer {
     /// orphaned descendants are restored separately.
     public static func serializeAtomic(_ block: Block) -> String {
         let bare = Block(id: block.id, kind: block.kind, children: [])
-        return serializeBlock(bare, depth: 0, titleForPath: { _ in nil })
+        return serializeBlock(bare, depth: 0, numberedIndex: 0, titleForPath: { _ in nil }, consecutiveNumbering: false)
     }
 
-    private static func serializeChildren(_ blocks: [Block], depth: Int, into out: inout String, titleForPath: (String) -> String?, isTopLevel: Bool) {
+    private static func serializeChildren(_ blocks: [Block], depth: Int, into out: inout String, titleForPath: (String) -> String?, isTopLevel: Bool, consecutiveNumbering: Bool) {
+        var numberedIndex = 0
         for (i, block) in blocks.enumerated() {
-            let chunk = serializeBlock(block, depth: depth, titleForPath: titleForPath)
+            if case .numbered = block.kind {
+                numberedIndex += 1
+            } else {
+                numberedIndex = 0
+            }
+            let chunk = serializeBlock(block, depth: depth, numberedIndex: numberedIndex, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
             out += chunk
             let isLast = i == blocks.count - 1
             // Inter-block separator: paragraphs/headings/quotes/code/dividers
@@ -47,7 +53,7 @@ public enum BlockSerializer {
         }
     }
 
-    private static func serializeBlock(_ block: Block, depth: Int, titleForPath: (String) -> String?) -> String {
+    private static func serializeBlock(_ block: Block, depth: Int, numberedIndex: Int, titleForPath: (String) -> String?, consecutiveNumbering: Bool) -> String {
         let prefix = indentPrefix(depth)
         switch block.kind {
         case .paragraph(let text):
@@ -61,7 +67,7 @@ public enum BlockSerializer {
             // any descendant tree for forward-compat.
             var s = prefix + line + "\n\n"
             if !block.children.isEmpty {
-                s += serializeContainerBody(block.children, depth: depth + 1, titleForPath: titleForPath)
+                s += serializeContainerBody(block.children, depth: depth + 1, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
             }
             return s
 
@@ -72,21 +78,23 @@ public enum BlockSerializer {
             // not depth 1. The parser's heading-fold pass reconstructs the
             // ownership purely from sibling order + level comparison.
             if !block.children.isEmpty {
-                return line + serializeContainerBody(block.children, depth: depth, titleForPath: titleForPath)
+                return line + serializeContainerBody(block.children, depth: depth, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
             }
             return line
 
         case .bullet(let text):
-            return listItemLine(marker: "- ", contentColumn: 2, prefix: prefix, text: text, children: block.children, titleForPath: titleForPath)
+            return listItemLine(marker: "- ", contentColumn: 2, prefix: prefix, text: text, children: block.children, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
 
         case .numbered(let text):
-            return listItemLine(marker: "1. ", contentColumn: 3, prefix: prefix, text: text, children: block.children, titleForPath: titleForPath)
+            let n = consecutiveNumbering && numberedIndex > 0 ? numberedIndex : 1
+            let marker = "\(n). "
+            return listItemLine(marker: marker, contentColumn: marker.count, prefix: prefix, text: text, children: block.children, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
 
         case .todo(let text, let done):
             // The `[ ]` / `[x]` is content per GFM — the actual list marker is
             // just `- `, so children indent to column 2, not column 6.
             let mark = "- [" + (done ? "x" : " ") + "] "
-            return listItemLine(marker: mark, contentColumn: 2, prefix: prefix, text: text, children: block.children, titleForPath: titleForPath)
+            return listItemLine(marker: mark, contentColumn: 2, prefix: prefix, text: text, children: block.children, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
 
         case .quote(let text):
             return prefix + "> " + inlineString(text) + "\n\n"
@@ -101,7 +109,7 @@ public enum BlockSerializer {
 
         case .toggle(let title):
             let titleLine = prefix + "▸ " + inlineString(title) + "\n"
-            var bodyText = serializeContainerBody(block.children, depth: depth + 1, titleForPath: titleForPath)
+            var bodyText = serializeContainerBody(block.children, depth: depth + 1, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
             // Toggles always end with a blank line so the next sibling has separation.
             if !bodyText.hasSuffix("\n\n") {
                 if bodyText.hasSuffix("\n") {
@@ -116,7 +124,7 @@ public enum BlockSerializer {
             // Body is serialized as if it were top-level (depth 0) and then
             // every line indented by `depth` spaces. The fence pair sits at
             // `depth`. Body trailing blank lines are trimmed.
-            var inner = serializeContainerBody(block.children, depth: 0, titleForPath: titleForPath)
+            var inner = serializeContainerBody(block.children, depth: 0, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
             while inner.hasSuffix("\n\n") { inner.removeLast() }
             if block.children.isEmpty {
                 inner = ""
@@ -138,9 +146,9 @@ public enum BlockSerializer {
 
     /// Serialize a container's children list with proper inter-block
     /// separation. Used by every container kind that has a body.
-    private static func serializeContainerBody(_ blocks: [Block], depth: Int, titleForPath: (String) -> String?) -> String {
+    private static func serializeContainerBody(_ blocks: [Block], depth: Int, titleForPath: (String) -> String?, consecutiveNumbering: Bool) -> String {
         var out = ""
-        serializeChildren(blocks, depth: depth, into: &out, titleForPath: titleForPath, isTopLevel: false)
+        serializeChildren(blocks, depth: depth, into: &out, titleForPath: titleForPath, isTopLevel: false, consecutiveNumbering: consecutiveNumbering)
         return out
     }
 
@@ -162,10 +170,10 @@ public enum BlockSerializer {
     /// fenced body. `contentColumn` is the offset of the list-syntax content
     /// position from the item's start; the printed marker (`marker`) may be
     /// wider (todos render `- [ ] ` but the GFM list marker is just `- `).
-    private static func listItemLine(marker: String, contentColumn: Int, prefix: String, text: AttributedString, children: [Block], titleForPath: (String) -> String?) -> String {
+    private static func listItemLine(marker: String, contentColumn: Int, prefix: String, text: AttributedString, children: [Block], titleForPath: (String) -> String?, consecutiveNumbering: Bool) -> String {
         let line = prefix + marker + inlineString(text) + "\n"
         if children.isEmpty { return line }
-        let body = serializeContainerBody(children, depth: 0, titleForPath: titleForPath)
+        let body = serializeContainerBody(children, depth: 0, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
         let childIndent = String(repeating: " ", count: prefix.count + contentColumn)
         let indented = body
             .split(separator: "\n", omittingEmptySubsequences: false)
