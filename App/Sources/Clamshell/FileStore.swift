@@ -50,20 +50,17 @@ public struct FileStore: Sendable {
     }
 
     public func read(_ url: URL) throws -> String {
-        let coordinator = NSFileCoordinator()
-        var coordError: NSError?
-        var content = ""
-        var readError: Error?
-        coordinator.coordinate(readingItemAt: url, options: [], error: &coordError) { coordinatedURL in
-            do {
-                content = try String(contentsOf: coordinatedURL, encoding: .utf8)
-            } catch {
-                readError = error
-            }
+        // NSFileCoordinator on the main thread deadlocks for "very long" with
+        // iCloud Drive workspaces — Foundation's access-claim machinery waits
+        // on file-provider/presenter callbacks that ultimately need the main
+        // queue. The file presenter on the currently-open document already
+        // catches external edits; for these one-shot reads we trade off
+        // cross-process coordination for liveness.
+        do {
+            return try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            throw FileStoreError.readFailed(url, underlying: error)
         }
-        if let coordError { throw FileStoreError.readFailed(url, underlying: coordError) }
-        if let readError { throw FileStoreError.readFailed(url, underlying: readError) }
-        return content
     }
 
     public func write(_ contents: String, to url: URL) throws {

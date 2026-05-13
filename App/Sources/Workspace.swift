@@ -380,10 +380,20 @@ final class Workspace {
     }
 
     func loadSubpage(relativePath: String) -> [Block]? {
-        guard let clamshell else { return nil }
+        guard let clamshell else {
+            NSLog("[CLI][loadSubpage] no clamshell relativePath=\(relativePath)")
+            return nil
+        }
         let target = clamshell.url(for: relativePath)
-        guard let doc = try? loadDocument(at: target) else { return nil }
-        return doc.children
+        let exists = FileManager.default.fileExists(atPath: target.path)
+        NSLog("[CLI][loadSubpage] relativePath=\(relativePath) target=\(target.path) exists=\(exists)")
+        do {
+            let doc = try loadDocument(at: target)
+            return doc.children
+        } catch {
+            NSLog("[CLI][loadSubpage] loadDocument threw: \(error)")
+            return nil
+        }
     }
 
     @discardableResult
@@ -414,9 +424,16 @@ final class Workspace {
 
     @discardableResult
     func moveSubpageToTrash(relativePath: String) -> Bool {
-        guard let clamshell else { return false }
+        guard let clamshell else {
+            NSLog("[CLI][moveSubpageToTrash] no clamshell relativePath=\(relativePath)")
+            return false
+        }
         let target = clamshell.url(for: relativePath)
-        return moveToTrash(at: target)
+        let exists = FileManager.default.fileExists(atPath: target.path)
+        NSLog("[CLI][moveSubpageToTrash] relativePath=\(relativePath) target=\(target.path) exists=\(exists)")
+        let result = moveToTrash(at: target)
+        NSLog("[CLI][moveSubpageToTrash] result=\(result)")
+        return result
     }
 
     // MARK: - Pasted images

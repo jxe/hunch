@@ -166,7 +166,9 @@ extension EditorView {
 
     @discardableResult
     func convert(blockIDs: [BlockID], to target: BlockTurnInto) -> KeyPress.Result {
+        NSLog("[CLI][convert] entered blockIDs.count=\(blockIDs.count) target=\(target)")
         let ids = blockIDs.filter { document.find($0) != nil }
+        NSLog("[CLI][convert] after filter ids.count=\(ids.count) target=\(target)")
         guard !ids.isEmpty else { return .ignored }
         if ids.count == 1, let id = ids.first {
             return convertSingle(blockID: id, to: target)
@@ -188,6 +190,7 @@ extension EditorView {
 
     @discardableResult
     fileprivate func convertSingle(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
+        NSLog("[CLI][convertSingle] entered blockID=\(blockID) target=\(target) kind=\(String(describing: document.find(blockID)?.kind))")
         if target == .page {
             return convertBlockToSubpage(blockID: blockID, preferredTitle: nil)
         }
@@ -247,16 +250,32 @@ extension EditorView {
 
     @discardableResult
     fileprivate func convertSubpage(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
-        guard target != .page else { return .ignored }
+        guard target != .page else {
+            NSLog("[CLI][convertSubpage] target==.page short-circuit (should never happen) blockID=\(blockID)")
+            return .ignored
+        }
         guard let block = document.find(blockID),
-              case .subpage(let title, let path) = block.kind else { return .ignored }
-        guard var loaded = host.onLoadSubpage(path) else { return .ignored }
+              case .subpage(let title, let path) = block.kind else {
+            NSLog("[CLI][convertSubpage] block not found or not .subpage blockID=\(blockID)")
+            return .ignored
+        }
+        guard var loaded = host.onLoadSubpage(path) else {
+            NSLog("[CLI][convertSubpage] host.onLoadSubpage returned nil — path=\(path) target=\(target)")
+            return .ignored
+        }
+        // Heading containment means the page's body lives as children of the
+        // title H1, not as siblings. Replace the title heading with its
+        // children so the subpage's body survives the inline.
         if let first = loaded.first,
            case .heading(.h1, let leadingText) = first.kind,
            String(leadingText.characters).trimmingCharacters(in: .whitespacesAndNewlines) == title {
-            loaded.removeFirst()
+            loaded.replaceSubrange(0...0, with: first.children)
         }
-        guard host.onAbsorbSubpage(path) else { return .ignored }
+        guard host.onAbsorbSubpage(path) else {
+            NSLog("[CLI][convertSubpage] host.onAbsorbSubpage returned false — path=\(path) target=\(target)")
+            return .ignored
+        }
+        NSLog("[CLI][convertSubpage] proceeding — path=\(path) target=\(target) loaded.count=\(loaded.count)")
 
         // The subpage's loaded blocks become the children of the new container
         // (toggle / templateButton / list item etc.). For non-container kinds
@@ -380,6 +399,7 @@ extension EditorView {
                                     keyboardShortcut: target.keyboardShortcut,
                                     isSelected: target == selectedTarget
                                 ) {
+                                    NSLog("[CLI][menuButton] tapped target=\(target) selectedTarget=\(String(describing: selectedTarget)) targetIDs=\(targetIDs)")
                                     if target != selectedTarget {
                                         _ = convert(blockIDs: targetIDs, to: target)
                                     }
