@@ -156,9 +156,59 @@ final class Workspace {
             self.clamshell = clamshell
             homeRelativePath = clamshell.homeRelativePath
             rescan()
+            if homeRelativePath == nil {
+                autoDetectOrSeedHome(in: clamshell)
+            }
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
         }
+    }
+
+    /// Create a new workspace folder at `url` and open it. The folder is seeded
+    /// with a welcome page by `setWorkspace`'s auto-detect path (the folder is
+    /// empty after creation, so the seed branch fires).
+    func createNewWorkspace(at url: URL) {
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        } catch {
+            self.error = "Failed to create workspace folder: \(error.localizedDescription)"
+            return
+        }
+        setWorkspace(url)
+    }
+
+    /// After `setWorkspace` lands a folder with no `homeRelativePath`, pick or
+    /// create a home page so the user doesn't get dumped into `EmptyWorkspaceView`:
+    ///   - If a root-level `README.md` / `index.md` exists, use it.
+    ///   - Else if any root-level `.md` exists, use the alphabetically-first.
+    ///   - Else seed `Welcome to Hunch.md` from `welcomeContentBlocks()`.
+    private func autoDetectOrSeedHome(in clamshell: Clamshell) {
+        let rootMDs = entries
+            .filter { !$0.relativePath.contains("/") }
+            .sorted { $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending }
+        let detected: String? = {
+            if let readme = rootMDs.first(where: { $0.relativePath.lowercased() == "readme.md" }) {
+                return readme.relativePath
+            }
+            if let index = rootMDs.first(where: { $0.relativePath.lowercased() == "index.md" }) {
+                return index.relativePath
+            }
+            return rootMDs.first?.relativePath
+        }()
+
+        if let detected {
+            clamshell.homeRelativePath = detected
+            homeRelativePath = detected
+            return
+        }
+
+        // Empty folder — seed the welcome page and set it as home.
+        guard let path = createSubpage(
+            title: "Welcome to Hunch",
+            requestedPath: nil,
+            initialContent: welcomeContentBlocks()
+        ), let entry = entries.first(where: { $0.relativePath == path }) else { return }
+        setHome(entry)
     }
 
     /// Drop the currently bookmarked workspace. Open windows observe

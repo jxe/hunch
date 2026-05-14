@@ -1,8 +1,9 @@
 import SwiftUI
 import Editor
 import UniformTypeIdentifiers
-
-private let markdownFileType = UTType(filenameExtension: "md") ?? .plainText
+#if os(macOS)
+import AppKit
+#endif
 
 struct ContentView: View {
     @Bindable var workspace: Workspace
@@ -242,48 +243,46 @@ private struct EditorPage: View {
 
 private struct WorkspacePickerView: View {
     let workspace: Workspace
-    @State private var showingPicker = false
+    @State private var showingOpenPicker = false
+    #if os(iOS)
+    @State private var showingNameSheet = false
+    @State private var newWorkspaceName = "My Notes"
+    #endif
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
             Spacer()
             Image(systemName: "folder.badge.plus")
                 .font(.system(size: 64))
                 .foregroundStyle(NotionStyle.mutedForeground)
-            #if os(iOS)
-            Text("Choose a folder")
-                .font(NotionStyle.body(size: 18, weight: .semibold))
+            Text("Welcome to Hunch")
+                .font(NotionStyle.body(size: 22, weight: .semibold))
                 .foregroundStyle(NotionStyle.foreground)
-            Text("Pick the folder Hunch should use as your workspace.")
+            Text("A workspace is a folder of plain markdown files. Pick one to get started.")
                 .font(NotionStyle.body(size: 14))
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            Button("Choose folder") {
-                showingPicker = true
+            HStack(spacing: 12) {
+                Button {
+                    createNewWorkspace()
+                } label: {
+                    Label("Create new workspace", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                Button {
+                    showingOpenPicker = true
+                } label: {
+                    Label("Open a folder", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
-            #else
-            Text("Choose a key file")
-                .font(NotionStyle.body(size: 18, weight: .semibold))
-                .foregroundStyle(NotionStyle.foreground)
-            Text("Pick the .md file Hunch should open by default. Its folder becomes the workspace.")
-                .font(NotionStyle.body(size: 14))
-                .foregroundStyle(NotionStyle.mutedForeground)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-            Button("Choose key file") {
-                showingPicker = true
-            }
-            .buttonStyle(.borderedProminent)
-            #endif
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(NotionStyle.background)
-        #if os(iOS)
         .fileImporter(
-            isPresented: $showingPicker,
+            isPresented: $showingOpenPicker,
             allowedContentTypes: [.folder],
             allowsMultipleSelection: false
         ) { result in
@@ -296,24 +295,88 @@ private struct WorkspacePickerView: View {
                 workspace.error = error.localizedDescription
             }
         }
-        #else
-        .fileImporter(
-            isPresented: $showingPicker,
-            allowedContentTypes: [markdownFileType],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first {
-                    workspace.setWorkspaceFromKeyFile(url)
+        #if os(iOS)
+        .sheet(isPresented: $showingNameSheet) {
+            NewWorkspaceNameSheet(
+                name: $newWorkspaceName,
+                onCancel: { showingNameSheet = false },
+                onCreate: { name in
+                    showingNameSheet = false
+                    createIOSWorkspace(named: name)
                 }
-            case .failure(let error):
-                workspace.error = error.localizedDescription
-            }
+            )
         }
         #endif
     }
+
+    private func createNewWorkspace() {
+        #if os(macOS)
+        let panel = NSSavePanel()
+        panel.title = "Create New Workspace"
+        panel.message = "Hunch will create a folder here for your markdown files."
+        panel.nameFieldLabel = "Workspace name:"
+        panel.nameFieldStringValue = "My Notes"
+        panel.prompt = "Create"
+        panel.canCreateDirectories = true
+        panel.allowsOtherFileTypes = true
+        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        if panel.runModal() == .OK, let url = panel.url {
+            workspace.createNewWorkspace(at: url)
+        }
+        #else
+        newWorkspaceName = "My Notes"
+        showingNameSheet = true
+        #endif
+    }
+
+    #if os(iOS)
+    private func createIOSWorkspace(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        else {
+            workspace.error = "Couldn't locate the Documents directory."
+            return
+        }
+        workspace.createNewWorkspace(at: docs.appendingPathComponent(trimmed))
+    }
+    #endif
 }
+
+#if os(iOS)
+private struct NewWorkspaceNameSheet: View {
+    @Binding var name: String
+    let onCancel: () -> Void
+    let onCreate: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Workspace name", text: $name)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.words)
+                } footer: {
+                    Text("A folder by this name will be created in Hunch's Documents directory — visible in the Files app under On My iPhone → Hunch.")
+                }
+            }
+            .navigationTitle("New Workspace")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        onCreate(name)
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}
+#endif
 
 /// Unified search sheet. Used both for navigation (set-home / move-to-trash
 /// rows enabled, activate pushes via the caller's `onActivate`) and for the
@@ -384,10 +447,10 @@ private struct EmptyWorkspaceView: View {
             Image(systemName: "doc.text")
                 .font(.system(size: 48))
                 .foregroundStyle(NotionStyle.mutedForeground)
-            Text("No home page")
+            Text("Pick a page to open by default")
                 .font(NotionStyle.body(size: 18, weight: .semibold))
                 .foregroundStyle(NotionStyle.foreground)
-            Text("Search to pick an existing page, or create a new one.")
+            Text("Choose one from your workspace, or create a new page.")
                 .font(NotionStyle.body(size: 14))
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .multilineTextAlignment(.center)
