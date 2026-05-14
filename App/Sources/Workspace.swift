@@ -31,6 +31,23 @@ final class Workspace {
     /// Surfaced in the alert in any open window. Last-write-wins across
     /// concurrent windows — acceptable; user dismisses the alert.
     var error: String?
+    /// Transient non-modal notification shown by any open window. The
+    /// BannerView clears it on its own dismiss timer. Last-write-wins
+    /// across concurrent banners — uncommon enough to be fine.
+    var banner: Banner?
+
+    /// Transient, informational. Identity is per-instance so the view can
+    /// distinguish "same message, new event" and restart its timer.
+    struct Banner: Identifiable, Equatable {
+        let id = UUID()
+        let message: String
+    }
+
+    /// URLs currently mounted as `openDocument` in any `WorkspaceWindow`.
+    /// Refcounted so two windows showing the same page don't lose tracking
+    /// when one closes. Used by `rescan()` to skip pages that have an active
+    /// file presenter (which handles their conflict resolution directly).
+    private var openURLCounts: [URL: Int] = [:]
 
     private(set) var clamshell: Clamshell?
 
@@ -127,6 +144,7 @@ final class Workspace {
             self.clamshell = clamshell
             homeRelativePath = clamshell.homeRelativePath
             rescan()
+            runAutoTombstoneMigrationIfNeeded(for: clamshell)
         }
     }
 
@@ -142,6 +160,7 @@ final class Workspace {
             self.clamshell = clamshell
             homeRelativePath = homePath
             rescan()
+            runAutoTombstoneMigrationIfNeeded(for: clamshell)
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
         }
@@ -159,8 +178,22 @@ final class Workspace {
             if homeRelativePath == nil {
                 autoDetectOrSeedHome(in: clamshell)
             }
+            runAutoTombstoneMigrationIfNeeded(for: clamshell)
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
+        }
+    }
+
+    /// Fire-and-forget retroactive auto-tombstone migration. Gated internally
+    /// by the `.clamshell.json` flag — first-time run iterates pages and
+    /// writes purge records for our own log's orphans; subsequent calls
+    /// are cheap early returns.
+    private func runAutoTombstoneMigrationIfNeeded(for clamshell: Clamshell) {
+        let originalURL = workspaceURL
+        Task { @MainActor [weak self, clamshell] in
+            await clamshell.runAutoTombstoneMigrationIfNeeded()
+            guard let self, self.workspaceURL == originalURL else { return }
+            self.rescan()
         }
     }
 
@@ -222,6 +255,7 @@ final class Workspace {
         entries = []
         titleCache = [:]
         diskHistory = [:]
+        openURLCounts = [:]
         clamshell = nil
         titleRefreshTask?.cancel()
         titleRefreshTask = nil
@@ -240,8 +274,65 @@ final class Workspace {
                 )
             }
             refreshTitlesInBackground(for: scanned, workspaceURL: workspaceURL)
+            resolveConflictsForClosedPages(workspaceURL: workspaceURL)
         } catch {
             self.error = "Failed to scan workspace: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Open-URL registry
+
+    /// Register a URL as currently mounted in some window's `openDocument`.
+    /// Refcounted; safe to call repeatedly. Pair with `unregisterOpenURL`.
+    func registerOpenURL(_ url: URL) {
+        openURLCounts[url, default: 0] += 1
+    }
+
+    func unregisterOpenURL(_ url: URL) {
+        guard let n = openURLCounts[url] else { return }
+        if n <= 1 { openURLCounts.removeValue(forKey: url) }
+        else { openURLCounts[url] = n - 1 }
+    }
+
+    // MARK: - iCloud conflict resolution
+
+    /// Iterate scanned entries in the background and run
+    /// `Clamshell.resolveConflictVersions` for any page that isn't currently
+    /// open in a window (those are handled by their file presenter). Surfaces
+    /// a banner per page that salvaged blocks; rescans once at the end if
+    /// anything was merged so the page list picks up the new mtime.
+    private func resolveConflictsForClosedPages(workspaceURL: URL) {
+        guard let clamshell else { return }
+        let candidates = entries
+            .map(\.url)
+            .filter { openURLCounts[$0] == nil }
+        guard !candidates.isEmpty else { return }
+        let titleByURL = Dictionary(uniqueKeysWithValues: entries.map { ($0.url, $0.title) })
+
+        Task { @MainActor [weak self, clamshell, candidates, workspaceURL, titleByURL] in
+            var anyMerged = false
+            for url in candidates {
+                guard let self else { return }
+                guard self.workspaceURL == workspaceURL else { return }
+                let count: Int
+                do {
+                    count = try clamshell.resolveConflictVersions(at: url, againstLive: nil)
+                } catch {
+                    Diag.merge.error("scan-time resolve failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    await Task.yield()
+                    continue
+                }
+                if count > 0 {
+                    anyMerged = true
+                    let title = titleByURL[url] ?? url.deletingPathExtension().lastPathComponent
+                    let noun = count == 1 ? "block" : "blocks"
+                    self.banner = Banner(message: "Merged \(count) \(noun) from another device into \(title)")
+                }
+                await Task.yield()
+            }
+            if anyMerged, let self, self.workspaceURL == workspaceURL {
+                self.rescan()
+            }
         }
     }
 

@@ -51,7 +51,16 @@ public actor RecoveryLog {
     /// recorded for this page, and append them as one batched write to our
     /// device's log. Steady-state saves with no new content perform zero file
     /// I/O — the in-memory hash cache short-circuits ahead of the append.
-    public func record(page rel: String, blocks: [Block]) throws {
+    ///
+    /// `removing` is the set of hashes that existed in the page's prior state
+    /// (typically the on-disk `.md` content being replaced) but are no longer
+    /// in `blocks`. For each, a `purge` record is appended and the hash is
+    /// dropped from `ourDeviceHashes` so a later re-appearance gets a fresh
+    /// `add` (which wins over the older purge via latest-`t` semantics in
+    /// `unionLatest`). Pass an empty set when there is no prior state to
+    /// diff against (first save after launch with no cache seed, or the
+    /// pre-mutation `snapshotIntoRecoveryLog` path).
+    public func record(page rel: String, blocks: [Block], removing: Set<String> = []) throws {
         var known = try ensureDeviceHashesLoaded(for: rel)
         var newRecords: [Wire] = []
         let now = Date().timeIntervalSince1970
@@ -62,6 +71,10 @@ public actor RecoveryLog {
             now: now,
             into: &newRecords
         )
+        for hash in removing {
+            newRecords.append(Wire(op: "purge", h: hash, p: nil, m: nil, t: now))
+            known.remove(hash)
+        }
         guard !newRecords.isEmpty else {
             ourDeviceHashes[rel] = known
             return
@@ -102,15 +115,17 @@ public actor RecoveryLog {
     // MARK: - Queries
 
     /// Lost-block entries for one page. Reads every device's log for the
-    /// page, dedups by hash (latest `t` wins for parent metadata across
-    /// devices), filters out hashes still alive in the page's `.md`, and
-    /// drops anything any device has tombstoned via `.purge`.
+    /// page, picks the latest record per hash (add or purge, latest-`t` wins
+    /// across devices), keeps only hashes whose latest record is an `add`
+    /// that isn't currently alive in the page's `.md`. A later `add`
+    /// overrides an earlier `purge`, so deleted-then-readded content
+    /// surfaces correctly.
     public func enumerate(page rel: String) -> [LostBlock] {
         guard FileManager.default.fileExists(atPath: pageDir(rel: rel).path) else { return [] }
-        let (adds, purges) = unionRecords(page: rel)
+        let latest = unionLatest(page: rel)
         let live = liveAtomicHashes(forPage: rel)
-        return adds.values
-            .filter { !live.contains($0.h) && !purges.contains($0.h) }
+        return latest.values
+            .filter { $0.op == "add" && !live.contains($0.h) }
             .map { LostBlock(record: $0, source: rel) }
             .sorted { $0.recordedAt > $1.recordedAt }
     }
@@ -139,13 +154,42 @@ public actor RecoveryLog {
     }
 
     /// Recorded parent hash for `hash` on `page`, by reading every device's
-    /// log and picking the latest-`t` add record. Used by the restore flow's
-    /// ancestor climb when the immediate parent of a lost block isn't itself
-    /// alive in the page anymore. Returns nil for top-level (recorded `p`
-    /// was null) or for hashes the log doesn't know about.
+    /// log and picking the latest add record (purge records don't carry
+    /// parent metadata). Used by the restore flow's ancestor climb when
+    /// the immediate parent of a lost block isn't itself alive in the page
+    /// anymore. Returns nil for top-level (recorded `p` was null) or for
+    /// hashes the log doesn't know about as an add.
     public func parentHash(page rel: String, hash: String) -> String? {
-        let (adds, _) = unionRecords(page: rel)
-        return adds[hash]?.p
+        let latest = unionLatest(page: rel)
+        guard let wire = latest[hash], wire.op == "add" else { return nil }
+        return wire.p
+    }
+
+    /// Combined view used by the iCloud conflict-merge path: tombstoned hashes
+    /// (to skip blocks the user explicitly dismissed) plus a hash→parent-hash
+    /// map for the climb to the nearest live ancestor when an alternate
+    /// version's parent isn't itself alive in the survivor. One log-union read
+    /// covers both fields.
+    public struct MergeContext: Sendable {
+        public let tombstones: Set<String>
+        public let parentHashes: [String: String]
+    }
+
+    nonisolated public func mergeContext(page rel: String) -> MergeContext {
+        let latest = unionLatest(page: rel)
+        var tombstones: Set<String> = []
+        var parentHashes: [String: String] = [:]
+        for (hash, wire) in latest {
+            switch wire.op {
+            case "purge":
+                tombstones.insert(hash)
+            case "add":
+                if let p = wire.p { parentHashes[hash] = p }
+            default:
+                continue
+            }
+        }
+        return MergeContext(tombstones: tombstones, parentHashes: parentHashes)
     }
 
     /// Move a page's history dir. Used by trash / rename / restore so the
@@ -162,6 +206,14 @@ public actor RecoveryLog {
         if let cached = ourDeviceHashes.removeValue(forKey: src) {
             ourDeviceHashes[dst] = cached
         }
+    }
+
+    /// Hashes our own device's log has recorded as `add`s for `page`. Used
+    /// by the auto-tombstone migration to compute which of our own past
+    /// observations don't appear in the current `.md` (and should be
+    /// retroactively tombstoned so they don't resurrect on next open).
+    public func ourAddedHashes(page rel: String) throws -> Set<String> {
+        try ensureDeviceHashesLoaded(for: rel)
     }
 
     // MARK: - Internals: hash cache
@@ -232,23 +284,22 @@ public actor RecoveryLog {
         return out
     }
 
-    nonisolated private func unionRecords(page rel: String) -> (adds: [String: Wire], purges: Set<String>) {
-        var adds: [String: Wire] = [:]
-        var purges: Set<String> = []
+    /// Latest record (add or purge) per hash, across every device's log for
+    /// `page`. Latest-`t` wins regardless of op kind — a later `add` for a
+    /// hash overrides an earlier `purge` and vice versa. This is what makes
+    /// "delete X, save (auto-tombstone), undo, save (auto-readd)" coherent:
+    /// the readd's record is newer than the tombstone, so X is alive again
+    /// in the union.
+    nonisolated private func unionLatest(page rel: String) -> [String: Wire] {
+        var latest: [String: Wire] = [:]
         for url in deviceLogURLs(for: rel) {
             for record in readRecords(at: url) {
-                switch record.op {
-                case "add":
-                    if let prev = adds[record.h], prev.t >= record.t { continue }
-                    adds[record.h] = record
-                case "purge":
-                    purges.insert(record.h)
-                default:
-                    continue
-                }
+                guard record.op == "add" || record.op == "purge" else { continue }
+                if let prev = latest[record.h], prev.t >= record.t { continue }
+                latest[record.h] = record
             }
         }
-        return (adds, purges)
+        return latest
     }
 
     nonisolated private func deviceLogURLs(for rel: String) -> [URL] {

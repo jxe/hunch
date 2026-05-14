@@ -97,7 +97,11 @@ struct RecoveryLogTests {
     // MARK: - Recovery via Clamshell
 
     @MainActor
-    @Test func deletedBlockSurfacesAsLost() async throws {
+    /// With auto-tombstone-on-save, an in-app deletion + save tombstones the
+    /// removed block immediately. The Recover sheet no longer surfaces it —
+    /// deletion is intentional, the log union's latest record for that hash
+    /// is a `purge`.
+    @Test func deletedBlockAutoTombstonesAndDoesNotSurface() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
@@ -121,12 +125,46 @@ struct RecoveryLogTests {
         try await Task.sleep(for: .milliseconds(80))
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
+        #expect(lost.isEmpty, "auto-tombstone should suppress the deleted block")
+    }
+
+    /// External (non-Hunch) loss of a block whose log entry exists from a
+    /// prior save surfaces as a lost block — no save fired to auto-tombstone,
+    /// so the log union's latest record is still `add`.
+    @MainActor
+    @Test func externalLossOfBlockSurfacesAsLost() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p",
+            children: [
+                Block.paragraph(text: attr("Keep")),
+                Block.paragraph(text: attr("Lose"))
+            ],
+            modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(80))
+
+        // Simulate an external editor / iCloud stomp: overwrite .md directly,
+        // bypassing the Clamshell save path so no auto-tombstone fires.
+        try "# p\n\nKeep\n".write(to: url, atomically: true, encoding: .utf8)
+
+        let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.count == 1)
         #expect(lost.first?.markdown.contains("Lose") == true)
     }
 
+    /// A delete-then-recreate cycle through the save path: the delete writes
+    /// a `purge`, the recreate writes a fresh `add` with a newer `t`. The
+    /// latest-wins union picks the new add → the block is alive again and
+    /// the log union exposes no lost entry. (Pre-auto-tombstone this test
+    /// also checked the intermediate "deleted = lost" state; that's now
+    /// covered by `deletedBlockAutoTombstonesAndDoesNotSurface`.)
     @MainActor
-    @Test func recreatedBlockClearsItFromLost() async throws {
+    @Test func recreatedBlockOverridesAutoTombstone() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
@@ -143,9 +181,13 @@ struct RecoveryLogTests {
         ))
         try await Task.sleep(for: .milliseconds(80))
 
+        // Intermediate: auto-tombstoned, so nothing is "lost".
         var lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
-        #expect(lost.count == 1)
+        #expect(lost.isEmpty)
 
+        // Subsecond timestamps could collide with the prior purge; sleep
+        // through a millisecond boundary so latest-wins picks the new add.
+        try await Task.sleep(for: .milliseconds(20))
         try clamshell.writeImmediately(Document(
             url: url, title: "p",
             children: [Block.paragraph(text: attr("ghost"))],
@@ -153,11 +195,17 @@ struct RecoveryLogTests {
         ))
         try await Task.sleep(for: .milliseconds(80))
         lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
-        #expect(lost.isEmpty)
+        #expect(lost.isEmpty, "alive in .md, latest-record is add → not lost")
     }
 
+    /// The first save records `body` with `toggle`'s hash as its parent in the
+    /// log. Even after auto-tombstone-on-save fires for `body` on the second
+    /// save, `parentHash(forPage:hash:)` still returns the parent — but only
+    /// for hashes whose latest record is an `add`. Here we keep `body` live
+    /// so the latest record stays as `add`; the question is whether the
+    /// parent metadata was recorded at first observation.
     @MainActor
-    @Test func deletedChildOfLiveToggleRecordsToggleAsParent() async throws {
+    @Test func nestedChildRecordsParentHashThroughClamshell() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
@@ -170,39 +218,45 @@ struct RecoveryLogTests {
         ))
         try await Task.sleep(for: .milliseconds(80))
 
-        try clamshell.writeImmediately(Document(
-            url: url, title: "p",
-            children: [Block.toggle(title: attr("Outer"), children: [])],
-            modificationDate: nil
-        ))
-        try await Task.sleep(for: .milliseconds(80))
-
-        let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
-        #expect(lost.count == 1)
         let toggleHash = BlockFingerprint.atomicHash(toggle)
-        #expect(lost.first?.parentHash == toggleHash)
+        let bodyHash = BlockFingerprint.atomicHash(body)
+        let recorded = await clamshell.parentHash(forPage: "p.md", hash: bodyHash)
+        #expect(recorded == toggleHash)
     }
 
+    /// Explicit `purgeLostBlock` still works for the case where a block is
+    /// surfaced as lost via another device's log (auto-tombstone never ran
+    /// because our device didn't perform the deletion). The Recover sheet's
+    /// dismiss action exercises this path.
     @MainActor
-    @Test func purgeTombstoneSuppressesLostBlock() async throws {
+    @Test func purgeTombstoneSuppressesForeignLostBlock() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
-            children: [Block.paragraph(text: attr("ghost"))],
-            modificationDate: nil
-        ))
-        try await Task.sleep(for: .milliseconds(80))
-        try clamshell.writeImmediately(Document(
             url: url, title: "p", children: [], modificationDate: nil
         ))
-        try await Task.sleep(for: .milliseconds(80))
+        try await Task.sleep(for: .milliseconds(40))
+
+        let foreignBlock = Block.paragraph(text: attr("ghost"))
+        let h = BlockFingerprint.atomicHash(foreignBlock)
+        let m = BlockSerializer.serializeAtomic(foreignBlock)
+        let escaped = m
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let line = "{\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":1714867200.0}\n"
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: foreignURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try line.write(to: foreignURL, atomically: true, encoding: .utf8)
 
         var lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
-        let entry = try #require(lost.first)
+        let entry = try #require(lost.first(where: { $0.hash == h }))
         try await clamshell.purgeLostBlock(entry)
         lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty, "purge tombstone should suppress entry")
@@ -268,6 +322,76 @@ struct RecoveryLogTests {
             .appendingPathComponent("Trash/p.md")
         #expect(FileManager.default.fileExists(atPath: trashedHistoryDir.path))
         #expect(!FileManager.default.fileExists(atPath: liveHistoryDir.path))
+    }
+
+    /// Re-adding a hash after it was tombstoned: the new `add` has a later
+    /// `t` than the prior `purge`, so latest-wins picks the add and the
+    /// block is alive again. `listLostBlocks` excludes it (alive in .md).
+    @MainActor
+    @Test func newAddOverridesEarlierPurge() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("phoenix"))
+        try await log.record(page: "p.md", blocks: [block])
+        // 1ms guarantees a fresh timestamp; precision of `t` is ms.
+        try await Task.sleep(for: .milliseconds(2))
+        try await log.record(
+            page: "p.md",
+            blocks: [],
+            removing: [BlockFingerprint.atomicHash(block)]
+        )
+        try await Task.sleep(for: .milliseconds(2))
+        try await log.record(page: "p.md", blocks: [block])
+
+        // Plant the block as alive in .md so the live-set check excludes it
+        // — the assertion is that it doesn't surface as "lost" even though
+        // a purge exists in the log.
+        try BlockSerializer.serialize([block])
+            .write(to: root.appendingPathComponent("p.md"), atomically: true, encoding: .utf8)
+
+        let lost = await log.enumerate(page: "p.md")
+        #expect(lost.contains(where: { $0.hash == BlockFingerprint.atomicHash(block) }) == false)
+    }
+
+    /// Auto-tombstone migration: workspace with pre-existing log entries
+    /// whose blocks are no longer in `.md` (legacy state) gets retroactive
+    /// tombstones written for *our own* log's orphans on first run. After
+    /// migration, those hashes don't appear as lost.
+    @MainActor
+    @Test func autoTombstoneMigrationRetroactivelyTombstonesOwnOrphans() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+
+        // Seed: page with two blocks, both recorded in our log.
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p",
+            children: [
+                Block.paragraph(text: attr("Alpha")),
+                Block.paragraph(text: attr("Beta"))
+            ],
+            modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(40))
+
+        // Simulate legacy state: externally drop Beta from .md without a
+        // matching tombstone. (This is what saves looked like before the
+        // auto-tombstone feature.) Use a fresh Clamshell so its
+        // lastKnownDiskHashes cache doesn't paper over the drop.
+        try "# p\n\nAlpha\n".write(to: url, atomically: true, encoding: .utf8)
+
+        // Wipe the migration flag, if any, by reopening with no metadata.
+        let fresh = Clamshell(root: root)
+        let beforeLost = await fresh.listLostBlocks(filter: .page(relativePath: "p.md"))
+        #expect(beforeLost.contains(where: { $0.markdown.contains("Beta") }))
+
+        await fresh.runAutoTombstoneMigrationIfNeeded()
+        let afterLost = await fresh.listLostBlocks(filter: .page(relativePath: "p.md"))
+        #expect(afterLost.isEmpty, "migration should have tombstoned Beta")
+        #expect(fresh.autoTombstoneMigrationDone)
     }
 
     @MainActor

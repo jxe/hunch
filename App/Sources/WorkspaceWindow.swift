@@ -130,6 +130,9 @@ final class WorkspaceWindow {
             isDirty = false
             installFilePresenter(for: url)
             startBackstop()
+            Task { @MainActor [weak self] in
+                await self?.autoRestoreLostBlocksOnOpen(for: url)
+            }
         } catch {
             workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
         }
@@ -333,6 +336,54 @@ final class WorkspaceWindow {
         }
     }
 
+    /// On fresh document load, splice in every non-tombstoned lost block
+    /// the recovery log knows about for this page. Auto-tombstoning on save
+    /// is what keeps this safe: any block whose latest-record-in-union is
+    /// `add` is a genuine recovery candidate. We process oldest-first so
+    /// parent entries land before their children (each child's parent-chain
+    /// climb then finds the just-spliced parent live in the doc).
+    @MainActor
+    private func autoRestoreLostBlocksOnOpen(for url: URL) async {
+        guard let clamshell = workspace.clamshell else { return }
+        guard openDocument?.url == url, let doc = openDocument else { return }
+        // Skip until the workspace-level migration has had a chance to run;
+        // otherwise legacy orphan blocks across every page would resurrect.
+        guard clamshell.autoTombstoneMigrationDone else { return }
+        let rel = clamshell.relativePath(of: url)
+        let lost = await clamshell.listLostBlocks(filter: .page(relativePath: rel))
+        let candidates = lost.sorted { $0.recordedAt < $1.recordedAt }
+        guard !candidates.isEmpty else { return }
+        guard openDocument?.url == url else { return }
+
+        var restored = 0
+        for entry in candidates {
+            guard openDocument?.url == url else { return }
+            if findAtomicHash(entry.hash, in: doc) != nil { continue }
+            guard let parsed = BlockParser.parse(entry.markdown).first else { continue }
+            let shell = parsed.withFreshIDs()
+            let parentID = await resolveLiveAncestor(
+                startingParentHash: entry.parentHash,
+                pageRel: rel,
+                in: doc,
+                clamshell: clamshell
+            )
+            let siblings = parentID.flatMap(doc.find)?.children ?? doc.children
+            doc.insertSubtrees([shell], at: DropPath(parent: parentID, position: siblings.count))
+            restored += 1
+        }
+        guard restored > 0 else { return }
+        doc.enforceHeadingContainment()
+        doc.title = Document.deriveTitle(
+            from: doc.children,
+            fallback: url.deletingPathExtension().lastPathComponent
+        )
+        cacheOpenDocument()
+        markEdited()
+        let noun = restored == 1 ? "block" : "blocks"
+        workspace.banner = .init(message: "Restored \(restored) \(noun) from another device into \(doc.title)")
+        Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(restored, privacy: .public)")
+    }
+
     @discardableResult
     func restoreLostBlock(_ entry: LostBlock) async -> Bool {
         guard let clamshell = workspace.clamshell, let workspaceURL = workspace.workspaceURL else { return false }
@@ -438,11 +489,15 @@ final class WorkspaceWindow {
         }
         NSFileCoordinator.addFilePresenter(presenter)
         filePresenter = presenter
+        workspace.registerOpenURL(url)
     }
 
     private func removeFilePresenter() {
         if let filePresenter {
             NSFileCoordinator.removeFilePresenter(filePresenter)
+            if let url = filePresenter.presentedItemURL {
+                workspace.unregisterOpenURL(url)
+            }
         }
         filePresenter = nil
     }
@@ -453,6 +508,35 @@ final class WorkspaceWindow {
         guard !Task.isCancelled, openDocument?.url == doc.url else { return }
 
         let url = doc.url
+
+        // Auto-merge any unresolved iCloud conflict versions before falling
+        // back to the echo/stomp/external-edit branching. The live `doc` is
+        // mutated in place when blocks get salvaged, so subsequent state
+        // (diskHistory, mtime, title cache) needs reseeding.
+        if let clamshell = workspace.clamshell {
+            do {
+                let salvaged = try clamshell.resolveConflictVersions(
+                    at: url,
+                    againstLive: doc,
+                    resolvingSubpageTitle: workspace.saveTitleResolver()
+                )
+                if salvaged > 0 {
+                    if let raw = try? clamshell.readRawText(at: url) {
+                        workspace.recordDiskText(raw, for: url)
+                    }
+                    doc.modificationDate = workspace.modificationDate(for: url)
+                    cacheOpenDocument()
+                    workspace.refreshTitleCache(from: doc)
+                    let noun = salvaged == 1 ? "block" : "blocks"
+                    workspace.banner = .init(message: "Merged \(salvaged) \(noun) from another device into \(doc.title)")
+                    workspace.rescan()
+                    return
+                }
+            } catch {
+                Diag.merge.error("presenter resolve failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
+        }
+
         let currentMTime = workspace.modificationDate(for: url)
         if currentMTime == doc.modificationDate { workspace.rescan(); return }
 

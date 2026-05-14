@@ -32,6 +32,11 @@ public final class Clamshell {
         }
     }
 
+    /// In-memory mirror of `Metadata.autoTombstoneMigrationDone`. Read on
+    /// every fresh `loadDocument` so this stays a cheap O(1) lookup; backed
+    /// by the on-disk flag.
+    private(set) public var autoTombstoneMigrationDone: Bool
+
     /// Scope for `listLostBlocks(filter:)`.
     public enum LostBlocksFilter: Sendable {
         /// Every page in the workspace, including trashed ones.
@@ -45,6 +50,16 @@ public final class Clamshell {
     nonisolated private let trash: TrashStore
     nonisolated private let log: RecoveryLog
 
+    /// Per-URL snapshot of the atomic-block hashes our last observed `.md`
+    /// content had on disk. Seeded by `loadDocument` / `loadDocumentAndRawText`
+    /// and refreshed by each `save` / `writeImmediately`. The save path diffs
+    /// the new doc against this set to derive which hashes need a `purge`
+    /// record in the recovery log — the "auto-tombstone on save" mechanic
+    /// that keeps log-as-truth semantics coherent without surfacing every
+    /// deletion as a Recover-sheet chore. Empty entry = first save for this
+    /// URL in this session; no diff is written.
+    private var lastKnownDiskHashes: [URL: Set<String>] = [:]
+
     public init(root: URL) {
         self.root = root
         let files = FileStore()
@@ -56,15 +71,18 @@ public final class Clamshell {
         let metadataURL = Clamshell.metadataURL(forRoot: root)
         if let metadata = Clamshell.readMetadata(at: metadataURL) {
             self.homeRelativePath = metadata.homeRelativePath
+            self.autoTombstoneMigrationDone = metadata.autoTombstoneMigrationDone == true
         } else if let legacy = UserDefaults.standard.string(forKey: WorkspaceBookmark.legacyHomePathDefaultsKey) {
             // One-time migration: pre-Clamshell builds stored the home page in
             // UserDefaults. Move it onto the filesystem so it travels with the
             // folder, then clear the legacy key.
             self.homeRelativePath = legacy
+            self.autoTombstoneMigrationDone = false
             persistMetadata()
             UserDefaults.standard.removeObject(forKey: WorkspaceBookmark.legacyHomePathDefaultsKey)
         } else {
             self.homeRelativePath = nil
+            self.autoTombstoneMigrationDone = false
         }
 
         // Lazy migration: the previous (one-commit-old) build wrote per-block
@@ -99,7 +117,9 @@ public final class Clamshell {
 
     @MainActor
     public func loadDocument(at url: URL) throws -> Document {
-        try files.loadDocument(at: url)
+        let doc = try files.loadDocument(at: url)
+        lastKnownDiskHashes[url] = Self.atomicHashes(of: doc.children)
+        return doc
     }
 
     /// Load + return the raw bytes that produced the document. The raw text is
@@ -113,6 +133,7 @@ public final class Clamshell {
         let fallbackTitle = url.deletingPathExtension().lastPathComponent
         let title = Document.deriveTitle(from: blocks, fallback: fallbackTitle)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        lastKnownDiskHashes[url] = Self.atomicHashes(of: blocks)
         return (Document(url: url, title: title, children: blocks, modificationDate: mtime), raw)
     }
 
@@ -132,8 +153,10 @@ public final class Clamshell {
     /// Coalesced async save (autosave path). Document is `@MainActor`-isolated,
     /// so we serialize on the calling actor (MainActor) before handing the
     /// String + URL across to the save coordinator. After the write lands,
-    /// fires a fire-and-forget `RecoveryLog.record` so any new atomic block
-    /// content gets logged in our device's append-only log.
+    /// fires a fire-and-forget `RecoveryLog.record` that logs any new atomic
+    /// block content AND writes `purge` records for any hash that was in the
+    /// prior on-disk content (per `lastKnownDiskHashes`) but is no longer in
+    /// the new tree — the auto-tombstone-on-save mechanic.
     @MainActor
     public func save(
         _ document: Document,
@@ -143,24 +166,32 @@ public final class Clamshell {
         let url = document.url
         let rel = relativePath(of: url)
         let blocks = document.children
+        let newHashes = Self.atomicHashes(of: blocks)
+        let removed = (lastKnownDiskHashes[url] ?? []).subtracting(newHashes)
         try await saver.save(url: url, contents: newText)
-        scheduleRecord(rel: rel, blocks: blocks)
+        lastKnownDiskHashes[url] = newHashes
+        scheduleRecord(rel: rel, blocks: blocks, removing: removed)
     }
 
     /// Synchronous full write — bypasses the coalescer. For modifications-as-a-unit
     /// (trashing a dirty open doc, appending to a subpage, restoring a lost block)
     /// where the doc must be on disk before the next operation runs. Also schedules
-    /// a recovery-log append for any new atomic block content.
+    /// a recovery-log append for any new atomic block content and tombstones for
+    /// any prior hash no longer present.
     @MainActor
     public func writeImmediately(
         _ document: Document,
         resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
     ) throws {
         let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: titleForPath)
-        let rel = relativePath(of: document.url)
+        let url = document.url
+        let rel = relativePath(of: url)
         let blocks = document.children
-        try files.write(newText, to: document.url)
-        scheduleRecord(rel: rel, blocks: blocks)
+        let newHashes = Self.atomicHashes(of: blocks)
+        let removed = (lastKnownDiskHashes[url] ?? []).subtracting(newHashes)
+        try files.write(newText, to: url)
+        lastKnownDiskHashes[url] = newHashes
+        scheduleRecord(rel: rel, blocks: blocks, removing: removed)
     }
 
     /// Awaits any in-flight + pending save for the URL.
@@ -169,18 +200,169 @@ public final class Clamshell {
     }
 
     @MainActor
-    private func scheduleRecord(rel: String, blocks: [Block]) {
+    private func scheduleRecord(rel: String, blocks: [Block], removing: Set<String> = []) {
         Task { [log] in
-            try? await log.record(page: rel, blocks: blocks)
+            try? await log.record(page: rel, blocks: blocks, removing: removing)
         }
     }
 
     /// Force a recovery-log snapshot of `blocks` for the page at `url`. Used
     /// by the editor right before a destructive mutation so transient blocks
-    /// that never hit the autosave still land in the log.
+    /// that never hit the autosave still land in the log. Never tombstones —
+    /// the snapshot is a *pre*-mutation capture; the post-mutation autosave
+    /// is the one that derives tombstones.
     public func snapshotIntoRecoveryLog(at url: URL, blocks: [Block]) {
         let rel = relativePath(of: url)
         scheduleRecord(rel: rel, blocks: blocks)
+    }
+
+    static func atomicHashes(of blocks: [Block]) -> Set<String> {
+        var out: Set<String> = []
+        collect(blocks, into: &out)
+        return out
+    }
+
+    private static func collect(_ blocks: [Block], into out: inout Set<String>) {
+        for block in blocks {
+            out.insert(BlockFingerprint.atomicHash(block))
+            collect(block.children, into: &out)
+        }
+    }
+
+    // MARK: - Auto-tombstone migration
+
+    /// One-time migration: walk every existing page; for each, retroactively
+    /// tombstone any hash our own log has recorded as an `add` that isn't
+    /// alive in the page's current `.md`. After this runs, the union under
+    /// latest-`t` semantics reflects "trust current `.md` as ground truth"
+    /// for every block this device has ever observed. Auto-tombstoning on
+    /// future saves keeps that property going forward.
+    ///
+    /// Conservative by design: only touches our own log, never other
+    /// devices'. That avoids accidentally tombstoning in-flight cross-device
+    /// content whose `.md` hasn't synced yet. Other devices run the same
+    /// migration against their own logs; the union eventually converges.
+    ///
+    /// Idempotent. Gated by `autoTombstoneMigrationDone` in `.clamshell.json`;
+    /// safe to call multiple times — second call is an O(1) early return.
+    @MainActor
+    public func runAutoTombstoneMigrationIfNeeded() async {
+        if autoTombstoneMigrationDone { return }
+        let entries: [WorkspaceEntry]
+        do { entries = try scan() }
+        catch {
+            Diag.merge.error("auto-tombstone migration scan failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        var totalTombstoned = 0
+        for entry in entries {
+            do {
+                let ourAdds = try await log.ourAddedHashes(page: entry.relativePath)
+                guard !ourAdds.isEmpty else { continue }
+                let raw = (try? files.read(entry.url)) ?? ""
+                let blocks = BlockParser.parse(raw)
+                let live = Self.atomicHashes(of: blocks)
+                let orphans = ourAdds.subtracting(live)
+                if orphans.isEmpty { continue }
+                try await log.record(page: entry.relativePath, blocks: blocks, removing: orphans)
+                totalTombstoned += orphans.count
+            } catch {
+                Diag.merge.error("auto-tombstone migration page=\(entry.relativePath, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        Diag.merge.log("auto-tombstone migration done tombstoned=\(totalTombstoned, privacy: .public) pages=\(entries.count, privacy: .public)")
+        autoTombstoneMigrationDone = true
+        var metadata = Clamshell.readMetadata(at: Clamshell.metadataURL(forRoot: root)) ?? Metadata()
+        metadata.autoTombstoneMigrationDone = true
+        Clamshell.writeMetadata(metadata, to: Clamshell.metadataURL(forRoot: root))
+    }
+
+    // MARK: - iCloud conflict resolution
+
+    /// If `url` has any unresolved `NSFileVersion` conflict alternates,
+    /// merge their blocks into the survivor (in-memory `doc` if provided,
+    /// otherwise the on-disk text), write the merged document immediately,
+    /// and mark each alternate version resolved. Returns the count of
+    /// distinct block-hashes that were salvaged from alternates and weren't
+    /// already in the survivor. Returns 0 when there are no alternates or
+    /// when alternates contributed nothing new.
+    ///
+    /// Open-page callers: pass the live `Document`. On a non-zero return
+    /// the live doc's `children` and `title` are updated in place; the
+    /// caller is responsible for any post-update plumbing (cache refresh,
+    /// disk-hash seeding, banner).
+    ///
+    /// Closed-page callers: pass `nil`. The merged result is written
+    /// straight to disk.
+    @MainActor
+    public func resolveConflictVersions(
+        at url: URL,
+        againstLive doc: Document? = nil,
+        resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
+    ) throws -> Int {
+        let alternates = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        guard !alternates.isEmpty else { return 0 }
+
+        var alternateBlockLists: [[Block]] = []
+        for version in alternates {
+            guard let text = Clamshell.readCoordinated(version.url) else { continue }
+            alternateBlockLists.append(BlockParser.parse(text))
+        }
+
+        let survivorBlocks: [Block]
+        if let doc {
+            survivorBlocks = doc.children
+        } else {
+            let raw = try files.read(url)
+            survivorBlocks = BlockParser.parse(raw)
+        }
+
+        let rel = relativePath(of: url)
+        let context = log.mergeContext(page: rel)
+
+        let result = ConflictMerger.merge(
+            survivor: survivorBlocks,
+            alternates: alternateBlockLists,
+            tombstones: context.tombstones,
+            parentHashLookup: { hash in context.parentHashes[hash] }
+        )
+
+        Diag.merge.log("resolve url=\(url.lastPathComponent, privacy: .public) alternates=\(alternates.count, privacy: .public) salvaged=\(result.salvagedHashes.count, privacy: .public)")
+
+        if result.salvagedHashes.isEmpty {
+            Clamshell.markAlternatesResolved(alternates)
+            return 0
+        }
+
+        let fallbackTitle = url.deletingPathExtension().lastPathComponent
+        let mergedTitle = Document.deriveTitle(from: result.merged, fallback: fallbackTitle)
+        let merged = Document(url: url, title: mergedTitle, children: result.merged)
+        try writeImmediately(merged, resolvingSubpageTitle: titleForPath)
+
+        if let doc {
+            doc.children = result.merged
+            doc.title = mergedTitle
+        }
+
+        Clamshell.markAlternatesResolved(alternates)
+        return result.salvagedHashes.count
+    }
+
+    nonisolated private static func readCoordinated(_ url: URL) -> String? {
+        let coordinator = NSFileCoordinator()
+        var coordError: NSError?
+        var out: String?
+        coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { coordinatedURL in
+            out = try? String(contentsOf: coordinatedURL, encoding: .utf8)
+        }
+        return out
+    }
+
+    nonisolated private static func markAlternatesResolved(_ alternates: [NSFileVersion]) {
+        for version in alternates {
+            version.isResolved = true
+            try? version.remove()
+        }
     }
 
     // MARK: - Pages: create
@@ -406,6 +588,12 @@ public final class Clamshell {
 
     private struct Metadata: Codable, Sendable {
         var homeRelativePath: String?
+        /// One-time flag: set once `runAutoTombstoneMigrationIfNeeded()` has
+        /// retroactively tombstoned our own log's orphan hashes for every
+        /// page that existed at migration time. Future pages don't need it
+        /// because their saves auto-tombstone going forward. Optional in the
+        /// JSON so pre-migration `.clamshell.json` files parse cleanly.
+        var autoTombstoneMigrationDone: Bool?
     }
 
     private static func metadataURL(forRoot root: URL) -> URL {
@@ -419,10 +607,14 @@ public final class Clamshell {
 
     private func persistMetadata() {
         let url = Clamshell.metadataURL(forRoot: root)
-        let metadata = Metadata(homeRelativePath: homeRelativePath)
+        var metadata = Clamshell.readMetadata(at: url) ?? Metadata()
+        metadata.homeRelativePath = homeRelativePath
+        Clamshell.writeMetadata(metadata, to: url)
+    }
 
+    nonisolated private static func writeMetadata(_ metadata: Metadata, to url: URL) {
         // If everything's empty, prefer removing the file over leaving `{}` behind.
-        let isEmpty = metadata.homeRelativePath == nil
+        let isEmpty = metadata.homeRelativePath == nil && metadata.autoTombstoneMigrationDone != true
         if isEmpty {
             try? FileManager.default.removeItem(at: url)
             return

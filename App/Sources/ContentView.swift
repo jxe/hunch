@@ -100,6 +100,17 @@ struct ContentView: View {
         } message: {
             Text(workspace.error ?? "")
         }
+        .overlay(alignment: .top) {
+            if let banner = workspace.banner {
+                BannerView(banner: banner) {
+                    if workspace.banner?.id == banner.id { workspace.banner = nil }
+                }
+                .padding(.horizontal, 16)
+                .frame(maxWidth: 480)
+                .allowsHitTesting(true)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: workspace.banner?.id)
     }
 
     /// NavigationStack root: the home page editor when home is set and loaded;
