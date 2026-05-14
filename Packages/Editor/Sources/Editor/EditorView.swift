@@ -806,15 +806,15 @@ public struct EditorView: View {
     /// Returns `.ignored` if no binding matches so SwiftUI can pass the press
     /// through to other handlers.
     func handleNavKeyPress(_ press: KeyPress) -> KeyPress.Result {
-        NSLog("[NAVKEY] press key=\(press.key) modifiers=\(press.modifiers.rawValue) cursor=\(String(describing: state.cursor)) selection=\(state.selection.count) editing=\(String(describing: state.editingBlock))")
+        Diag.navkey.debug("press key=\(String(describing: press.key), privacy: .public) modifiers=\(press.modifiers.rawValue, privacy: .public) cursor=\(String(describing: state.cursor), privacy: .public) selection=\(state.selection.count, privacy: .public) editing=\(String(describing: state.editingBlock), privacy: .public)")
         guard state.editingBlock == nil else { return .ignored }
         guard let action = Self.navAction(for: press.key, modifiers: press.modifiers) else {
-            NSLog("[NAVKEY] no action matched")
+            Diag.navkey.debug("no action matched")
             return .ignored
         }
-        NSLog("[NAVKEY] dispatching action=\(action)")
+        Diag.navkey.debug("dispatching action=\(String(describing: action), privacy: .public)")
         editorCommands.perform(action)
-        NSLog("[NAVKEY] after dispatch cursor=\(String(describing: state.cursor)) selection=\(state.selection.count)")
+        Diag.navkey.debug("after dispatch cursor=\(String(describing: state.cursor), privacy: .public) selection=\(state.selection.count, privacy: .public)")
         return .handled
     }
 
@@ -1000,7 +1000,7 @@ public struct EditorView: View {
     /// remember to flip `pageFocused`.
     func handleModeChange(from oldMode: Mode, to newMode: Mode) {
         let wasEditing: Bool = { if case .editing = oldMode { return true } else { return false } }()
-        NSLog("[MODE] from=\(oldMode) to=\(newMode)")
+        Diag.mode.debug("from=\(String(describing: oldMode), privacy: .public) to=\(String(describing: newMode), privacy: .public)")
 
         switch newMode {
         case .editing(let id, _):
@@ -1035,7 +1035,52 @@ public struct EditorView: View {
                 host.onBlur()
             }
         }
+
+        #if os(macOS)
+        ensureCursorVisible()
+        #endif
     }
+
+    #if os(macOS)
+    /// Scroll the page so the nav-mode cursor's row is in view — but only if
+    /// it isn't already. Arrow nav within the visible region produces no page
+    /// motion; nav that walks the cursor off-screen scrolls just enough to
+    /// bring it back. Called from `handleModeChange` so every mode-changing
+    /// path (arrow, Shift+arrow, paste, undo, …) keeps cursor and viewport
+    /// in lockstep.
+    ///
+    /// `rowFrames` are in `PageHoverCoordinateSpace`, which is the ScrollView's
+    /// local coords — `frame.minY` is already the row's offset from the
+    /// viewport top, so we can compare directly against `[topInset,
+    /// viewportH-bottomInset]`. When the cursor's row isn't yet in
+    /// `rowFrames` (LazyVStack hasn't materialized it), we fall back to
+    /// `scrollPosition.scrollTo(id:)`, which SwiftUI resolves by walking the
+    /// content forward until the id is reached.
+    func ensureCursorVisible() {
+        guard case .navigating(let sel) = state.mode, let cursor = sel.cursor else { return }
+        let viewportH = scrollMetrics.viewportHeight
+        guard viewportH > 0 else { return }
+        let visibleTop = scrollMetrics.topInset
+        let visibleBottom = viewportH - scrollMetrics.bottomInset
+        guard let frame = rowFrames.frames[cursor] else {
+            scrollPosition.scrollTo(id: cursor, anchor: nil)
+            return
+        }
+        if frame.minY >= visibleTop && frame.maxY <= visibleBottom {
+            return
+        }
+        let currentOffset = scrollMetrics.contentOffsetY
+        let targetOffset: CGFloat
+        if frame.minY < visibleTop {
+            targetOffset = currentOffset + (frame.minY - visibleTop)
+        } else {
+            targetOffset = currentOffset + (frame.maxY - visibleBottom)
+        }
+        let maxOffset = max(0, scrollMetrics.contentHeight - viewportH)
+        let clamped = max(0, min(maxOffset, targetOffset))
+        scrollPosition.scrollTo(point: CGPoint(x: 0, y: clamped))
+    }
+    #endif
 
     /// Request a re-grab of page focus. Bumps a token that the body's
     /// `.onChange(of: pageFocusToken)` observes; the actual `false → true`

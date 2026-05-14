@@ -52,7 +52,7 @@ final class EditorPageCoordinator: EditorHost {
         Task { @MainActor [window, workspace] in
             let saved = await window.saveNow(force: true)
             guard saved else {
-                NSLog("[onAbsorbSubpage] force-save failed; skipping trash of \(pageID) to avoid data loss")
+                Diag.subpage.error("onAbsorbSubpage: force-save failed; skipping trash of \(pageID, privacy: .public) to avoid data loss")
                 return
             }
             workspace.moveSubpageToTrash(relativePath: pageID)

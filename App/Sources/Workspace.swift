@@ -383,7 +383,7 @@ final class Workspace {
             let doc = try loadDocument(at: target)
             return doc.children
         } catch {
-            NSLog("[loadSubpage] loadDocument(at: \(target.path)) threw: \(error.localizedDescription)")
+            Diag.subpage.error("loadSubpage: loadDocument(at: \(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }

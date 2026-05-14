@@ -1,6 +1,6 @@
 # Hunch — Claude working notes
 
-(Repo dir is `console`, target/scheme/binary are `Hunch`. The product display name is Hunch; bundle id is `org.nxhx.Hunch` — pre-TestFlight builds used `com.joeedelman.console`, so any local installs from before the rename are orphaned and won't share UserDefaults / workspace bookmark with the new id.)
+(Repo dir is `console`, target/scheme/binary are `Hunch`. The product display name is Hunch; bundle id is `org.nxhx.Hunch` — pre-TestFlight builds used `com.joeedelman.console`, so any local installs from before the rename are orphaned and won't share UserDefaults / workspace bookmark with the new id. `scripts/clean-orphans.sh` purges those legacy bundles and rebuilds LaunchServices' index; `scripts/run.sh` calls it pre-launch so name-based resolution can't land on a stale bundle.)
 
 A native iOS 26 + macOS 26 markdown editor. Each block is its own row in a
 SwiftUI `LazyVStack` — sidesteps the hardest problems of Notion-style editors
@@ -260,8 +260,30 @@ tail -f /tmp/console.log
 Sprinkle `print("[CLI] ...")` at suspect transitions (state setters,
 focus changes, key handlers, lifecycle hooks). Strip them before
 committing: `grep -rn '\[CLI\]' Packages/UI App`. `print()` may buffer
-when stdout isn't a tty — use `NSLog` (visible via `log show --predicate
-'process == "Hunch"' --last 2m`) for real-time.
+when stdout isn't a tty.
+
+For diagnostics that need to outlive a single debug session — and to read
+state from a build the user is running directly (no `> /tmp/console.log`
+redirect) — use the `Diag.*` loggers (`Packages/Editor/.../Diag.swift`,
+`App/Sources/Diag.swift`). They're `os.Logger` keyed to subsystem
+`org.nxhx.Hunch` with categories `navkey` / `mode` / `subpage` / `speech`.
+**Do not use `NSLog` for new diagnostics** — its message bodies land as
+`<private>` in the unified log (Apple redacts dynamic string args by
+default) and are unreadable without `sudo log config` mucking. The `Diag`
+calls all mark their values `, privacy: .public` so they show up plain.
+Tail with:
+
+```sh
+log stream --predicate 'subsystem == "org.nxhx.Hunch"'
+# or narrow:
+log stream --predicate 'subsystem == "org.nxhx.Hunch" AND category == "navkey"'
+```
+
+When attaching `lldb -p <pid>` to read live state, detach by sending
+`SIGTERM` to the lldb process — `SIGKILL` takes the target down with
+it. In Python breakpoint callbacks, use `frame.EvaluateExpression(...)`
+rather than `interp.HandleCommand(...)` — the latter loses the frame
+binding and expressions fail with `cannot find 'self' in scope`.
 
 Xcode tools that earn their keep:
 - **Accessibility Inspector** — what's hit-testable at a point; useful

@@ -34,7 +34,7 @@ public final class PageSpeechRecorder {
             try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker])
             try session.setActive(true, options: [])
         } catch {
-            NSLog("[PageSpeechRecorder] audio session activation failed: %@", String(describing: error))
+            Diag.speech.error("audio session activation failed: \(String(describing: error), privacy: .public)")
             throw PageSpeechRecorderError.recordingFailed(underlying: (error as NSError).localizedDescription)
         }
         #endif
@@ -55,15 +55,15 @@ public final class PageSpeechRecorder {
         do {
             recorder = try AVAudioRecorder(url: url, settings: settings)
         } catch {
-            NSLog("[PageSpeechRecorder] AVAudioRecorder init failed: %@", String(describing: error))
+            Diag.speech.error("AVAudioRecorder init failed: \(String(describing: error), privacy: .public)")
             throw PageSpeechRecorderError.recordingFailed(underlying: (error as NSError).localizedDescription)
         }
         guard recorder.prepareToRecord() else {
-            NSLog("[PageSpeechRecorder] prepareToRecord returned false for %@", url.path)
+            Diag.speech.error("prepareToRecord returned false for \(url.path, privacy: .public)")
             throw PageSpeechRecorderError.recordingFailed(underlying: "prepareToRecord failed")
         }
         guard recorder.record() else {
-            NSLog("[PageSpeechRecorder] record() returned false; session category=%@", currentSessionCategoryDescription())
+            Diag.speech.error("record() returned false; session category=\(self.currentSessionCategoryDescription(), privacy: .public)")
             throw PageSpeechRecorderError.recordingFailed(underlying: "record() returned false")
         }
 
@@ -103,7 +103,7 @@ public final class PageSpeechRecorder {
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
-            NSLog("[PageSpeechRecorder] audio session deactivation failed: %@", String(describing: error))
+            Diag.speech.error("audio session deactivation failed: \(String(describing: error), privacy: .public)")
         }
         #endif
     }

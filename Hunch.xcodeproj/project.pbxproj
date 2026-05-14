@@ -38,6 +38,7 @@
 		B681767CB931D2A7DC39D806 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C4608B6FE43942A156484E8F /* PrivacyInfo.xcprivacy */; };
 		BF5E458EBAE96BAD9EA9B1D9 /* Clamshell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6089D3744533A5D4FAF49690 /* Clamshell.swift */; };
 		C1FCDFD59E1F87957A2AF622 /* Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 944DA3136290A9A3124F0973 /* Parser.swift */; };
+		C8D66E78DE747B7C1B518CF4 /* Diag.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADBD47A7CADD0F953053FE59 /* Diag.swift */; };
 		C8DC2CA143C6DAABBBE43AB2 /* WorkspaceBookmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0D5BC6AC3A24FE2C74A0EC1 /* WorkspaceBookmarkTests.swift */; };
 		CA658357BA6A169272DEBD08 /* DocumentSaveCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E370B1BF7897B78733986CE /* DocumentSaveCoordinator.swift */; };
 		CB53208075BF30FCC290AF1D /* TrashStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBF5AC98CF7B5213C676903 /* TrashStore.swift */; };
@@ -101,6 +102,7 @@
 		9D5DCC509F521050F7038C36 /* Editor */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Editor; path = Packages/Editor; sourceTree = SOURCE_ROOT; };
 		AAAA7247FD43CDAAE1290007 /* BlockFingerprint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockFingerprint.swift; sourceTree = "<group>"; };
 		AD818E80A31A592762987ECC /* ClamshellImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClamshellImageTests.swift; sourceTree = "<group>"; };
+		ADBD47A7CADD0F953053FE59 /* Diag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diag.swift; sourceTree = "<group>"; };
 		B408352065605E2F3259DD3B /* DeviceID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceID.swift; sourceTree = "<group>"; };
 		BAC5EF536498D40451D461DD /* RoundTripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoundTripTests.swift; sourceTree = "<group>"; };
 		BBBF5AC98CF7B5213C676903 /* TrashStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashStore.swift; sourceTree = "<group>"; };
@@ -264,6 +266,7 @@
 				751618CABFCA5662084F2607 /* LinkPreviews */,
 				573EDB9EE7E75299C1A6A1A7 /* Shell */,
 				1D68ED38B354E02D3C714C9F /* ContentView.swift */,
+				ADBD47A7CADD0F953053FE59 /* Diag.swift */,
 				0151C2F42360D5C2F999A0ED /* EditorPageCoordinator.swift */,
 				5F377A4E9DAA12643BB2666D /* FontRegistration.swift */,
 				4EDE9175735C2BEE33F669B6 /* HunchApp.swift */,
@@ -432,6 +435,7 @@
 				BF5E458EBAE96BAD9EA9B1D9 /* Clamshell.swift in Sources */,
 				96052357A5A3DF167EBAEFE7 /* ContentView.swift in Sources */,
 				2A56AD20C0BCB86D2C72CAF5 /* DeviceID.swift in Sources */,
+				C8D66E78DE747B7C1B518CF4 /* Diag.swift in Sources */,
 				CA658357BA6A169272DEBD08 /* DocumentSaveCoordinator.swift in Sources */,
 				DB0E106BB91A5CC1C9E8597F /* EditorPageCoordinator.swift in Sources */,
 				F70ABF6CF6A83F55B5C10876 /* FileStore.swift in Sources */,

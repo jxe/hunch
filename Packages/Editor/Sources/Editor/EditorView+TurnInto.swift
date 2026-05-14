@@ -251,7 +251,7 @@ extension EditorView {
         guard let block = document.find(blockID),
               case .subpage(let title, let path) = block.kind else { return .ignored }
         guard var loaded = host.onLoadSubpage(path) else {
-            NSLog("[convertSubpage] onLoadSubpage returned nil — path=\(path)")
+            Diag.subpage.error("convertSubpage: onLoadSubpage returned nil — path=\(path, privacy: .public)")
             return .ignored
         }
         // Heading containment means the page's body lives as children of the
@@ -279,7 +279,7 @@ extension EditorView {
         // duplicate (file still in workspace, bullet on disk) rather than data
         // loss (file gone, bullet never persisted).
         if !host.onAbsorbSubpage(path) {
-            NSLog("[convertSubpage] onAbsorbSubpage failed after mutation — orphan file at \(path)")
+            Diag.subpage.error("convertSubpage: onAbsorbSubpage failed after mutation — orphan file at \(path, privacy: .public)")
         }
         if target == .toggle {
             state.expandedToggles.insert(blockID)

@@ -9,11 +9,20 @@
 
 set -euo pipefail
 
+script_dir="${0:A:h}"
+
 installed="$HOME/Applications/Hunch.app"
 if [[ ! -d "$installed" ]]; then
   echo "no $installed — build the macOS target first (xcodebuild ... build, or Xcode Run)" >&2
   exit 1
 fi
+
+# Purge legacy `com.joeedelman.console` bundles and rebuild the LaunchServices
+# index. Without this, tools that resolve "Hunch" by display name (Spotlight,
+# accessibility grants, `open -b`) can land on a stale legacy bundle in
+# DerivedData instead of the current `org.nxhx.Hunch` build. Cheap to run
+# unconditionally (~0.15s); script is also invocable standalone.
+"$script_dir/clean-orphans.sh"
 
 # Kill by bundle id so we catch both DerivedData and ~/Applications copies.
 pkill -f "com.joeedelman.console" 2>/dev/null || true
