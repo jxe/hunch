@@ -569,7 +569,9 @@ final class Workspace {
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
             workspaceURL = root
             let clamshell = Clamshell(root: root)
+            clamshell.homeRelativePath = "everything.md"
             self.clamshell = clamshell
+            homeRelativePath = "everything.md"
             entries = (try? clamshell.scan()) ?? []
         } catch {
             self.error = "Failed to install tall-doc UI test workspace: \(error.localizedDescription)"

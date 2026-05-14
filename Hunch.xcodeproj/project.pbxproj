@@ -49,6 +49,7 @@
 		E435BE3FEC464693DD180764 /* WorkspaceBookmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95705379B9963C729E4484B1 /* WorkspaceBookmark.swift */; };
 		EA7FB89847BE5FAA565621E8 /* BlockFingerprint.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA7247FD43CDAAE1290007 /* BlockFingerprint.swift */; };
 		F0EBD1DFC3F2FD8D6D676A43 /* WorkspaceWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40BF2D87C103EC5F23D76AE /* WorkspaceWindow.swift */; };
+		F32380CE2D342AE7F33282B0 /* HunchSplitKeyboardUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00870C5C9061DB320F414983 /* HunchSplitKeyboardUITests.swift */; };
 		F70ABF6CF6A83F55B5C10876 /* FileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C40C5869BF914FA61B2FEC5D /* FileStore.swift */; };
 		FC2E031962A8B9A4060D90EA /* HunchEditScrollUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF8364C13DB45F36866FE4A /* HunchEditScrollUITests.swift */; };
 /* End PBXBuildFile section */
@@ -71,6 +72,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		00870C5C9061DB320F414983 /* HunchSplitKeyboardUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HunchSplitKeyboardUITests.swift; sourceTree = "<group>"; };
 		0151C2F42360D5C2F999A0ED /* EditorPageCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorPageCoordinator.swift; sourceTree = "<group>"; };
 		03A95B584DA472A6EEE3FB22 /* LinkPreviewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkPreviewService.swift; sourceTree = "<group>"; };
 		0C720F60C39E316833209F75 /* FileStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileStoreTests.swift; sourceTree = "<group>"; };
@@ -245,6 +247,7 @@
 			children = (
 				9221CD2529F8914B14AA5D9E /* HunchDragAndDropUITests.swift */,
 				7BF8364C13DB45F36866FE4A /* HunchEditScrollUITests.swift */,
+				00870C5C9061DB320F414983 /* HunchSplitKeyboardUITests.swift */,
 			);
 			path = UITests;
 			sourceTree = "<group>";
@@ -467,6 +470,7 @@
 			files = (
 				7047AECA135A40E7543D2CAC /* HunchDragAndDropUITests.swift in Sources */,
 				FC2E031962A8B9A4060D90EA /* HunchEditScrollUITests.swift in Sources */,
+				F32380CE2D342AE7F33282B0 /* HunchSplitKeyboardUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

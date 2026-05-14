@@ -68,6 +68,11 @@ public struct EditorView: View {
     /// `becomeFirstResponder`, the old UITextView is still in the window hierarchy.
     /// UIKit transfers first responder synchronously and the soft keyboard stays
     /// up — without this, splitting on Return makes the keyboard hide+show.
+    ///
+    /// Written by `transferFocus(to:)` synchronously, BEFORE the `state.mode`
+    /// mutation, so the first body re-render that sees the new mode also sees
+    /// this transitioning ID — `.onChange(of: state.mode)` fires after the
+    /// render completes, which would be one tick too late.
     @State var iosTransitioningEditorID: BlockID?
     #endif
     /// Document-level undo coordinator. Owns the shared `UndoManager` that NSTextView
@@ -303,8 +308,17 @@ public struct EditorView: View {
             // scene-level remains visible to the menu commands.
             .focusedSceneValue(\.documentUndoController, undoController)
             .focusedSceneValue(\.editorCommands, editorCommands)
+            #if os(macOS)
+            // macOS uses page-level focus for nav-mode hardware keyboard handling.
+            // iOS has no such nav mode and no hardware keyboard nav, AND attaching
+            // .focusable()/.focused() at the EditorView root registers the editor
+            // tree in SwiftUI's focus engine, which then eagerly calls
+            // resignFirstResponder on any nested UITextView whenever the view
+            // tree updates (insert a row, change state.mode). That race hides
+            // the soft keyboard mid-split. Skip both on iOS.
             .focusable()
             .focused($pageFocused)
+            #endif
             .onAppear {
                 if state.cursor == nil, let first = document.children.first {
                     state.setCursor(first.id)
@@ -996,6 +1010,16 @@ public struct EditorView: View {
                     break
                 }
             }
+            #if os(iOS)
+            // Set BEFORE the state.mode mutation so the next body render sees
+            // both new values together. Driving this from .onChange(of: state.mode)
+            // fires too late — the old row unmounts in the first render that
+            // sees the new mode, before .onChange runs. See `iosTransitioningEditorID`.
+            if case .editing(let oldID, _) = state.mode, oldID != id {
+                iosTransitioningEditorID = oldID
+                DispatchQueue.main.async { iosTransitioningEditorID = nil }
+            }
+            #endif
             state.enterEditMode(on: id, initialCursor: initialCursor)
 
         case .nav(let cursor):
@@ -1028,18 +1052,9 @@ public struct EditorView: View {
             // NSTextView's `viewDidMoveToWindow` `wantsFocus` async path takes over.
             macActiveTextView.makeFirstResponder(for: id)
             #endif
-            #if os(iOS)
-            // Inter-block transfer (e.g. Return → split, Backspace → merge): the old
-            // row's BlockTextEditor would unmount before SwiftUI inserts/mounts the
-            // new row's UITextView, opening a one-tick gap where no UITextView is
-            // first responder and the soft keyboard begins its hide animation. Keep
-            // the old row mounted for one runloop so the new view's `didMoveToWindow`
-            // grabs first responder while the old UITextView is still in the window.
-            if case .editing(let oldID, _) = oldMode, oldID != id {
-                iosTransitioningEditorID = oldID
-                DispatchQueue.main.async { iosTransitioningEditorID = nil }
-            }
-            #endif
+            // iOS inter-block overlap (`iosTransitioningEditorID`) is set inside
+            // `transferFocus` BEFORE the state.mode mutation, not here — .onChange
+            // fires after the render that picks up the new mode, which is too late.
         case .navigating:
             editorFocused = nil
             // Only re-grab page focus on real edit→nav transitions. .onChange fires on
