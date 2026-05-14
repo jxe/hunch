@@ -178,6 +178,21 @@ public struct EditorView: View {
                             } action: { newValue in
                                 rowFrames.frames[block.id] = newValue
                             }
+                            // LazyVStack unmounts rows that scroll outside its
+                            // materialization window. `onGeometryChange` only
+                            // fires while the view is mounted, so without this
+                            // the dict keeps the row's last-known frame forever
+                            // — `ensureCursorVisible` then reads a stale frame
+                            // (the row's old viewport-relative Y from when it
+                            // was last visible) and scrolls a few points
+                            // instead of jumping to where the row actually is.
+                            // Clearing on disappear means the next
+                            // `ensureCursorVisible` falls through to the
+                            // `scrollPosition.scrollTo(id:)` path, which lets
+                            // SwiftUI walk the content forward.
+                            .onDisappear {
+                                rowFrames.frames.removeValue(forKey: block.id)
+                            }
                     }
                     let trailingPinchGap = pinchExtraGap(forIndex: trailingSlot)
                     let trailingReorderGap = reorderDriftGap(at: trailingSlot, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
