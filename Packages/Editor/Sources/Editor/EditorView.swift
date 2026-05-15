@@ -343,6 +343,18 @@ public struct EditorView: View {
                 if actionSheet != nil { actionSheet = nil }
                 handleModeChange(from: oldMode, to: newMode)
             }
+            // The `Binding<Document>` from the host can swap to a freshly-parsed
+            // `Document` instance (e.g. external-change reload after autosave).
+            // Fresh parse → fresh BlockIDs → every `state.cursor` / `state.selection`
+            // ID is now stale, which silently breaks nav-mode highlight and delete
+            // (both guard `document.find(id)` and skip on miss). `Document.id` is
+            // the URL and survives the swap, so we key on `ObjectIdentifier`.
+            .onChange(of: ObjectIdentifier(document)) { _, _ in
+                var validIDs: Set<BlockID> = []
+                document.walk { block, _, _ in validIDs.insert(block.id) }
+                Diag.mode.debug("document instance swap — revalidating state against \(validIDs.count, privacy: .public) blocks")
+                state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
+            }
             // Single home for the focus-pump dance. `forcePageFocusGrab()`
             // bumps `pageFocusToken`, which lands here and flips
             // `pageFocused` `false → true` across two runloop ticks (a
@@ -1628,6 +1640,9 @@ public struct EditorView: View {
         out.sort { (a, b) in
             (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
         }
+        if out.isEmpty, !state.selection.isEmpty {
+            Diag.mode.error("effectiveSelectedIDs: state.selection has \(state.selection.count, privacy: .public) IDs but none present in document")
+        }
         return out
     }
 
@@ -1720,6 +1735,13 @@ public struct EditorView: View {
             if let block = document.find(id) {
                 appendPreorder(block, into: &removedFlat)
             }
+        }
+        // Selection IDs all missing from the doc — would silently no-op. Should be
+        // unreachable now that `.onChange(of: ObjectIdentifier(document))` revalidates
+        // state on doc-instance swaps; log loudly if it ever fires again.
+        if indicesFlat.isEmpty {
+            Diag.mode.error("deleteBlocks: selection has no doc-present IDs roots=\(roots.count, privacy: .public)")
+            return
         }
         host.onRecordBlockDeletion(indicesFlat, removedFlat, actionName)
 
