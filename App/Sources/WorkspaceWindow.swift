@@ -40,6 +40,16 @@ final class WorkspaceWindow {
     private var isDirty = false
     private var isSaving = false
     private var documentCache: [URL: Document] = [:]
+    /// Hashes auto-restored into a page during this app session, per URL.
+    /// Belt-and-braces against re-restore loops: if the post-save echo (or
+    /// any other file-presenter wakeup) sees the same recovery-log entries
+    /// surface as "lost" again — whether due to a race with the
+    /// fire-and-forget `RecoveryLog.record`, an iCloud-Drive stomp that
+    /// keeps reverting the `.md`, or a stale-cache read — we refuse the
+    /// second pass. If the user genuinely wants the same content back after
+    /// deleting it, that path goes through the manual Recover sheet (which
+    /// also handles the "Deleted on purpose" surface).
+    private var autoRestoredHashes: [URL: Set<String>] = [:]
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -155,6 +165,7 @@ final class WorkspaceWindow {
         openDocument = nil
         path = []
         documentCache = [:]
+        autoRestoredHashes = [:]
         isDirty = false
         isSaving = false
     }
@@ -306,6 +317,7 @@ final class WorkspaceWindow {
             self.openDocument = nil
         }
         documentCache.removeValue(forKey: entry.url)
+        autoRestoredHashes.removeValue(forKey: entry.url)
         path.removeAll { $0 == entry.url }
         return workspace.moveToTrash(at: entry.url)
     }
@@ -372,13 +384,18 @@ final class WorkspaceWindow {
         if isDirty || isSaving { return }
         let rel = clamshell.relativePath(of: url)
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: rel))
-        let candidates = lost.filter { findAtomicHash($0.hash, in: doc) == nil }
+        let alreadyRestored = autoRestoredHashes[url] ?? []
+        let candidates = lost.filter {
+            findAtomicHash($0.hash, in: doc) == nil
+                && !alreadyRestored.contains($0.hash)
+        }
         guard !candidates.isEmpty else { return }
         let roots = LostBlockForest.assemble(candidates)
         guard !roots.isEmpty else { return }
         guard openDocument?.url == url else { return }
 
         var restored = 0
+        var restoredHashes: Set<String> = []
         for root in roots {
             guard openDocument?.url == url else { return }
             let fresh = root.block.withFreshIDs()
@@ -391,7 +408,11 @@ final class WorkspaceWindow {
             let siblings = parentID.flatMap(doc.find)?.children ?? doc.children
             doc.insertSubtrees([fresh], at: DropPath(parent: parentID, position: siblings.count))
             restored += root.hashes.count
+            restoredHashes.formUnion(root.hashes)
         }
+        // Remember these for the rest of the session so a re-fire (post-save
+        // echo, iCloud stomp, file-presenter burst, …) can't re-insert them.
+        autoRestoredHashes[url, default: []].formUnion(restoredHashes)
         guard restored > 0 else { return }
         doc.enforceHeadingContainment()
         doc.title = Document.deriveTitle(
