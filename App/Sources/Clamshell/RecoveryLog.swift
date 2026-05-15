@@ -122,11 +122,11 @@ public actor RecoveryLog {
     /// surfaces correctly.
     public func enumerate(page rel: String) -> [LostBlock] {
         guard FileManager.default.fileExists(atPath: pageDir(rel: rel).path) else { return [] }
-        let latest = unionLatest(page: rel)
+        let byHash = unionLatestWithAdd(page: rel)
         let live = liveAtomicHashes(forPage: rel)
-        return latest.values
-            .filter { $0.op == "add" && !live.contains($0.h) }
-            .map { LostBlock(record: $0, source: rel) }
+        return byHash.values
+            .filter { $0.latest.op == "add" && !live.contains($0.latest.h) }
+            .map { LostBlock(record: $0.latest, source: rel) }
             .sorted { $0.recordedAt > $1.recordedAt }
     }
 
@@ -140,6 +140,46 @@ public actor RecoveryLog {
             out.append(contentsOf: enumerate(page: rel))
         }
         return out.sorted { $0.recordedAt > $1.recordedAt }
+    }
+
+    /// Blocks the user (or auto-tombstone) deleted on purpose: the latest
+    /// record for the hash is a `purge`, but a prior `add` for the same hash
+    /// still carries the markdown + parent metadata, so we can reconstruct
+    /// the block on restore. Excludes hashes that are currently alive in
+    /// `.md` (a re-add already brought them back).
+    ///
+    /// `since` filters out purges older than the given date. nil disables
+    /// the cap (returns everything). The Recover sheet defaults to a recent
+    /// window to keep noise low.
+    public func enumeratePurged(page rel: String, since: Date? = nil) -> [PurgedBlock] {
+        guard FileManager.default.fileExists(atPath: pageDir(rel: rel).path) else { return [] }
+        let byHash = unionLatestWithAdd(page: rel)
+        let live = liveAtomicHashes(forPage: rel)
+        let cutoff = since?.timeIntervalSince1970
+        var out: [PurgedBlock] = []
+        for entry in byHash.values {
+            guard entry.latest.op == "purge",
+                  let add = entry.latestAdd,
+                  !live.contains(entry.latest.h) else { continue }
+            if let cutoff, entry.latest.t < cutoff { continue }
+            out.append(PurgedBlock(
+                addRecord: add,
+                purgedAt: Date(timeIntervalSince1970: entry.latest.t),
+                source: rel
+            ))
+        }
+        return out.sorted { $0.purgedAt > $1.purgedAt }
+    }
+
+    /// Purged blocks for every page that has ever produced log activity.
+    public func enumerateAllPurged(since: Date? = nil) -> [PurgedBlock] {
+        let historyRoot = historyRootURL()
+        guard FileManager.default.fileExists(atPath: historyRoot.path) else { return [] }
+        var out: [PurgedBlock] = []
+        for rel in pageRelsUnder(historyRoot) {
+            out.append(contentsOf: enumeratePurged(page: rel, since: since))
+        }
+        return out.sorted { $0.purgedAt > $1.purgedAt }
     }
 
     // MARK: - Mutation
@@ -160,9 +200,31 @@ public actor RecoveryLog {
     /// anymore. Returns nil for top-level (recorded `p` was null) or for
     /// hashes the log doesn't know about as an add.
     public func parentHash(page rel: String, hash: String) -> String? {
-        let latest = unionLatest(page: rel)
-        guard let wire = latest[hash], wire.op == "add" else { return nil }
-        return wire.p
+        let byHash = unionLatestWithAdd(page: rel)
+        return byHash[hash]?.latestAdd?.p
+    }
+
+    /// Append a fresh `add` for `block` with the current timestamp,
+    /// bypassing the in-memory hash cache. Used by the
+    /// restore-from-tombstone path: a plain `record` would short-circuit
+    /// (the device has already observed this hash) and the purge would
+    /// remain the latest record, leaving the block tombstoned in the
+    /// union. Updates the cache so subsequent normal `record` calls don't
+    /// re-emit.
+    public func reAdd(page rel: String, block: Block, parentHash: String?) throws {
+        var known = try ensureDeviceHashesLoaded(for: rel)
+        let h = BlockFingerprint.atomicHash(block)
+        let record = Wire(
+            op: "add",
+            h: h,
+            p: parentHash,
+            m: BlockSerializer.serializeAtomic(block),
+            t: Date().timeIntervalSince1970
+        )
+        guard let line = Self.encode(record) else { return }
+        try appendLines(line + "\n", to: ourLogURL(for: rel))
+        known.insert(h)
+        ourDeviceHashes[rel] = known
     }
 
     /// Combined view used by the iCloud conflict-merge path: tombstoned hashes
@@ -176,17 +238,15 @@ public actor RecoveryLog {
     }
 
     nonisolated public func mergeContext(page rel: String) -> MergeContext {
-        let latest = unionLatest(page: rel)
+        let byHash = unionLatestWithAdd(page: rel)
         var tombstones: Set<String> = []
         var parentHashes: [String: String] = [:]
-        for (hash, wire) in latest {
-            switch wire.op {
-            case "purge":
+        for (hash, entry) in byHash {
+            if entry.latest.op == "purge" {
                 tombstones.insert(hash)
-            case "add":
-                if let p = wire.p { parentHashes[hash] = p }
-            default:
-                continue
+            }
+            if let p = entry.latestAdd?.p {
+                parentHashes[hash] = p
             }
         }
         return MergeContext(tombstones: tombstones, parentHashes: parentHashes)
@@ -284,22 +344,40 @@ public actor RecoveryLog {
         return out
     }
 
-    /// Latest record (add or purge) per hash, across every device's log for
-    /// `page`. Latest-`t` wins regardless of op kind — a later `add` for a
-    /// hash overrides an earlier `purge` and vice versa. This is what makes
-    /// "delete X, save (auto-tombstone), undo, save (auto-readd)" coherent:
-    /// the readd's record is newer than the tombstone, so X is alive again
-    /// in the union.
-    nonisolated private func unionLatest(page rel: String) -> [String: Wire] {
-        var latest: [String: Wire] = [:]
+    /// Per-hash union across every device's log for `page`. Tracks two
+    /// pieces of state side-by-side:
+    /// - `latest`: the newest record overall (add or purge). Latest-`t`
+    ///   wins; tells the caller whether the hash is currently tombstoned
+    ///   ("delete X, save (auto-tombstone), undo, save (auto-readd)"
+    ///   coherence — the readd's record is newer than the purge, so X is
+    ///   alive again in the union).
+    /// - `latestAdd`: the newest `add` record specifically. Carries the
+    ///   block's atomic markdown `m` and recorded parent hash `p`, even
+    ///   when the latest overall record is a purge. The Recover sheet
+    ///   uses this to show "deleted on purpose" entries with their
+    ///   original content + parent info.
+    fileprivate struct HashEntry: Sendable {
+        let latest: Wire
+        let latestAdd: Wire?
+    }
+
+    nonisolated fileprivate func unionLatestWithAdd(page rel: String) -> [String: HashEntry] {
+        var byHash: [String: HashEntry] = [:]
         for url in deviceLogURLs(for: rel) {
             for record in readRecords(at: url) {
                 guard record.op == "add" || record.op == "purge" else { continue }
-                if let prev = latest[record.h], prev.t >= record.t { continue }
-                latest[record.h] = record
+                let existing = byHash[record.h]
+                let newLatest = (existing?.latest).map { record.t > $0.t ? record : $0 } ?? record
+                let newLatestAdd: Wire?
+                if record.op == "add" {
+                    newLatestAdd = (existing?.latestAdd).map { record.t > $0.t ? record : $0 } ?? record
+                } else {
+                    newLatestAdd = existing?.latestAdd
+                }
+                byHash[record.h] = HashEntry(latest: newLatest, latestAdd: newLatestAdd)
             }
         }
-        return latest
+        return byHash
     }
 
     nonisolated private func deviceLogURLs(for rel: String) -> [URL] {
@@ -403,5 +481,71 @@ public struct LostBlock: Sendable, Identifiable {
 
 extension LostBlock: Hashable {
     public static func == (lhs: LostBlock, rhs: LostBlock) -> Bool { lhs.id == rhs.id }
+    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+extension LostBlock {
+    /// Construct a `LostBlock`-shaped record for inputs that didn't come
+    /// straight out of the log union (e.g. `PurgedBlock` re-grouped through
+    /// the same forest assembler in the host). Internal-style escape hatch
+    /// for code in the same module that needs the same fields without
+    /// fabricating a `Wire`.
+    public static func adapt(
+        hash: String,
+        parentHash: String?,
+        markdown: String,
+        source: String,
+        recordedAt: Date
+    ) -> LostBlock {
+        LostBlock(
+            adaptedHash: hash,
+            parentHash: parentHash,
+            markdown: markdown,
+            source: source,
+            recordedAt: recordedAt
+        )
+    }
+
+    fileprivate init(
+        adaptedHash: String,
+        parentHash: String?,
+        markdown: String,
+        source: String,
+        recordedAt: Date
+    ) {
+        self.markdown = markdown
+        self.hash = adaptedHash
+        self.parentHash = parentHash
+        self.source = source
+        self.recordedAt = recordedAt
+    }
+}
+
+// MARK: - PurgedBlock
+
+/// A block whose latest log record across all devices is a `purge`, but
+/// whose markdown + parent metadata we still have from a prior `add`.
+/// Surfaces in the Recover sheet's "deleted on purpose" section so the
+/// user can bring back intentional deletions when needed.
+public struct PurgedBlock: Sendable, Identifiable {
+    public let markdown: String
+    public let hash: String
+    public let parentHash: String?
+    public let source: String
+    public let purgedAt: Date
+
+    public var id: String { "\(source)|\(hash)" }
+
+    fileprivate init(addRecord: RecoveryLog.Wire, purgedAt: Date, source: String) {
+        self.markdown = addRecord.m ?? ""
+        self.hash = addRecord.h
+        self.parentHash = addRecord.p
+        self.source = source
+        self.purgedAt = purgedAt
+    }
+}
+
+extension PurgedBlock: Hashable {
+    public static func == (lhs: PurgedBlock, rhs: PurgedBlock) -> Bool { lhs.id == rhs.id }
     public func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }

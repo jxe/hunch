@@ -620,12 +620,16 @@ final class Workspace {
         clamshell.snapshotIntoRecoveryLog(at: sourceURL, blocks: previousBlocks)
     }
 
-    /// One-shot stream of recoverable entries (trash + lost blocks). JSONL
-    /// gives us hash + parent + markdown per line, so there's no cheaper
-    /// first pass the way the per-block pool had — we yield one fully
-    /// populated batch. The stream API stays so the call site keeps an
-    /// `AsyncStream` shape and can be enriched later (e.g. tail-first reads).
-    func streamRecoverableEntries(filter: RecoveryListFilter = .all) -> AsyncStream<[RecoverableEntry]> {
+    /// One-shot stream of recoverable entries (trash + lost blocks + purged
+    /// blocks). Lost and purged blocks are tree-consolidated via
+    /// `LostBlockForest.assemble` — a heading + child paragraphs deleted
+    /// together arrive as one entry whose root carries the descendants.
+    /// `purgedSince` caps purged-block surface area (default: last 30 days);
+    /// pass `nil` via `showAllPurged` on the caller to disable.
+    func streamRecoverableEntries(
+        filter: RecoveryListFilter = .all,
+        showAllPurged: Bool = false
+    ) -> AsyncStream<[RecoverableEntry]> {
         AsyncStream { continuation in
             let task = Task { @MainActor [weak self] in
                 guard let self, let clamshell = self.clamshell else {
@@ -644,8 +648,19 @@ final class Workspace {
                 case .all: lostFilter = .all
                 case .page(let rel): lostFilter = .page(relativePath: rel)
                 }
+
                 let lost = await clamshell.listLostBlocks(filter: lostFilter)
-                out.append(contentsOf: lost.map { .lostBlock($0) })
+                out.append(contentsOf: Workspace.consolidate(lost: lost))
+
+                let purgedSince: Date? = showAllPurged
+                    ? nil
+                    : Date().addingTimeInterval(-30 * 86_400)
+                let purged = await clamshell.listPurgedBlocks(
+                    filter: lostFilter,
+                    since: purgedSince
+                )
+                out.append(contentsOf: Workspace.consolidate(purged: purged))
+
                 out.sort { $0.timestamp > $1.timestamp }
 
                 continuation.yield(out)
@@ -653,6 +668,56 @@ final class Workspace {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Group lost-block records by source page, then run each page's set
+    /// through `LostBlockForest.assemble` so siblings sharing a parentHash
+    /// chain emerge as one root with descendants attached. One
+    /// `RecoverableEntry.lostBlock` per root.
+    private static func consolidate(lost: [LostBlock]) -> [RecoverableEntry] {
+        let bySource = Dictionary(grouping: lost) { $0.source }
+        var out: [RecoverableEntry] = []
+        for (_, entries) in bySource {
+            for root in LostBlockForest.assemble(entries) {
+                out.append(.lostBlock(LostBlockGroup(
+                    root: root.lost,
+                    descendantHashes: root.hashes
+                )))
+            }
+        }
+        return out
+    }
+
+    /// Same as `consolidate(lost:)` but for `PurgedBlock` records. Reuses
+    /// the same forest assembler via a thin LostBlock-shaped shim so we
+    /// have one tree-building code path.
+    private static func consolidate(purged: [PurgedBlock]) -> [RecoverableEntry] {
+        let bySource = Dictionary(grouping: purged) { $0.source }
+        var out: [RecoverableEntry] = []
+        for (_, entries) in bySource {
+            // Adapter: feed purged into the same assembler via a lossless
+            // mapping (LostBlock and PurgedBlock have the same recovery-
+            // relevant fields). `recordedAt` carries `purgedAt` so root
+            // ordering stays meaningful.
+            let adapted: [LostBlock] = entries.map { p in
+                LostBlock.adapt(
+                    hash: p.hash,
+                    parentHash: p.parentHash,
+                    markdown: p.markdown,
+                    source: p.source,
+                    recordedAt: p.purgedAt
+                )
+            }
+            let purgedByHash = Dictionary(uniqueKeysWithValues: entries.map { ($0.hash, $0) })
+            for root in LostBlockForest.assemble(adapted) {
+                guard let purgedRoot = purgedByHash[root.lost.hash] else { continue }
+                out.append(.purgedBlock(PurgedBlockGroup(
+                    root: purgedRoot,
+                    descendantHashes: root.hashes
+                )))
+            }
+        }
+        return out
     }
 
     @discardableResult
@@ -749,41 +814,100 @@ public enum RecoveryListFilter: Sendable, Hashable, Identifiable {
     public var id: Self { self }
 }
 
+/// Tree-consolidated view of a lost block forest root. Wraps the root
+/// `LostBlock` (used for restore — the `WorkspaceWindow` path reconstructs
+/// the subtree from this hash) plus the set of hashes covered by the
+/// assembled tree (for "+N more" affordances and post-restore purge).
+public struct LostBlockGroup: Sendable, Hashable, Identifiable {
+    public let root: LostBlock
+    public let descendantHashes: Set<String>
+
+    public var id: String { root.id }
+    public var hash: String { root.hash }
+    public var source: String { root.source }
+    public var recordedAt: Date { root.recordedAt }
+    public var markdown: String { root.markdown }
+    public var nestedCount: Int { descendantHashes.count - 1 }
+
+    public init(root: LostBlock, descendantHashes: Set<String>) {
+        self.root = root
+        self.descendantHashes = descendantHashes
+    }
+}
+
+/// Same shape as `LostBlockGroup` but for intentionally-deleted blocks.
+public struct PurgedBlockGroup: Sendable, Hashable, Identifiable {
+    public let root: PurgedBlock
+    public let descendantHashes: Set<String>
+
+    public var id: String { root.id }
+    public var hash: String { root.hash }
+    public var source: String { root.source }
+    public var purgedAt: Date { root.purgedAt }
+    public var markdown: String { root.markdown }
+    public var nestedCount: Int { descendantHashes.count - 1 }
+
+    public init(root: PurgedBlock, descendantHashes: Set<String>) {
+        self.root = root
+        self.descendantHashes = descendantHashes
+    }
+}
+
 public enum RecoverableEntry: Identifiable, Sendable, Hashable {
     case deletedPage(TrashEntry)
-    case lostBlock(LostBlock)
+    case lostBlock(LostBlockGroup)
+    case purgedBlock(PurgedBlockGroup)
 
     public var id: String {
         switch self {
         case .deletedPage(let e): return "page:\(e.id)"
-        case .lostBlock(let l): return "lost:\(l.id)"
+        case .lostBlock(let g): return "lost:\(g.id)"
+        case .purgedBlock(let g): return "purged:\(g.id)"
         }
     }
 
     public var timestamp: Date {
         switch self {
         case .deletedPage(let e): return e.timestamp
-        case .lostBlock(let l): return l.recordedAt
+        case .lostBlock(let g): return g.recordedAt
+        case .purgedBlock(let g): return g.purgedAt
         }
     }
 
     public var sourcePath: String {
         switch self {
         case .deletedPage(let e): return e.sourcePath
-        case .lostBlock(let l): return l.source
+        case .lostBlock(let g): return g.source
+        case .purgedBlock(let g): return g.source
         }
     }
 
     public var displayTitle: String {
         switch self {
         case .deletedPage(let e): return e.displayTitle
-        case .lostBlock(let l): return RecoverableEntry.previewLine(from: l.markdown)
+        case .lostBlock(let g): return RecoverableEntry.previewLine(from: g.markdown)
+        case .purgedBlock(let g): return RecoverableEntry.previewLine(from: g.markdown)
         }
     }
 
     public var isPageEntry: Bool {
         if case .deletedPage = self { return true }
         return false
+    }
+
+    public var isPurged: Bool {
+        if case .purgedBlock = self { return true }
+        return false
+    }
+
+    /// Count of additional blocks (beyond the root) bundled in this entry.
+    /// Used by `RecoveryView` to show "+N more" on tree-consolidated rows.
+    public var nestedCount: Int {
+        switch self {
+        case .deletedPage: return 0
+        case .lostBlock(let g): return g.nestedCount
+        case .purgedBlock(let g): return g.nestedCount
+        }
     }
 
     private static func previewLine(from body: String) -> String {

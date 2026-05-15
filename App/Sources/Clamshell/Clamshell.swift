@@ -516,11 +516,43 @@ public final class Clamshell {
         try await log.purge(page: entry.source, hash: entry.hash)
     }
 
+    /// Hash-keyed tombstone variant. Used by the manual-restore path
+    /// when purging an entire restored subtree — the caller has the
+    /// page + hash set in hand but no `LostBlock` per descendant.
+    public func purgeHash(_ hash: String, in page: String) async throws {
+        try await log.purge(page: page, hash: hash)
+    }
+
     /// Resolve a hash to its recorded parent hash via the per-device recovery
     /// log union. Used by the restore flow's ancestor climb when the
     /// immediate parent isn't alive in the page anymore.
     public func parentHash(forPage page: String, hash: String) async -> String? {
         await log.parentHash(page: page, hash: hash)
+    }
+
+    /// Blocks the user (or auto-tombstone) deleted on purpose: the log
+    /// union's latest record is a `purge`, but a prior `add` carries the
+    /// markdown + parent metadata so we can reconstruct them. `since`
+    /// caps the result to recent purges (default: last 30 days). Pass
+    /// `since: nil` to disable the cap.
+    public func listPurgedBlocks(
+        filter: LostBlocksFilter = .all,
+        since: Date? = Date().addingTimeInterval(-30 * 86_400)
+    ) async -> [PurgedBlock] {
+        switch filter {
+        case .page(let rel):
+            return await log.enumeratePurged(page: rel, since: since)
+        case .all:
+            return await log.enumerateAllPurged(since: since)
+        }
+    }
+
+    /// Restore-from-tombstone: append a fresh `add` for `block` so the log
+    /// union's latest record is no longer a `purge`. The caller is
+    /// responsible for inserting `block` back into the doc and saving — the
+    /// `reAdd` call alone changes only the log, not the `.md`.
+    public func unpurgeBlock(_ block: Block, in page: String, parentHash: String?) async throws {
+        try await log.reAdd(page: page, block: block, parentHash: parentHash)
     }
 
     // MARK: - Assets (pasted images)
