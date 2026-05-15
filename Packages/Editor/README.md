@@ -131,7 +131,7 @@ import Editor
 final class MyHost: EditorHost {
     func suggestPages(_ query: String) -> [MentionItem] { [] }
     func onSubpageTap(_ pageID: String) {}
-    func pageTitle(_ pageID: String) -> String? { nil }
+    func lookupPage(_ pageID: String) -> PageLookup { .missing }
     func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? { nil }
     func onLoadSubpage(_ pageID: String) -> [Block]? { nil }
     func onAbsorbSubpage(_ pageID: String) -> Bool { false }
@@ -234,8 +234,10 @@ public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
   The editor echoes it back unchanged in `onSubpageTap`, `onLoadSubpage`,
   `onAbsorbSubpage`, `onAppendToSubpage`.
 - **`Block.subpage`'s `title: String`** is a fallback hint. The editor
-  prefers `host.pageTitle(pageID)`; falls back to this when the host
-  returns nil.
+  prefers the title from `host.lookupPage(pageID)` when the host has it
+  cached; falls back to this when the host returns `.present(title: nil)`.
+  A `.missing` result renders the row in a broken-link style and disables
+  navigation on tap.
 
 ### Document
 
@@ -359,7 +361,7 @@ make it obvious which extension points you've left unwired.
 | Method | Signature | When it fires | Return semantics |
 |--------|-----------|---------------|------------------|
 | `suggestPages` | `(_ query: String) -> [MentionItem]` | While the @-mention popover is visible, on every render. The query is whatever the user has typed after `@`. | Up to 8 items shown; host owns ranking/filtering. Empty array shows "No matching pages". |
-| `pageTitle` | `(_ pageID: String) -> String?` | Whenever a subpage row needs a display title (rendering a `.subpage` block, an inline `[text](path.md)` link, an @-mention popover row). | nil falls back to the cached `title` on the Block / MentionItem. |
+| `lookupPage` | `(_ pageID: String) -> PageLookup` | Whenever a subpage row needs to know if its target exists and what to display (rendering a `.subpage` block, an inline `[text](path.md)` link, an @-mention popover row). | `.missing` renders broken-link style and disables tap-to-navigate; `.present(title: nil)` falls back to the cached `title` on the Block / MentionItem; `.present(title: "…")` shows the resolved title. |
 | `onSubpageTap` | `(_ pageID: String) -> Void` | User clicks/taps a subpage row, or hits Return / → on a selected subpage block. | Host pushes the child page onto its navigation stack. |
 | `onCreateSubpage` | `(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id. nil falls back to `requestedID` or a default. |
 | `onLoadSubpage` | `(_ pageID: String) -> [Block]?` | Expand Subpage (inline this child's content here, **keep the file**). | Host returns the child page's blocks. nil makes the action a no-op. |
@@ -424,5 +426,7 @@ swift test --package-path Packages/Editor
 ```
 
 Covers autotransforms, document tree mutations + walker semantics,
-mention-trigger detection, the reorder drop resolver, and the nav-mode
-key binding table. Headless, fast.
+mention-trigger detection, the reorder drop resolver, the nav-mode
+key binding table, the inline-marks bridge (NSAttributedString ↔
+typed `InlineAttributes` round-trip), and title abbreviation. Headless,
+fast.

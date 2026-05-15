@@ -5,7 +5,7 @@ pixel-correct typography iteration in M2.
 
 ## Why these matter
 
-Notion changed its page typography in a March 2026 update. Console targets
+Notion changed its page typography in a March 2026 update. Hunch targets
 the *pre-update* style. The `react-notion-x` library claims to mirror that
 style but its CSS doesn't match Notion exactly, so we work directly from
 screenshots of real Notion pages from before the change.

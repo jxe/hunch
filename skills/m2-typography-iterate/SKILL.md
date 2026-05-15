@@ -1,6 +1,6 @@
 ---
 name: m2-typography-iterate
-description: Use when the user is iterating on Notion-style typography in Packages/UI — adjusting NotionStyle constants or BlockSpacing margins/padding to match the pre-March-2026 Notion reference screenshots. Loop is: edit constants → rebuild → use-fixture → snap-diff → compare against References/typography/ → repeat.
+description: Use when the user is iterating on Notion-style typography in the Editor package — adjusting NotionStyle constants or the BlockSpacing enum (both in Packages/Editor/Sources/Editor/NotionStyle.swift) to match the pre-March-2026 Notion reference screenshots. Loop is: edit constants → rebuild → use-fixture → snap-diff → compare against References/typography/ → repeat.
 ---
 
 # Pixel-correct Notion typography iteration
@@ -8,17 +8,20 @@ description: Use when the user is iterating on Notion-style typography in Packag
 ## When this fires
 
 The user is tuning visible spacing, font sizes, line heights, heading weights,
-or block margins in `Packages/UI/Sources/UI/NotionStyle.swift` or
-`Packages/UI/Sources/UI/BlockSpacing.swift`, and wants to verify the result
-against a real Notion reference shot. Not for non-typography changes.
+or block margins in `Packages/Editor/Sources/Editor/NotionStyle.swift` (which
+holds both the `NotionStyle` enum and the `BlockSpacing` enum), and wants to
+verify the result against a real Notion reference shot. Not for non-typography
+changes.
 
 ## Editing rules (load-bearing)
 
-- Only edit `NotionStyle.swift` and `BlockSpacing.swift`. No magic numbers in
-  `BlockRendering.swift`.
-- Don't touch `Packages/Core/`. The parser/serializer is the source of truth
-  and 16 round-trip tests gate any change to it.
-- After every edit: `swift test --package-path Packages/Core` — must stay
+- Only edit `NotionStyle.swift`. No magic numbers in
+  `Packages/Editor/Sources/Editor/BlockRow.swift`.
+- Don't touch the markdown layer in `App/Sources/Clamshell/`. Parser /
+  Serializer is the source of truth and `RoundTripTests` (in
+  `App/Tests/HunchUnitTests/`) plus the SPM tests in
+  `Packages/Editor/Tests/EditorTests/` gate any change.
+- After every edit: `swift test --package-path Packages/Editor` — must stay
   green.
 
 ## The loop
@@ -43,13 +46,13 @@ against a real Notion reference shot. Not for non-typography changes.
 
 3. **Rebuild + relaunch with the fixture.**
    ```sh
-   xcodebuild -project Console.xcodeproj -scheme Console \
+   xcodebuild -project Hunch.xcodeproj -scheme Hunch \
      -destination 'platform=macOS' -configuration Debug build
    ./scripts/use-fixture.sh <fixture-name>
    ```
    The fixture script copies the markdown into `/tmp/console-fixture/everything.md`
-   and relaunches Console. The app auto-restores `console.lastOpenPage` so no
-   clicks are needed.
+   and relaunches Hunch. (The `console-` prefix in the temp path predates the
+   rename; kept for compat.)
 
 4. **Capture + diff.**
    ```sh
@@ -57,7 +60,7 @@ against a real Notion reference shot. Not for non-typography changes.
    open /tmp/console-screenshots/<fixture-name>-diff.png
    ```
    For fixtures with a Notion reference, this produces a side-by-side PNG with
-   the reference on the left and the Console screenshot on the right, scaled
+   the reference on the left and the Hunch screenshot on the right, scaled
    so body line-heights match. Red horizontal rules mark every detected
    text-band edge so misaligned gaps jump out.
 
@@ -67,8 +70,8 @@ against a real Notion reference shot. Not for non-typography changes.
 
 ## Tooling reference
 
-- `scripts/use-fixture.sh <name>` — relaunches Console with that fixture.
-- `scripts/snap-diff.sh <name>` — captures the Console window via
+- `scripts/use-fixture.sh <name>` — relaunches Hunch with that fixture.
+- `scripts/snap-diff.sh <name>` — captures the Hunch window via
   `screencapture -l <window-id>` (overlapping windows don't show), runs
   `compare-typography.py` for a diff overlay.
 - `scripts/compare-typography.py` — does the cropping, scaling, and band-rule

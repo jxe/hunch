@@ -1,63 +1,50 @@
 # Inline link click → push onto NavigationStack
 
+## Status
+
+**Read-only path: done.** Inline `[text](page.md)` link taps inside
+read-only rows now push the target onto the navigation stack. The
+implementation lives in [App/Sources/ContentView.swift](../App/Sources/ContentView.swift)
+(an `OpenURLAction` interceptor on the `NavigationStack`) plus
+[Workspace.workspaceRelativeMarkdownPath](../App/Sources/Workspace.swift)
+(URL → workspace-relative resolver, covered by
+[WorkspaceRelativeLinkTests](../App/Tests/HunchUnitTests/WorkspaceRelativeLinkTests.swift)).
+
+**Editor-mode path: not done.** When a link is inside the active
+TextEditor, NSTextView (macOS) and UITextView (iOS) own the click. The
+remainder of this note tracks that piece.
+
 ## Goal
 
-Tapping an inline `[text](path.md)` link inside body text should navigate
-to that page the same way a subpage row does — i.e. push the target onto
-`WorkspaceModel.path` so the new doc covers the current one and iOS
-edge-swipe-from-left pops back.
+Tapping an inline `[text](path.md)` link from inside an active
+`BlockTextEditor` should also route through `WorkspaceWindow.openSubpage`
+instead of (a) doing nothing, or (b) opening the link in the system
+browser via `\.openURL`.
 
-## Current behavior
+## Surfaces to extend
 
-- The subpage-row path works: a paragraph containing exactly one `.md` link
-  is detected as `.subpage` in `Packages/Core/Sources/Core/Markdown/Parser.swift`
-  and rendered via `subpageRow` in `Packages/UI/Sources/UI/BlockRendering.swift`,
-  which is wired through `onSubpageTap` → `WorkspaceModel.openSubpage`.
-- Inline links inside other text render with the `.link` attribute on
-  SwiftUI's `Text` (see `InlineRenderer.swiftUIAttributed` in
-  `Packages/UI/Sources/UI/BlockRendering.swift:17`). They get the blue
-  underline styling but tapping them does **not** push — SwiftUI's default
-  `Text(.link)` tap routes through `\.openURL`, and we don't intercept.
+- **macOS** — implement
+  `textView(_:clickedOnLink:at:)` in `MacBlockTextEditor.Coordinator`
+  ([Packages/Editor/Sources/Editor/Text/BlockTextEditor.swift](../Packages/Editor/Sources/Editor/Text/BlockTextEditor.swift)).
+  Walk up to the host's `OpenURLAction` (or expose a
+  `EditorHost.onOpenURL(URL) -> Bool` so the editor stays
+  filesystem-agnostic) and short-circuit if the host claims it.
+- **iOS** — `UITextItemMenuConfiguration` /
+  `textItemConfiguration(for:defaultMenu:)`. Same routing: ask the host
+  first, fall through if it returns false.
 
-## Desired behavior
-
-Inline `.md` links resolved against the workspace push the target doc.
-Non-`.md` URLs (http(s), mailto, etc.) keep the system default behavior.
-
-## Sketch
-
-In `App/Sources/ContentView.swift`, attach an `OpenURLAction` to the
-NavigationStack (or to `pageDetail`):
-
-```swift
-.environment(\.openURL, OpenURLAction { url in
-    if let relative = model.workspaceRelativePath(for: url, currentDocURL: model.path.last) {
-        model.openSubpage(relativePath: relative)
-        return .handled
-    }
-    return .systemAction
-})
-```
-
-Add a `WorkspaceModel.workspaceRelativePath(for url: URL, currentDocURL: URL?) -> String?`
-helper:
-- If `url` is absolute and inside `workspaceURL`, return its workspace-relative
-  path.
-- If `url` is relative (no scheme / host), resolve against
-  `currentDocURL?.deletingLastPathComponent()` and return relative-to-workspace
-  if inside.
-- Only return non-nil for `.md` (or `.markdown`) targets.
+Adding `EditorHost.onOpenURL` keeps the SPM package free of any
+filesystem knowledge — the host (`EditorPageCoordinator`) already
+holds `WorkspaceWindow` and can dispatch.
 
 ## Out of scope
 
-- Editor-mode link taps. NSTextView and UITextView have their own link
-  handling paths (`NSTextViewDelegate.textView(_:clickedOnLink:at:)` /
-  `UITextItemMenuConfiguration`). Skip until someone reports it.
-- Wikilink syntax (`[[Page]]`). Not parsed today and not needed for this
-  task — the markdown-link form covers the use case.
+- Wikilink syntax (`[[Page]]`). Not parsed today.
+- Inline-link previews on hover (already a separate concern wired
+  through `linkPreviewProvider`).
 
 ## Test loop
 
-`./scripts/run.sh`, open a doc that contains an inline `[link](other.md)`
-in a paragraph alongside other text, click the link, verify the stack
-pushed and edge-swipe (iOS) / Cmd+[ (macOS) pops back.
+`./scripts/run.sh`, open a doc, enter edit mode on a paragraph that
+contains an inline `[link](other.md)` mid-text, click the link, verify
+the stack pushed and edge-swipe (iOS) / Cmd+[ (macOS) pops back.

@@ -1,6 +1,6 @@
 # Hunch — Claude working notes
 
-(Repo dir is `console`, target/scheme/binary are `Hunch`. The product display name is Hunch; bundle id is `org.nxhx.Hunch` — pre-TestFlight builds used `com.joeedelman.console`, so any local installs from before the rename are orphaned and won't share UserDefaults / workspace bookmark with the new id. `scripts/clean-orphans.sh` purges those legacy bundles and rebuilds LaunchServices' index; `scripts/run.sh` calls it pre-launch so name-based resolution can't land on a stale bundle.)
+(Repo dir is `hunch`, target/scheme/binary are `Hunch`. The product display name is Hunch; bundle id is `org.nxhx.Hunch` — pre-TestFlight builds used `com.joeedelman.console`, so any local installs from before the rename are orphaned and won't share UserDefaults / workspace bookmark with the new id. `scripts/clean-orphans.sh` purges those legacy bundles and rebuilds LaunchServices' index; `scripts/run.sh` calls it pre-launch so name-based resolution can't land on a stale bundle. The `console.workspace.bookmark` UserDefaults key and `--console-ui-testing` launch flag also predate the rename and are kept for compat.)
 
 A native iOS 26 + macOS 26 markdown editor. Each block is its own row in a
 SwiftUI `LazyVStack` — sidesteps the hardest problems of Notion-style editors
@@ -19,10 +19,13 @@ user-picked workspace folder.
   host is responsible for serialization, persistence, navigation, and
   multi-page operations. SPM tests live here. See
   `Packages/Editor/README.md` for the embedding contract.
-- `App/Sources/` — Hunch.app target. `HunchApp`/`ContentView` (with
-  `WorkspaceModel` bridging the editor's id-based callbacks to filesystem
-  paths, and a small `EditorPage` wrapper that owns one `EditorState` per
-  navigation destination), Inter font registration, plus:
+- `App/Sources/` — Hunch.app target. `HunchApp` (root, owns `Workspace`),
+  `ContentView` (one per `WindowGroup` body, owns a `WorkspaceWindow`),
+  `Workspace.swift` / `WorkspaceWindow.swift` (the host model — see below),
+  `EditorPageCoordinator.swift` (per-page `EditorHost` implementation that
+  bridges the editor's id-based callbacks to filesystem paths), and an
+  `EditorPage` wrapper view inside `ContentView.swift` that owns one
+  `EditorState` per navigation destination, plus Inter font registration:
   - `App/Sources/Clamshell/` — **Clamshell** is Hunch's persistent
     markdown format and its API. On disk a Clamshell is a folder of
     `*.md` plus `Trash/` (soft-deleted pages), `.history/<rel>/<device-id>.jsonl`
@@ -50,11 +53,22 @@ user-picked workspace folder.
     persists the security-scoped URL of the user's chosen Clamshell.
     See [`App/Sources/Clamshell/README.md`](App/Sources/Clamshell/README.md)
     for the on-disk format, log record shape, and operation reference.
-  - `App/Sources/Shell/` — `PageListView` (sidebar) and `RecoveryView`
-    (unified "Recover" sheet over trash + lost blocks).
-  - `App/Sources/Workspace.swift` — `WorkspaceEntry` (filesystem-flavoured
-    page reference, host-side only — translated into `MentionItem` at the
-    editor boundary).
+  - `App/Sources/Shell/` — auxiliary views: `PagePickerView` (the row list
+    used inside the search sheet), `MoveDestinationSheet` (block-move
+    picker), `RecoveryView` (unified "Recover" sheet over trash + lost
+    blocks), `BannerView` (transient toast). There is no sidebar — page
+    navigation goes through the search sheet (Cmd+P / iOS toolbar
+    magnifying-glass) or subpage rows.
+  - `App/Sources/Workspace.swift` — `Workspace` (workspace-level model,
+    one per app instance: clamshell handle, page list, title cache,
+    disk-history, security-scoped URL, conflict resolution) and
+    `WorkspaceEntry` (filesystem-flavoured page reference, host-side
+    only — translated into `MentionItem` at the editor boundary).
+  - `App/Sources/WorkspaceWindow.swift` — per-window navigation and
+    edit-session state: `path: [URL]` (NavigationStack), `openDocument`,
+    debounced/backstop save lifecycle, file-presenter wiring, move-to
+    request plumbing, lost-block auto-restore on open. References the
+    shared `Workspace` for filesystem ops.
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
   storage + parser/serializer (formerly SPM tests under `CoreTests/`).
   The test target depends only on the `Hunch` app target — Editor's
@@ -113,18 +127,24 @@ owns `@State EditorState` so each navigation destination gets fresh
 state. EditorView caches focus, undo, and gesture state internally and
 assumes both inputs are stable.
 
-**Page navigation is a `NavigationStack(path: [URL])`.** `WorkspaceModel.path`
-is the source of truth for what's open: `path == []` shows the page list root,
+**Page navigation is a `NavigationStack(path: [URL])`.** `WorkspaceWindow.path`
+is the source of truth for what's open: `path == []` shows the home page,
 `path.last` is the visible doc, and a `.onChange(of: path)` calls
 `handlePathChange()` to flush the outgoing doc and load the new top.
-Subpage taps (`onSubpageTap` → `model.openSubpage`) append to `path`, pushing
-deeper. Sidebar taps (`model.open`) reset `path` to a single entry.
-`model.goBack()` pops; on iOS this is also driven by edge-swipe-from-left,
-on macOS by the Cmd+[ menu and the system back chevron. Subpage rows are
-the existing render path: a paragraph that is a single `.md` link is
-detected in `BlockParser` and rendered via `subpageRow` in
-`BlockRow.swift`. (Inline `[text](path.md)` clicks inside body text
-don't navigate yet — see `tasks/inline-link-click-navigation.md`.)
+Subpage taps (`onSubpageTap` → `window.openSubpage`) append to `path`,
+pushing deeper. Search-sheet activation (`window.navigateFromSearch`)
+pushes a single entry on top of home (or drains to root when the picked
+page *is* home). `window.goBack()` pops; on iOS this is also driven by
+edge-swipe-from-left, on macOS by the Cmd+[ menu and the system back
+chevron. Subpage rows are the existing render path: a paragraph that is
+a single `.md` link is detected in `BlockParser` and rendered via
+`subpageRow` in `BlockRow.swift`. **Inline `[text](path.md)` clicks
+inside read-only body text** route through an `OpenURLAction` interceptor
+on the `NavigationStack` (see `ContentView.swift`) →
+`Workspace.workspaceRelativeMarkdownPath` →  `window.openSubpage`;
+non-`.md` URLs fall through to the system handler. Inline link taps
+*inside* an active TextEditor are not yet intercepted (NSTextView /
+UITextView own those gestures).
 
 **Nav mode is multi-select.** `Mode.navigating(Selection)` carries
 `blocks: Set<BlockID>`, `cursor` (moving end), `anchor` (fixed end).
@@ -259,8 +279,8 @@ tail -f /tmp/console.log
 
 Sprinkle `print("[CLI] ...")` at suspect transitions (state setters,
 focus changes, key handlers, lifecycle hooks). Strip them before
-committing: `grep -rn '\[CLI\]' Packages/UI App`. `print()` may buffer
-when stdout isn't a tty.
+committing: `grep -rn '\[CLI\]' Packages/Editor App`. `print()` may
+buffer when stdout isn't a tty.
 
 For diagnostics that need to outlive a single debug session — and to read
 state from a build the user is running directly (no `> /tmp/console.log`

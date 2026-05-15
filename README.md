@@ -95,7 +95,7 @@ You can read the code, fork it, audit your own data layer, and ship patches. (Li
 - 🎨  Color (text and `style`-tag backgrounds)
 - 🗂️  Category-style list rendering
 - 🔎  Full-text search across the workspace
-- 🔗  Inline link clicks for navigation (`[text](page.md)` mid-paragraph)
+- 🔗  Inline link clicks while *editing* a paragraph (read-only rows already navigate)
 - 🖼️  Image paste outside edit mode
 - 🅰️  Refresh of the Notion typography constants against the latest reference shots
 

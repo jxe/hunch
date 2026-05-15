@@ -16,17 +16,17 @@ What's **deliberately not** in the design: shadows, card treatments, rotation, p
 
 ## Drop slot resolution (shared)
 
-Both platforms resolve the candidate insertion index the same way: `ReorderDropResolver.insertionIndex(forY:rowFrames:previousIndex:hysteresis:)` ([ReorderDropResolver.swift](../Packages/UI/Sources/UI/ReorderDropResolver.swift)).
+Both platforms resolve the candidate insertion index the same way: `ReorderDropResolver.insertionIndex(forY:rowFrames:previousIndex:hysteresis:)` ([ReorderDropResolver.swift](../Packages/Editor/Sources/Editor/ReorderDropResolver.swift)).
 
-It maps the pointer's y-coordinate to a slot by counting how many rows have a midY above it, with a 10pt hysteresis band so a pointer hovering near a row boundary doesn't oscillate between two slots. `rowFrames` is published from the live layout via `RowFramePreferenceKey`, so dimensions track wrapping/edits.
+It maps the pointer's y-coordinate to a slot by counting how many rows have a midY above it, with a 10pt hysteresis band so a pointer hovering near a row boundary doesn't oscillate between two slots. `rowFrames` is held in a `RowFramesStore` populated from each row's geometry, so dimensions track wrapping/edits.
 
 Earlier iterations used per-slot `.dropDestination` / `isTargeted` callbacks — those produced a "buzzing" pattern where opening a gap shifted hit-testing, which closed the gap, which shifted hit-testing back. The page-level resolver against frozen frames is what fixed it.
 
-Tests live next to `ReorderDropResolver`. Add coverage there before touching hover math.
+Tests live in [ReorderDropResolverTests.swift](../Packages/Editor/Tests/EditorTests/ReorderDropResolverTests.swift). Add coverage there before touching hover math.
 
 ## iOS
 
-**Gesture** — `UILongPressGestureRecognizer` attached at the page level via `IOSPageReorderGestureBridge` (a `UIViewRepresentable` placed inside the `ScrollView`'s content). It walks up to the host `UIScrollView` at `didMoveToWindow`, adds its recognizer there, and calls `panGestureRecognizer.require(toFail: lp)`. Configuration: `minimumPressDuration = 0.5`, `allowableMovement = 8`, `cancelsTouchesInView = false`. UIKit-level coordination is what makes scroll work: a fast vertical drag exceeds `allowableMovement` before the timer fires → long-press fails → pan recognizer (which was waiting) wins → page scrolls. A deliberate hold within 8pt for 0.5s → long-press fires → pan never starts → reorder begins.
+**Gesture** — `UILongPressGestureRecognizer` attached at the page level via `IOSPageReorderGestureBridge` (a `UIViewRepresentable` defined in [EditorView+Gestures.swift](../Packages/Editor/Sources/Editor/EditorView+Gestures.swift), placed inside the `ScrollView`'s content). It walks up to the host `UIScrollView` at `didMoveToWindow`, adds its recognizer there, and calls `panGestureRecognizer.require(toFail: lp)`. Configuration: `minimumPressDuration = 0.5`, `allowableMovement = 8`, `cancelsTouchesInView = false`. UIKit-level coordination is what makes scroll work: a fast vertical drag exceeds `allowableMovement` before the timer fires → long-press fails → pan recognizer (which was waiting) wins → page scrolls. A deliberate hold within 8pt for 0.5s → long-press fires → pan never starts → reorder begins.
 
 Two SwiftUI gesture experiments were tried first and abandoned:
 1. `LongPressGesture(0.34, 36).sequenced(before: DragGesture(0))` — once `LongPressGesture` fires, SwiftUI's system gesture gate stalls subsequent events for ~1.9s and blocks `ScrollView` pan, stranding the row dimmed.
@@ -48,7 +48,7 @@ Only UIKit-level `require(toFail:)` lets pan and long-press coexist correctly.
 
 **Gesture** — `DragGesture(minimumDistance: 4, coordinateSpace: .named(PageHoverCoordinateSpace.name))` attached as a `simultaneousGesture` on both the gutter `DragHandle` and the row body. The 4pt threshold is what lets the row-body drag coexist with click-to-edit: a click without movement enters edit mode via `.onTapGesture`; movement past 4pt starts a drag instead. The gesture is gated off while `isEditing` is true so the editor's own selection drag isn't shadowed.
 
-The handle is normally only hit-testable while the row is hovered. **During an active drag the handle's hit-testing is forced on for the source row**, even though `hoveredBlockID` shifts to whichever row the cursor is currently over. Without this, SwiftUI silently cancels the in-flight gesture (no `.onEnded` fires) the moment `allowsHitTesting(false)` flips on the still-tracking view, leaving the lift stuck on screen with no recovery. See `isMacDraggingFromRow(_:)` in [PageView.swift](../Packages/UI/Sources/UI/PageView.swift).
+The handle is normally only hit-testable while the row is hovered. **During an active drag the handle's hit-testing is forced on for the source row**, even though `hoveredBlock` shifts to whichever row the cursor is currently over. Without this, SwiftUI silently cancels the in-flight gesture (no `.onEnded` fires) the moment `allowsHitTesting(false)` flips on the still-tracking view, leaving the lift stuck on screen with no recovery. See `isMacDraggingFromRow(_:)` in [EditorView+Reorder.swift](../Packages/Editor/Sources/Editor/EditorView+Reorder.swift).
 
 **Source frame freeze + anchor** — same pattern as iOS: `tickReorderLift` captures `sourceFrame`, `sourceIndex`, `sourceEndIndex`, and `touchOffset` once on the first event, then only updates `location`. `touchOffset` uses `value.startLocation` here (no long-press, so it's where the click landed). Because the click typically lands in the gutter (left of `sourceFrame.minX`), `touchOffset.width` is negative — the cursor floats just left of the lift's leading edge throughout the drag, exactly as it sat against the gutter at click time.
 
@@ -60,9 +60,9 @@ The handle is normally only hit-testable while the row is hovered. **During an a
 
 If a cancellation path turns up that we haven't covered, the right escape hatch is an `NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp)` installed on lift-begin and torn down on lift-end — that fires regardless of whether SwiftUI's gesture is still tracking.
 
-## Unified state (PageView)
+## Unified state (EditorView)
 
-A single `reorderLift: ReorderLift?` carries the lift across both platforms. Its fields are platform-agnostic:
+A single `gesture: .reordering(ReorderLift)` case on `EditorState` carries the lift across both platforms (read via the computed `state.reorderLift`). Its fields are platform-agnostic:
 
 - `block: Block` — the lead block, used for the lift overlay's content.
 - `ids: [BlockID]` — every block participating in the drag (one for a single-row drag; the whole selection for a multi-block drag).

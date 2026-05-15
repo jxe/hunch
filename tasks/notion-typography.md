@@ -17,10 +17,13 @@ CSS.
 
 ```sh
 ./scripts/use-fixture.sh <name>
-xcodebuild -project Console.xcodeproj -scheme Console -destination 'platform=macOS' -configuration Debug build
+xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -configuration Debug build
 ./scripts/snap-diff.sh <name>
 open /tmp/console-screenshots/<name>-diff.png
 ```
+
+(The `console-` prefixes in `/tmp/console-fixture/` and
+`/tmp/console-screenshots/` predate the rename and are kept for compat.)
 
 Fixtures with Notion references: `rfc_prompt`, `notion_page_example`,
 `blog_post_draft`, `ai_for_docs`.
@@ -29,7 +32,8 @@ Capture-only fixture: `headings_and_bullets`.
 
 ## Editing Rules
 
-Only touch `NotionStyle.swift` and `BlockSpacing.swift` unless the
-renderer has a real bug. Do not add magic numbers to
-`BlockRendering.swift`.
+Only touch `Packages/Editor/Sources/Editor/NotionStyle.swift` (which
+holds both the `NotionStyle` enum and the `BlockSpacing` enum) unless
+the renderer has a real bug. Do not add magic numbers to
+`Packages/Editor/Sources/Editor/BlockRow.swift`.
 

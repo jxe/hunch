@@ -36,9 +36,11 @@ the framework itself isn't broken.
 ## Desired behavior
 
 `xcodebuild test -only-testing:HunchUnitTests` runs and reports
-pass/fail for `FileStoreTests`, `DocumentSaveCoordinatorTests`,
-`HistoryStoreTests`, `TrashStoreTests`, `WorkspaceBookmarkTests`,
-`RoundTripTests`. Same for the Xcode UI test action on the Hunch scheme.
+pass/fail for `BlockFingerprintTests`, `ClamshellImageTests`,
+`ConflictMergerTests`, `DocumentSaveCoordinatorTests`, `FileStoreTests`,
+`RecoveryLogTests`, `RoundTripTests`, `TrashStoreTests`,
+`WorkspaceBookmarkTests`, `WorkspaceRelativeLinkTests`. Same for the
+Xcode UI test action on the Hunch scheme.
 
 ## Useful findings / hypotheses
 

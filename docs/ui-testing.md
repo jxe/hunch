@@ -41,13 +41,16 @@ Then add the smallest test at that layer before patching.
 
 ## Running XCUITests
 
-The app accepts `--console-ui-testing` and boots directly into a deterministic
-fixture document. This avoids the file picker and bookmark restore path.
+The app accepts `--console-ui-testing` (kept for compat — predates the
+console→Hunch rename) and boots directly into a deterministic fixture
+document. This avoids the file picker and bookmark restore path. The
+related `--console-ui-testing-tall-doc` flag installs a 60-row fixture
+used by the scroll/keyboard UI tests in `App/UITests/`.
 
 Run focused iOS UI tests with:
 
 ```sh
-xcodebuild -project Console.xcodeproj -scheme Console -destination 'platform=iOS Simulator,name=iPhone 17' test
+xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'platform=iOS Simulator,name=iPhone 17' test
 ```
 
 Use the generated row labels (`Paragraph: Bravo`, etc.) for interaction and

@@ -123,8 +123,9 @@ by an earlier (now-retired) per-block-pool design.
 | Search | `searchPages(in:query:excluding:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Recovery log | `listLostBlocks(filter:)`, `purgeLostBlock(_:)`, `parentHash(forPage:hash:)` |
+| iCloud merge | `resolveConflictVersions(at:againstLive:resolvingSubpageTitle:)`, `runAutoTombstoneMigrationIfNeeded()` |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
-| Metadata | `homeRelativePath` (read/write), `root` |
+| Metadata | `homeRelativePath` (read/write), `autoTombstoneMigrationDone`, `root` |
 
 The `resolvingSubpageTitle: (String) -> String?` callback on the write
 paths is used by the serializer to refresh stale subpage-link titles
@@ -188,6 +189,31 @@ restore handles this by climbing the recorded parent chain (via
 alive, falling back to top-of-page when none of the ancestors
 survive.
 
+**iCloud conflict versions auto-merge.** When iCloud Drive lands a
+sibling-file conflict (`<page> 2.md`, `<page> (joe's iPad).md`, or any
+file iCloud's `NSURLUbiquitousItemHasUnresolvedConflictsKey` flags),
+`resolveConflictVersions(at:)` parses every alternate version, diffs
+their atomic-block hashes against the survivor's, and splices any
+unique-to-an-alternate block (that isn't tombstoned) under the closest
+live ancestor. Block identity is by content hash (same as the recovery
+log), so independent edits on two devices end up additive instead of
+clobbering each other. The merge is delegated to `ConflictMerger` (a
+pure block-tree function); the caller writes the merged result back
+through the same save path. Driven by `Workspace` at scan time (closed
+pages) and by `WorkspaceWindow.handlePresentedFileChange` for the open
+page on file-presenter wakeups.
+
+**Auto-tombstone migration runs once per Clamshell.** Until the
+`autoTombstoneMigrationDone` flag in `.clamshell.json` is set, the
+recovery log can hold orphan `add` records from before auto-tombstoning
+was wired up. `runAutoTombstoneMigrationIfNeeded()` iterates pages,
+auto-tombstones any of *this device's* log entries whose hashes aren't
+live in the page or any other device's log, and sets the flag.
+Idempotent; subsequent calls early-return. The host calls it on
+workspace open. Auto-restore-on-page-open
+(`WorkspaceWindow.autoRestoreLostBlocksOnOpen`) is gated on this flag
+to avoid resurrecting legacy orphans.
+
 ---
 
 ## Concurrency
@@ -219,6 +245,7 @@ last append" — `NSFileCoordinator` handles that.
 - [WorkspaceBookmark.swift](WorkspaceBookmark.swift) — UserDefaults persistence of the security-scoped URL bookmark for the user's chosen Clamshell folder.
 - [BlockFingerprint.swift](BlockFingerprint.swift) — stable content-identity hash for a `Block`. Two outputs: a 16-char prefix for compact display, and the full SHA-256 used as `h` in the recovery log and elsewhere.
 - [Parser.swift](Parser.swift) / [Serializer.swift](Serializer.swift) — markdown ↔ `[Block]`. swift-markdown lives here, not in the [Editor package](../../../Packages/Editor/). `Serializer.serializeAtomic(_:)` emits a single block without children — what the recovery log stores in its `m` field.
+- [ConflictMerger.swift](ConflictMerger.swift) — pure block-tree merge for iCloud conflict resolution. Driven by `Clamshell.resolveConflictVersions`, called by `Workspace`/`WorkspaceWindow` from scan and file-presenter paths.
 
 ---
 
