@@ -86,7 +86,8 @@ public struct EditorView: View {
     /// DynamicProperty wrapper (which would defeat `.equatable()`). Keyed by
     /// the absolute URL; rows receive only the subset relevant to their text.
     @State var linkPreviews: [URL: LinkPreview] = [:]
-    @State var lastDropHapticIndex: Int?
+    @State var lastDropHapticTarget: DropTarget?
+    @State var lastDropHapticFireAt: Date?
     @State var pinchGestureActive = false
     @State var pinchCrossedInsertThreshold = false
     @State var pinchCrossedFocusThreshold = false
@@ -326,8 +327,8 @@ public struct EditorView: View {
                 installUndoApply()
                 wireEditorCommands()
             }
-            .onChange(of: state.dropHoverPath) { _, newValue in
-                handleDropHoverChange(newValue?.position)
+            .onChange(of: state.currentDropTarget) { _, newValue in
+                handleDropTargetChange(newValue)
             }
             #if os(macOS)
             .onChange(of: state.reorderLift != nil) { _, isActive in

@@ -550,17 +550,33 @@ extension EditorView {
         return snapshot.count
     }
 
-    func handleDropHoverChange(_ index: Int?) {
+    /// Haptic on drop-target changes during an active reorder. Two layers of
+    /// suppression keep this from machine-gunning when the drift gap's
+    /// 260ms spring animation makes row frames jitter:
+    /// 1. Dedupe on the full `DropTarget` (not just `.insertAt` position), so
+    ///    a brief detour through `.asLastChildOf` / `.intoSubpage` and back
+    ///    to the same `.insertAt` slot doesn't re-fire.
+    /// 2. Minimum 60ms between fires — caps the rate when the resolver
+    ///    genuinely flips between adjacent slots mid-animation (the
+    ///    interpolating row frames can occasionally overrun the 10pt
+    ///    hysteresis at the slot boundary).
+    func handleDropTargetChange(_ target: DropTarget?) {
         #if os(iOS)
-        guard let index else {
-            lastDropHapticIndex = nil
+        guard let target else {
+            lastDropHapticTarget = nil
             return
         }
-        guard lastDropHapticIndex != index else { return }
-        lastDropHapticIndex = index
+        guard lastDropHapticTarget != target else { return }
+        let now = Date()
+        if let last = lastDropHapticFireAt, now.timeIntervalSince(last) < 0.06 {
+            lastDropHapticTarget = target
+            return
+        }
+        lastDropHapticTarget = target
+        lastDropHapticFireAt = now
         Haptics.light()
         #else
-        _ = index
+        _ = target
         #endif
     }
 
