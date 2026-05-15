@@ -42,7 +42,11 @@ changes.
    - `NotionStyle.headingWeight` — confirmed `.bold` against all four refs
    - `BlockSpacing.topMargin(_:)` / `bottomMargin(_:)` — per-kind sibling
      margins (CSS-style margin-collapse computed in `gap(before:after:)`)
-   - `BlockSpacing.intrinsicVerticalPadding(_:)` — inside the block's frame
+   - `BlockSpacing.intrinsicTopPadding(_:)` / `intrinsicBottomPadding(_:)` —
+     padding inside the block's row frame. Asymmetric so headings can clip
+     their oversized font line-leading on whichever side faces body text;
+     negative values are allowed (they pull the row frame inside the font's
+     built-in leading).
 
 3. **Rebuild + relaunch with the fixture.**
    ```sh

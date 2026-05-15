@@ -36,20 +36,28 @@ out_dir="/tmp/console-screenshots"
 mkdir -p "$out_dir"
 
 # Capture by window ID via CGWindowListCopyWindowInfo so overlapping
-# windows (Claude chat panel, etc.) don't appear in the screenshot.
+# windows (Claude chat panel, etc.) don't appear in the screenshot. Pick the
+# largest Hunch window — recent SwiftUI builds expose several small toolbar /
+# accessory windows in addition to the content window, and the content one is
+# always the biggest by area.
 find_window_id() {
 swift - <<'SWIFT'
 import AppKit
 import CoreGraphics
 let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
 let info = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] ?? []
+var best: (Int, Double) = (0, 0)
 for w in info {
     if let owner = w["kCGWindowOwnerName"] as? String, owner == "Hunch",
-       let num = w["kCGWindowNumber"] as? Int {
-        print(num)
-        exit(0)
+       let num = w["kCGWindowNumber"] as? Int,
+       let bounds = w["kCGWindowBounds"] as? [String: Any],
+       let h = bounds["Height"] as? Double,
+       let width = bounds["Width"] as? Double {
+        let area = h * width
+        if area > best.1 { best = (num, area) }
     }
 }
+if best.0 != 0 { print(best.0) }
 SWIFT
 }
 

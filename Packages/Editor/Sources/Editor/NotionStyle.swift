@@ -182,6 +182,16 @@ public enum NotionStyle {
     // MARK: Toggle / subpage
     public static let chevronSize: CGFloat = 12
     public static let pageIconSize: CGFloat = 14
+
+    /// Visual shift (in pt) to apply to a right-aligned marker so its horizontal center
+    /// matches the bullet marker's center. Bullet is `bulletMarkerDiameter` wide and sits
+    /// at the right edge of `bulletMarkerColumnWidth`; a wider marker right-aligned in the
+    /// same column has its center further left by `(width - bulletMarkerDiameter) / 2`.
+    /// Apply via `.offset(x:)` *after* the marker's `.frame(...)` so layout (and therefore
+    /// the text column) is unaffected.
+    public static func markerCenteringOffset(markerWidth: CGFloat) -> CGFloat {
+        (markerWidth - bulletMarkerDiameter) / 2
+    }
 }
 
 /// Sibling-aware spacing modelled on Notion's pre-March-2026 CSS as preserved in
@@ -210,41 +220,67 @@ public enum BlockSpacing {
         if isNestedChild {
             currTop = 0
         } else if isListItem(prev) != isListItem(current) {
-            // The implicit `<ul>` / `<ol>` container in Notion has 0.6em (~9.6pt) top/bottom margin.
-            // We render a flat list (no container), so simulate that by adding the container's margin
-            // whenever we cross the list↔non-list boundary.
-            currTop = max(currTop, 9.6)
+            // Cross-boundary bump simulates Notion's implicit `<ul>` / `<ol>` container margin.
+            // SwiftUI's line-leading already contributes ~11pt at a body-text boundary, so the
+            // bump only needs to be small there. Headings carry less visual mass below their
+            // descender (no body text underneath the baseline), so heading → list needs more
+            // explicit gap to read with the same breathing room.
+            currTop = max(currTop, isHeading(prev) ? 7 : 3)
         }
 
         return max(prevBottom, currTop)
     }
 
-    /// Intrinsic vertical padding INSIDE a block (between content and the block's frame edges).
-    /// This corresponds to CSS `padding-top` + `padding-bottom`; SwiftUI applies it via
-    /// `.padding(.vertical, …)`.
-    public static func intrinsicVerticalPadding(_ block: Block) -> CGFloat {
+    /// Intrinsic padding INSIDE a block's row (between text content and the row's frame edges).
+    /// Split top/bottom so headings can clip their oversized font line-leading on whichever side
+    /// is adjacent to body text — a symmetric `.padding(.vertical, X)` couldn't do that.
+    /// Negative values are allowed: SwiftUI honors negative padding, and it's the only way to
+    /// pull the row frame *inside* the font's built-in leading (cap-top buffer / descender
+    /// buffer). See `intrinsicTopPadding` / `intrinsicBottomPadding`.
+    public static func intrinsicTopPadding(_ block: Block) -> CGFloat {
         switch block.kind {
-        // List items: ~5pt above/below per item — measured against notion_prompt_example.png,
-        // gives an item-to-item gap that's ~1.5× the within-paragraph line height. Toggles
-        // are list-item shaped (chevron + title, body as siblings), so they share this rule.
         case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton: return 5
-        // .notion-code { padding: 1em }
         case .code: return 16
-        // Default block padding — matches Notion's `.notion > * { padding: 3px 2px }`.
+        case .heading: return 0
+        default: return 3
+        }
+    }
+
+    public static func intrinsicBottomPadding(_ block: Block) -> CGFloat {
+        switch block.kind {
+        case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton: return 5
+        case .code: return 16
+        case .heading: return 0
         default: return 3
         }
     }
 
     /// Top-margins reverse-engineered from real Notion screenshots (not from react-notion-x's CSS,
     /// which doesn't match). Headings carry generous breathing room above; paragraphs sit on a
-    /// 6-7pt margin so two stacked paragraphs show a clear blank-line-style gap.
+    /// margin that gives the ~24pt visual ink-to-ink gap Notion shows between stacked paragraphs
+    /// and after an H2; list items get a non-zero top margin so item-to-item gaps match
+    /// `notion_prompt_example.png` (the nested-child branch in `gap(...)` forces currTop = 0,
+    /// so nested items still pack tight).
     private static func topMargin(_ block: Block) -> CGFloat {
         switch block.kind {
-        case .heading(.h1, _): return 32  // page-title H1: ~2em above when there is something
-        case .heading(.h2, _): return 28  // H2 above body or after another heading
-        case .heading(.h3, _): return 22
-        case .paragraph: return 5
-        case .quote: return 6
+        case .heading(.h1, _): return 40
+        case .heading(.h2, _): return 40
+        case .heading(.h3, _): return 30
+        case .paragraph: return 4
+        case .quote: return 4
+        case .code: return 8
+        case .divider: return 12
+        case .image: return 8
+        case .subpage, .bullet, .numbered, .todo, .toggle, .templateButton: return 1
+        }
+    }
+
+    private static func bottomMargin(_ block: Block) -> CGFloat {
+        switch block.kind {
+        case .heading(.h1, _): return 0
+        case .heading: return 0
+        case .paragraph: return 3
+        case .quote: return 4
         case .code: return 8
         case .divider: return 12
         case .image: return 8
@@ -252,17 +288,9 @@ public enum BlockSpacing {
         }
     }
 
-    private static func bottomMargin(_ block: Block) -> CGFloat {
-        switch block.kind {
-        case .heading(.h1, _): return 6
-        case .heading: return 5
-        case .paragraph: return 5
-        case .quote: return 6
-        case .code: return 8
-        case .divider: return 12
-        case .image: return 8
-        case .subpage, .bullet, .numbered, .todo, .toggle, .templateButton: return 0
-        }
+    private static func isHeading(_ block: Block) -> Bool {
+        if case .heading = block.kind { return true }
+        return false
     }
 
     private static func isListItem(_ block: Block) -> Bool {

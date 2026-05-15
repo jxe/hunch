@@ -320,9 +320,8 @@ public struct EditorView: View {
             .focused($pageFocused)
             #endif
             .onAppear {
-                if state.cursor == nil, let first = document.children.first {
-                    state.setCursor(first.id)
-                }
+                // Open with no nav-mode selection. The first ↓ press lands on the
+                // top block via `moveCursor(by:)`'s nil-cursor branch.
                 forcePageFocusGrab()
                 installUndoApply()
                 wireEditorCommands()
@@ -1538,6 +1537,12 @@ public struct EditorView: View {
         let hidden = hiddenBlockIDs(in: document.children)
         let visible = blocks.filter { !hidden.contains($0.id) }
         guard !visible.isEmpty else { return }
+        if state.cursor == nil {
+            // Fresh document or post-Esc: first ↓ lands on the top row,
+            // first ↑ on the bottom row.
+            setCursor(visible[delta > 0 ? 0 : visible.count - 1].id)
+            return
+        }
         let currentIndex = state.cursor.flatMap { id in visible.firstIndex(where: { $0.id == id }) } ?? 0
         let nextIndex = max(0, min(visible.count - 1, currentIndex + delta))
         setCursor(visible[nextIndex].id)

@@ -2,8 +2,10 @@
 # scripts/use-fixture.sh <fixture-name>
 #
 # Copies References/typography/fixtures/<name>.md → /tmp/console-fixture/everything.md
-# and relaunches Hunch. The app's auto-open-last-page brings up the new content
-# without any clicks.
+# and relaunches Hunch with `--workspace /tmp/console-fixture`, which overrides
+# the user's saved workspace bookmark for that process only and opens the
+# fixture directly without any clicks. The app's `installLaunchArgWorkspace`
+# handles the `--workspace` flag in `Workspace.tryRestore`.
 #
 # Usage: ./scripts/use-fixture.sh rfc_prompt
 #        ./scripts/use-fixture.sh notion_page_example
@@ -31,7 +33,7 @@ mkdir -p /tmp/console-fixture
 cp "$src" /tmp/console-fixture/everything.md
 echo "fixture: $1"
 
-# Relaunch the most recently built Hunch.app so the new fixture loads.
+# Relaunch the most recently built Hunch.app with the fixture workspace.
 pkill -f "com.joeedelman.console" 2>/dev/null || true
 pkill -x Hunch 2>/dev/null || true
 sleep 1
@@ -40,4 +42,4 @@ if [[ -z "$app" ]]; then
   echo "no built Hunch.app found — run xcodebuild first"
   exit 1
 fi
-open "$app"
+open "$app" --args --workspace /tmp/console-fixture

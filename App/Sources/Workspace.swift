@@ -137,6 +137,14 @@ final class Workspace {
         // tryRestore is called from `.task` in every window; only the first
         // call needs to do anything.
         guard workspaceURL == nil else { return }
+        // `--workspace <path>` overrides the saved bookmark for this process —
+        // used by `scripts/use-fixture.sh` to point at the typography-iteration
+        // fixture directory without clobbering the user's real workspace bookmark.
+        let args = ProcessInfo.processInfo.arguments
+        if let idx = args.firstIndex(of: "--workspace"), idx + 1 < args.count {
+            installLaunchArgWorkspace(path: args[idx + 1])
+            return
+        }
         if let url = WorkspaceBookmark.resolve() {
             accessedWorkspaceURL = url
             workspaceURL = url
@@ -146,6 +154,20 @@ final class Workspace {
             rescan()
             runAutoTombstoneMigrationIfNeeded(for: clamshell)
         }
+    }
+
+    private func installLaunchArgWorkspace(path: String) {
+        let root = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        workspaceURL = root
+        let clamshell = Clamshell(root: root)
+        // Fixture clamshells contain a single `everything.md` — open it
+        // directly so snap-diff sees content immediately on launch.
+        if clamshell.homeRelativePath == nil {
+            clamshell.homeRelativePath = "everything.md"
+        }
+        self.clamshell = clamshell
+        homeRelativePath = clamshell.homeRelativePath
+        entries = (try? clamshell.scan()) ?? []
     }
 
     func setWorkspaceFromKeyFile(_ url: URL) {

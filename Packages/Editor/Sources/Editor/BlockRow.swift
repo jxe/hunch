@@ -338,7 +338,8 @@ public struct BlockRow: View, Equatable {
     public var body: some View {
         let externalURLs = collectExternalURLs(in: block.text)
         return content
-            .padding(.vertical, BlockSpacing.intrinsicVerticalPadding(block))
+            .padding(.top, BlockSpacing.intrinsicTopPadding(block))
+            .padding(.bottom, BlockSpacing.intrinsicBottomPadding(block))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isSelected && !isEditing ? NotionStyle.selectionBackground : Color.clear)
             .task(id: externalURLs) {
@@ -674,6 +675,7 @@ public struct BlockRow: View, Equatable {
                 .font(.system(size: NotionStyle.pageIconSize))
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                .offset(x: NotionStyle.markerCenteringOffset(markerWidth: NotionStyle.pageIconSize))
                 .alignmentGuide(.firstTextBaseline) { dimensions in
                     dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                 }
@@ -928,7 +930,8 @@ public struct BlockRowPreview: View, Equatable {
 
     public var body: some View {
         content
-            .padding(.vertical, BlockSpacing.intrinsicVerticalPadding(block))
+            .padding(.top, BlockSpacing.intrinsicTopPadding(block))
+            .padding(.bottom, BlockSpacing.intrinsicBottomPadding(block))
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -1065,6 +1068,7 @@ public struct BlockRowPreview: View, Equatable {
                     .font(.system(size: NotionStyle.pageIconSize))
                     .foregroundStyle(NotionStyle.mutedForeground)
                     .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .offset(x: NotionStyle.markerCenteringOffset(markerWidth: NotionStyle.pageIconSize))
                     .alignmentGuide(.firstTextBaseline) { dimensions in
                         dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                     }
