@@ -1,9 +1,12 @@
 import SwiftUI
 import Editor
 
-/// Unified workspace-wide recovery sheet. Surfaces both deleted whole pages
-/// (from `TrashStore`) and lost blocks (from `RecoveryLog`) — anything that
-/// disappeared from a doc and can be brought back.
+/// Unified workspace-wide recovery sheet. Surfaces three kinds of
+/// recoverable items, each in its own section: deleted whole pages (from
+/// `TrashStore`), lost blocks (recovery-log entries whose hash isn't in
+/// `.md`), and intentionally-deleted blocks (log entries whose latest
+/// record is a tombstone — visually distinct and capped at 30 days by
+/// default, with "Show older" to expand).
 ///
 /// `filter` is `.all` (everything) or `.page(rel)` (one source page only).
 /// Inside the sheet a segmented control lets the user flip between scopes
@@ -18,7 +21,8 @@ public struct RecoveryView: View {
     let currentPageRelativePath: String?
     /// Two-pass stream: first emission is the trash + stub list, subsequent
     /// emissions replace stubs with populated entries as bodies load.
-    let entriesStream: (RecoveryListFilter) -> AsyncStream<[RecoverableEntry]>
+    /// `showAllPurged` lifts the default 30-day cap on the purged section.
+    let entriesStream: (RecoveryListFilter, Bool) -> AsyncStream<[RecoverableEntry]>
     let onRestore: (RecoverableEntry) async -> Bool
     let onClose: () -> Void
 
@@ -27,13 +31,14 @@ public struct RecoveryView: View {
     @State private var loadState: LoadState = .loading
     @State private var pendingRestore: RecoverableEntry?
     @State private var selection: RecoverableEntry.ID?
+    @State private var showAllPurged: Bool = false
 
     enum LoadState { case loading, loaded, empty }
 
     public init(
         initialFilter: RecoveryListFilter,
         currentPageRelativePath: String?,
-        entriesStream: @escaping (RecoveryListFilter) -> AsyncStream<[RecoverableEntry]>,
+        entriesStream: @escaping (RecoveryListFilter, Bool) -> AsyncStream<[RecoverableEntry]>,
         onRestore: @escaping (RecoverableEntry) async -> Bool,
         onClose: @escaping () -> Void
     ) {
@@ -65,8 +70,8 @@ public struct RecoveryView: View {
                     }
                 }
         }
-        .task(id: filter) {
-            await consumeStream(for: filter)
+        .task(id: StreamKey(filter: filter, showAllPurged: showAllPurged)) {
+            await consumeStream(for: filter, showAllPurged: showAllPurged)
         }
         .alert(
             "Restore this item?",
@@ -138,27 +143,30 @@ public struct RecoveryView: View {
     }
 
     private var list: some View {
-        List(selection: $selection) {
-            ForEach(entries) { entry in
-                row(for: entry)
-                    .tag(entry.id)
-                    .contentShape(Rectangle())
-                    .onTapGesture { pendingRestore = entry }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button {
-                            pendingRestore = entry
-                        } label: {
-                            Label("Restore", systemImage: "arrow.uturn.backward")
-                        }
-                        .tint(.blue)
+        let pages = entries.filter { if case .deletedPage = $0 { return true } else { return false } }
+        let lost = entries.filter { if case .lostBlock = $0 { return true } else { return false } }
+        let purged = entries.filter { if case .purgedBlock = $0 { return true } else { return false } }
+        return List(selection: $selection) {
+            if !pages.isEmpty {
+                Section("Pages") {
+                    ForEach(pages) { entry in row(for: entry).tag(entry.id) }
+                }
+            }
+            if !lost.isEmpty {
+                Section("Lost") {
+                    ForEach(lost) { entry in row(for: entry).tag(entry.id) }
+                }
+            }
+            if !purged.isEmpty || showAllPurged {
+                Section("Deleted on purpose") {
+                    ForEach(purged) { entry in row(for: entry).tag(entry.id) }
+                    if !showAllPurged {
+                        Button("Show older") { showAllPurged = true }
+                            .buttonStyle(.borderless)
+                            .font(NotionStyle.body(size: 12))
+                            .foregroundStyle(NotionStyle.mutedForeground)
                     }
-                    .contextMenu {
-                        Button {
-                            pendingRestore = entry
-                        } label: {
-                            Label("Restore", systemImage: "arrow.uturn.backward")
-                        }
-                    }
+                }
             }
         }
         .listStyle(.plain)
@@ -174,16 +182,25 @@ public struct RecoveryView: View {
         }
     }
 
+    @ViewBuilder
     private func row(for entry: RecoverableEntry) -> some View {
+        let isPurged = entry.isPurged
         HStack(spacing: 10) {
             Image(systemName: icon(for: entry))
                 .foregroundStyle(NotionStyle.mutedForeground)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.displayTitle)
-                    .font(NotionStyle.body())
-                    .foregroundStyle(NotionStyle.foreground)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(entry.displayTitle)
+                        .font(NotionStyle.body())
+                        .foregroundStyle(isPurged ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                        .lineLimit(1)
+                    if entry.nestedCount > 0 {
+                        Text("+\(entry.nestedCount) more")
+                            .font(NotionStyle.body(size: 11))
+                            .foregroundStyle(NotionStyle.mutedForeground)
+                    }
+                }
                 Text(secondaryLine(for: entry))
                     .font(NotionStyle.body(size: 12))
                     .foregroundStyle(NotionStyle.mutedForeground)
@@ -195,12 +212,30 @@ public struct RecoveryView: View {
                 .foregroundStyle(NotionStyle.mutedForeground)
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture { pendingRestore = entry }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                pendingRestore = entry
+            } label: {
+                Label("Restore", systemImage: "arrow.uturn.backward")
+            }
+            .tint(.blue)
+        }
+        .contextMenu {
+            Button {
+                pendingRestore = entry
+            } label: {
+                Label("Restore", systemImage: "arrow.uturn.backward")
+            }
+        }
     }
 
     private func icon(for entry: RecoverableEntry) -> String {
         switch entry {
         case .deletedPage: return "doc.text"
         case .lostBlock: return "square.stack.3d.up"
+        case .purgedBlock: return "trash.slash"
         }
     }
 
@@ -212,17 +247,25 @@ public struct RecoveryView: View {
         switch entry {
         case .deletedPage:
             return "“\(entry.displayTitle)” will be moved back to \(entry.sourcePath)."
-        case .lostBlock(let lost):
-            let location = lost.parentHash != nil
+        case .lostBlock(let group):
+            let location = group.root.parentHash != nil
                 ? "inside its original parent (or the closest live ancestor)"
                 : "at the top of the page"
-            return "Block will be inserted in \(entry.sourcePath) \(location), without overwriting the current contents."
+            let extras = group.nestedCount > 0
+                ? " (with \(group.nestedCount) nested \(group.nestedCount == 1 ? "block" : "blocks"))"
+                : ""
+            return "Block\(extras) will be inserted in \(entry.sourcePath) \(location), without overwriting the current contents."
+        case .purgedBlock(let group):
+            let extras = group.nestedCount > 0
+                ? " (with \(group.nestedCount) nested \(group.nestedCount == 1 ? "block" : "blocks"))"
+                : ""
+            return "This block\(extras) was deleted on purpose. Restore it back into \(entry.sourcePath)?"
         }
     }
 
-    private func consumeStream(for filter: RecoveryListFilter) async {
+    private func consumeStream(for filter: RecoveryListFilter, showAllPurged: Bool) async {
         if entries.isEmpty { loadState = .loading }
-        for await next in entriesStream(filter) {
+        for await next in entriesStream(filter, showAllPurged) {
             entries = next
             loadState = next.isEmpty ? .empty : .loaded
         }
@@ -230,7 +273,12 @@ public struct RecoveryView: View {
 
     private func performRestore(_ entry: RecoverableEntry) async {
         if await onRestore(entry) {
-            await consumeStream(for: filter)
+            await consumeStream(for: filter, showAllPurged: showAllPurged)
         }
     }
+}
+
+private struct StreamKey: Hashable {
+    let filter: RecoveryListFilter
+    let showAllPurged: Bool
 }

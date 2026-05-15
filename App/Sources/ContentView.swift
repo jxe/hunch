@@ -73,7 +73,9 @@ struct ContentView: View {
                     RecoveryView(
                         initialFilter: filter,
                         currentPageRelativePath: window.currentPageRelativePath,
-                        entriesStream: { filter in workspace.streamRecoverableEntries(filter: filter) },
+                        entriesStream: { filter, showAllPurged in
+                            workspace.streamRecoverableEntries(filter: filter, showAllPurged: showAllPurged)
+                        },
                         onRestore: { entry in await window.restoreRecoverable(entry) },
                         onClose: { window.recoveryFilter = nil }
                     )

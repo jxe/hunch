@@ -410,4 +410,123 @@ struct RecoveryLogTests {
         _ = Clamshell(root: root)
         #expect(!FileManager.default.fileExists(atPath: blocks.path))
     }
+
+    // MARK: - Purged blocks (intentional deletions, restorable)
+
+    /// After an in-app delete + save, the hash's latest record is a purge.
+    /// `enumeratePurged` surfaces it with the markdown reconstructed from
+    /// the prior `add`, so the Recover sheet can offer to bring it back.
+    @MainActor
+    @Test func enumeratePurgedSurfacesAutoTombstonedBlocks() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p",
+            children: [
+                Block.paragraph(text: attr("Keep")),
+                Block.paragraph(text: attr("Lose"))
+            ],
+            modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(80))
+
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p",
+            children: [Block.paragraph(text: attr("Keep"))],
+            modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(80))
+
+        let purged = await clamshell.listPurgedBlocks(
+            filter: .page(relativePath: "p.md"),
+            since: nil
+        )
+        #expect(purged.count == 1)
+        #expect(purged.first?.markdown.contains("Lose") == true)
+    }
+
+    /// `since:` caps the surfaced purges to recent records. The default
+    /// 30-day cap drops anything older; `since: nil` disables the cap.
+    @MainActor
+    @Test func enumeratePurgedRespectsSinceCap() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+
+        // Plant an ancient purge by hand-writing the log.
+        let block = Block.paragraph(text: attr("ancient"))
+        let h = BlockFingerprint.atomicHash(block)
+        let m = BlockSerializer.serializeAtomic(block)
+        let escaped = m
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let addLine = "{\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":1.0}\n"
+        let purgeLine = "{\"h\":\"\(h)\",\"m\":null,\"op\":\"purge\",\"p\":null,\"t\":2.0}\n"
+        let logURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        try FileManager.default.createDirectory(
+            at: logURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try (addLine + purgeLine).write(to: logURL, atomically: true, encoding: .utf8)
+
+        // Plant the live .md so it's a valid scan target.
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p", children: [], modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(40))
+
+        // Default 30-day cap excludes the ancient purge.
+        let recent = await clamshell.listPurgedBlocks(filter: .page(relativePath: "p.md"))
+        #expect(!recent.contains(where: { $0.hash == h }))
+
+        // since: nil sees everything.
+        let all = await clamshell.listPurgedBlocks(filter: .page(relativePath: "p.md"), since: nil)
+        #expect(all.contains(where: { $0.hash == h }))
+    }
+
+    /// `unpurgeBlock` appends a fresh `add` with a current timestamp. The
+    /// union picks the new add as latest → the hash is no longer surfaced
+    /// as purged or lost.
+    @MainActor
+    @Test func unpurgeBlockLiftsTombstone() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p",
+            children: [Block.paragraph(text: attr("doomed"))],
+            modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(40))
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p", children: [], modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(40))
+
+        // It's now purged.
+        let purgedBefore = await clamshell.listPurgedBlocks(
+            filter: .page(relativePath: "p.md"),
+            since: nil
+        )
+        #expect(purgedBefore.count == 1)
+        let entry = try #require(purgedBefore.first)
+
+        // Sleep across a ms boundary so the reAdd timestamp beats the purge.
+        try await Task.sleep(for: .milliseconds(20))
+        let block = Block.paragraph(text: attr("doomed"))
+        try await clamshell.unpurgeBlock(block, in: "p.md", parentHash: entry.parentHash)
+
+        let purgedAfter = await clamshell.listPurgedBlocks(
+            filter: .page(relativePath: "p.md"),
+            since: nil
+        )
+        #expect(purgedAfter.isEmpty)
+    }
 }

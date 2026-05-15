@@ -35,6 +35,7 @@ final class WorkspaceWindow {
 
     private var debounceTask: Task<Void, Never>?
     private var backstopTask: Task<Void, Never>?
+    private var autoRestoreTask: Task<Void, Never>?
     private var filePresenter: DocumentFilePresenter?
     private var isDirty = false
     private var isSaving = false
@@ -122,6 +123,7 @@ final class WorkspaceWindow {
             openDocument = cached
             installFilePresenter(for: url)
             startBackstop()
+            scheduleAutoRestore(for: url)
             return
         }
         do {
@@ -130,11 +132,19 @@ final class WorkspaceWindow {
             isDirty = false
             installFilePresenter(for: url)
             startBackstop()
-            Task { @MainActor [weak self] in
-                await self?.autoRestoreLostBlocksOnOpen(for: url)
-            }
+            scheduleAutoRestore(for: url)
         } catch {
             workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    /// Coalesce auto-restore invocations — cancels any pending pass and
+    /// schedules a fresh one. Called from `handlePathChange` and after
+    /// every file-presenter wakeup; idempotent against the in-memory doc.
+    private func scheduleAutoRestore(for url: URL) {
+        autoRestoreTask?.cancel()
+        autoRestoreTask = Task { @MainActor [weak self] in
+            await self?.autoRestoreLostBlocksOnOpen(for: url)
         }
     }
 
@@ -256,6 +266,7 @@ final class WorkspaceWindow {
     func flushAndClose() {
         debounceTask?.cancel(); debounceTask = nil
         backstopTask?.cancel(); backstopTask = nil
+        autoRestoreTask?.cancel(); autoRestoreTask = nil
         removeFilePresenter()
         guard let doc = openDocument, let clamshell = workspace.clamshell else { return }
         let wasDirty = isDirty
@@ -331,17 +342,25 @@ final class WorkspaceWindow {
         switch entry {
         case .deletedPage(let trashEntry):
             return await workspace.restoreDeletedPage(trashEntry)
-        case .lostBlock(let lost):
-            return await restoreLostBlock(lost)
+        case .lostBlock(let group):
+            return await restoreLostBlock(group.root)
+        case .purgedBlock(let purged):
+            return await restorePurgedBlock(purged)
         }
     }
 
-    /// On fresh document load, splice in every non-tombstoned lost block
-    /// the recovery log knows about for this page. Auto-tombstoning on save
-    /// is what keeps this safe: any block whose latest-record-in-union is
-    /// `add` is a genuine recovery candidate. We process oldest-first so
-    /// parent entries land before their children (each child's parent-chain
-    /// climb then finds the just-spliced parent live in the doc).
+    /// Splice in every non-tombstoned lost block the recovery log knows
+    /// about for this page. Auto-tombstoning on save keeps this safe: any
+    /// hash whose latest-record-in-union is `add` is a genuine recovery
+    /// candidate. Lost blocks linked by `parentHash` are rebuilt as nested
+    /// subtrees via `LostBlockForest.assemble` and inserted under the
+    /// closest live ancestor, so a parent + children deleted together on
+    /// another device restore as one tree, not as flat siblings.
+    ///
+    /// Re-triggered on every file-presenter wakeup; idempotent — blocks
+    /// already live in `doc` are skipped via `findAtomicHash`. Held off
+    /// while the local doc is dirty or a save is in flight to avoid
+    /// fighting with user edits.
     @MainActor
     private func autoRestoreLostBlocksOnOpen(for url: URL) async {
         guard let clamshell = workspace.clamshell else { return }
@@ -349,27 +368,29 @@ final class WorkspaceWindow {
         // Skip until the workspace-level migration has had a chance to run;
         // otherwise legacy orphan blocks across every page would resurrect.
         guard clamshell.autoTombstoneMigrationDone else { return }
+        // Don't race with in-flight user edits or saves.
+        if isDirty || isSaving { return }
         let rel = clamshell.relativePath(of: url)
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: rel))
-        let candidates = lost.sorted { $0.recordedAt < $1.recordedAt }
+        let candidates = lost.filter { findAtomicHash($0.hash, in: doc) == nil }
         guard !candidates.isEmpty else { return }
+        let roots = LostBlockForest.assemble(candidates)
+        guard !roots.isEmpty else { return }
         guard openDocument?.url == url else { return }
 
         var restored = 0
-        for entry in candidates {
+        for root in roots {
             guard openDocument?.url == url else { return }
-            if findAtomicHash(entry.hash, in: doc) != nil { continue }
-            guard let parsed = BlockParser.parse(entry.markdown).first else { continue }
-            let shell = parsed.withFreshIDs()
+            let fresh = root.block.withFreshIDs()
             let parentID = await resolveLiveAncestor(
-                startingParentHash: entry.parentHash,
+                startingParentHash: root.lost.parentHash,
                 pageRel: rel,
                 in: doc,
                 clamshell: clamshell
             )
             let siblings = parentID.flatMap(doc.find)?.children ?? doc.children
-            doc.insertSubtrees([shell], at: DropPath(parent: parentID, position: siblings.count))
-            restored += 1
+            doc.insertSubtrees([fresh], at: DropPath(parent: parentID, position: siblings.count))
+            restored += root.hashes.count
         }
         guard restored > 0 else { return }
         doc.enforceHeadingContainment()
@@ -381,7 +402,7 @@ final class WorkspaceWindow {
         markEdited()
         let noun = restored == 1 ? "block" : "blocks"
         workspace.banner = .init(message: "Restored \(restored) \(noun) from another device into \(doc.title)")
-        Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(restored, privacy: .public)")
+        Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(restored, privacy: .public) roots=\(roots.count, privacy: .public)")
     }
 
     @discardableResult
@@ -393,12 +414,24 @@ final class WorkspaceWindow {
             return false
         }
 
+        // Pull the full lost set for the page so we can rebuild the subtree
+        // rooted at `entry.hash` — restoring a parent should also pull in
+        // any descendants that landed in the same loss event.
+        let allLost = await clamshell.listLostBlocks(filter: .page(relativePath: entry.source))
+        let root: LostBlockForest.Root
+        if let assembled = LostBlockForest.assemble(allLost, rootedAt: entry.hash) {
+            root = assembled
+        } else if let fallback = LostBlockForest.assemble([entry], rootedAt: entry.hash) {
+            // The clicked entry no longer in the freshly-read list (rare
+            // race with a refresh) — fall back to the entry passed in.
+            root = fallback
+        } else {
+            workspace.error = "Couldn't parse the recovered block."
+            return false
+        }
+
         do {
-            guard let parsed = BlockParser.parse(entry.markdown).first else {
-                workspace.error = "Couldn't parse the recovered block."
-                return false
-            }
-            let restored = parsed.withFreshIDs()
+            let restored = root.block.withFreshIDs()
 
             let useLiveDoc = (openDocument?.url == target)
             let doc: Document
@@ -410,10 +443,10 @@ final class WorkspaceWindow {
 
             // Climb the lost block's recorded parent chain in the recovery
             // log until we find a hash that's currently live in the doc —
-            // append the restored block as a child of it. If we run out of
-            // ancestors, append at the top of the page.
+            // append the restored subtree as a child of it. If we run out
+            // of ancestors, append at the top of the page.
             let parentID = await resolveLiveAncestor(
-                startingParentHash: entry.parentHash,
+                startingParentHash: root.lost.parentHash,
                 pageRel: entry.source,
                 in: doc,
                 clamshell: clamshell
@@ -439,7 +472,120 @@ final class WorkspaceWindow {
                 }
                 workspace.rescan()
             }
-            try? await clamshell.purgeLostBlock(entry)
+            // Purge every hash in the restored subtree so the Recover sheet
+            // stops surfacing it. Includes the clicked entry's hash and any
+            // descendants we pulled in.
+            for hash in root.hashes {
+                try? await clamshell.purgeHash(hash, in: entry.source)
+            }
+            return true
+        } catch {
+            workspace.error = "Restore failed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Restore a block the user intentionally deleted (latest log record is
+    /// a `purge`). Mirror of `restoreLostBlock`: pulls the full purged set
+    /// for the page, rebuilds the subtree rooted at the clicked entry, and
+    /// inserts it under the closest live ancestor. Writes a fresh `add`
+    /// record per restored hash so the union stops treating them as
+    /// tombstoned — a plain doc save would skip the hashes (the device
+    /// cache says "already recorded") and the tombstones would linger.
+    @discardableResult
+    func restorePurgedBlock(_ group: PurgedBlockGroup) async -> Bool {
+        guard let clamshell = workspace.clamshell, let workspaceURL = workspace.workspaceURL else { return false }
+        let target = workspaceURL.appendingPathComponent(group.source).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: target.path) else {
+            workspace.error = "Original page no longer exists at \(group.source)."
+            return false
+        }
+
+        // Pull the full purged set for the page (no time cap — we know the
+        // entry exists in the union or the row wouldn't have rendered) and
+        // rebuild the subtree rooted at the clicked entry.
+        let allPurged = await clamshell.listPurgedBlocks(
+            filter: .page(relativePath: group.source),
+            since: nil
+        )
+        let adapted: [LostBlock] = allPurged.map { p in
+            LostBlock.adapt(
+                hash: p.hash,
+                parentHash: p.parentHash,
+                markdown: p.markdown,
+                source: p.source,
+                recordedAt: p.purgedAt
+            )
+        }
+        let purgedByHash = Dictionary(uniqueKeysWithValues: allPurged.map { ($0.hash, $0) })
+        let root: LostBlockForest.Root
+        if let assembled = LostBlockForest.assemble(adapted, rootedAt: group.hash) {
+            root = assembled
+        } else if let fallback = LostBlockForest.assemble(
+            [LostBlock.adapt(
+                hash: group.root.hash,
+                parentHash: group.root.parentHash,
+                markdown: group.root.markdown,
+                source: group.root.source,
+                recordedAt: group.root.purgedAt
+            )],
+            rootedAt: group.hash
+        ) {
+            root = fallback
+        } else {
+            workspace.error = "Couldn't parse the recovered block."
+            return false
+        }
+
+        do {
+            let restored = root.block.withFreshIDs()
+
+            let useLiveDoc = (openDocument?.url == target)
+            let doc: Document
+            if useLiveDoc, let live = openDocument {
+                doc = live
+            } else {
+                doc = try workspace.loadDocument(at: target)
+            }
+
+            let parentID = await resolveLiveAncestor(
+                startingParentHash: group.root.parentHash,
+                pageRel: group.source,
+                in: doc,
+                clamshell: clamshell
+            )
+            let siblings = parentID.flatMap(doc.find)?.children ?? doc.children
+            doc.insertSubtrees([restored], at: DropPath(parent: parentID, position: siblings.count))
+
+            doc.enforceHeadingContainment()
+            doc.title = Document.deriveTitle(from: doc.children, fallback: target.deletingPathExtension().lastPathComponent)
+
+            // Unpurge each restored hash BEFORE the save so the save's
+            // auto-tombstone diff sees them as already-recorded (in the
+            // device cache) and doesn't immediately re-purge.
+            for hash in root.hashes {
+                guard let purgedRecord = purgedByHash[hash],
+                      let parsed = BlockParser.parse(purgedRecord.markdown).first else { continue }
+                try? await clamshell.unpurgeBlock(
+                    parsed,
+                    in: group.source,
+                    parentHash: purgedRecord.parentHash
+                )
+            }
+
+            if useLiveDoc {
+                openDocument = doc
+                cacheOpenDocument()
+                markEdited()
+            } else {
+                try clamshell.writeImmediately(doc, resolvingSubpageTitle: workspace.saveTitleResolver())
+                doc.modificationDate = workspace.modificationDate(for: target)
+                documentCache[target] = doc
+                if let raw = try? clamshell.readRawText(at: target) {
+                    workspace.recordDiskText(raw, for: target)
+                }
+                workspace.rescan()
+            }
             return true
         } catch {
             workspace.error = "Restore failed: \(error.localizedDescription)"
@@ -508,6 +654,13 @@ final class WorkspaceWindow {
         guard !Task.isCancelled, openDocument?.url == doc.url else { return }
 
         let url = doc.url
+        // iCloud often delivers the `.md` and a sibling
+        // `.history/<rel>/<other-device>.jsonl` in the same burst — by the
+        // time the presenter wakes, we may have new log entries to act on
+        // even if the `.md` hash hasn't changed. Re-run auto-restore on
+        // every wakeup; the method is idempotent (already-live hashes are
+        // skipped) and self-coalesced via `autoRestoreTask`.
+        defer { scheduleAutoRestore(for: url) }
 
         // Auto-merge any unresolved iCloud conflict versions before falling
         // back to the echo/stomp/external-edit branching. The live `doc` is
@@ -598,6 +751,144 @@ final class WorkspaceWindow {
                 await self?.saveNow()
             }
         }
+    }
+}
+
+// MARK: - LostBlockForest
+
+/// Pure transform from a flat list of `LostBlock` records into the roots of
+/// a forest of `Block` trees. Each lost block whose recorded `parentHash`
+/// points to another lost block becomes a child of that parent in the
+/// assembled tree, so a parent + its descendants restore as one nested
+/// subtree instead of N flat siblings. Cycle-safe.
+struct LostBlockForest {
+    struct Root {
+        /// Originating record for the root (used by callers to look up the
+        /// recorded `parentHash` for live-ancestor resolution).
+        let lost: LostBlock
+        /// Assembled tree with children attached. IDs are still the parser's;
+        /// callers should `withFreshIDs()` once before inserting.
+        let block: Block
+        /// Atomic hashes covered by this root (including the root itself).
+        /// Used by the manual-restore path to purge the whole subtree post-
+        /// insert and by the Recover sheet to badge "+N more" affordances.
+        let hashes: Set<String>
+    }
+
+    static func assemble(_ entries: [LostBlock]) -> [Root] {
+        let (parsed, byHash) = buildIndex(entries)
+        guard !byHash.isEmpty else { return [] }
+        let childrenByParent = buildChildrenByParent(byHash: byHash)
+        let rootHashes = byHash.values.compactMap { entry -> String? in
+            if let p = entry.parentHash, byHash[p] != nil { return nil }
+            return entry.hash
+        }
+        let sortedRoots = rootHashes.sorted { lhs, rhs in
+            (byHash[lhs]?.recordedAt ?? .distantPast)
+                < (byHash[rhs]?.recordedAt ?? .distantPast)
+        }
+        return sortedRoots.compactMap { hash in
+            buildRoot(
+                hash: hash,
+                parsed: parsed,
+                byHash: byHash,
+                childrenByParent: childrenByParent
+            )
+        }
+    }
+
+    /// Single-root overload: assemble only the subtree rooted at `rootedAt`
+    /// from the entries (descendants pulled in by parentHash linkage).
+    /// Returns nil if `rootedAt` isn't in the entries.
+    static func assemble(_ entries: [LostBlock], rootedAt: String) -> Root? {
+        let (parsed, byHash) = buildIndex(entries)
+        guard byHash[rootedAt] != nil else { return nil }
+        let childrenByParent = buildChildrenByParent(byHash: byHash)
+        return buildRoot(
+            hash: rootedAt,
+            parsed: parsed,
+            byHash: byHash,
+            childrenByParent: childrenByParent
+        )
+    }
+
+    private static func buildChildrenByParent(byHash: [String: LostBlock]) -> [String: [String]] {
+        var out: [String: [String]] = [:]
+        for entry in byHash.values {
+            guard let p = entry.parentHash, byHash[p] != nil else { continue }
+            out[p, default: []].append(entry.hash)
+        }
+        return out
+    }
+
+    // MARK: - Internals
+
+    private static func buildIndex(_ entries: [LostBlock])
+        -> (parsed: [String: Block], byHash: [String: LostBlock])
+    {
+        var parsed: [String: Block] = [:]
+        var byHash: [String: LostBlock] = [:]
+        for entry in entries {
+            guard let block = BlockParser.parse(entry.markdown).first else { continue }
+            // Defensive: dupe hash → keep the latest recordedAt for ordering.
+            if let existing = byHash[entry.hash], existing.recordedAt >= entry.recordedAt {
+                continue
+            }
+            parsed[entry.hash] = block
+            byHash[entry.hash] = entry
+        }
+        return (parsed, byHash)
+    }
+
+    private static func buildRoot(
+        hash: String,
+        parsed: [String: Block],
+        byHash: [String: LostBlock],
+        childrenByParent: [String: [String]]
+    ) -> Root? {
+        guard let lost = byHash[hash], let block = parsed[hash] else { return nil }
+        var visited: Set<String> = []
+        var hashes: Set<String> = []
+        let assembled = attach(
+            hash: hash,
+            block: block,
+            parsed: parsed,
+            byHash: byHash,
+            childrenByParent: childrenByParent,
+            visited: &visited,
+            hashes: &hashes
+        )
+        return Root(lost: lost, block: assembled, hashes: hashes)
+    }
+
+    private static func attach(
+        hash: String,
+        block: Block,
+        parsed: [String: Block],
+        byHash: [String: LostBlock],
+        childrenByParent: [String: [String]],
+        visited: inout Set<String>,
+        hashes: inout Set<String>
+    ) -> Block {
+        guard visited.insert(hash).inserted else { return block }
+        hashes.insert(hash)
+        let childHashes = (childrenByParent[hash] ?? []).sorted { lhs, rhs in
+            (byHash[lhs]?.recordedAt ?? .distantPast)
+                < (byHash[rhs]?.recordedAt ?? .distantPast)
+        }
+        let children = childHashes.compactMap { childHash -> Block? in
+            guard let childBlock = parsed[childHash] else { return nil }
+            return attach(
+                hash: childHash,
+                block: childBlock,
+                parsed: parsed,
+                byHash: byHash,
+                childrenByParent: childrenByParent,
+                visited: &visited,
+                hashes: &hashes
+            )
+        }
+        return block.withChildren(children)
     }
 }
 

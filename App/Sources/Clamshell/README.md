@@ -122,7 +122,7 @@ by an earlier (now-retired) per-block-pool design.
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Search | `searchPages(in:query:excluding:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
-| Recovery log | `listLostBlocks(filter:)`, `purgeLostBlock(_:)`, `parentHash(forPage:hash:)` |
+| Recovery log | `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)`, `purgeLostBlock(_:)`, `purgeHash(_:in:)`, `unpurgeBlock(_:in:withParent:)`, `parentHash(forPage:hash:)` |
 | iCloud merge | `resolveConflictVersions(at:againstLive:resolvingSubpageTitle:)`, `runAutoTombstoneMigrationIfNeeded()` |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
 | Metadata | `homeRelativePath` (read/write), `autoTombstoneMigrationDone`, `root` |
@@ -202,6 +202,16 @@ pure block-tree function); the caller writes the merged result back
 through the same save path. Driven by `Workspace` at scan time (closed
 pages) and by `WorkspaceWindow.handlePresentedFileChange` for the open
 page on file-presenter wakeups.
+
+**Intentional deletions stay recoverable.** Auto-tombstoned and
+manually-purged hashes are tracked separately from "lost" entries —
+the log union remembers both the latest record (purge) and the
+latest prior `add` (carrying markdown + parent). `listPurgedBlocks`
+surfaces them so the user can bring back something they deleted on
+purpose; `unpurgeBlock` appends a fresh `add` with a new timestamp,
+which beats the prior purge under latest-`t` semantics and lifts
+the tombstone from the union. Defaults to a 30-day window for
+surface area; pass `since: nil` to see everything.
 
 **Auto-tombstone migration runs once per Clamshell.** Until the
 `autoTombstoneMigrationDone` flag in `.clamshell.json` is set, the
