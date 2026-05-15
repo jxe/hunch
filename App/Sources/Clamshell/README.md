@@ -213,6 +213,15 @@ which beats the prior purge under latest-`t` semantics and lifts
 the tombstone from the union. Defaults to a 30-day window for
 surface area; pass `since: nil` to see everything.
 
+**`LostBlock.everPurged` flags ever-tombstoned content.** A lost
+block is "ever purged" if any device's log has recorded a `purge`
+for the hash, even when a later `add` overrode it under latest-`t`
+semantics. The host's auto-restore filters these out — they only
+come back when the user explicitly clicks them in the Recover
+sheet. Keeps auto-restore principled: it brings back content that
+went missing without an intent signal, never content the user (or
+another device) deliberately removed.
+
 **Auto-tombstone migration runs once per Clamshell.** Until the
 `autoTombstoneMigrationDone` flag in `.clamshell.json` is set, the
 recovery log can hold orphan `add` records from before auto-tombstoning

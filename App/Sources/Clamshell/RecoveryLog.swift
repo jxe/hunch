@@ -126,7 +126,7 @@ public actor RecoveryLog {
         let live = liveAtomicHashes(forPage: rel)
         return byHash.values
             .filter { $0.latest.op == "add" && !live.contains($0.latest.h) }
-            .map { LostBlock(record: $0.latest, source: rel) }
+            .map { LostBlock(record: $0.latest, source: rel, everPurged: $0.everPurged) }
             .sorted { $0.recordedAt > $1.recordedAt }
     }
 
@@ -359,6 +359,14 @@ public actor RecoveryLog {
     fileprivate struct HashEntry: Sendable {
         let latest: Wire
         let latestAdd: Wire?
+        /// Whether any `purge` record for this hash has ever appeared on
+        /// any device's log for this page. Even if a later `add` overrode
+        /// the purge under latest-`t` semantics (so the hash is currently
+        /// live in the union), `everPurged` stays true — auto-restore
+        /// uses this to refuse re-inserting content that was ever
+        /// intentionally removed, deferring those to the manual Recover
+        /// sheet.
+        let everPurged: Bool
     }
 
     nonisolated fileprivate func unionLatestWithAdd(page rel: String) -> [String: HashEntry] {
@@ -374,7 +382,12 @@ public actor RecoveryLog {
                 } else {
                     newLatestAdd = existing?.latestAdd
                 }
-                byHash[record.h] = HashEntry(latest: newLatest, latestAdd: newLatestAdd)
+                let everPurged = (existing?.everPurged ?? false) || record.op == "purge"
+                byHash[record.h] = HashEntry(
+                    latest: newLatest,
+                    latestAdd: newLatestAdd,
+                    everPurged: everPurged
+                )
             }
         }
         return byHash
@@ -467,15 +480,23 @@ public struct LostBlock: Sendable, Identifiable {
     public let parentHash: String?
     public let source: String
     public let recordedAt: Date
+    /// True if any device's log has ever recorded a `purge` for this hash
+    /// on this page — even if a later `add` overrode it under latest-`t`
+    /// semantics. Auto-restore filters these out (intentional deletions
+    /// are surfaced via the manual Recover sheet's "Deleted on purpose"
+    /// section instead). False for the typical cross-device "block from
+    /// another device that never landed here" case.
+    public let everPurged: Bool
 
     public var id: String { "\(source)|\(hash)" }
 
-    fileprivate init(record: RecoveryLog.Wire, source: String) {
+    fileprivate init(record: RecoveryLog.Wire, source: String, everPurged: Bool) {
         self.markdown = record.m ?? ""
         self.hash = record.h
         self.parentHash = record.p
         self.source = source
         self.recordedAt = Date(timeIntervalSince1970: record.t)
+        self.everPurged = everPurged
     }
 }
 
@@ -495,14 +516,16 @@ extension LostBlock {
         parentHash: String?,
         markdown: String,
         source: String,
-        recordedAt: Date
+        recordedAt: Date,
+        everPurged: Bool = false
     ) -> LostBlock {
         LostBlock(
             adaptedHash: hash,
             parentHash: parentHash,
             markdown: markdown,
             source: source,
-            recordedAt: recordedAt
+            recordedAt: recordedAt,
+            everPurged: everPurged
         )
     }
 
@@ -511,13 +534,15 @@ extension LostBlock {
         parentHash: String?,
         markdown: String,
         source: String,
-        recordedAt: Date
+        recordedAt: Date,
+        everPurged: Bool
     ) {
         self.markdown = markdown
         self.hash = adaptedHash
         self.parentHash = parentHash
         self.source = source
         self.recordedAt = recordedAt
+        self.everPurged = everPurged
     }
 }
 

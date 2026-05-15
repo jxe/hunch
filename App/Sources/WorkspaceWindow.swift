@@ -386,8 +386,17 @@ final class WorkspaceWindow {
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: rel))
         let alreadyRestored = autoRestoredHashes[url] ?? []
         let candidates = lost.filter {
+            // Skip anything currently live in the doc (by content hash).
             findAtomicHash($0.hash, in: doc) == nil
+                // Skip anything already auto-restored this session (memo
+                // against re-fire loops from save echoes / iCloud stomps).
                 && !alreadyRestored.contains($0.hash)
+                // Skip anything that's ever been tombstoned. Intentional
+                // deletions surface in the "Deleted on purpose" section
+                // of the Recover sheet for explicit user action — never
+                // auto-resurrected, even if a later `add` is currently
+                // winning latest-`t` semantics.
+                && !$0.everPurged
         }
         guard !candidates.isEmpty else { return }
         let roots = LostBlockForest.assemble(candidates)

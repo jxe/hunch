@@ -489,6 +489,50 @@ struct RecoveryLogTests {
         #expect(all.contains(where: { $0.hash == h }))
     }
 
+    /// A block that's currently surfaced as "lost" carries `everPurged` =
+    /// true if any purge record exists for the hash on any device's log —
+    /// even when a later `add` overrode it under latest-`t` and the block
+    /// is back in the union as "lost". Auto-restore uses this flag to
+    /// avoid resurrecting things the user (or another device) once
+    /// deliberately tossed.
+    @MainActor
+    @Test func everPurgedReflectsHistoricalTombstones() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+
+        // Round-trip: add → save (no auto-tombstone yet because lastKnown
+        // is empty), then drop and save (auto-tombstone fires), then
+        // externally re-introduce the same hash so it surfaces as lost.
+        let block = Block.paragraph(text: attr("phoenix"))
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p", children: [block], modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(40))
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p", children: [], modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(40))
+
+        // External writer brings the hash back into the log via a foreign
+        // device's add at a newer timestamp than our purge.
+        let h = BlockFingerprint.atomicHash(block)
+        let m = BlockSerializer.serializeAtomic(block)
+        let escaped = m
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let now = Date().timeIntervalSince1970
+        let line = "{\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":\(now + 10)}\n"
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try line.write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
+        let entry = try #require(lost.first(where: { $0.hash == h }))
+        #expect(entry.everPurged, "purge record from our own log should keep everPurged = true")
+    }
+
     /// `unpurgeBlock` appends a fresh `add` with a current timestamp. The
     /// union picks the new add as latest → the hash is no longer surfaced
     /// as purged or lost.
