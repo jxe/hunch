@@ -414,6 +414,59 @@ struct PatchEngineTests {
         #expect(recon.inserts.isEmpty)
     }
 
+    // MARK: - Phase 3 defense: hash-mismatch quarantine
+
+    /// Recorded markdown won't parse → mark unrestorable so the
+    /// orchestrator can purge the hash and stop the reconcile path from
+    /// firing on it forever.
+    @Test func malformedMarkdownGoesToUnrestorable() throws {
+        let badHash = String(repeating: "f", count: 64)
+        let intent = IntentState(byHash: [
+            badHash: .alive(latestAdd: .init(
+                parent: nil,
+                markdown: "",
+                recordedAt: Date()
+            ))
+        ])
+        let recon = PatchEngine.reconcile(intent: intent, doc: [])
+
+        #expect(recon.inserts.isEmpty)
+        #expect(recon.unrestorable.count == 1)
+        let entry = try #require(recon.unrestorable.first)
+        #expect(entry.hash == badHash)
+        if case .parseFailure = entry.reason {} else {
+            Issue.record("expected .parseFailure, got \(entry.reason)")
+        }
+    }
+
+    /// Recorded markdown parses fine, but the parsed block's `atomicHash`
+    /// doesn't match the recorded hash → unrestorable. Inserting anyway
+    /// would re-fire reconcile forever (doc gets a block with a different
+    /// hash than intent expects).
+    @Test func hashMismatchOnRoundTripGoesToUnrestorable() throws {
+        let realBlock = Block.paragraph(text: attr("real content"))
+        let fakeHash = String(repeating: "0", count: 64)
+        let intent = IntentState(byHash: [
+            fakeHash: .alive(latestAdd: .init(
+                parent: nil,
+                markdown: BlockSerializer.serializeAtomic(realBlock),
+                recordedAt: Date()
+            ))
+        ])
+        let recon = PatchEngine.reconcile(intent: intent, doc: [])
+
+        #expect(recon.inserts.isEmpty)
+        #expect(recon.unrestorable.count == 1)
+        let entry = try #require(recon.unrestorable.first)
+        #expect(entry.hash == fakeHash)
+        if case .hashMismatch(let actual, let kind) = entry.reason {
+            #expect(actual == realBlock.atomicHash)
+            #expect(kind == "paragraph")
+        } else {
+            Issue.record("expected .hashMismatch, got \(entry.reason)")
+        }
+    }
+
     @Test func purgedEntriesRespectSinceWindow() {
         let x = Block.paragraph(text: attr("X"))
         let now = Date()

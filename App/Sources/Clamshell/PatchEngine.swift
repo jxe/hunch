@@ -239,14 +239,56 @@ public enum PatchEngine {
         guard !aliveEntries.isEmpty else {
             return Reconciliation(inserts: [], restoredHashes: [], toAppend: toAppend)
         }
+        let aliveByHash = Dictionary(uniqueKeysWithValues: aliveEntries.map { ($0.hash, $0) })
         let roots = LostBlockForest.assemble(aliveEntries)
-        guard !roots.isEmpty else {
-            return Reconciliation(inserts: [], restoredHashes: [], toAppend: toAppend)
+        let forestHashes = Set(roots.flatMap { $0.hashes })
+
+        var unrestorable: [UnrestorableEntry] = []
+        // Hashes the forest couldn't represent at all — `m` failed to
+        // parse, no `Block` could be built. They get quarantined as
+        // parse failures with whatever we know from the log entry.
+        for (hash, entry) in aliveByHash where !forestHashes.contains(hash) {
+            unrestorable.append(UnrestorableEntry(
+                hash: hash,
+                recordedMarkdown: entry.markdown,
+                recordedParent: entry.parentHash,
+                recordedAt: entry.recordedAt,
+                reason: .parseFailure
+            ))
         }
 
         var inserts: [Insert] = []
         var restoredHashes: [String] = []
         for root in roots {
+            // Round-trip check: the parsed subtree's atomic hash MUST match
+            // what the journal recorded. If it doesn't, inserting would
+            // make doc.children contain a different hash than intent
+            // expects → next reconcile reads intent as still-missing →
+            // infinite re-fire. Quarantine instead.
+            let actualHash = root.block.atomicHash
+            if actualHash != root.lost.hash {
+                unrestorable.append(UnrestorableEntry(
+                    hash: root.lost.hash,
+                    recordedMarkdown: root.lost.markdown,
+                    recordedParent: root.lost.parentHash,
+                    recordedAt: root.lost.recordedAt,
+                    reason: .hashMismatch(actualHash: actualHash, parsedKind: kindLabel(root.block.kind))
+                ))
+                // Also quarantine descendants — they only got pulled in as
+                // children of this root and won't be inserted on their own.
+                for descendantHash in root.hashes where descendantHash != root.lost.hash {
+                    if let descendant = aliveByHash[descendantHash] {
+                        unrestorable.append(UnrestorableEntry(
+                            hash: descendant.hash,
+                            recordedMarkdown: descendant.markdown,
+                            recordedParent: descendant.parentHash,
+                            recordedAt: descendant.recordedAt,
+                            reason: .descendantOfUnrestorableRoot(rootHash: root.lost.hash)
+                        ))
+                    }
+                }
+                continue
+            }
             let parentID = resolveLiveAncestor(
                 startingParentHash: root.lost.parentHash,
                 intent: intent,
@@ -262,8 +304,28 @@ public enum PatchEngine {
         return Reconciliation(
             inserts: inserts,
             restoredHashes: restoredHashes,
-            toAppend: toAppend
+            toAppend: toAppend,
+            unrestorable: unrestorable
         )
+    }
+
+    /// Short, log-friendly label for a block kind. Just the case name —
+    /// avoids dumping payload text into the unified log.
+    private static func kindLabel(_ kind: BlockKind) -> String {
+        switch kind {
+        case .paragraph: return "paragraph"
+        case .heading(let level, _): return "heading-h\(level.rawValue)"
+        case .bullet: return "bullet"
+        case .numbered: return "numbered"
+        case .todo: return "todo"
+        case .quote: return "quote"
+        case .code: return "code"
+        case .divider: return "divider"
+        case .toggle: return "toggle"
+        case .templateButton: return "templateButton"
+        case .subpage: return "subpage"
+        case .image: return "image"
+        }
     }
 
     /// Walk `doc` preorder; emit one `Observation` per block whose hash isn't
@@ -299,24 +361,29 @@ public enum PatchEngine {
         /// Observations the engine made about blocks present in `doc` but
         /// not in the journal — synthesized `add` records the caller should
         /// append to *this device's* log to lift the doc's current content
-        /// into the journal. Drives:
-        ///
-        /// - Bare-md absorption: a `.md` with no history dir gets its blocks
-        ///   logged on first reconcile.
-        /// - External-edit absorption: blocks an external editor wrote that
-        ///   no device has logged yet are observed and logged here.
+        /// into the journal.
         public let toAppend: [Observation]
+        /// Hashes the journal classifies as `.alive` but the engine can't
+        /// turn into a valid `Insert`: the recorded `m` won't parse, or it
+        /// parses to a block whose `atomicHash` doesn't match the recorded
+        /// hash. The orchestrator should purge these so they stop firing —
+        /// the user loses the recovery option for the specific hash but
+        /// the loop stops. Each entry carries enough context (markdown,
+        /// reason, parsed kind on mismatch) to debug what's drifting.
+        public let unrestorable: [UnrestorableEntry]
 
         public var didChange: Bool { !inserts.isEmpty }
 
         public init(
             inserts: [Insert],
             restoredHashes: [String],
-            toAppend: [Observation] = []
+            toAppend: [Observation] = [],
+            unrestorable: [UnrestorableEntry] = []
         ) {
             self.inserts = inserts
             self.restoredHashes = restoredHashes
             self.toAppend = toAppend
+            self.unrestorable = unrestorable
         }
     }
 
@@ -335,6 +402,48 @@ public enum PatchEngine {
             self.subtree = subtree
             self.parent = parent
             self.coveredHashes = coveredHashes
+        }
+    }
+
+    /// One hash the engine quarantined from reconciliation. Carries enough
+    /// context to debug *why* the recorded entry can't be restored and what
+    /// blocks the loop. The orchestrator logs these and purges the hash so
+    /// it stops firing reconcile.
+    public struct UnrestorableEntry: Sendable {
+        public enum Reason: Sendable {
+            /// `BlockParser.parse(recordedMarkdown)` returned no blocks.
+            case parseFailure
+            /// `parse(recordedMarkdown).first.atomicHash != recordedHash`.
+            /// The recorded markdown round-trips to *something*, but its
+            /// hash doesn't match what the log claimed. Carries the actual
+            /// hash + parsed block kind for diagnosis.
+            case hashMismatch(actualHash: String, parsedKind: String)
+            /// A descendant in a subtree whose root was unrestorable. The
+            /// engine pulls descendants into the same `Root` via the forest
+            /// assembly; if the root can't be inserted, neither can its
+            /// children (as their own roots). Quarantined together so the
+            /// log stops surfacing them all.
+            case descendantOfUnrestorableRoot(rootHash: String)
+        }
+
+        public let hash: String
+        public let recordedMarkdown: String
+        public let recordedParent: String?
+        public let recordedAt: Date
+        public let reason: Reason
+
+        public init(
+            hash: String,
+            recordedMarkdown: String,
+            recordedParent: String?,
+            recordedAt: Date,
+            reason: Reason
+        ) {
+            self.hash = hash
+            self.recordedMarkdown = recordedMarkdown
+            self.recordedParent = recordedParent
+            self.recordedAt = recordedAt
+            self.reason = reason
         }
     }
 

@@ -41,6 +41,11 @@ final class WorkspaceWindow {
     private var isDirty: Bool { saveSession?.isDirty == true }
     private var isSaving: Bool { saveSession?.isSaving == true }
     private var documentCache: [URL: Document] = [:]
+    /// Per-URL memo of the hash set the last reconcile pass restored. If a
+    /// fresh pass would emit the exact same set, something is keeping those
+    /// hashes from sticking in `doc` (round-trip drift the engine couldn't
+    /// detect, e.g. save-time content transform). Break the loop and log.
+    private var lastRestoredHashes: [URL: Set<String>] = [:]
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -185,6 +190,7 @@ final class WorkspaceWindow {
         openDocument = nil
         path = []
         documentCache = [:]
+        lastRestoredHashes = [:]
     }
 
     // MARK: - Move-to picker
@@ -331,13 +337,52 @@ final class WorkspaceWindow {
         let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
 
         // Bare-md / external-edit absorption: lift any unlogged blocks into
-        // the journal as `add` observations. Fire-and-forget; the engine has
-        // already deduped against the journal, the actor de-dupes against
-        // our per-device cache.
+        // the journal as `add` observations. Fire-and-forget.
         clamshell.appendObservations(recon.toAppend, forPage: rel)
 
-        guard recon.didChange else { return }
+        // Quarantine hashes the engine can't make valid Inserts for
+        // (markdown won't parse, or parses to a different hash than what
+        // was recorded — typically a serialization-format drift). Without
+        // this, those hashes stay `.alive` in intent forever and the
+        // reconcile path re-fires on every wakeup.
+        if !recon.unrestorable.isEmpty {
+            let hashList = recon.unrestorable.map(\.hash).joined(separator: ",")
+            Diag.merge.error("reconcile quarantining url=\(url.lastPathComponent, privacy: .public) count=\(recon.unrestorable.count, privacy: .public) hashes=\(hashList, privacy: .public)")
+            for entry in recon.unrestorable {
+                let reasonLabel: String
+                switch entry.reason {
+                case .parseFailure: reasonLabel = "parseFailure"
+                case .hashMismatch(let actual, let kind): reasonLabel = "hashMismatch actual=\(actual) kind=\(kind)"
+                case .descendantOfUnrestorableRoot(let rootHash): reasonLabel = "descendantOf=\(rootHash)"
+                }
+                let mdPreview = entry.recordedMarkdown
+                    .prefix(160)
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                Diag.merge.error("unrestorable hash=\(entry.hash, privacy: .public) reason=\(reasonLabel, privacy: .public) parent=\(entry.recordedParent ?? "nil", privacy: .public) recordedAt=\(entry.recordedAt.timeIntervalSince1970, privacy: .public) md=\(String(mdPreview), privacy: .public)")
+                Task { [clamshell, hash = entry.hash, rel] in
+                    try? await clamshell.purgeHash(hash, in: rel)
+                }
+            }
+        }
+
+        guard recon.didChange else {
+            lastRestoredHashes[url] = nil
+            return
+        }
         guard openDocument?.url == url else { return }
+
+        // Re-fire guard: if this pass would restore exactly the same set as
+        // the previous pass for this URL, something is preventing those
+        // hashes from sticking in `doc` after save (round-trip drift the
+        // engine's mismatch check didn't catch). Break the loop and log so
+        // we can see what's drifting.
+        let restoredSet = Set(recon.restoredHashes)
+        if let prior = lastRestoredHashes[url], prior == restoredSet {
+            Diag.merge.error("reconcile re-fire detected url=\(url.lastPathComponent, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public) — bailing to break loop")
+            lastRestoredHashes[url] = nil
+            return
+        }
+        lastRestoredHashes[url] = restoredSet
 
         PatchEngine.apply(recon, to: doc)
         cacheOpenDocument()
@@ -345,7 +390,7 @@ final class WorkspaceWindow {
         let restored = recon.restoredHashes.count
         let noun = restored == 1 ? "block" : "blocks"
         workspace.banner = .init(message: "Restored \(restored) \(noun) from another device into \(doc.title)")
-        Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(restored, privacy: .public) roots=\(recon.inserts.count, privacy: .public)")
+        Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(restored, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
     }
 
     @discardableResult
