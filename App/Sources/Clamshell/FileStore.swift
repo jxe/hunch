@@ -82,10 +82,8 @@ public struct FileStore: Sendable {
     public func loadDocument(at url: URL) throws -> Document {
         let source = try read(url)
         let blocks = BlockParser.parse(source)
-        let fallbackTitle = url.deletingPathExtension().lastPathComponent
-        let title = Document.deriveTitle(from: blocks, fallback: fallbackTitle)
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-        return Document(url: url, title: title, children: blocks, modificationDate: mtime)
+        return Document(url: url, children: blocks, modificationDate: mtime)
     }
 
     @MainActor

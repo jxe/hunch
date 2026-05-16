@@ -11,7 +11,6 @@ struct DocumentTransactionTests {
     private func makeDoc() -> Document {
         Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [
                 .paragraph(text: AttributedString("alpha")),
                 .paragraph(text: AttributedString("bravo"))
@@ -198,7 +197,6 @@ struct DocumentTransactionTests {
         // the paragraph into the heading's children after a transaction.
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/h.md"),
-            title: "H",
             children: [
                 .heading(level: .h1, text: AttributedString("Title")),
                 .paragraph(text: AttributedString("body"))

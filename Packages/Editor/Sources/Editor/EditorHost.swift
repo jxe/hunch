@@ -58,8 +58,10 @@ public protocol EditorHost: AnyObject {
 
     /// Absorb a subpage's content into its parent (Turn Into a non-page block):
     /// the editor inlines the loaded blocks at the subpage row's position and
-    /// the host trashes the original file. Returns `true` if the host trashed it.
-    func onAbsorbSubpage(_ pageID: String) -> Bool
+    /// the host trashes the original file. Returns `true` if the host trashed
+    /// the file. Async so the inline-then-trash sequence runs in real order
+    /// (the host needs to force-save the parent before deleting the source).
+    func onAbsorbSubpage(_ pageID: String) async -> Bool
 
     /// Append blocks to the end of the page at `pageID`. Returns `true` on
     /// success. Used by drop-on-subpage to move dragged blocks into a child page.
@@ -94,8 +96,9 @@ public protocol EditorHost: AnyObject {
     func purgeAtomicHash(_ hash: String)
 
     /// Editor lost focus (focus left an active text editor). Host force-saves so
-    /// user input doesn't sit in memory until app suspension.
-    func onBlur()
+    /// user input doesn't sit in memory until app suspension. Async so callers
+    /// in scene-phase / focus-loss handlers can await durability where it matters.
+    func onBlur() async
 
     /// Serialize blocks into a string the editor will write to the system
     /// pasteboard on copy/cut. Host chooses the format (markdown, plain text).

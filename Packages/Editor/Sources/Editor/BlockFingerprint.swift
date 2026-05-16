@@ -1,29 +1,41 @@
 import Foundation
 import CryptoKit
 
-/// Stable content-identity for a block. `BlockID` is a fresh UUID on every parse, so
-/// it can't be used to ask "is this the same logical block as one in the previous
-/// parse?" — fingerprinting builds a canonical string from the block's kind and
-/// content, then SHA-256s it down to a 64-bit hex string.
+/// Stable content-identity for a block. `BlockID` is a fresh UUID on every parse,
+/// so it can't be used to ask "is this the same logical block as one in the
+/// previous parse?" — the hashes below build a canonical string from the block's
+/// kind and content, then SHA-256 it.
 ///
-/// Equal fingerprints ⇒ blocks are content-equivalent (modulo `BlockID` and tree
+/// Equal hashes ⇒ blocks are content-equivalent (modulo `BlockID` and tree
 /// position). Depth is structural rather than content, so it's intentionally NOT
 /// included — moving a paragraph up an indent level shouldn't change its identity.
-public enum BlockFingerprint {
-    public static func compute(_ block: Block) -> String {
-        let digest = sha256(block)
-        // Take the first 8 bytes → 16 hex chars → 64-bit identity. Plenty of entropy
-        // for at most a few hundred records per page.
-        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+public extension Block {
+    /// Full SHA-256 hex of the block's canonical content — used as the on-disk
+    /// identity for a block in the recovery log (`h` field).
+    var atomicHash: String {
+        BlockHashing.sha256(self).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Full SHA-256 hex of the same canonical content `compute` hashes — used as
-    /// the on-disk identity for a block in the recovery log (`h` field).
-    public static func atomicHash(_ block: Block) -> String {
-        sha256(block).map { String(format: "%02x", $0) }.joined()
+    /// 16-char prefix of `atomicHash` — 64 bits of identity, enough for the
+    /// few-hundred-records-per-page scale we hash at.
+    var fingerprint: String {
+        BlockHashing.sha256(self).prefix(8).map { String(format: "%02x", $0) }.joined()
     }
+}
 
-    private static func sha256(_ block: Block) -> SHA256.Digest {
+public extension Document {
+    /// Collect the atomic hashes of every block in the document (preorder).
+    /// Used by save / conflict / recovery paths to compare against on-disk
+    /// state without re-walking the tree at each call site.
+    func atomicHashSet() -> Set<String> {
+        var out: Set<String> = []
+        walk { block, _, _ in out.insert(block.atomicHash) }
+        return out
+    }
+}
+
+enum BlockHashing {
+    static func sha256(_ block: Block) -> SHA256.Digest {
         SHA256.hash(data: Data(canonicalString(block).utf8))
     }
 

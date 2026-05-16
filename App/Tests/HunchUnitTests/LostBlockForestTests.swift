@@ -17,8 +17,8 @@ struct LostBlockForestTests {
         recordedAt: Date = Date(timeIntervalSince1970: 0)
     ) -> LostBlock {
         LostBlock.adapt(
-            hash: BlockFingerprint.atomicHash(block),
-            parentHash: parent.map { BlockFingerprint.atomicHash($0) },
+            hash: block.atomicHash,
+            parentHash: parent?.atomicHash,
             markdown: BlockSerializer.serializeAtomic(block),
             source: source,
             recordedAt: recordedAt
@@ -55,7 +55,7 @@ struct LostBlockForestTests {
         let roots = LostBlockForest.assemble(records)
         #expect(roots.count == 1)
         let root = try! #require(roots.first)
-        #expect(root.lost.hash == BlockFingerprint.atomicHash(parent))
+        #expect(root.lost.hash == parent.atomicHash)
         #expect(root.block.children.count == 1)
         #expect(root.hashes.count == 2)
     }
@@ -87,10 +87,10 @@ struct LostBlockForestTests {
         let roots = LostBlockForest.assemble(records)
         #expect(roots.count == 1)
         let root = try! #require(roots.first)
-        #expect(root.lost.hash == BlockFingerprint.atomicHash(orphan))
+        #expect(root.lost.hash == orphan.atomicHash)
         // Its `parentHash` is preserved on the root so the caller can resolve
         // to the live ancestor.
-        #expect(root.lost.parentHash == BlockFingerprint.atomicHash(livingParent))
+        #expect(root.lost.parentHash == livingParent.atomicHash)
     }
 
     @Test func cycleDoesNotInfiniteRecurse() {
@@ -100,15 +100,15 @@ struct LostBlockForestTests {
         // practice but corrupt logs are a possibility).
         let records = [
             LostBlock.adapt(
-                hash: BlockFingerprint.atomicHash(a),
-                parentHash: BlockFingerprint.atomicHash(b),
+                hash: a.atomicHash,
+                parentHash: b.atomicHash,
                 markdown: BlockSerializer.serializeAtomic(a),
                 source: "p.md",
                 recordedAt: Date(timeIntervalSince1970: 1)
             ),
             LostBlock.adapt(
-                hash: BlockFingerprint.atomicHash(b),
-                parentHash: BlockFingerprint.atomicHash(a),
+                hash: b.atomicHash,
+                parentHash: a.atomicHash,
                 markdown: BlockSerializer.serializeAtomic(b),
                 source: "p.md",
                 recordedAt: Date(timeIntervalSince1970: 2)
@@ -158,7 +158,7 @@ struct LostBlockForestTests {
         ]
         let roots = LostBlockForest.assemble(records)
         #expect(roots.count == 1)
-        #expect(roots.first?.lost.hash == BlockFingerprint.atomicHash(a))
+        #expect(roots.first?.lost.hash == a.atomicHash)
     }
 
     @Test func rootedAtReturnsJustThatSubtree() {
@@ -172,9 +172,9 @@ struct LostBlockForestTests {
             makeRecord(p, parent: h2, recordedAt: Date(timeIntervalSince1970: 3)),
             makeRecord(unrelated, recordedAt: Date(timeIntervalSince1970: 4)),
         ]
-        let root = try! #require(LostBlockForest.assemble(records, rootedAt: BlockFingerprint.atomicHash(h1)))
+        let root = try! #require(LostBlockForest.assemble(records, rootedAt: h1.atomicHash))
         #expect(root.hashes.count == 3)
-        #expect(!root.hashes.contains(BlockFingerprint.atomicHash(unrelated)))
+        #expect(!root.hashes.contains(unrelated.atomicHash))
     }
 
     @Test func rootedAtUnknownHashReturnsNil() {

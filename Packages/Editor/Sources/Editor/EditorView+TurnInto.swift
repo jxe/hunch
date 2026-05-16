@@ -277,9 +277,13 @@ extension EditorView {
         // Trash the source AFTER the mutation. The host force-saves the parent
         // doc before trashing, so a crash here leaves only a recoverable
         // duplicate (file still in workspace, bullet on disk) rather than data
-        // loss (file gone, bullet never persisted).
-        if !host.onAbsorbSubpage(path) {
-            Diag.subpage.error("convertSubpage: onAbsorbSubpage failed after mutation — orphan file at \(path, privacy: .public)")
+        // loss (file gone, bullet never persisted). Spawn a Task so the sync
+        // key-handler returns immediately — the host genuinely awaits the save
+        // now, so the error log fires only on real failure.
+        Task { @MainActor [host] in
+            if !(await host.onAbsorbSubpage(path)) {
+                Diag.subpage.error("convertSubpage: onAbsorbSubpage failed after mutation — orphan file at \(path, privacy: .public)")
+            }
         }
         if target == .toggle {
             state.expandedToggles.insert(blockID)

@@ -32,7 +32,7 @@ struct EditorViewPurgeDiffTests {
         let keep = block("keep")
         let drop = block("drop")
         let preByID = EditorView.idToAtomicHash([keep, drop])
-        let dropHash = BlockFingerprint.atomicHash(drop)
+        let dropHash = drop.atomicHash
         let removed = EditorView.removedHashes(preByID: preByID, post: [keep])
         #expect(removed == [dropHash])
     }
@@ -44,9 +44,9 @@ struct EditorViewPurgeDiffTests {
         let preByID = EditorView.idToAtomicHash([parent])
         let removed = Set(EditorView.removedHashes(preByID: preByID, post: []))
         #expect(removed == Set([
-            BlockFingerprint.atomicHash(parent),
-            BlockFingerprint.atomicHash(leaf1),
-            BlockFingerprint.atomicHash(leaf2)
+            parent.atomicHash,
+            leaf1.atomicHash,
+            leaf2.atomicHash
         ]), "removing a subtree purges every descendant hash")
     }
 
@@ -59,7 +59,7 @@ struct EditorViewPurgeDiffTests {
         let newBlock = block("after")
         let preByID = EditorView.idToAtomicHash([oldBlock])
         let removed = EditorView.removedHashes(preByID: preByID, post: [newBlock])
-        #expect(removed == [BlockFingerprint.atomicHash(oldBlock)])
+        #expect(removed == [oldBlock.atomicHash])
     }
 
     @Test func reorderingProducesNoPurges() {

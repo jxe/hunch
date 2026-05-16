@@ -14,7 +14,6 @@ struct DocumentSaveCoordinatorTests {
     private func makeDoc(url: URL, body: String) -> Document {
         Document(
             url: url,
-            title: "T",
             children: [.paragraph(text: AttributedString(body))]
         )
     }
@@ -79,7 +78,7 @@ struct DocumentSaveCoordinatorTests {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let doc = Document(url: url, title: "T", children: [
+        let doc = Document(url: url, children: [
             .heading(level: .h1, text: AttributedString("Title"), children: [
                 .paragraph(text: AttributedString("Body.")),
                 .bullet(text: AttributedString("one"), children: [

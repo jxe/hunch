@@ -87,8 +87,8 @@ struct RecoveryLogTests {
         // To assert the parent header was written, we check the file contents.
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         let text = try String(contentsOf: url, encoding: .utf8)
-        let toggleHash = BlockFingerprint.atomicHash(toggle)
-        let childHash = BlockFingerprint.atomicHash(child)
+        let toggleHash = toggle.atomicHash
+        let childHash = child.atomicHash
         #expect(text.contains("\"h\":\"\(toggleHash)\""))
         #expect(text.contains("\"h\":\"\(childHash)\""))
         #expect(text.contains("\"p\":\"\(toggleHash)\""))   // child's parent is toggle
@@ -108,19 +108,19 @@ struct RecoveryLogTests {
 
         let lose = Block.paragraph(text: attr("Lose"))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
+            url: url,
             children: [Block.paragraph(text: attr("Keep")), lose],
             modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
 
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
+            url: url,
             children: [Block.paragraph(text: attr("Keep"))],
             modificationDate: nil
         ))
         // The editor would call `purgeHash` for the removed block — simulate it.
-        try await clamshell.purgeHash(BlockFingerprint.atomicHash(lose), in: "p.md")
+        try await clamshell.purgeHash(lose.atomicHash, in: "p.md")
         try await Task.sleep(for: .milliseconds(80))
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
@@ -138,7 +138,7 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
+            url: url,
             children: [
                 Block.paragraph(text: attr("Keep")),
                 Block.paragraph(text: attr("Lose"))
@@ -169,13 +169,13 @@ struct RecoveryLogTests {
 
         let ghost = Block.paragraph(text: attr("ghost"))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [ghost], modificationDate: nil
+            url: url, children: [ghost], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [], modificationDate: nil
+            url: url, children: [], modificationDate: nil
         ))
-        try await clamshell.purgeHash(BlockFingerprint.atomicHash(ghost), in: "p.md")
+        try await clamshell.purgeHash(ghost.atomicHash, in: "p.md")
         try await Task.sleep(for: .milliseconds(80))
 
         // Intermediate: explicitly purged, so nothing is "lost".
@@ -186,7 +186,7 @@ struct RecoveryLogTests {
         // through a millisecond boundary so latest-wins picks the new add.
         try await Task.sleep(for: .milliseconds(20))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
+            url: url,
             children: [Block.paragraph(text: attr("ghost"))],
             modificationDate: nil
         ))
@@ -211,12 +211,12 @@ struct RecoveryLogTests {
         let body = Block.paragraph(text: attr("inside"))
         let toggle = Block.toggle(title: attr("Outer"), children: [body])
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [toggle], modificationDate: nil
+            url: url, children: [toggle], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
 
-        let toggleHash = BlockFingerprint.atomicHash(toggle)
-        let bodyHash = BlockFingerprint.atomicHash(body)
+        let toggleHash = toggle.atomicHash
+        let bodyHash = body.atomicHash
         let recorded = await clamshell.parentHash(forPage: "p.md", hash: bodyHash)
         #expect(recorded == toggleHash)
     }
@@ -233,12 +233,12 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [], modificationDate: nil
+            url: url, children: [], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
 
         let foreignBlock = Block.paragraph(text: attr("ghost"))
-        let h = BlockFingerprint.atomicHash(foreignBlock)
+        let h = foreignBlock.atomicHash
         let m = BlockSerializer.serializeAtomic(foreignBlock)
         let escaped = m
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -268,13 +268,13 @@ struct RecoveryLogTests {
 
         // Plant an empty live page so the live-set check excludes nothing.
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [], modificationDate: nil
+            url: url, children: [], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
 
         // Hand-write a foreign device's log entry.
         let foreignBlock = Block.paragraph(text: attr("from another device"))
-        let h = BlockFingerprint.atomicHash(foreignBlock)
+        let h = foreignBlock.atomicHash
         let m = BlockSerializer.serializeAtomic(foreignBlock)
         let escaped = m
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -300,7 +300,7 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
+            url: url,
             children: [Block.paragraph(text: attr("alive"))],
             modificationDate: nil
         ))
@@ -337,7 +337,7 @@ struct RecoveryLogTests {
         try await log.record(
             page: "p.md",
             blocks: [],
-            removing: [BlockFingerprint.atomicHash(block)]
+            removing: [block.atomicHash]
         )
         try await Task.sleep(for: .milliseconds(2))
         try await log.record(page: "p.md", blocks: [block])
@@ -349,7 +349,7 @@ struct RecoveryLogTests {
             .write(to: root.appendingPathComponent("p.md"), atomically: true, encoding: .utf8)
 
         let lost = await log.enumerate(page: "p.md")
-        #expect(lost.contains(where: { $0.hash == BlockFingerprint.atomicHash(block) }) == false)
+        #expect(lost.contains(where: { $0.hash == block.atomicHash }) == false)
     }
 
     @MainActor
@@ -384,18 +384,18 @@ struct RecoveryLogTests {
 
         let lose = Block.paragraph(text: attr("Lose"))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
+            url: url,
             children: [Block.paragraph(text: attr("Keep")), lose],
             modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
 
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
+            url: url,
             children: [Block.paragraph(text: attr("Keep"))],
             modificationDate: nil
         ))
-        try await clamshell.purgeHash(BlockFingerprint.atomicHash(lose), in: "p.md")
+        try await clamshell.purgeHash(lose.atomicHash, in: "p.md")
         try await Task.sleep(for: .milliseconds(80))
 
         let purged = await clamshell.listPurgedBlocks(
@@ -417,7 +417,7 @@ struct RecoveryLogTests {
 
         // Plant an ancient purge by hand-writing the log.
         let block = Block.paragraph(text: attr("ancient"))
-        let h = BlockFingerprint.atomicHash(block)
+        let h = block.atomicHash
         let m = BlockSerializer.serializeAtomic(block)
         let escaped = m
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -434,7 +434,7 @@ struct RecoveryLogTests {
 
         // Plant the live .md so it's a valid scan target.
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [], modificationDate: nil
+            url: url, children: [], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
 
@@ -460,19 +460,19 @@ struct RecoveryLogTests {
 
         let block = Block.paragraph(text: attr("phoenix"))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [block], modificationDate: nil
+            url: url, children: [block], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [], modificationDate: nil
+            url: url, children: [], modificationDate: nil
         ))
-        try await clamshell.purgeHash(BlockFingerprint.atomicHash(block), in: "p.md")
+        try await clamshell.purgeHash(block.atomicHash, in: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         // External writer brings the hash back into the log via a foreign
         // device's add with a counter strictly greater than anything our
         // device has minted on this page.
-        let h = BlockFingerprint.atomicHash(block)
+        let h = block.atomicHash
         let m = BlockSerializer.serializeAtomic(block)
         let escaped = m
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -500,15 +500,15 @@ struct RecoveryLogTests {
 
         let doomed = Block.paragraph(text: attr("doomed"))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
+            url: url,
             children: [doomed],
             modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [], modificationDate: nil
+            url: url, children: [], modificationDate: nil
         ))
-        try await clamshell.purgeHash(BlockFingerprint.atomicHash(doomed), in: "p.md")
+        try await clamshell.purgeHash(doomed.atomicHash, in: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         // It's now purged.
@@ -578,17 +578,17 @@ struct RecoveryLogTests {
 
         let block = Block.paragraph(text: attr("phoenix"))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [block], modificationDate: nil
+            url: url, children: [block], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [], modificationDate: nil
+            url: url, children: [], modificationDate: nil
         ))
-        try await clamshell.purgeHash(BlockFingerprint.atomicHash(block), in: "p.md")
+        try await clamshell.purgeHash(block.atomicHash, in: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         // Foreign device: counter 9999 but wall-clock 100s in the *past*.
-        let h = BlockFingerprint.atomicHash(block)
+        let h = block.atomicHash
         let m = BlockSerializer.serializeAtomic(block)
         let escaped = m
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -617,13 +617,13 @@ struct RecoveryLogTests {
 
         // Seed with an empty live page so the live-set excludes nothing.
         try clamshell.writeImmediately(Document(
-            url: url, title: "p", children: [], modificationDate: nil
+            url: url, children: [], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
 
         // Plant a legacy add with t = far future (no `c` field).
         let block = Block.paragraph(text: attr("legacy-ghost"))
-        let h = BlockFingerprint.atomicHash(block)
+        let h = block.atomicHash
         let m = BlockSerializer.serializeAtomic(block)
         let escaped = m
             .replacingOccurrences(of: "\\", with: "\\\\")

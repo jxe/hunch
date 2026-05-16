@@ -373,7 +373,7 @@ public struct EditorView: View {
             // which `handleModeChange` already wires to onBlur.
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
-                    host.onBlur()
+                    Task { @MainActor [host] in await host.onBlur() }
                 }
             }
             #endif
@@ -979,7 +979,7 @@ public struct EditorView: View {
 
     private static func collectIDHashes(_ blocks: [Block], into out: inout [BlockID: String]) {
         for block in blocks {
-            out[block.id] = BlockFingerprint.atomicHash(block)
+            out[block.id] = block.atomicHash
             collectIDHashes(block.children, into: &out)
         }
     }
@@ -1111,7 +1111,7 @@ public struct EditorView: View {
             // re-grabbing every time would steal focus from menus and sheets.
             if wasEditing {
                 forcePageFocusGrab()
-                host.onBlur()
+                Task { @MainActor [host] in await host.onBlur() }
             }
         }
 

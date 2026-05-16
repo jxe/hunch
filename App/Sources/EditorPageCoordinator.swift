@@ -48,7 +48,7 @@ final class EditorPageCoordinator: EditorHost {
         workspace.loadSubpage(relativePath: pageID)
     }
 
-    func onAbsorbSubpage(_ pageID: String) -> Bool {
+    func onAbsorbSubpage(_ pageID: String) async -> Bool {
         // The editor calls this immediately after the inline-content mutation
         // and relies on the host to durably persist the parent doc before the
         // source file is trashed. Without the force-save here, the autosave is
@@ -57,15 +57,11 @@ final class EditorPageCoordinator: EditorHost {
         guard let clamshell = workspace.clamshell else { return false }
         let target = clamshell.url(for: pageID)
         guard FileManager.default.fileExists(atPath: target.path) else { return false }
-        Task { @MainActor [window, workspace] in
-            let saved = await window.saveNow(force: true)
-            guard saved else {
-                Diag.subpage.error("onAbsorbSubpage: force-save failed; skipping trash of \(pageID, privacy: .public) to avoid data loss")
-                return
-            }
-            workspace.moveSubpageToTrash(relativePath: pageID)
+        guard await window.saveNow(force: true) else {
+            Diag.subpage.error("onAbsorbSubpage: force-save failed; skipping trash of \(pageID, privacy: .public) to avoid data loss")
+            return false
         }
-        return true
+        return workspace.moveSubpageToTrash(relativePath: pageID)
     }
 
     func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) -> Bool {
@@ -90,8 +86,8 @@ final class EditorPageCoordinator: EditorHost {
         Task { try? await clamshell.purgeHash(hash, in: rel) }
     }
 
-    func onBlur() {
-        Task { await window.saveNow() }
+    func onBlur() async {
+        await window.saveNow()
     }
 
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {

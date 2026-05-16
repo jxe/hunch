@@ -107,7 +107,7 @@ public actor RecoveryLog {
         into out: inout [Wire]
     ) {
         for block in blocks {
-            let h = BlockFingerprint.atomicHash(block)
+            let h = block.atomicHash
             if known.insert(h).inserted {
                 out.append(Wire(
                     op: "add",
@@ -241,7 +241,7 @@ public actor RecoveryLog {
     public func reAdd(page rel: String, block: Block, parentHash: String?) throws {
         var known = try ensureDeviceHashesLoaded(for: rel)
         let counter = try ensureCounterLoaded(for: rel)
-        let h = BlockFingerprint.atomicHash(block)
+        let h = block.atomicHash
         let record = Wire(
             op: "add",
             h: h,
@@ -497,7 +497,7 @@ public actor RecoveryLog {
 
     nonisolated private static func collectAtomicHashes(_ blocks: [Block], into out: inout Set<String>) {
         for block in blocks {
-            out.insert(BlockFingerprint.atomicHash(block))
+            out.insert(block.atomicHash)
             collectAtomicHashes(block.children, into: &out)
         }
     }

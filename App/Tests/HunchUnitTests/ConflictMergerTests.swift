@@ -6,7 +6,7 @@ import Editor
 @Suite("ConflictMerger") @MainActor
 struct ConflictMergerTests {
     private func hash(_ block: Block) -> String {
-        BlockFingerprint.atomicHash(block)
+        block.atomicHash
     }
 
     private func hashes(_ blocks: [Block]) -> Set<String> {
@@ -94,7 +94,7 @@ struct ConflictMergerTests {
         #expect(Set(result.salvagedHashes) == [hash(leaf)])
         // Find leaf in merged tree and check its parent is aliveAncestor.
         var leafParent: BlockID?
-        let doc = Document(url: URL(fileURLWithPath: "/x"), title: "", children: result.merged)
+        let doc = Document(url: URL(fileURLWithPath: "/x"), children: result.merged)
         doc.walk { block, _, parent in
             if hash(block) == hash(leaf) { leafParent = parent }
         }
@@ -151,7 +151,7 @@ struct ConflictMergerTests {
         )
 
         #expect(Set(result.salvagedHashes) == [hash(x)])
-        let doc = Document(url: URL(fileURLWithPath: "/x"), title: "", children: result.merged)
+        let doc = Document(url: URL(fileURLWithPath: "/x"), children: result.merged)
         var xParentHash: String?
         doc.walk { block, _, parent in
             guard hash(block) == hash(x), let parentID = parent else { return }
@@ -172,7 +172,7 @@ struct ConflictMergerTests {
         )
 
         var newTopParent: BlockID?
-        let doc = Document(url: URL(fileURLWithPath: "/x"), title: "", children: result.merged)
+        let doc = Document(url: URL(fileURLWithPath: "/x"), children: result.merged)
         doc.walk { block, _, parent in
             if hash(block) == hash(newTop) { newTopParent = parent }
         }

@@ -423,23 +423,12 @@ final class Workspace {
 
     @discardableResult
     func refreshTitleCache(from document: Document) -> Bool {
-        let updated = documentWithCurrentTitle(document)
-        let previous = titleCache[updated.url]
-        let titleChanged = previous?.title != updated.title
-        if titleChanged || previous?.modificationDate != updated.modificationDate {
-            titleCache[updated.url] = CachedTitle(title: updated.title, modificationDate: updated.modificationDate)
+        let previous = titleCache[document.url]
+        let titleChanged = previous?.title != document.title
+        if titleChanged || previous?.modificationDate != document.modificationDate {
+            titleCache[document.url] = CachedTitle(title: document.title, modificationDate: document.modificationDate)
         }
         return titleChanged
-    }
-
-    @discardableResult
-    private func documentWithCurrentTitle(_ document: Document) -> Document {
-        let fallback = document.url.deletingPathExtension().lastPathComponent
-        let derived = Document.deriveTitle(from: document.children, fallback: fallback)
-        if document.title != derived {
-            document.title = derived
-        }
-        return document
     }
 
     private func refreshTitlesInBackground(for scanned: [WorkspaceEntry], workspaceURL: URL) {
@@ -537,7 +526,6 @@ final class Workspace {
             // Re-fold so the appended blocks land inside any heading that
             // was at the end of the page, not as siblings of it.
             doc.enforceHeadingContainment()
-            doc.title = Document.deriveTitle(from: doc.children, fallback: target.deletingPathExtension().lastPathComponent)
             try clamshell.writeImmediately(doc, resolvingSubpageTitle: saveTitleResolver())
             doc.modificationDate = modificationDate(for: target)
             // Seed history with the new on-disk text.

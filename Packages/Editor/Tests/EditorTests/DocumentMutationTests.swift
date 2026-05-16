@@ -13,7 +13,6 @@ struct DocumentMutationTests {
     private func makeDoc() -> Document {
         Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [
                 .paragraph(text: AttributedString("first")),
                 .bullet(text: AttributedString("a"), children: [
@@ -137,7 +136,6 @@ struct DocumentMutationTests {
         let trailing = Block.paragraph(text: AttributedString("after"))
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [heading, trailing]
         )
 
@@ -155,7 +153,6 @@ struct DocumentMutationTests {
         let outer = Block.toggle(title: AttributedString("outer"), children: [inner])
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [outer]
         )
 
@@ -200,7 +197,6 @@ struct DocumentMutationTests {
     @Test func canIndentReturnsTrueWhenPreviousSiblingExists() {
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [
                 .bullet(text: AttributedString("first")),
                 .bullet(text: AttributedString("second"))
@@ -217,7 +213,6 @@ struct DocumentMutationTests {
     @Test func indentReparentsToPreviousSibling() {
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [
                 .bullet(text: AttributedString("first")),
                 .bullet(text: AttributedString("second"))
@@ -252,7 +247,6 @@ struct DocumentMutationTests {
     @Test func canDropRefusesHeadingIntoSameLevelHeadingChildren() {
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [
                 .heading(level: .h2, text: AttributedString("Outer"))
             ]
@@ -268,7 +262,6 @@ struct DocumentMutationTests {
     @Test func moveSubtreesShiftsTopLevel() {
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [
                 .paragraph(text: AttributedString("a")),
                 .paragraph(text: AttributedString("b")),
@@ -294,7 +287,6 @@ struct DocumentMutationTests {
         // Slide-down y from end of A → first child of B.
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [
                 .bullet(text: AttributedString("A"), children: [
                     .bullet(text: AttributedString("x")),
@@ -317,7 +309,6 @@ struct DocumentMutationTests {
         // Slide-up y from top of B → last child of A.
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [
                 .bullet(text: AttributedString("A"), children: [
                     .bullet(text: AttributedString("x"))
@@ -341,7 +332,6 @@ struct DocumentMutationTests {
         // to outdent: x becomes a top-level sibling between A and P.
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [
                 .bullet(text: AttributedString("A"), children: [
                     .bullet(text: AttributedString("x"))
@@ -430,7 +420,6 @@ struct DocumentMutationTests {
         let (head, _) = sliceMimickingSplit(attr, at: attr.characters.count)
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
-            title: "Test",
             children: [.paragraph(text: attr)]
         )
         let id = doc.children[0].id

@@ -110,10 +110,8 @@ public final class Clamshell {
     public func loadDocumentAndRawText(at url: URL) throws -> (Document, String) {
         let raw = try files.read(url)
         let blocks = BlockParser.parse(raw)
-        let fallbackTitle = url.deletingPathExtension().lastPathComponent
-        let title = Document.deriveTitle(from: blocks, fallback: fallbackTitle)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        return (Document(url: url, title: title, children: blocks, modificationDate: mtime), raw)
+        return (Document(url: url, children: blocks, modificationDate: mtime), raw)
     }
 
     /// Read the raw bytes on disk without parsing — used for hashing into
@@ -138,34 +136,39 @@ public final class Clamshell {
     /// mutation site for blocks the user removes, so the save path stays
     /// purely observational.
     @MainActor
+    @discardableResult
     public func save(
         _ document: Document,
         resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
-    ) async throws {
+    ) async throws -> String {
         let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: titleForPath)
         let url = document.url
         let rel = relativePath(of: url)
         let blocks = document.children
         try await saver.save(url: url, contents: newText)
         scheduleRecord(rel: rel, blocks: blocks)
+        return newText
     }
 
     /// Synchronous full write — bypasses the coalescer. For modifications-as-a-unit
     /// (trashing a dirty open doc, appending to a subpage, restoring a lost block)
     /// where the doc must be on disk before the next operation runs. Also schedules
     /// a recovery-log append for any new atomic block content this device hasn't
-    /// seen before.
+    /// seen before. Returns the serialized text so callers can reuse it (e.g.
+    /// to seed `diskHistory`) without re-running the serializer.
     @MainActor
+    @discardableResult
     public func writeImmediately(
         _ document: Document,
         resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
-    ) throws {
+    ) throws -> String {
         let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: titleForPath)
         let url = document.url
         let rel = relativePath(of: url)
         let blocks = document.children
         try files.write(newText, to: url)
         scheduleRecord(rel: rel, blocks: blocks)
+        return newText
     }
 
     /// Awaits any in-flight + pending save for the URL.
@@ -198,7 +201,7 @@ public final class Clamshell {
 
     private static func collect(_ blocks: [Block], into out: inout Set<String>) {
         for block in blocks {
-            out.insert(BlockFingerprint.atomicHash(block))
+            out.insert(block.atomicHash)
             collect(block.children, into: &out)
         }
     }
@@ -260,14 +263,11 @@ public final class Clamshell {
             return 0
         }
 
-        let fallbackTitle = url.deletingPathExtension().lastPathComponent
-        let mergedTitle = Document.deriveTitle(from: result.merged, fallback: fallbackTitle)
-        let merged = Document(url: url, title: mergedTitle, children: result.merged)
+        let merged = Document(url: url, children: result.merged)
         try writeImmediately(merged, resolvingSubpageTitle: titleForPath)
 
         if let doc {
             doc.children = result.merged
-            doc.title = mergedTitle
         }
 
         Clamshell.markAlternatesResolved(alternates)

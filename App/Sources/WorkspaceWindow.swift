@@ -162,10 +162,7 @@ final class WorkspaceWindow {
               let clamshell = workspace.clamshell else { return true }
         do {
             let resolver = workspace.saveTitleResolver()
-            // Re-serialize locally so we can record the post-save hash. The
-            // coordinator serializes its own copy too — acceptable double-work.
-            let serialized = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: resolver)
-            try await clamshell.save(doc, resolvingSubpageTitle: resolver)
+            let serialized = try await clamshell.save(doc, resolvingSubpageTitle: resolver)
             workspace.recordDiskText(serialized, for: doc.url)
             if openDocument?.url == doc.url {
                 openDocument?.modificationDate = workspace.modificationDate(for: doc.url)
@@ -231,27 +228,13 @@ final class WorkspaceWindow {
     }
 
     func updateDocumentForPage(_ document: Document) {
-        let updated = documentWithCurrentTitle(document)
-        if documentCache[updated.url] !== updated {
-            documentCache[updated.url] = updated
+        if documentCache[document.url] !== document {
+            documentCache[document.url] = document
         }
-        workspace.refreshTitleCache(from: updated)
-        if openDocument?.url == updated.url, openDocument !== updated {
-            openDocument = updated
+        workspace.refreshTitleCache(from: document)
+        if openDocument?.url == document.url, openDocument !== document {
+            openDocument = document
         }
-    }
-
-    /// Refresh the document's title from its current top-level H1. Document
-    /// is a class so this mutates in place; returns the same reference for
-    /// call-site readability (`let updated = documentWithCurrentTitle(...)`).
-    @discardableResult
-    private func documentWithCurrentTitle(_ document: Document) -> Document {
-        let fallback = document.url.deletingPathExtension().lastPathComponent
-        let derived = Document.deriveTitle(from: document.children, fallback: fallback)
-        if document.title != derived {
-            document.title = derived
-        }
-        return document
     }
 
     // MARK: - Save lifecycle (thin façade over DocumentSaveSession)
@@ -383,10 +366,6 @@ final class WorkspaceWindow {
         }
         guard restored > 0 else { return }
         doc.enforceHeadingContainment()
-        doc.title = Document.deriveTitle(
-            from: doc.children,
-            fallback: url.deletingPathExtension().lastPathComponent
-        )
         cacheOpenDocument()
         markEdited()
         let noun = restored == 1 ? "block" : "blocks"
@@ -446,7 +425,6 @@ final class WorkspaceWindow {
             // Restored blocks may have inserted as siblings of headings; fold
             // them in so the recovered shape matches the rest of the doc.
             doc.enforceHeadingContainment()
-            doc.title = Document.deriveTitle(from: doc.children, fallback: target.deletingPathExtension().lastPathComponent)
 
             if useLiveDoc {
                 openDocument = doc
@@ -547,7 +525,6 @@ final class WorkspaceWindow {
             doc.insertSubtrees([restored], at: DropPath(parent: parentID, position: siblings.count))
 
             doc.enforceHeadingContainment()
-            doc.title = Document.deriveTitle(from: doc.children, fallback: target.deletingPathExtension().lastPathComponent)
 
             // Unpurge each restored hash BEFORE the save so the save's
             // auto-tombstone diff sees them as already-recorded (in the
@@ -606,7 +583,7 @@ final class WorkspaceWindow {
     private func findAtomicHash(_ hash: String, in doc: Document) -> BlockID? {
         var match: BlockID?
         doc.walk { block, _, _ in
-            if match == nil, BlockFingerprint.atomicHash(block) == hash {
+            if match == nil, block.atomicHash == hash {
                 match = block.id
             }
         }

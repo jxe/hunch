@@ -27,13 +27,19 @@ public struct DropPath: Hashable, Sendable {
 @Observable @MainActor
 public final class Document: @MainActor Identifiable {
     public let url: URL
-    public var title: String
     public var children: [Block] {
         didSet { _parentCache = nil }
     }
     public var modificationDate: Date?
 
     public var id: URL { url }
+
+    /// Derived from `children` (first top-level H1) with the URL's filename
+    /// (sans extension) as fallback. Single source of truth — no separate
+    /// stored field, no risk of drift after children mutate.
+    public var title: String {
+        Document.deriveTitle(from: children, fallback: url.deletingPathExtension().lastPathComponent)
+    }
 
     @ObservationIgnored
     private var _parentCache: [BlockID: BlockID]?
@@ -83,9 +89,8 @@ public final class Document: @MainActor Identifiable {
     @ObservationIgnored
     private var inTransaction: Bool = false
 
-    public init(url: URL, title: String, children: [Block], modificationDate: Date? = nil) {
+    public init(url: URL, children: [Block], modificationDate: Date? = nil) {
         self.url = url
-        self.title = title
         self.children = children
         self.modificationDate = modificationDate
     }

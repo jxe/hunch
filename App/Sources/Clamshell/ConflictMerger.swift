@@ -32,7 +32,6 @@ enum ConflictMerger {
 
         let doc = Document(
             url: URL(fileURLWithPath: "/conflict-merge"),
-            title: "",
             children: survivor
         )
 
@@ -68,7 +67,7 @@ enum ConflictMerger {
         salvaged: inout [String]
     ) {
         for block in blocks {
-            let hash = BlockFingerprint.atomicHash(block)
+            let hash = block.atomicHash
             if liveHashes.contains(hash) {
                 walk(
                     blocks: block.children,
@@ -142,14 +141,14 @@ enum ConflictMerger {
 
     private static func collectAtomicHashes(_ blocks: [Block], into out: inout Set<String>) {
         for block in blocks {
-            out.insert(BlockFingerprint.atomicHash(block))
+            out.insert(block.atomicHash)
             collectAtomicHashes(block.children, into: &out)
         }
     }
 
     private static func rebuildHashToID(_ blocks: [Block], into map: inout [String: BlockID]) {
         for block in blocks {
-            map[BlockFingerprint.atomicHash(block)] = block.id
+            map[block.atomicHash] = block.id
             rebuildHashToID(block.children, into: &map)
         }
     }

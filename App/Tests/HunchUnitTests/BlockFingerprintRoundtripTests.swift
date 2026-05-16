@@ -28,8 +28,8 @@ struct BlockFingerprintRoundtripTests {
         #expect(reparsed.count == 1,
                 "[\(name)] expected exactly one block after re-parse, got \(reparsed.count). Serialized:\n\(serialized)")
         guard let first = reparsed.first else { return }
-        let originalHash = BlockFingerprint.atomicHash(block)
-        let reparsedHash = BlockFingerprint.atomicHash(first)
+        let originalHash = block.atomicHash
+        let reparsedHash = first.atomicHash
         #expect(originalHash == reparsedHash,
                 "[\(name)] hash drift on round-trip. Serialized:\n\(serialized)\nOriginal kind: \(block.kind)\nReparsed kind: \(first.kind)")
     }
