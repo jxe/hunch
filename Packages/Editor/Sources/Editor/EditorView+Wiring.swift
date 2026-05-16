@@ -8,17 +8,16 @@ import AppKit
 // EditorView holds two `@State`-owned reference types — `editorCommands`
 // (an `EditorCommands` whose `perform` / `can` closures the menu and
 // keyboard handlers call) and `undoController` (a `DocumentUndoController`
-// whose `apply` / `applyTextChange` closures the undo manager calls on
-// Cmd-Z / redo). Both are installed once on first appear.
+// that owns the shared `UndoManager`). Both are installed once on first appear.
 //
-// The closures capture the View struct by value, so they capture the
-// underlying `Document` and `EditorState` references. Reads happen at
-// fire time, so a captured-state closure that runs after the user has
-// edited still sees fresh model state.
+// The hooks `installUndoApply` wires onto `Document` (preMutation,
+// didApplyUndo) capture the View struct by value, so they capture the
+// underlying `Document` and `EditorState` references. Reads happen at fire
+// time, so a captured-state closure that runs after the user has edited
+// still sees fresh model state.
 //
 // Wiring lives in this file so `EditorView.swift` doesn't carry a
-// 100-line setter assignment block in `onAppear`. Step 5 expands the
-// EditorCommands surface and routes nav-mode keys through it.
+// 100-line setter assignment block in `onAppear`.
 
 extension EditorView {
     /// Install `editorCommands.perform` / `editorCommands.can`. Called once
@@ -159,33 +158,31 @@ extension EditorView {
         }
     }
 
-    /// Install the closures the undo controller calls on Cmd-Z / redo.
-    /// `apply` restores the document tree (and re-registers the inverse for
-    /// redo). `applyTextChange` restores a single block's text — used for
-    /// the coalesced typing-burst undo entries.
+    /// Wire the editor's per-document hooks onto `Document`. After this:
+    ///   - `document.undoManager` is the controller's manager (so transactions
+    ///     register inverses against it).
+    ///   - `document.preMutation` flushes any in-flight NSTextView text before
+    ///     a transaction snapshots.
+    ///   - `document.didApplyUndo` revalidates `EditorState` against the new
+    ///     tree on undo/redo and notifies the host.
+    ///   - `undoController.document` points at this document, so the typing
+    ///     path in `BlockTextEditor` can call `undoController.transaction(...)`.
     func installUndoApply() {
-        undoController.apply = { newBlocks in
-            let beforeRedo = document.snapshot()
-            document.restore(newBlocks)
+        document.undoManager = undoController.undoManager
+        undoController.document = document
 
-            // Validate cursor/selection/edit-mode against the new tree — drops
-            // invalid IDs from the navigating selection, falls back to nav mode
-            // if the editing block disappeared.
+        document.preMutation = { [weak undoController] in
+            undoController?.commitActiveEditor?()
+        }
+
+        // Capture by reference: `document` and `state` are class types reachable
+        // through this struct's stored bindings; reads happen at fire time so
+        // the callback sees fresh state.
+        document.didApplyUndo = {
             var validIDs: Set<BlockID> = []
             document.walk { block, _, _ in validIDs.insert(block.id) }
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
-
-            // Re-register inverse — when this runs during isUndoing, UndoManager pushes
-            // it to the redo stack; during isRedoing, it goes back on the undo stack.
-            undoController.register(beforeRedo, name: undoController.undoManager.undoActionName)
-            host.onEdited()
-        }
-        undoController.applyTextChange = { blockID, oldText in
-            guard let block = document.find(blockID) else { return }
-            let beforeRedoText = block.text
-            document.setText(blockID, oldText)
-            undoController.registerTextChange(blockID: blockID, oldText: beforeRedoText)
-            host.onEdited()
+            host.markDocumentDirty()
         }
     }
 

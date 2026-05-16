@@ -19,7 +19,7 @@ extension EnvironmentValues {
     }
 
     /// The `DocumentUndoController` for the current `EditorView`. Editor views read this to
-    /// register typing-session snapshots on focus loss.
+    /// register typing transactions and to break coalescing at edit-session boundaries.
     var documentUndoController: DocumentUndoController? {
         get { self[DocumentUndoControllerKey.self] }
         set { self[DocumentUndoControllerKey.self] = newValue }
@@ -40,39 +40,31 @@ extension FocusedValues {
     }
 }
 
-/// Document-level undo coordinator. One instance per open document.
+/// Owns the `UndoManager` for one open document, plus a couple of editor-layer
+/// hooks that don't belong on `Document` itself.
 ///
-/// `UndoManager.registerUndo(withTarget:)` requires a class target — `EditorView`
-/// is a struct, so this small class owns the manager and routes undo events
-/// back into the page via the `apply` closure (set by `EditorView` on appear).
-///
-/// NSTextView's typing-undo also feeds this manager via the Coordinator's
-/// `undoManager(for:)` delegate hook, so Cmd-Z walks one unified timeline.
+/// Mutation and undo registration live on `Document.transaction(...)` directly;
+/// this controller mostly exists so the typing path (which lives inside
+/// `BlockTextEditor` and reads from environment) can call into the document's
+/// transaction API without taking a Document reference through every NSTextView
+/// representable layer.
 @MainActor
 public final class DocumentUndoController {
     public let undoManager: UndoManager
-    /// Set by `EditorView` once mounted. Receives a snapshot of `[Block]` to
-    /// restore. The closure is responsible for fixing up cursor/selection
-    /// against the new block set and for re-registering the inverse for redo.
-    var apply: (([Block]) -> Void)?
-    /// Set by `EditorView`. Restores a single block's text — used for typing-burst
-    /// undo entries. Closure must re-register the inverse so redo works.
-    var applyTextChange: ((BlockID, AttributedString) -> Void)?
-    /// Published by the active editor's Coordinator on `textDidBeginEditing`, cleared
-    /// on `textDidEndEditing`. EditorView calls this before any state mutation that
-    /// would unmount the live editor (e.g. clicking into another block) so the
-    /// in-flight text reaches the binding before the BlockTextEditor tears down —
-    /// otherwise the binding write happens during SwiftUI's update pass and doesn't
-    /// reliably propagate to the read-only Text that takes the row's slot.
-    var commitActiveEditor: (() -> Void)?
 
-    /// Time-window for coalescing consecutive typing entries on the same block. Within
-    /// this window, additional `registerTextChange` calls are folded into the existing
-    /// entry (the one with the burst's starting text). Tuned to match common rapid-typing
-    /// cadence — one burst per ~second of continuous typing.
-    private static let coalesceInterval: TimeInterval = 1.0
-    private var lastTextChangeBlock: BlockID?
-    private var lastTextChangeTime: Date?
+    /// Set by `EditorView` once the document is mounted. Used by `transaction`
+    /// and `breakCoalescing` to forward into the document's API.
+    weak var document: Document?
+
+    /// Published by the active editor's Coordinator on `textDidBeginEditing`,
+    /// cleared on `textDidEndEditing`. EditorView calls this before any state
+    /// mutation that would unmount the live editor (e.g. clicking into another
+    /// block) so the in-flight text reaches the binding before the
+    /// `BlockTextEditor` tears down — otherwise the binding write happens during
+    /// SwiftUI's update pass and doesn't reliably propagate to the read-only
+    /// `Text` that takes the row's slot. Also wired into `Document.preMutation`
+    /// so every transaction flushes in-flight text before snapshotting.
+    var commitActiveEditor: (() -> Void)?
 
     public init() {
         self.undoManager = UndoManager()
@@ -81,46 +73,20 @@ public final class DocumentUndoController {
 
     public func reset() {
         undoManager.removeAllActions()
-        lastTextChangeBlock = nil
-        lastTextChangeTime = nil
+        document?.breakCoalescing()
     }
 
-    /// Force the next `registerTextChange` to start a new entry, even if it's within
-    /// the coalesce interval. Called at edit-session boundaries and around structural
-    /// ops so a typing burst doesn't merge across them.
-    func breakTextCoalescing() {
-        lastTextChangeBlock = nil
-        lastTextChangeTime = nil
+    /// Run `change` inside the document's transaction. Used by `BlockTextEditor`
+    /// for the typing path (with `coalesceKey: blockID` so consecutive keystrokes
+    /// on the same block fold into one undo entry).
+    func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: () -> Void) {
+        document?.transaction(name: name, coalesceKey: coalesceKey) { _ in change() }
     }
 
-    func register(_ blocks: [Block], name: String) {
-        undoManager.registerUndo(withTarget: self) { target in
-            target.apply?(blocks)
-        }
-        undoManager.setActionName(name)
-        breakTextCoalescing()
-    }
-
-    /// Register a typing undo. Coalesces with the previous registration if it's for the
-    /// same block within `coalesceInterval` — meaning the user gets one undo per ~1s
-    /// burst of typing rather than one per character, while still surviving editor
-    /// unmount because the entry references only the model (BlockID + AttributedString),
-    /// never the NSTextView.
-    func registerTextChange(blockID: BlockID, oldText: AttributedString, name: String = "Type") {
-        let now = Date()
-        if let lastBlock = lastTextChangeBlock, lastBlock == blockID,
-           let lastTime = lastTextChangeTime,
-           now.timeIntervalSince(lastTime) < Self.coalesceInterval {
-            // Coalesce: the existing entry already captures the burst's starting text.
-            // Just bump the timer so further keystrokes keep extending the burst.
-            lastTextChangeTime = now
-            return
-        }
-        undoManager.registerUndo(withTarget: self) { target in
-            target.applyTextChange?(blockID, oldText)
-        }
-        undoManager.setActionName(name)
-        lastTextChangeBlock = blockID
-        lastTextChangeTime = now
+    /// Force the next coalesce-keyed transaction to register a fresh undo entry
+    /// even if its key matches the previous within the coalesce interval. Called
+    /// at edit-session boundaries.
+    func breakCoalescing() {
+        document?.breakCoalescing()
     }
 }

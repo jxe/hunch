@@ -501,7 +501,7 @@ public struct EditorView: View {
 
         // Bundle of editor-only bindings/closures, present only on the row
         // currently being edited. Read-only rows pass `editor: nil` and avoid
-        // allocating any of this. (`onBlockChange` / `onEdited` stay at the
+        // allocating any of this. (`onBlockChange` / `markDirty` stay at the
         // top level — they're also fired by non-editor mutations like the
         // todo-row checkbox toggle.)
         let editing: BlockRow.TextEditing? = isEditing
@@ -524,7 +524,7 @@ public struct EditorView: View {
             block: block,
             state: state,
             onBlockChange: { newBlock in binding.wrappedValue = newBlock },
-            onEdited: host.onEdited,
+            markDirty: host.markDocumentDirty,
             depth: depth,
             editor: editing,
             isPageTitle: isPageTitleBlock(block, snapshot: snapshot),
@@ -928,30 +928,17 @@ public struct EditorView: View {
         .init(key: .escape, modifiers: [], action: .escape),
     ]
 
-    /// Wrap a structural mutation so its inverse is registered with `undoController`.
-    /// Callers must only call `mutate` when actually changing something — the helper
-    /// doesn't equality-check. Snapshots the document tree before the change, runs
-    /// the change, then registers the previous snapshot as the undo. Redo is
-    /// re-registered by the apply closure during `isUndoing`.
+    /// Wrap a structural mutation so its inverse is registered with the
+    /// document's `undoManager`. Callers must only call `mutate` when actually
+    /// changing something — the helper doesn't equality-check.
     ///
-    /// Always commits the active editor's live text into the binding first.
-    /// Many structural ops (split, merge, autotransform, paste, etc.) read
-    /// `block.text` from the model immediately after, so any in-flight typing
-    /// in NSTextView/UITextView has to land in the binding before the snapshot
-    /// is taken. Centralizing the commit here means individual call sites
-    /// (`splitBlock`, `applyAutotransform`, `convertBlockToSubpage`, …) don't
-    /// each have to remember to call `commitLiveText` first.
+    /// Thin wrapper over `document.transaction`: that handles flushing in-flight
+    /// text via `preMutation`, snapshotting `[Block]` for undo, enforcing
+    /// heading containment, and registering the inverse. This caller adds the
+    /// host-dirty notification on top.
     func mutate(_ name: String, _ change: () -> Void) {
-        undoController.commitActiveEditor?()
-        let before = document.snapshot()
-        change()
-        // Re-apply heading containment after every structural mutation. This
-        // is what makes "Enter at end of heading creates a paragraph INSIDE
-        // the heading" work — the split inserts a sibling, and refold moves
-        // it under the heading. Idempotent on already-valid trees.
-        document.enforceHeadingContainment()
-        undoController.register(before, name: name)
-        host.onEdited()
+        document.transaction(name: name) { _ in change() }
+        host.markDocumentDirty()
     }
 
     /// Consume a host-supplied append payload (via `EditorState.appendBlocks`).
@@ -1678,17 +1665,13 @@ public struct EditorView: View {
     func moveBlocksInDocument(_ ids: Set<BlockID>, by delta: Int) {
         let roots = document.selectionSubtreeRoots(ids)
         guard !roots.isEmpty else { return }
-        // `slideSiblings` is its own validity check + mutation: it returns false
-        // and leaves the doc untouched if the slab isn't a valid contiguous
-        // same-parent set. Snapshot before, run once, register the snapshot as
-        // the undo entry. Replaces a previous three-call dance (forward to test,
-        // backward to roll back, forward again inside `mutate`).
-        undoController.commitActiveEditor?()
-        let before = document.snapshot()
-        guard document.slideSiblings(Set(roots), by: delta) else { return }
-        document.enforceHeadingContainment()
-        undoController.register(before, name: "Move Block")
-        host.onEdited()
+        // `slideSiblings` is internally atomic: it returns false and leaves the
+        // doc untouched if the slab isn't a valid contiguous same-parent set.
+        // On the invalid path the wrapping transaction still registers a
+        // before==after undo entry, which Cmd-Z silently no-ops — acceptable.
+        mutate("Move Block") {
+            _ = document.slideSiblings(Set(roots), by: delta)
+        }
         revealHiddenBlocks(ids)
     }
 
@@ -1711,11 +1694,6 @@ public struct EditorView: View {
             return
         }
 
-        let order = document.documentOrder(of: id) ?? 0
-        var husk = heading
-        husk.children = []
-        host.onRecordBlockDeletion([order], [husk], "Delete")
-
         let cursorTarget = nearestCursorAfterRemoval(of: [id])
         mutate("Delete") {
             document.removeBlockLiftingChildren(id)
@@ -1732,24 +1710,14 @@ public struct EditorView: View {
             return
         }
 
-        // Capture the removed subtrees flat-preorder (for `onRecordBlockDeletion`).
-        var removedFlat: [Block] = []
-        var indicesFlat: [Int] = []
-        for id in roots {
-            guard let order = document.documentOrder(of: id) else { continue }
-            indicesFlat.append(order)
-            if let block = document.find(id) {
-                appendPreorder(block, into: &removedFlat)
-            }
-        }
-        // Selection IDs all missing from the doc — would silently no-op. Should be
-        // unreachable now that `.onChange(of: ObjectIdentifier(document))` revalidates
-        // state on doc-instance swaps; log loudly if it ever fires again.
-        if indicesFlat.isEmpty {
+        // Sanity check: selection IDs all missing from the doc — would silently
+        // no-op. Should be unreachable now that `.onChange(of:
+        // ObjectIdentifier(document))` revalidates state on doc-instance
+        // swaps; log loudly if it ever fires again.
+        if !roots.contains(where: { document.documentOrder(of: $0) != nil }) {
             Diag.mode.error("deleteBlocks: selection has no doc-present IDs roots=\(roots.count, privacy: .public)")
             return
         }
-        host.onRecordBlockDeletion(indicesFlat, removedFlat, actionName)
 
         let cursorTarget = nearestCursorAfterRemoval(of: roots)
         mutate(actionName) {
@@ -1767,14 +1735,6 @@ public struct EditorView: View {
 
         if let id = cursorTarget {
             setCursor(id)
-        }
-    }
-
-    /// Walk a subtree in preorder and append every node to `out`.
-    private func appendPreorder(_ block: Block, into out: inout [Block]) {
-        out.append(block)
-        for child in block.children {
-            appendPreorder(child, into: &out)
         }
     }
 

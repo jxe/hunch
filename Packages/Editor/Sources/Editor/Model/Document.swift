@@ -38,11 +38,138 @@ public final class Document: @MainActor Identifiable {
     @ObservationIgnored
     private var _parentCache: [BlockID: BlockID]?
 
+    /// `UndoManager` to register transaction inverses against. Injected by the
+    /// editor on mount; nil means transactions still run but don't accumulate
+    /// undo history (useful for non-editor mutations like load).
+    @ObservationIgnored
+    public weak var undoManager: UndoManager?
+
+    /// Editor-supplied hook fired before every transaction's `change` closure.
+    /// Used to flush in-flight NSTextView text into the model so the snapshot
+    /// captures it. Set by `EditorView` on mount.
+    @ObservationIgnored
+    public var preMutation: (() -> Void)?
+
+    /// Host-supplied hook fired before every transaction's `change` closure.
+    /// Used to snapshot pre-mutation state into the recovery log. Set by the
+    /// host on document open.
+    @ObservationIgnored
+    public var willMutate: ((Document) -> Void)?
+
+    /// Editor-supplied hook fired after an undo/redo apply restores a snapshot.
+    /// Used to revalidate `EditorState` selection against the new block set and
+    /// notify the host the document changed. Set by `EditorView` on mount.
+    @ObservationIgnored
+    public var didApplyUndo: (() -> Void)?
+
+    /// Coalesce window — same `coalesceKey` within this interval is folded into
+    /// the previous transaction's undo entry (no new entry registered).
+    public static let coalesceInterval: TimeInterval = 1.0
+
+    @ObservationIgnored
+    private var lastTransactionKey: AnyHashable?
+
+    @ObservationIgnored
+    private var lastTransactionTime: Date?
+
+    /// Set while a `transaction(...)` call is on the stack. A nested call
+    /// (typically from inside `preMutation` — e.g. `BlockTextEditor`'s typing
+    /// path opens its own transaction to flush text — but also any explicit
+    /// nested call) collapses into the outer: it runs its `change` closure
+    /// and returns without firing `preMutation` / `willMutate`, without
+    /// snapshotting, and without registering its own undo entry. The outer
+    /// transaction's snapshot captures the post-inner state, so undo of the
+    /// outer reverses both as one atomic action.
+    @ObservationIgnored
+    private var inTransaction: Bool = false
+
     public init(url: URL, title: String, children: [Block], modificationDate: Date? = nil) {
         self.url = url
         self.title = title
         self.children = children
         self.modificationDate = modificationDate
+    }
+
+    // MARK: - Transaction (unified mutation + undo entry point)
+
+    /// Mutate the document atomically. Calls register an undo entry against
+    /// `undoManager`. If `coalesceKey` matches the previous transaction's key
+    /// within `coalesceInterval`, the mutation is applied without registering
+    /// a new undo entry — the previous entry's pre-mutation snapshot already
+    /// captures the burst's start. Use for typing (`coalesceKey = blockID`)
+    /// and any other rapid-fire same-thing mutations; pass `nil` for one-shot
+    /// structural edits.
+    ///
+    /// Fires `preMutation` (editor flush) and `willMutate` (host snapshot)
+    /// before the change, then `enforceHeadingContainment` after — both inside
+    /// the same atomic boundary so the registered undo restores a valid tree.
+    public func transaction(
+        name: String,
+        coalesceKey: AnyHashable? = nil,
+        _ change: (Document) -> Void
+    ) {
+        // Nested call: absorb into the outer transaction. The outer's snapshot
+        // already covers everything before its `change` closure runs, and its
+        // `preMutation` / `willMutate` already fired. Just apply the change.
+        if inTransaction {
+            change(self)
+            return
+        }
+        inTransaction = true
+        defer { inTransaction = false }
+
+        let now = Date()
+        let shouldCoalesce =
+            coalesceKey != nil &&
+            coalesceKey == lastTransactionKey &&
+            (lastTransactionTime.map { now.timeIntervalSince($0) < Self.coalesceInterval } == true)
+
+        if shouldCoalesce {
+            // Coalesced — the existing undo entry's snapshot already captures
+            // the burst start. Just flush + apply.
+            preMutation?()
+            willMutate?(self)
+            change(self)
+            enforceHeadingContainment()
+            lastTransactionTime = now
+        } else {
+            // Snapshot BEFORE preMutation/willMutate, so any state mutations
+            // those hooks trigger via nested transactions (e.g. the typing
+            // path's `commitLiveText` flushing in-flight NSTextView text
+            // through a nested `transaction`) are also captured in `before`.
+            // Undo then reverts the whole logical action — flush + change —
+            // as one atomic step.
+            let before = snapshot()
+            preMutation?()
+            willMutate?(self)
+            change(self)
+            enforceHeadingContainment()
+            registerUndo(before: before, name: name)
+            lastTransactionKey = coalesceKey
+            lastTransactionTime = now
+        }
+    }
+
+    /// Break the coalesce window so the next transaction with a `coalesceKey`
+    /// starts a fresh undo entry even if the key matches the previous. Called
+    /// at edit-session boundaries (focus change, structural ops).
+    public func breakCoalescing() {
+        lastTransactionKey = nil
+        lastTransactionTime = nil
+    }
+
+    private func registerUndo(before: [Block], name: String) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { doc in
+            let after = doc.snapshot()
+            doc.children = before
+            doc.enforceHeadingContainment()
+            doc.lastTransactionKey = nil
+            doc.lastTransactionTime = nil
+            doc.registerUndo(before: after, name: name)
+            doc.didApplyUndo?()
+        }
+        undoManager.setActionName(name)
     }
 
     /// Pulls a title out of the first top-level H1, falling back to the

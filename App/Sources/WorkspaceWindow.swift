@@ -33,12 +33,14 @@ final class WorkspaceWindow {
         let completion: (MoveDestination?) -> Void
     }
 
-    private var debounceTask: Task<Void, Never>?
-    private var backstopTask: Task<Void, Never>?
     private var autoRestoreTask: Task<Void, Never>?
     private var filePresenter: DocumentFilePresenter?
-    private var isDirty = false
-    private var isSaving = false
+    /// Owns the per-open-document save state machine (clean / dirty / saving /
+    /// flushing) plus debounce + backstop tasks. Nil before any document is
+    /// loaded and after `flushAndClose`. Replaced on every page-change.
+    private var saveSession: DocumentSaveSession?
+    private var isDirty: Bool { saveSession?.isDirty == true }
+    private var isSaving: Bool { saveSession?.isSaving == true }
     private var documentCache: [URL: Document] = [:]
     /// Hashes auto-restored into a page during this app session, per URL.
     /// Belt-and-braces against re-restore loops: if the post-save echo (or
@@ -125,26 +127,68 @@ final class WorkspaceWindow {
         flushAndClose()
         guard let url = topURL else {
             openDocument = nil
-            backstopTask?.cancel()
-            backstopTask = nil
             return
         }
         if let cached = documentCache[url] {
             openDocument = cached
+            installSaveSession(for: url)
             installFilePresenter(for: url)
-            startBackstop()
             scheduleAutoRestore(for: url)
             return
         }
         do {
             openDocument = try workspace.loadDocument(at: url)
             cacheOpenDocument()
-            isDirty = false
+            installSaveSession(for: url)
             installFilePresenter(for: url)
-            startBackstop()
             scheduleAutoRestore(for: url)
         } catch {
             workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    /// Create a fresh `DocumentSaveSession` for the given URL and start its
+    /// 30s backstop. Captures the URL into the save/flush closures so the
+    /// session is self-contained.
+    private func installSaveSession(for url: URL) {
+        let session = DocumentSaveSession(
+            performSave: { [weak self] in
+                await self?.performSave(for: url) ?? false
+            },
+            performFlush: { [weak workspace] in
+                guard let clamshell = workspace?.clamshell else { return }
+                try? await clamshell.flush(url: url)
+            }
+        )
+        saveSession = session
+        session.startBackstop()
+    }
+
+    /// The actual save work: serialize, write through Clamshell, record disk
+    /// hash for stomp defense, refresh mtime/title cache, rescan the workspace.
+    /// Called by `DocumentSaveSession` when its state transitions to `.saving`.
+    private func performSave(for url: URL) async -> Bool {
+        guard let doc = openDocument, doc.url == url,
+              let clamshell = workspace.clamshell else { return true }
+        do {
+            let resolver = workspace.saveTitleResolver()
+            // Re-serialize locally so we can record the post-save hash. The
+            // coordinator serializes its own copy too — acceptable double-work.
+            let serialized = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: resolver)
+            try await clamshell.save(doc, resolvingSubpageTitle: resolver)
+            workspace.recordDiskText(serialized, for: doc.url)
+            if openDocument?.url == doc.url {
+                openDocument?.modificationDate = workspace.modificationDate(for: doc.url)
+                cacheOpenDocument()
+                if let openDocument {
+                    workspace.refreshTitleCache(from: openDocument)
+                }
+            }
+            workspace.rescan()
+            return true
+        } catch {
+            workspace.error = "Save failed: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -166,8 +210,6 @@ final class WorkspaceWindow {
         path = []
         documentCache = [:]
         autoRestoredHashes = [:]
-        isDirty = false
-        isSaving = false
     }
 
     // MARK: - Move-to picker
@@ -204,12 +246,9 @@ final class WorkspaceWindow {
         if documentCache[updated.url] !== updated {
             documentCache[updated.url] = updated
         }
-        let titleChanged = workspace.refreshTitleCache(from: updated)
+        workspace.refreshTitleCache(from: updated)
         if openDocument?.url == updated.url, openDocument !== updated {
             openDocument = updated
-        }
-        if titleChanged {
-            workspace.refreshEntriesFromTitleCache()
         }
     }
 
@@ -226,48 +265,16 @@ final class WorkspaceWindow {
         return document
     }
 
-    // MARK: - Save lifecycle
+    // MARK: - Save lifecycle (thin façade over DocumentSaveSession)
 
     func markEdited() {
-        isDirty = true
         cacheOpenDocument()
-        debounceTask?.cancel()
-        debounceTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
-            await self?.saveNow()
-        }
+        saveSession?.markDirty()
     }
 
     @discardableResult
     func saveNow(force: Bool = false) async -> Bool {
-        debounceTask?.cancel()
-        debounceTask = nil
-        guard let doc = openDocument, let clamshell = workspace.clamshell else { return true }
-        guard force || isDirty else { return true }
-        do {
-            isSaving = true
-            defer { isSaving = false }
-            let resolver = workspace.saveTitleResolver()
-            // Re-serialize locally so we can record the post-save hash. The
-            // coordinator serializes its own copy too — acceptable double-work.
-            let serialized = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: resolver)
-            try await clamshell.save(doc, resolvingSubpageTitle: resolver)
-            workspace.recordDiskText(serialized, for: doc.url)
-            if openDocument?.url == doc.url {
-                openDocument?.modificationDate = workspace.modificationDate(for: doc.url)
-                cacheOpenDocument()
-                if let openDocument {
-                    workspace.refreshTitleCache(from: openDocument)
-                }
-            }
-            isDirty = false
-            workspace.rescan()
-            return true
-        } catch {
-            workspace.error = "Save failed: \(error.localizedDescription)"
-            return false
-        }
+        await saveSession?.saveNow(force: force) ?? true
     }
 
     /// Cancel pending tasks and ensure any unsaved edits land on disk before
@@ -275,27 +282,10 @@ final class WorkspaceWindow {
     /// survives this caller returning) so a rapid page switch doesn't drop
     /// the latest snapshot.
     func flushAndClose() {
-        debounceTask?.cancel(); debounceTask = nil
-        backstopTask?.cancel(); backstopTask = nil
         autoRestoreTask?.cancel(); autoRestoreTask = nil
         removeFilePresenter()
-        guard let doc = openDocument, let clamshell = workspace.clamshell else { return }
-        let wasDirty = isDirty
-        isDirty = false
-        let resolver = workspace.saveTitleResolver()
-        let serialized = wasDirty ? BlockSerializer.serialize(doc.children, resolvingSubpageTitle: resolver) : nil
-        let url = doc.url
-        Task { [clamshell, doc, wasDirty, resolver, serialized, weak workspace] in
-            if wasDirty {
-                try? await clamshell.save(doc, resolvingSubpageTitle: resolver)
-                if let serialized {
-                    await MainActor.run {
-                        workspace?.recordDiskText(serialized, for: url)
-                    }
-                }
-            }
-            try? await clamshell.flush(url: url)
-        }
+        saveSession?.flushAndClose()
+        saveSession = nil
     }
 
     // MARK: - Trash & restore (per-window)
@@ -307,12 +297,16 @@ final class WorkspaceWindow {
             if isDirty, let openDocument {
                 do {
                     try clamshell.writeImmediately(openDocument, resolvingSubpageTitle: workspace.saveTitleResolver())
-                    isDirty = false
                 } catch {
                     workspace.error = "Save failed: \(error.localizedDescription)"
                     return false
                 }
             }
+            // flushAndClose tears down the save session and queues any
+            // pending save+flush. After writeImmediately above, the session
+            // may still report .dirty (writeImmediately bypassed it); the
+            // queued save in flushAndClose is then a redundant no-op write
+            // that the per-URL coordinator coalesces — harmless.
             flushAndClose()
             self.openDocument = nil
         }
@@ -336,17 +330,6 @@ final class WorkspaceWindow {
             documentCache[target] = doc
         }
         return true
-    }
-
-    func recordBlockDeletion(indices: [Int], blocks: [Block], actionName: String) {
-        _ = indices
-        _ = blocks
-        _ = actionName
-        guard let openDocument else { return }
-        workspace.recordBlockDeletion(
-            sourceURL: openDocument.url,
-            previousBlocks: openDocument.children
-        )
     }
 
     @discardableResult
@@ -772,16 +755,6 @@ final class WorkspaceWindow {
         workspace.refreshTitleCache(from: openDocument)
     }
 
-    private func startBackstop() {
-        backstopTask?.cancel()
-        backstopTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
-                guard !Task.isCancelled else { return }
-                await self?.saveNow()
-            }
-        }
-    }
 }
 
 // MARK: - LostBlockForest

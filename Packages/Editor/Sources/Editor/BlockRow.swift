@@ -30,7 +30,7 @@ public struct BlockRow: View, Equatable {
     /// hover→write→invalidate→layout→hover-redispatch feedback loop.
     public let state: EditorState
     public let onBlockChange: (Block) -> Void
-    public let onEdited: () -> Void
+    public let markDirty: () -> Void
     /// Depth of this block in the document tree. Replaces the old per-case
     /// `indent` field — passed in by the visible-layout walk so the row
     /// renders the right leading inset without consulting the model directly.
@@ -240,7 +240,7 @@ public struct BlockRow: View, Equatable {
         block: Block,
         state: EditorState,
         onBlockChange: @escaping (Block) -> Void,
-        onEdited: @escaping () -> Void,
+        markDirty: @escaping () -> Void,
         depth: Int,
         editor: TextEditing?,
         isPageTitle: Bool,
@@ -281,7 +281,7 @@ public struct BlockRow: View, Equatable {
         self.block = block
         self.state = state
         self.onBlockChange = onBlockChange
-        self.onEdited = onEdited
+        self.markDirty = markDirty
         self.depth = depth
         self.editor = editor
         self.isPageTitle = isPageTitle
@@ -442,7 +442,7 @@ public struct BlockRow: View, Equatable {
                 if String(newValue.characters) != String(block.text.characters) ||
                    !attributedStringMarksEqual(newValue, block.text) {
                     onBlockChange(block.withText(newValue))
-                    onEdited()
+                    markDirty()
                 }
             }
         )
@@ -537,7 +537,7 @@ public struct BlockRow: View, Equatable {
                     var updated = block
                     updated.kind = .todo(text: text, done: !isDone)
                     onBlockChange(updated)
-                    onEdited()
+                    markDirty()
                 }
             } label: {
                 Image(systemName: done ? "checkmark.square.fill" : "square")

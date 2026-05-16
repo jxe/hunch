@@ -18,6 +18,14 @@ final class EditorPageCoordinator: EditorHost {
         self.document = document
         self.workspace = workspace
         self.window = window
+        // Snapshot the pre-mutation block tree into the recovery log on every
+        // transaction. Cheap when no new content (RecoveryLog dedupes by
+        // device-known hash set). Catches transient blocks that appear and
+        // disappear inside the autosave debounce window — without this they'd
+        // never be logged and would be unrecoverable.
+        document.willMutate = { [workspace] doc in
+            workspace.recordBlockDeletion(sourceURL: doc.url, previousBlocks: doc.children)
+        }
     }
 
     func suggestPages(_ query: String) -> [MentionItem] {
@@ -72,16 +80,12 @@ final class EditorPageCoordinator: EditorHost {
         window.goBack()
     }
 
-    func onEdited() {
+    func markDocumentDirty() {
         window.markEdited()
     }
 
     func onBlur() {
         Task { await window.saveNow() }
-    }
-
-    func onRecordBlockDeletion(_ indices: [Int], _ blocks: [Block], _ actionName: String) {
-        window.recordBlockDeletion(indices: indices, blocks: blocks, actionName: actionName)
     }
 
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {

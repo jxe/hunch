@@ -500,9 +500,13 @@ struct MacBlockTextEditor: NSViewRepresentable {
             let newPlain = String(newText.characters)
             let changed = oldPlain != newPlain || !attributedStringMarksEqual(oldText, newText)
             if changed {
-                parent.documentUndoController?
-                    .registerTextChange(blockID: parent.blockID, oldText: oldText)
-                parent.text = newText
+                if let controller = parent.documentUndoController {
+                    controller.transaction(name: "Type", coalesceKey: parent.blockID) {
+                        parent.text = newText
+                    }
+                } else {
+                    parent.text = newText
+                }
             }
             lastKnownBindingPlain = newPlain
             textStorageDirty = false
@@ -548,7 +552,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
             // this delegate doesn't fire for programmatic attribute changes
             // (Cmd-B / Cmd-I via `didChangeText()`), so a Cmd-B-then-Esc with no
             // intervening typing would otherwise leave the commit hook nil.
-            parent.documentUndoController?.breakTextCoalescing()
+            parent.documentUndoController?.breakCoalescing()
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(true)
             }
@@ -566,7 +570,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
             // commits AFTER first responder resigns — clearing the closure here would
             // turn that commit into a no-op. The closure captures coordinator + view
             // weakly, so unmounting the row still cleans it up.
-            parent.documentUndoController?.breakTextCoalescing()
+            parent.documentUndoController?.breakCoalescing()
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(false)
             }
@@ -1217,9 +1221,13 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             let newPlain = String(newText.characters)
             let changed = oldPlain != newPlain || !attributedStringMarksEqual(oldText, newText)
             if changed {
-                parent.documentUndoController?
-                    .registerTextChange(blockID: parent.blockID, oldText: oldText)
-                parent.text = newText
+                if let controller = parent.documentUndoController {
+                    controller.transaction(name: "Type", coalesceKey: parent.blockID) {
+                        parent.text = newText
+                    }
+                } else {
+                    parent.text = newText
+                }
             }
             lastKnownBindingPlain = newPlain
             textStorageDirty = false
@@ -1255,7 +1263,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
-            parent.documentUndoController?.breakTextCoalescing()
+            parent.documentUndoController?.breakCoalescing()
             // `commitActiveEditor` wired eagerly in `makeUIView` — see macOS twin.
             // Defer the @FocusState write — this delegate fires synchronously
             // from `updateUIView`'s own `becomeFirstResponder`, which runs
@@ -1272,7 +1280,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             // Don't clear `commitActiveEditor` — keep the hook wired for late
             // commits (e.g. mode-change paths that fire after first responder
             // resigns). Weak refs in the closure clean up on unmount.
-            parent.documentUndoController?.breakTextCoalescing()
+            parent.documentUndoController?.breakCoalescing()
             Task { @MainActor [weak self] in
                 self?.parent.onFocusChange(false)
             }

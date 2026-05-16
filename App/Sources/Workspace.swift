@@ -26,7 +26,29 @@ public struct WorkspaceEntry: Identifiable, Sendable, Hashable {
 @Observable
 final class Workspace {
     var workspaceURL: URL?
-    var entries: [WorkspaceEntry] = []
+    /// Raw scan result from `clamshell.scan()`. Titles here are
+    /// filename-derived fallbacks; the title overlay lives in `titleCache`.
+    /// Use `entries` for the user-facing list — it merges this with the cache.
+    private(set) var scanResult: [WorkspaceEntry] = []
+    /// Page list with current title overlay applied. Computed from
+    /// `scanResult` + `titleCache` so the two never drift — mutating either
+    /// invalidates Observation subscribers automatically.
+    var entries: [WorkspaceEntry] {
+        scanResult.map { entry in
+            let title: String
+            if let cached = titleCache[entry.url], cached.modificationDate == entry.modificationDate {
+                title = cached.title
+            } else {
+                title = entry.title
+            }
+            return WorkspaceEntry(
+                url: entry.url,
+                relativePath: entry.relativePath,
+                title: title,
+                modificationDate: entry.modificationDate
+            )
+        }
+    }
     var homeRelativePath: String?
     /// Surfaced in the alert in any open window. Last-write-wins across
     /// concurrent windows — acceptable; user dismisses the alert.
@@ -167,7 +189,7 @@ final class Workspace {
         }
         self.clamshell = clamshell
         homeRelativePath = clamshell.homeRelativePath
-        entries = (try? clamshell.scan()) ?? []
+        scanResult = (try? clamshell.scan()) ?? []
     }
 
     func setWorkspaceFromKeyFile(_ url: URL) {
@@ -274,7 +296,7 @@ final class Workspace {
         releaseWorkspaceAccess()
         workspaceURL = nil
         homeRelativePath = nil
-        entries = []
+        scanResult = []
         titleCache = [:]
         diskHistory = [:]
         openURLCounts = [:]
@@ -286,16 +308,8 @@ final class Workspace {
     func rescan() {
         guard let workspaceURL, let clamshell else { return }
         do {
-            let scanned = try clamshell.scan()
-            entries = scanned.map { entry in
-                WorkspaceEntry(
-                    url: entry.url,
-                    relativePath: entry.relativePath,
-                    title: cachedTitle(for: entry, fallback: entry.title),
-                    modificationDate: entry.modificationDate
-                )
-            }
-            refreshTitlesInBackground(for: scanned, workspaceURL: workspaceURL)
+            scanResult = try clamshell.scan()
+            refreshTitlesInBackground(for: scanResult, workspaceURL: workspaceURL)
             resolveConflictsForClosedPages(workspaceURL: workspaceURL)
         } catch {
             self.error = "Failed to scan workspace: \(error.localizedDescription)"
@@ -434,27 +448,6 @@ final class Workspace {
         return titleChanged
     }
 
-    func refreshEntriesFromTitleCache() {
-        let updated = entries.map { entry in
-            WorkspaceEntry(
-                url: entry.url,
-                relativePath: entry.relativePath,
-                title: titleCache[entry.url]?.title ?? entry.title,
-                modificationDate: entry.modificationDate
-            )
-        }
-        if updated != entries {
-            entries = updated
-        }
-    }
-
-    private func cachedTitle(for entry: WorkspaceEntry, fallback: String) -> String {
-        if let cached = titleCache[entry.url], cached.modificationDate == entry.modificationDate {
-            return cached.title
-        }
-        return fallback
-    }
-
     @discardableResult
     private func documentWithCurrentTitle(_ document: Document) -> Document {
         let fallback = document.url.deletingPathExtension().lastPathComponent
@@ -496,7 +489,6 @@ final class Workspace {
         }
         guard !truly.isEmpty else { return }
         titleCache.merge(truly) { _, new in new }
-        refreshEntriesFromTitleCache()
     }
 
     // MARK: - Page-level mutations
@@ -569,7 +561,6 @@ final class Workspace {
                 recordDiskText(raw, for: target)
             }
             refreshTitleCache(from: doc)
-            refreshEntriesFromTitleCache()
             return doc
         } catch {
             self.error = "Failed to move blocks into \(relativePath): \(error.localizedDescription)"
@@ -775,7 +766,7 @@ final class Workspace {
             workspaceURL = root
             let clamshell = Clamshell(root: root)
             self.clamshell = clamshell
-            entries = (try? clamshell.scan()) ?? []
+            scanResult = (try? clamshell.scan()) ?? []
         } catch {
             self.error = "Failed to install UI test workspace: \(error.localizedDescription)"
         }
@@ -800,7 +791,7 @@ final class Workspace {
             clamshell.homeRelativePath = "everything.md"
             self.clamshell = clamshell
             homeRelativePath = "everything.md"
-            entries = (try? clamshell.scan()) ?? []
+            scanResult = (try? clamshell.scan()) ?? []
         } catch {
             self.error = "Failed to install tall-doc UI test workspace: \(error.localizedDescription)"
         }

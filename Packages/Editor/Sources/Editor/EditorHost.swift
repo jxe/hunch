@@ -76,17 +76,16 @@ public protocol EditorHost: AnyObject {
     /// User pressed Cmd-[ / swipe-back / etc. — host pops its navigation stack.
     func onNavigateBack()
 
-    /// Document was mutated. Host kicks off its debounced save.
-    func onEdited()
+    /// Document was just mutated. Host marks dirty *synchronously* on the
+    /// mutation-commit thread. Not replaceable by `@Observable` notification
+    /// because the host's flush-on-close and trash paths read its dirty flag
+    /// synchronously when the user navigates away — without this, a fast
+    /// "type-then-navigate" sequence would drop the last keystroke.
+    func markDocumentDirty()
 
     /// Editor lost focus (focus left an active text editor). Host force-saves so
     /// user input doesn't sit in memory until app suspension.
     func onBlur()
-
-    /// Capture a block-level deletion before mutation so it can be restored
-    /// from the recently-deleted view. Editor supplies indices/blocks/action
-    /// name; host knows the document's relative path.
-    func onRecordBlockDeletion(_ indices: [Int], _ blocks: [Block], _ actionName: String)
 
     /// Serialize blocks into a string the editor will write to the system
     /// pasteboard on copy/cut. Host chooses the format (markdown, plain text).
