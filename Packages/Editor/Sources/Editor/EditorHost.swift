@@ -83,6 +83,16 @@ public protocol EditorHost: AnyObject {
     /// "type-then-navigate" sequence would drop the last keystroke.
     func markDocumentDirty()
 
+    /// A structural mutation just removed a block whose atomic hash was `hash`
+    /// (block ids present before the mutation, absent after). The host records
+    /// this as a tombstone in the recovery log so the deleted content surfaces
+    /// in the Recover sheet's "Deleted on purpose" section. Fire-and-forget by
+    /// design — the host returns immediately. Only fires for structural
+    /// removals (delete-block, cut, replace-via-turn-into, move-to); typing
+    /// inside a block does not fire it even though the block's hash changes,
+    /// because the block's id is still present.
+    func purgeAtomicHash(_ hash: String)
+
     /// Editor lost focus (focus left an active text editor). Host force-saves so
     /// user input doesn't sit in memory until app suspension.
     func onBlur()
@@ -108,4 +118,10 @@ public protocol EditorHost: AnyObject {
     /// Resolve an image block's `source` to a file URL the renderer can load.
     /// Nil → renderer shows a missing-image placeholder.
     var imageURLResolver: ImageURLResolver? { get }
+}
+
+extension EditorHost {
+    /// Default for hosts that don't care about recording deletions — keeps test
+    /// fakes and other minimal embedders source-compatible.
+    public func purgeAtomicHash(_ hash: String) {}
 }

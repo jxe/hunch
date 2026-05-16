@@ -174,7 +174,6 @@ final class Workspace {
             self.clamshell = clamshell
             homeRelativePath = clamshell.homeRelativePath
             rescan()
-            runAutoTombstoneMigrationIfNeeded(for: clamshell)
         }
     }
 
@@ -204,7 +203,6 @@ final class Workspace {
             self.clamshell = clamshell
             homeRelativePath = homePath
             rescan()
-            runAutoTombstoneMigrationIfNeeded(for: clamshell)
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
         }
@@ -222,22 +220,8 @@ final class Workspace {
             if homeRelativePath == nil {
                 autoDetectOrSeedHome(in: clamshell)
             }
-            runAutoTombstoneMigrationIfNeeded(for: clamshell)
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
-        }
-    }
-
-    /// Fire-and-forget retroactive auto-tombstone migration. Gated internally
-    /// by the `.clamshell.json` flag — first-time run iterates pages and
-    /// writes purge records for our own log's orphans; subsequent calls
-    /// are cheap early returns.
-    private func runAutoTombstoneMigrationIfNeeded(for clamshell: Clamshell) {
-        let originalURL = workspaceURL
-        Task { @MainActor [weak self, clamshell] in
-            await clamshell.runAutoTombstoneMigrationIfNeeded()
-            guard let self, self.workspaceURL == originalURL else { return }
-            self.rescan()
         }
     }
 

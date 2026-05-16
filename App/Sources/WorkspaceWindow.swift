@@ -42,16 +42,6 @@ final class WorkspaceWindow {
     private var isDirty: Bool { saveSession?.isDirty == true }
     private var isSaving: Bool { saveSession?.isSaving == true }
     private var documentCache: [URL: Document] = [:]
-    /// Hashes auto-restored into a page during this app session, per URL.
-    /// Belt-and-braces against re-restore loops: if the post-save echo (or
-    /// any other file-presenter wakeup) sees the same recovery-log entries
-    /// surface as "lost" again — whether due to a race with the
-    /// fire-and-forget `RecoveryLog.record`, an iCloud-Drive stomp that
-    /// keeps reverting the `.md`, or a stale-cache read — we refuse the
-    /// second pass. If the user genuinely wants the same content back after
-    /// deleting it, that path goes through the manual Recover sheet (which
-    /// also handles the "Deleted on purpose" surface).
-    private var autoRestoredHashes: [URL: Set<String>] = [:]
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -209,7 +199,6 @@ final class WorkspaceWindow {
         openDocument = nil
         path = []
         documentCache = [:]
-        autoRestoredHashes = [:]
     }
 
     // MARK: - Move-to picker
@@ -311,7 +300,6 @@ final class WorkspaceWindow {
             self.openDocument = nil
         }
         documentCache.removeValue(forKey: entry.url)
-        autoRestoredHashes.removeValue(forKey: entry.url)
         path.removeAll { $0 == entry.url }
         return workspace.moveToTrash(at: entry.url)
     }
@@ -344,13 +332,20 @@ final class WorkspaceWindow {
         }
     }
 
-    /// Splice in every non-tombstoned lost block the recovery log knows
-    /// about for this page. Auto-tombstoning on save keeps this safe: any
-    /// hash whose latest-record-in-union is `add` is a genuine recovery
-    /// candidate. Lost blocks linked by `parentHash` are rebuilt as nested
-    /// subtrees via `LostBlockForest.assemble` and inserted under the
-    /// closest live ancestor, so a parent + children deleted together on
-    /// another device restore as one tree, not as flat siblings.
+    /// Splice in every lost block the recovery log surfaces for this page.
+    /// "Lost" already means: the union's latest record for the hash is an
+    /// `add` and the hash isn't currently alive in the `.md`. With the
+    /// editor emitting explicit `purgeHash` calls on user-initiated
+    /// deletions, "latest record is add" is a clean intent signal — no
+    /// session memo, no `everPurged` poison-pill needed. The
+    /// hash-stability round-trip invariant (`hash(parse(serializeAtomic))
+    /// == hash`) keeps the post-save liveness check sufficient to break
+    /// the re-fire loop.
+    ///
+    /// Lost blocks linked by `parentHash` are rebuilt as nested subtrees
+    /// via `LostBlockForest.assemble` and inserted under the closest live
+    /// ancestor, so a parent + children deleted together on another device
+    /// restore as one tree, not as flat siblings.
     ///
     /// Re-triggered on every file-presenter wakeup; idempotent — blocks
     /// already live in `doc` are skipped via `findAtomicHash`. Held off
@@ -360,26 +355,12 @@ final class WorkspaceWindow {
     private func autoRestoreLostBlocksOnOpen(for url: URL) async {
         guard let clamshell = workspace.clamshell else { return }
         guard openDocument?.url == url, let doc = openDocument else { return }
-        // Skip until the workspace-level migration has had a chance to run;
-        // otherwise legacy orphan blocks across every page would resurrect.
-        guard clamshell.autoTombstoneMigrationDone else { return }
         // Don't race with in-flight user edits or saves.
         if isDirty || isSaving { return }
         let rel = clamshell.relativePath(of: url)
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: rel))
-        let alreadyRestored = autoRestoredHashes[url] ?? []
         let candidates = lost.filter {
-            // Skip anything currently live in the doc (by content hash).
             findAtomicHash($0.hash, in: doc) == nil
-                // Skip anything already auto-restored this session (memo
-                // against re-fire loops from save echoes / iCloud stomps).
-                && !alreadyRestored.contains($0.hash)
-                // Skip anything that's ever been tombstoned. Intentional
-                // deletions surface in the "Deleted on purpose" section
-                // of the Recover sheet for explicit user action — never
-                // auto-resurrected, even if a later `add` is currently
-                // winning latest-`t` semantics.
-                && !$0.everPurged
         }
         guard !candidates.isEmpty else { return }
         let roots = LostBlockForest.assemble(candidates)
@@ -387,7 +368,6 @@ final class WorkspaceWindow {
         guard openDocument?.url == url else { return }
 
         var restored = 0
-        var restoredHashes: Set<String> = []
         for root in roots {
             guard openDocument?.url == url else { return }
             let fresh = root.block.withFreshIDs()
@@ -400,11 +380,7 @@ final class WorkspaceWindow {
             let siblings = parentID.flatMap(doc.find)?.children ?? doc.children
             doc.insertSubtrees([fresh], at: DropPath(parent: parentID, position: siblings.count))
             restored += root.hashes.count
-            restoredHashes.formUnion(root.hashes)
         }
-        // Remember these for the rest of the session so a re-fire (post-save
-        // echo, iCloud stomp, file-presenter burst, …) can't re-insert them.
-        autoRestoredHashes[url, default: []].formUnion(restoredHashes)
         guard restored > 0 else { return }
         doc.enforceHeadingContainment()
         doc.title = Document.deriveTitle(

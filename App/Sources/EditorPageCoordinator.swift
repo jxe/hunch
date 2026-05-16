@@ -84,6 +84,12 @@ final class EditorPageCoordinator: EditorHost {
         window.markEdited()
     }
 
+    func purgeAtomicHash(_ hash: String) {
+        guard let clamshell = workspace.clamshell else { return }
+        let rel = clamshell.relativePath(of: url)
+        Task { try? await clamshell.purgeHash(hash, in: rel) }
+    }
+
     func onBlur() {
         Task { await window.saveNow() }
     }

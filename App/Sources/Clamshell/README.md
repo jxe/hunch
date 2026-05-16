@@ -51,8 +51,8 @@ JSON objects, one per line, append-only. Two record kinds, distinguished
 by the `op` field:
 
 ```jsonc
-{"op":"add","h":"<full-sha256>","p":"<parent-hash>"|null,"m":"<atomic markdown>","t":1714867200.123}
-{"op":"purge","h":"<full-sha256>","t":1714867200.123}
+{"op":"add","h":"<full-sha256>","p":"<parent-hash>"|null,"m":"<atomic markdown>","t":1714867200.123,"c":42}
+{"op":"purge","h":"<full-sha256>","t":1714867200.123,"c":43}
 ```
 
 - **`add`** is appended the first time this device observes a given
@@ -62,12 +62,20 @@ by the `op` field:
   observation, or `null` for top-level. `m` is the block's atomic
   markdown — the block on its own, no children. Write-once: subsequent
   saves with the same `h` on the same device append nothing.
-- **`purge`** is a tombstone. Appended when the user dismisses a
-  recovered entry from the Recover sheet. Suppresses `h` from recovery
-  results across every device's log union.
-- **`t`** is Unix seconds with millisecond precision. On hash
-  collisions across devices' logs, the latest `t` wins for parent
-  metadata.
+- **`purge`** is a tombstone. Appended explicitly by the editor at
+  the moment of a structural removal (`EditorView.mutate` diffs
+  pre/post block ids and fires one purge per removed id), or by the
+  user dismissing a recovered entry from the Recover sheet.
+  Suppresses `h` from recovery results across every device's log
+  union when its `(c, device-id)` is the latest pair for that hash.
+- **`t`** is Unix seconds with millisecond precision. Preserved for
+  display and the `since:` filter on `listPurgedBlocks`. Not the
+  order resolver.
+- **`c`** is a per-page Lamport counter, monotonically incrementing
+  per device. Records compare on `(c, device-id)` lex; legacy
+  records (no `c`) fall back to `t` and always lose to modern
+  records in mixed comparisons — they predate the upgrade in any
+  realistic timeline.
 
 Recovery for a page reads every device's log under
 `.history/<page-rel>/`, unions them, drops anything tombstoned,
@@ -123,9 +131,9 @@ by an earlier (now-retired) per-block-pool design.
 | Search | `searchPages(in:query:excluding:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Recovery log | `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)`, `purgeLostBlock(_:)`, `purgeHash(_:in:)`, `unpurgeBlock(_:in:withParent:)`, `parentHash(forPage:hash:)` |
-| iCloud merge | `resolveConflictVersions(at:againstLive:resolvingSubpageTitle:)`, `runAutoTombstoneMigrationIfNeeded()` |
+| iCloud merge | `resolveConflictVersions(at:againstLive:resolvingSubpageTitle:)` |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
-| Metadata | `homeRelativePath` (read/write), `autoTombstoneMigrationDone`, `root` |
+| Metadata | `homeRelativePath` (read/write), `root` |
 
 The `resolvingSubpageTitle: (String) -> String?` callback on the write
 paths is used by the serializer to refresh stale subpage-link titles
@@ -150,9 +158,13 @@ content, not many small files.
 **Cross-device merging happens on read, not write.** Each device only
 ever writes its own `<device-id>.jsonl`. Other devices' files are
 read but never modified. Recovery's union-by-hash collapses
-duplicates (latest `t` wins for parent metadata). Tombstones from any
-device suppress the hash globally. There are no cross-device write
-contention windows and no merge-on-read sibling-file plumbing.
+duplicates: records are compared on `(c, device-id)` lex (Lamport
+counter, clock-skew-immune); legacy records without a `c` fall back
+to `t`, and a modern record always strictly succeeds a legacy one in
+the order. Tombstones from any device suppress the hash globally
+when their `(c, device-id)` is the latest for that hash. There are no
+cross-device write contention windows and no merge-on-read
+sibling-file plumbing.
 
 **Live filtering.** A pool entry is only "lost" if its hash isn't in
 the live page's atomic-block set right now — re-creating the same
@@ -203,35 +215,29 @@ through the same save path. Driven by `Workspace` at scan time (closed
 pages) and by `WorkspaceWindow.handlePresentedFileChange` for the open
 page on file-presenter wakeups.
 
-**Intentional deletions stay recoverable.** Auto-tombstoned and
-manually-purged hashes are tracked separately from "lost" entries —
-the log union remembers both the latest record (purge) and the
-latest prior `add` (carrying markdown + parent). `listPurgedBlocks`
-surfaces them so the user can bring back something they deleted on
-purpose; `unpurgeBlock` appends a fresh `add` with a new timestamp,
-which beats the prior purge under latest-`t` semantics and lifts
-the tombstone from the union. Defaults to a 30-day window for
-surface area; pass `since: nil` to see everything.
+**Deletes are explicit, not inferred.** The editor calls
+`purgeHash(_:in:)` from inside `EditorView.mutate(_:_:)` for every
+block id present before a structural mutation but absent after.
+Save paths emit only `add` records; they never infer tombstones from
+diffing prior state. Consequences:
+- Typing inside a block (same id, different hash) does NOT fire a
+  purge — text editing is not deletion.
+- External edits to the `.md` (iCloud / other markdown apps) surface
+  the missing blocks as "lost" in the Recover sheet, never as
+  "Deleted on purpose" — Hunch can't infer intent from a write it
+  didn't author.
+- A block dragged across pages purges from the source's log; the
+  destination's save adds it cleanly.
 
-**`LostBlock.everPurged` flags ever-tombstoned content.** A lost
-block is "ever purged" if any device's log has recorded a `purge`
-for the hash, even when a later `add` overrode it under latest-`t`
-semantics. The host's auto-restore filters these out — they only
-come back when the user explicitly clicks them in the Recover
-sheet. Keeps auto-restore principled: it brings back content that
-went missing without an intent signal, never content the user (or
-another device) deliberately removed.
-
-**Auto-tombstone migration runs once per Clamshell.** Until the
-`autoTombstoneMigrationDone` flag in `.clamshell.json` is set, the
-recovery log can hold orphan `add` records from before auto-tombstoning
-was wired up. `runAutoTombstoneMigrationIfNeeded()` iterates pages,
-auto-tombstones any of *this device's* log entries whose hashes aren't
-live in the page or any other device's log, and sets the flag.
-Idempotent; subsequent calls early-return. The host calls it on
-workspace open. Auto-restore-on-page-open
-(`WorkspaceWindow.autoRestoreLostBlocksOnOpen`) is gated on this flag
-to avoid resurrecting legacy orphans.
+**Intentional deletions stay recoverable.** Manually-purged hashes
+are tracked alongside "lost" entries — the log union remembers both
+the latest record (purge) and the latest prior `add` (carrying
+markdown + parent). `listPurgedBlocks` surfaces them so the user
+can bring back something they deleted on purpose; `unpurgeBlock`
+appends a fresh `add` whose counter beats the prior purge under
+`(c, device-id)` lex, lifting the tombstone from the union.
+Defaults to a 30-day window for surface area; pass `since: nil`
+to see everything.
 
 ---
 

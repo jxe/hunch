@@ -97,22 +97,19 @@ struct RecoveryLogTests {
     // MARK: - Recovery via Clamshell
 
     @MainActor
-    /// With auto-tombstone-on-save, an in-app deletion + save tombstones the
-    /// removed block immediately. The Recover sheet no longer surfaces it —
-    /// deletion is intentional, the log union's latest record for that hash
-    /// is a `purge`.
-    @Test func deletedBlockAutoTombstonesAndDoesNotSurface() async throws {
+    /// When the editor records an explicit purge for a block the user deleted,
+    /// the Recover sheet's "Lost" list no longer surfaces it — the log union's
+    /// latest record for that hash is a `purge`.
+    @Test func explicitPurgeSuppressesDeletedBlock() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
+        let lose = Block.paragraph(text: attr("Lose"))
         try clamshell.writeImmediately(Document(
             url: url, title: "p",
-            children: [
-                Block.paragraph(text: attr("Keep")),
-                Block.paragraph(text: attr("Lose"))
-            ],
+            children: [Block.paragraph(text: attr("Keep")), lose],
             modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
@@ -122,10 +119,12 @@ struct RecoveryLogTests {
             children: [Block.paragraph(text: attr("Keep"))],
             modificationDate: nil
         ))
+        // The editor would call `purgeHash` for the removed block — simulate it.
+        try await clamshell.purgeHash(BlockFingerprint.atomicHash(lose), in: "p.md")
         try await Task.sleep(for: .milliseconds(80))
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
-        #expect(lost.isEmpty, "auto-tombstone should suppress the deleted block")
+        #expect(lost.isEmpty, "explicit purge should suppress the deleted block")
     }
 
     /// External (non-Hunch) loss of a block whose log entry exists from a
@@ -157,31 +156,29 @@ struct RecoveryLogTests {
         #expect(lost.first?.markdown.contains("Lose") == true)
     }
 
-    /// A delete-then-recreate cycle through the save path: the delete writes
-    /// a `purge`, the recreate writes a fresh `add` with a newer `t`. The
+    /// Delete-then-recreate cycle: the editor's explicit `purgeHash` writes a
+    /// `purge`, the recreate writes a fresh `add` with a newer `t`. The
     /// latest-wins union picks the new add → the block is alive again and
-    /// the log union exposes no lost entry. (Pre-auto-tombstone this test
-    /// also checked the intermediate "deleted = lost" state; that's now
-    /// covered by `deletedBlockAutoTombstonesAndDoesNotSurface`.)
+    /// the log union exposes no lost entry.
     @MainActor
-    @Test func recreatedBlockOverridesAutoTombstone() async throws {
+    @Test func recreatedBlockOverridesExplicitPurge() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
+        let ghost = Block.paragraph(text: attr("ghost"))
         try clamshell.writeImmediately(Document(
-            url: url, title: "p",
-            children: [Block.paragraph(text: attr("ghost"))],
-            modificationDate: nil
+            url: url, title: "p", children: [ghost], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
         try clamshell.writeImmediately(Document(
             url: url, title: "p", children: [], modificationDate: nil
         ))
+        try await clamshell.purgeHash(BlockFingerprint.atomicHash(ghost), in: "p.md")
         try await Task.sleep(for: .milliseconds(80))
 
-        // Intermediate: auto-tombstoned, so nothing is "lost".
+        // Intermediate: explicitly purged, so nothing is "lost".
         var lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty)
 
@@ -355,45 +352,6 @@ struct RecoveryLogTests {
         #expect(lost.contains(where: { $0.hash == BlockFingerprint.atomicHash(block) }) == false)
     }
 
-    /// Auto-tombstone migration: workspace with pre-existing log entries
-    /// whose blocks are no longer in `.md` (legacy state) gets retroactive
-    /// tombstones written for *our own* log's orphans on first run. After
-    /// migration, those hashes don't appear as lost.
-    @MainActor
-    @Test func autoTombstoneMigrationRetroactivelyTombstonesOwnOrphans() async throws {
-        let root = makeWorkspace()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let clamshell = Clamshell(root: root)
-        let url = root.appendingPathComponent("p.md")
-
-        // Seed: page with two blocks, both recorded in our log.
-        try clamshell.writeImmediately(Document(
-            url: url, title: "p",
-            children: [
-                Block.paragraph(text: attr("Alpha")),
-                Block.paragraph(text: attr("Beta"))
-            ],
-            modificationDate: nil
-        ))
-        try await Task.sleep(for: .milliseconds(40))
-
-        // Simulate legacy state: externally drop Beta from .md without a
-        // matching tombstone. (This is what saves looked like before the
-        // auto-tombstone feature.) Use a fresh Clamshell so its
-        // lastKnownDiskHashes cache doesn't paper over the drop.
-        try "# p\n\nAlpha\n".write(to: url, atomically: true, encoding: .utf8)
-
-        // Wipe the migration flag, if any, by reopening with no metadata.
-        let fresh = Clamshell(root: root)
-        let beforeLost = await fresh.listLostBlocks(filter: .page(relativePath: "p.md"))
-        #expect(beforeLost.contains(where: { $0.markdown.contains("Beta") }))
-
-        await fresh.runAutoTombstoneMigrationIfNeeded()
-        let afterLost = await fresh.listLostBlocks(filter: .page(relativePath: "p.md"))
-        #expect(afterLost.isEmpty, "migration should have tombstoned Beta")
-        #expect(fresh.autoTombstoneMigrationDone)
-    }
-
     @MainActor
     @Test func clamshellInitDeletesLegacyBlocksDir() async throws {
         let root = makeWorkspace()
@@ -413,22 +371,21 @@ struct RecoveryLogTests {
 
     // MARK: - Purged blocks (intentional deletions, restorable)
 
-    /// After an in-app delete + save, the hash's latest record is a purge.
-    /// `enumeratePurged` surfaces it with the markdown reconstructed from
-    /// the prior `add`, so the Recover sheet can offer to bring it back.
+    /// After the editor explicitly purges a block, the hash's latest record
+    /// is a purge. `enumeratePurged` surfaces it with the markdown
+    /// reconstructed from the prior `add`, so the Recover sheet can offer to
+    /// bring it back.
     @MainActor
-    @Test func enumeratePurgedSurfacesAutoTombstonedBlocks() async throws {
+    @Test func enumeratePurgedSurfacesExplicitlyPurgedBlocks() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
+        let lose = Block.paragraph(text: attr("Lose"))
         try clamshell.writeImmediately(Document(
             url: url, title: "p",
-            children: [
-                Block.paragraph(text: attr("Keep")),
-                Block.paragraph(text: attr("Lose"))
-            ],
+            children: [Block.paragraph(text: attr("Keep")), lose],
             modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
@@ -438,6 +395,7 @@ struct RecoveryLogTests {
             children: [Block.paragraph(text: attr("Keep"))],
             modificationDate: nil
         ))
+        try await clamshell.purgeHash(BlockFingerprint.atomicHash(lose), in: "p.md")
         try await Task.sleep(for: .milliseconds(80))
 
         let purged = await clamshell.listPurgedBlocks(
@@ -489,22 +447,17 @@ struct RecoveryLogTests {
         #expect(all.contains(where: { $0.hash == h }))
     }
 
-    /// A block that's currently surfaced as "lost" carries `everPurged` =
-    /// true if any purge record exists for the hash on any device's log —
-    /// even when a later `add` overrode it under latest-`t` and the block
-    /// is back in the union as "lost". Auto-restore uses this flag to
-    /// avoid resurrecting things the user (or another device) once
-    /// deliberately tossed.
+    /// A later `add` (e.g. from another device) overrides an earlier `purge`
+    /// under latest-`t` semantics — the block is alive in the union again
+    /// and surfaces as "lost" when the live `.md` doesn't yet include it.
+    /// No sticky poison-pill carries the historical purge forward.
     @MainActor
-    @Test func everPurgedReflectsHistoricalTombstones() async throws {
+    @Test func laterAddOverridesEarlierPurgeInUnion() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
-        // Round-trip: add → save (no auto-tombstone yet because lastKnown
-        // is empty), then drop and save (auto-tombstone fires), then
-        // externally re-introduce the same hash so it surfaces as lost.
         let block = Block.paragraph(text: attr("phoenix"))
         try clamshell.writeImmediately(Document(
             url: url, title: "p", children: [block], modificationDate: nil
@@ -513,10 +466,12 @@ struct RecoveryLogTests {
         try clamshell.writeImmediately(Document(
             url: url, title: "p", children: [], modificationDate: nil
         ))
+        try await clamshell.purgeHash(BlockFingerprint.atomicHash(block), in: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         // External writer brings the hash back into the log via a foreign
-        // device's add at a newer timestamp than our purge.
+        // device's add with a counter strictly greater than anything our
+        // device has minted on this page.
         let h = BlockFingerprint.atomicHash(block)
         let m = BlockSerializer.serializeAtomic(block)
         let escaped = m
@@ -524,13 +479,13 @@ struct RecoveryLogTests {
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\n", with: "\\n")
         let now = Date().timeIntervalSince1970
-        let line = "{\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":\(now + 10)}\n"
+        let line = "{\"c\":9999,\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":\(now + 10)}\n"
         let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
         try line.write(to: foreignURL, atomically: true, encoding: .utf8)
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
-        let entry = try #require(lost.first(where: { $0.hash == h }))
-        #expect(entry.everPurged, "purge record from our own log should keep everPurged = true")
+        #expect(lost.contains(where: { $0.hash == h }),
+                "later add should win over earlier purge → hash surfaces as lost")
     }
 
     /// `unpurgeBlock` appends a fresh `add` with a current timestamp. The
@@ -543,15 +498,17 @@ struct RecoveryLogTests {
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
+        let doomed = Block.paragraph(text: attr("doomed"))
         try clamshell.writeImmediately(Document(
             url: url, title: "p",
-            children: [Block.paragraph(text: attr("doomed"))],
+            children: [doomed],
             modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
         try clamshell.writeImmediately(Document(
             url: url, title: "p", children: [], modificationDate: nil
         ))
+        try await clamshell.purgeHash(BlockFingerprint.atomicHash(doomed), in: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         // It's now purged.
@@ -572,5 +529,121 @@ struct RecoveryLogTests {
             since: nil
         )
         #expect(purgedAfter.isEmpty)
+    }
+
+    // MARK: - Lamport counter
+
+    /// Each record this device writes carries a per-page counter, monotonic
+    /// across the session. The first call mints `c == 1`, subsequent calls
+    /// strictly increment. Hydrates lazily from the union of every device's
+    /// log on first observation.
+    @MainActor
+    @Test func recordsCarryMonotonicLamportCounter() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        try await log.record(page: "p.md", blocks: [
+            .paragraph(text: attr("first")),
+            .paragraph(text: attr("second"))
+        ])
+        try await log.record(page: "p.md", blocks: [
+            .paragraph(text: attr("first")),
+            .paragraph(text: attr("second")),
+            .paragraph(text: attr("third"))
+        ])
+
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        let counters = lines.compactMap { line -> UInt64? in
+            guard let data = String(line).data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            return (obj["c"] as? UInt64) ?? (obj["c"] as? Int).flatMap { UInt64(exactly: $0) }
+        }
+        #expect(counters.count == 3, "three add records")
+        #expect(counters == counters.sorted(), "counters strictly monotonic")
+        #expect(Set(counters).count == counters.count, "no duplicate counters")
+    }
+
+    /// When two devices write the same hash, the higher-counter record wins
+    /// regardless of wall-clock skew. This is the clock-skew-immunity
+    /// property: a slow-clock device whose `t` is small still wins on `c`.
+    @MainActor
+    @Test func unionPrefersHigherCounterOverWallClock() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+
+        let block = Block.paragraph(text: attr("phoenix"))
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p", children: [block], modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(40))
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p", children: [], modificationDate: nil
+        ))
+        try await clamshell.purgeHash(BlockFingerprint.atomicHash(block), in: "p.md")
+        try await Task.sleep(for: .milliseconds(40))
+
+        // Foreign device: counter 9999 but wall-clock 100s in the *past*.
+        let h = BlockFingerprint.atomicHash(block)
+        let m = BlockSerializer.serializeAtomic(block)
+        let escaped = m
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let pastT = Date().timeIntervalSince1970 - 100
+        let line = "{\"c\":9999,\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":\(pastT)}\n"
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try line.write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
+        #expect(lost.contains(where: { $0.hash == h }),
+                "higher counter wins regardless of past wall-clock t")
+    }
+
+    /// Modern records (with `c`) always beat legacy records (without `c`)
+    /// in the union, regardless of `t`. This is the migration story: legacy
+    /// records pre-date the upgrade and can never appear strictly after a
+    /// modern one in a coherent timeline.
+    @MainActor
+    @Test func modernRecordBeatsLegacyRegardlessOfTime() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+
+        // Seed with an empty live page so the live-set excludes nothing.
+        try clamshell.writeImmediately(Document(
+            url: url, title: "p", children: [], modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(40))
+
+        // Plant a legacy add with t = far future (no `c` field).
+        let block = Block.paragraph(text: attr("legacy-ghost"))
+        let h = BlockFingerprint.atomicHash(block)
+        let m = BlockSerializer.serializeAtomic(block)
+        let escaped = m
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let futureT = Date().timeIntervalSince1970 + 10_000
+        let legacyAdd = "{\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":\(futureT)}\n"
+        let legacyURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "legacy-dev")
+        try FileManager.default.createDirectory(
+            at: legacyURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try legacyAdd.write(to: legacyURL, atomically: true, encoding: .utf8)
+
+        // Now our device purges. The purge record carries `c`.
+        try await clamshell.purgeHash(h, in: "p.md")
+        try await Task.sleep(for: .milliseconds(40))
+
+        let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
+        #expect(!lost.contains(where: { $0.hash == h }),
+                "modern purge (with c) wins over legacy add (no c) regardless of t")
     }
 }

@@ -935,10 +935,60 @@ public struct EditorView: View {
     /// Thin wrapper over `document.transaction`: that handles flushing in-flight
     /// text via `preMutation`, snapshotting `[Block]` for undo, enforcing
     /// heading containment, and registering the inverse. This caller adds the
-    /// host-dirty notification on top.
+    /// host-dirty notification on top — and walks the pre/post tree to fire
+    /// `host.purgeAtomicHash` for every block id removed by the mutation
+    /// (the patch-theoretic equivalent of "user deleted this content").
+    /// Typing-path text changes go through `document.transaction` directly,
+    /// not through this wrapper, so the typing burst won't fire purges even
+    /// though it changes a block's hash.
     func mutate(_ name: String, _ change: () -> Void) {
-        document.transaction(name: name) { _ in change() }
+        var preByID: [BlockID: String] = [:]
+        document.transaction(name: name) { _ in
+            // Capture pre-mutation hashes inside the transaction, after
+            // `preMutation` has flushed any in-flight typing into the model.
+            // This gives the *current* hash of every block right at the moment
+            // of mutation — so a delete-while-typing fires a purge for the
+            // text the user actually had, not a stale pre-typing version.
+            preByID = Self.idToAtomicHash(document.children)
+            change()
+        }
         host.markDocumentDirty()
+        for hash in Self.removedHashes(preByID: preByID, post: document.children) {
+            host.purgeAtomicHash(hash)
+        }
+    }
+
+    /// Block ids that were present in `preByID` but are no longer present
+    /// anywhere in `post`'s tree → their atomic hashes, in deterministic order.
+    /// Exposed for unit testing; production callers use `mutate(_:_:)`.
+    static func removedHashes(preByID: [BlockID: String], post: [Block]) -> [String] {
+        var postIDs: Set<BlockID> = []
+        collectIDs(post, into: &postIDs)
+        return preByID
+            .filter { !postIDs.contains($0.key) }
+            .sorted { $0.value < $1.value }
+            .map(\.value)
+    }
+
+    /// Walk the tree, mapping each `BlockID` to its current atomic hash.
+    static func idToAtomicHash(_ blocks: [Block]) -> [BlockID: String] {
+        var out: [BlockID: String] = [:]
+        collectIDHashes(blocks, into: &out)
+        return out
+    }
+
+    private static func collectIDHashes(_ blocks: [Block], into out: inout [BlockID: String]) {
+        for block in blocks {
+            out[block.id] = BlockFingerprint.atomicHash(block)
+            collectIDHashes(block.children, into: &out)
+        }
+    }
+
+    private static func collectIDs(_ blocks: [Block], into out: inout Set<BlockID>) {
+        for block in blocks {
+            out.insert(block.id)
+            collectIDs(block.children, into: &out)
+        }
     }
 
     /// Consume a host-supplied append payload (via `EditorState.appendBlocks`).

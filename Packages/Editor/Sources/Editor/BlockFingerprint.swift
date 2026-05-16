@@ -1,6 +1,5 @@
 import Foundation
 import CryptoKit
-import Editor
 
 /// Stable content-identity for a block. `BlockID` is a fresh UUID on every parse, so
 /// it can't be used to ask "is this the same logical block as one in the previous
@@ -10,8 +9,8 @@ import Editor
 /// Equal fingerprints ⇒ blocks are content-equivalent (modulo `BlockID` and tree
 /// position). Depth is structural rather than content, so it's intentionally NOT
 /// included — moving a paragraph up an indent level shouldn't change its identity.
-enum BlockFingerprint {
-    static func compute(_ block: Block) -> String {
+public enum BlockFingerprint {
+    public static func compute(_ block: Block) -> String {
         let digest = sha256(block)
         // Take the first 8 bytes → 16 hex chars → 64-bit identity. Plenty of entropy
         // for at most a few hundred records per page.
@@ -19,8 +18,8 @@ enum BlockFingerprint {
     }
 
     /// Full SHA-256 hex of the same canonical content `compute` hashes — used as
-    /// the on-disk filename in the per-page block pool (`.blocks/<rel>/<hash>.md`).
-    static func atomicHash(_ block: Block) -> String {
+    /// the on-disk identity for a block in the recovery log (`h` field).
+    public static func atomicHash(_ block: Block) -> String {
         sha256(block).map { String(format: "%02x", $0) }.joined()
     }
 

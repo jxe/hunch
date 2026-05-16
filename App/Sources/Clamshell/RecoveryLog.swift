@@ -13,13 +13,15 @@ import Editor
 ///
 /// Each line is one record:
 ///
-///     {"op":"add","h":"<full-sha256>","p":"<parent-hash>"|null,"m":"<atomic markdown>","t":<unix-seconds>}
-///     {"op":"purge","h":"<full-sha256>","t":<unix-seconds>}
+///     {"op":"add","h":"<full-sha256>","p":"<parent-hash>"|null,"m":"<atomic markdown>","t":<unix-seconds>,"c":<lamport-counter>}
+///     {"op":"purge","h":"<full-sha256>","t":<unix-seconds>,"c":<lamport-counter>}
 ///
 /// `add` is appended on first observation of `h` on this device. `p` is the
 /// parent hash at first observation (may go stale if the block later moves).
-/// `purge` is a tombstone — it suppresses `h` from recovery results across
-/// every device's log union, latest-`t` wins.
+/// `purge` is a tombstone. The union orders records by `(c, device-id)` lex
+/// where both have `c` (Lamport: clock-skew-immune), falling back to `t` for
+/// legacy records written before this field was added. Wall-clock `t` is
+/// preserved for display and the `since:` filter on `listPurgedBlocks`.
 public actor RecoveryLog {
     public static let directoryName = ".history"
     private static let logExtension = "jsonl"
@@ -33,6 +35,13 @@ public actor RecoveryLog {
     /// our own log; subsequent calls are pure in-memory checks. Eliminates
     /// per-keystroke file I/O on the steady-state save path.
     private var ourDeviceHashes: [String: Set<String>] = [:]
+
+    /// Per-page next-counter value to mint on the next write. Hydrated lazily
+    /// from the union of every device's log so our new records' counters
+    /// strictly exceed anything we've observed (modulo concurrent writes from
+    /// other devices we haven't seen yet, which the latest-counter-wins union
+    /// resolves on read).
+    private var nextCounter: [String: UInt64] = [:]
 
     public init(
         workspaceRoot: URL,
@@ -64,24 +73,29 @@ public actor RecoveryLog {
         var known = try ensureDeviceHashesLoaded(for: rel)
         var newRecords: [Wire] = []
         let now = Date().timeIntervalSince1970
+        var counter = try ensureCounterLoaded(for: rel)
         collectAdds(
             blocks: blocks,
             parentHash: nil,
             known: &known,
             now: now,
+            counter: &counter,
             into: &newRecords
         )
         for hash in removing {
-            newRecords.append(Wire(op: "purge", h: hash, p: nil, m: nil, t: now))
+            newRecords.append(Wire(op: "purge", h: hash, p: nil, m: nil, t: now, c: counter))
+            counter += 1
             known.remove(hash)
         }
         guard !newRecords.isEmpty else {
             ourDeviceHashes[rel] = known
+            nextCounter[rel] = counter
             return
         }
         let lines = newRecords.compactMap(Self.encode).joined(separator: "\n") + "\n"
         try appendLines(lines, to: ourLogURL(for: rel))
         ourDeviceHashes[rel] = known
+        nextCounter[rel] = counter
     }
 
     private func collectAdds(
@@ -89,6 +103,7 @@ public actor RecoveryLog {
         parentHash: String?,
         known: inout Set<String>,
         now: TimeInterval,
+        counter: inout UInt64,
         into out: inout [Wire]
     ) {
         for block in blocks {
@@ -99,14 +114,17 @@ public actor RecoveryLog {
                     h: h,
                     p: parentHash,
                     m: BlockSerializer.serializeAtomic(block),
-                    t: now
+                    t: now,
+                    c: counter
                 ))
+                counter += 1
             }
             collectAdds(
                 blocks: block.children,
                 parentHash: h,
                 known: &known,
                 now: now,
+                counter: &counter,
                 into: &out
             )
         }
@@ -126,7 +144,7 @@ public actor RecoveryLog {
         let live = liveAtomicHashes(forPage: rel)
         return byHash.values
             .filter { $0.latest.op == "add" && !live.contains($0.latest.h) }
-            .map { LostBlock(record: $0.latest, source: rel, everPurged: $0.everPurged) }
+            .map { LostBlock(record: $0.latest, source: rel) }
             .sorted { $0.recordedAt > $1.recordedAt }
     }
 
@@ -188,9 +206,18 @@ public actor RecoveryLog {
     /// reads union all tombstones across devices (any device can purge any
     /// hash; latest write wins).
     public func purge(page rel: String, hash: String) throws {
-        let record = Wire(op: "purge", h: hash, p: nil, m: nil, t: Date().timeIntervalSince1970)
+        let counter = try ensureCounterLoaded(for: rel)
+        let record = Wire(
+            op: "purge",
+            h: hash,
+            p: nil,
+            m: nil,
+            t: Date().timeIntervalSince1970,
+            c: counter
+        )
         guard let line = Self.encode(record) else { return }
         try appendLines(line + "\n", to: ourLogURL(for: rel))
+        nextCounter[rel] = counter + 1
     }
 
     /// Recorded parent hash for `hash` on `page`, by reading every device's
@@ -213,18 +240,21 @@ public actor RecoveryLog {
     /// re-emit.
     public func reAdd(page rel: String, block: Block, parentHash: String?) throws {
         var known = try ensureDeviceHashesLoaded(for: rel)
+        let counter = try ensureCounterLoaded(for: rel)
         let h = BlockFingerprint.atomicHash(block)
         let record = Wire(
             op: "add",
             h: h,
             p: parentHash,
             m: BlockSerializer.serializeAtomic(block),
-            t: Date().timeIntervalSince1970
+            t: Date().timeIntervalSince1970,
+            c: counter
         )
         guard let line = Self.encode(record) else { return }
         try appendLines(line + "\n", to: ourLogURL(for: rel))
         known.insert(h)
         ourDeviceHashes[rel] = known
+        nextCounter[rel] = counter + 1
     }
 
     /// Combined view used by the iCloud conflict-merge path: tombstoned hashes
@@ -268,14 +298,6 @@ public actor RecoveryLog {
         }
     }
 
-    /// Hashes our own device's log has recorded as `add`s for `page`. Used
-    /// by the auto-tombstone migration to compute which of our own past
-    /// observations don't appear in the current `.md` (and should be
-    /// retroactively tombstoned so they don't resurrect on next open).
-    public func ourAddedHashes(page rel: String) throws -> Set<String> {
-        try ensureDeviceHashesLoaded(for: rel)
-    }
-
     // MARK: - Internals: hash cache
 
     private func ensureDeviceHashesLoaded(for rel: String) throws -> Set<String> {
@@ -288,6 +310,24 @@ public actor RecoveryLog {
         }
         ourDeviceHashes[rel] = out
         return out
+    }
+
+    /// Lazy hydration of the next Lamport counter for the page. On first call,
+    /// scans every device's log to compute the max counter ever observed; new
+    /// records get `max + 1` and the cache is bumped accordingly. nil counters
+    /// in legacy records (pre-Lamport) don't affect the bump; they sort below
+    /// any modern record under the union comparator.
+    private func ensureCounterLoaded(for rel: String) throws -> UInt64 {
+        if let cached = nextCounter[rel] { return cached }
+        var maxObserved: UInt64 = 0
+        for url in deviceLogURLs(for: rel) {
+            for record in readRecords(at: url) {
+                if let c = record.c { maxObserved = max(maxObserved, c) }
+            }
+        }
+        let next = maxObserved + 1
+        nextCounter[rel] = next
+        return next
     }
 
     // MARK: - Internals: file I/O
@@ -359,38 +399,56 @@ public actor RecoveryLog {
     fileprivate struct HashEntry: Sendable {
         let latest: Wire
         let latestAdd: Wire?
-        /// Whether any `purge` record for this hash has ever appeared on
-        /// any device's log for this page. Even if a later `add` overrode
-        /// the purge under latest-`t` semantics (so the hash is currently
-        /// live in the union), `everPurged` stays true — auto-restore
-        /// uses this to refuse re-inserting content that was ever
-        /// intentionally removed, deferring those to the manual Recover
-        /// sheet.
-        let everPurged: Bool
+    }
+
+    /// True when `a` strictly succeeds `b` in the partial order. Both records
+    /// with a Lamport counter compare on `(c, device)` lex; both without
+    /// fall back to `t`; mixed records have the counter-bearing one win
+    /// (modern records strictly dominate legacy ones — legacy records pre-date
+    /// the upgrade in any realistic scenario).
+    nonisolated private static func isStrictlyAfter(
+        _ a: Wire, on aDevice: String,
+        than b: Wire, on bDevice: String
+    ) -> Bool {
+        if let ac = a.c, let bc = b.c {
+            if ac != bc { return ac > bc }
+            return aDevice > bDevice
+        }
+        if a.c != nil { return true }
+        if b.c != nil { return false }
+        return a.t > b.t
     }
 
     nonisolated fileprivate func unionLatestWithAdd(page rel: String) -> [String: HashEntry] {
-        var byHash: [String: HashEntry] = [:]
+        var latestByHash: [String: (record: Wire, device: String)] = [:]
+        var latestAddByHash: [String: (record: Wire, device: String)] = [:]
         for url in deviceLogURLs(for: rel) {
+            let device = url.deletingPathExtension().lastPathComponent
             for record in readRecords(at: url) {
                 guard record.op == "add" || record.op == "purge" else { continue }
-                let existing = byHash[record.h]
-                let newLatest = (existing?.latest).map { record.t > $0.t ? record : $0 } ?? record
-                let newLatestAdd: Wire?
-                if record.op == "add" {
-                    newLatestAdd = (existing?.latestAdd).map { record.t > $0.t ? record : $0 } ?? record
+                if let existing = latestByHash[record.h] {
+                    if Self.isStrictlyAfter(record, on: device, than: existing.record, on: existing.device) {
+                        latestByHash[record.h] = (record, device)
+                    }
                 } else {
-                    newLatestAdd = existing?.latestAdd
+                    latestByHash[record.h] = (record, device)
                 }
-                let everPurged = (existing?.everPurged ?? false) || record.op == "purge"
-                byHash[record.h] = HashEntry(
-                    latest: newLatest,
-                    latestAdd: newLatestAdd,
-                    everPurged: everPurged
-                )
+                if record.op == "add" {
+                    if let existingAdd = latestAddByHash[record.h] {
+                        if Self.isStrictlyAfter(record, on: device, than: existingAdd.record, on: existingAdd.device) {
+                            latestAddByHash[record.h] = (record, device)
+                        }
+                    } else {
+                        latestAddByHash[record.h] = (record, device)
+                    }
+                }
             }
         }
-        return byHash
+        var out: [String: HashEntry] = [:]
+        for (hash, latest) in latestByHash {
+            out[hash] = HashEntry(latest: latest.record, latestAdd: latestAddByHash[hash]?.record)
+        }
+        return out
     }
 
     nonisolated private func deviceLogURLs(for rel: String) -> [URL] {
@@ -452,6 +510,10 @@ public actor RecoveryLog {
         let p: String?
         let m: String?
         let t: TimeInterval
+        /// Per-page Lamport counter. nil on legacy records written before
+        /// the field was added; modern reads bump local-counter past every
+        /// observed `c`, so subsequent writes monotonically dominate.
+        let c: UInt64?
     }
 
     nonisolated private static func encode(_ wire: Wire) -> String? {
@@ -480,23 +542,15 @@ public struct LostBlock: Sendable, Identifiable {
     public let parentHash: String?
     public let source: String
     public let recordedAt: Date
-    /// True if any device's log has ever recorded a `purge` for this hash
-    /// on this page — even if a later `add` overrode it under latest-`t`
-    /// semantics. Auto-restore filters these out (intentional deletions
-    /// are surfaced via the manual Recover sheet's "Deleted on purpose"
-    /// section instead). False for the typical cross-device "block from
-    /// another device that never landed here" case.
-    public let everPurged: Bool
 
     public var id: String { "\(source)|\(hash)" }
 
-    fileprivate init(record: RecoveryLog.Wire, source: String, everPurged: Bool) {
+    fileprivate init(record: RecoveryLog.Wire, source: String) {
         self.markdown = record.m ?? ""
         self.hash = record.h
         self.parentHash = record.p
         self.source = source
         self.recordedAt = Date(timeIntervalSince1970: record.t)
-        self.everPurged = everPurged
     }
 }
 
@@ -516,16 +570,14 @@ extension LostBlock {
         parentHash: String?,
         markdown: String,
         source: String,
-        recordedAt: Date,
-        everPurged: Bool = false
+        recordedAt: Date
     ) -> LostBlock {
         LostBlock(
             adaptedHash: hash,
             parentHash: parentHash,
             markdown: markdown,
             source: source,
-            recordedAt: recordedAt,
-            everPurged: everPurged
+            recordedAt: recordedAt
         )
     }
 
@@ -534,15 +586,13 @@ extension LostBlock {
         parentHash: String?,
         markdown: String,
         source: String,
-        recordedAt: Date,
-        everPurged: Bool
+        recordedAt: Date
     ) {
         self.markdown = markdown
         self.hash = adaptedHash
         self.parentHash = parentHash
         self.source = source
         self.recordedAt = recordedAt
-        self.everPurged = everPurged
     }
 }
 

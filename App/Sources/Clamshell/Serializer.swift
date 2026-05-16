@@ -60,9 +60,11 @@ public enum BlockSerializer {
             // An empty paragraph has no native markdown representation — blank lines
             // are block separators, not blocks. Emit U+00A0 (non-breaking space) on
             // its own line so the paragraph survives round-trip; the parser detects
-            // a single-NBSP paragraph and converts it back to empty.
+            // a single-NBSP paragraph and converts it back to empty. Whitespace-only
+            // bodies follow the same path — the hash normalizer treats them as
+            // empty, so serialize them the same way to keep the round-trip stable.
             let body = inlineString(text)
-            let line = body.isEmpty ? "\u{00A0}" : body
+            let line = body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "\u{00A0}" : body
             // Paragraphs cannot contain children today, but defensively serialize
             // any descendant tree for forward-compat.
             var s = prefix + line + "\n\n"
