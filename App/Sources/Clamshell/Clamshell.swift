@@ -247,13 +247,12 @@ public final class Clamshell {
         }
 
         let rel = relativePath(of: url)
-        let context = log.mergeContext(page: rel)
+        let intent = PatchEngine.intent(from: log.readJournal(page: rel))
 
-        let result = ConflictMerger.merge(
+        let result = PatchEngine.mergeConflict(
             survivor: survivorBlocks,
             alternates: alternateBlockLists,
-            tombstones: context.tombstones,
-            parentHashLookup: { hash in context.parentHashes[hash] }
+            intent: intent
         )
 
         Diag.merge.log("resolve url=\(url.lastPathComponent, privacy: .public) alternates=\(alternates.count, privacy: .public) salvaged=\(result.salvagedHashes.count, privacy: .public)")
@@ -434,26 +433,33 @@ public final class Clamshell {
         }
     }
 
-    /// Append a tombstone for `entry` against its source page in this
-    /// device's log. Subsequent `listLostBlocks` calls (on this device
-    /// and on any other device that syncs the tombstone) will exclude
-    /// the entry's hash.
-    public func purgeLostBlock(_ entry: LostBlock) async throws {
-        try await log.purge(page: entry.source, hash: entry.hash)
-    }
-
-    /// Hash-keyed tombstone variant. Used by the manual-restore path
-    /// when purging an entire restored subtree — the caller has the
-    /// page + hash set in hand but no `LostBlock` per descendant.
+    /// Tombstone `hash` against `page` on this device's log. Called by
+    /// the editor at mutation time for every block removed structurally,
+    /// and by the manual-restore path when sweeping the descendant set
+    /// of a restored subtree out of the Recover sheet.
     public func purgeHash(_ hash: String, in page: String) async throws {
         try await log.purge(page: page, hash: hash)
     }
 
-    /// Resolve a hash to its recorded parent hash via the per-device recovery
-    /// log union. Used by the restore flow's ancestor climb when the
-    /// immediate parent isn't alive in the page anymore.
-    public func parentHash(forPage page: String, hash: String) async -> String? {
-        await log.parentHash(page: page, hash: hash)
+    /// Read every device's per-page log and return as a `LogJournal` (engine
+    /// input). Callers that drive auto-restore or the Recover sheet via
+    /// `PatchEngine` use this to get a snapshot of the journal in one I/O
+    /// pass, then derive intent / classify lost / classify purged without
+    /// re-hitting disk.
+    nonisolated public func readJournal(forPage page: String) -> LogJournal {
+        log.readJournal(page: page)
+    }
+
+    /// Append engine-supplied observations as `add` records on this device's
+    /// log. Fire-and-forget: returns immediately; the actor-isolated append
+    /// runs on a background Task. Used by the reconcile path to absorb
+    /// bare-md content and external-editor additions into the journal.
+    @MainActor
+    public func appendObservations(_ observations: [PatchEngine.Observation], forPage page: String) {
+        guard !observations.isEmpty else { return }
+        Task { [log] in
+            try? await log.append(observations: observations, to: page)
+        }
     }
 
     /// Blocks the user (or auto-tombstone) deleted on purpose: the log

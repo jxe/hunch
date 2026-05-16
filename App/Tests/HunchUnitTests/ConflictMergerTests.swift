@@ -5,9 +5,7 @@ import Editor
 
 @Suite("ConflictMerger") @MainActor
 struct ConflictMergerTests {
-    private func hash(_ block: Block) -> String {
-        block.atomicHash
-    }
+    private func hash(_ block: Block) -> String { block.atomicHash }
 
     private func hashes(_ blocks: [Block]) -> Set<String> {
         var out: Set<String> = []
@@ -21,6 +19,31 @@ struct ConflictMergerTests {
         return out
     }
 
+    /// Build an `IntentState` directly from raw fields. `tombstones` marks
+    /// hashes as latest-record-is-purge; `parents` maps hash → recorded
+    /// parent hash via a synthetic `latestAdd`. The engine's `parent(of:)`
+    /// climbs both `.alive` and `.tombstoned` records' latestAdd parent, so
+    /// a tombstoned hash with a parent in this map still climbs correctly.
+    private func intent(
+        tombstones: [String] = [],
+        parents: [String: String] = [:]
+    ) -> IntentState {
+        let now = Date()
+        var byHash: [String: IntentState.Status] = [:]
+        for (child, parent) in parents {
+            byHash[child] = .alive(latestAdd: .init(
+                parent: parent, markdown: "", recordedAt: now
+            ))
+        }
+        for h in tombstones {
+            let latestAdd: IntentState.AddSnapshot? = parents[h].map {
+                .init(parent: $0, markdown: "", recordedAt: now)
+            }
+            byHash[h] = .tombstoned(latestAdd: latestAdd, purgedAt: now)
+        }
+        return IntentState(byHash: byHash)
+    }
+
     @Test func disjointBlocksGetSpliced() {
         let a: Block = .paragraph(text: AttributedString("A"))
         let b: Block = .paragraph(text: AttributedString("B"))
@@ -28,14 +51,10 @@ struct ConflictMergerTests {
         let d: Block = .paragraph(text: AttributedString("D"))
         let e: Block = .paragraph(text: AttributedString("E"))
 
-        let survivor: [Block] = [a, b, c]
-        let alternate: [Block] = [a, b, c, d, e]
-
-        let result = ConflictMerger.merge(
-            survivor: survivor,
-            alternates: [alternate],
-            tombstones: [],
-            parentHashLookup: { _ in nil }
+        let result = PatchEngine.mergeConflict(
+            survivor: [a, b, c],
+            alternates: [[a, b, c, d, e]],
+            intent: intent()
         )
 
         let mergedHashes = hashes(result.merged)
@@ -52,11 +71,10 @@ struct ConflictMergerTests {
         let dismissed: Block = .paragraph(text: AttributedString("Dismissed"))
         let kept: Block = .paragraph(text: AttributedString("Kept"))
 
-        let result = ConflictMerger.merge(
+        let result = PatchEngine.mergeConflict(
             survivor: [a],
             alternates: [[a, dismissed, kept]],
-            tombstones: [hash(dismissed)],
-            parentHashLookup: { _ in nil }
+            intent: intent(tombstones: [hash(dismissed)])
         )
 
         let mergedHashes = hashes(result.merged)
@@ -71,28 +89,26 @@ struct ConflictMergerTests {
         let missingMid: Block = .heading(level: .h2, text: AttributedString("Mid"))
         let leaf: Block = .paragraph(text: AttributedString("Leaf"))
 
-        // Survivor has only aliveAncestor; alternate has leaf with missingMid as
-        // its direct parent. The log says missingMid's parent is aliveAncestor —
-        // so leaf should land under aliveAncestor.
+        // Survivor has only aliveAncestor; alternate has leaf with missingMid
+        // as its direct parent. Intent says missingMid is tombstoned but its
+        // recorded parent is aliveAncestor — so leaf climbs through and
+        // lands under aliveAncestor.
         let alternate: Block = .heading(
             level: .h2,
             text: AttributedString("Mid"),
             children: [leaf]
         )
 
-        let result = ConflictMerger.merge(
+        let result = PatchEngine.mergeConflict(
             survivor: [aliveAncestor],
             alternates: [[alternate]],
-            tombstones: [hash(missingMid)],
-            parentHashLookup: { h in
-                if h == hash(missingMid) { return hash(aliveAncestor) }
-                return nil
-            }
+            intent: intent(
+                tombstones: [hash(missingMid)],
+                parents: [hash(missingMid): hash(aliveAncestor)]
+            )
         )
 
-        // Both missingMid (tombstoned, skipped) and leaf are accounted for.
         #expect(Set(result.salvagedHashes) == [hash(leaf)])
-        // Find leaf in merged tree and check its parent is aliveAncestor.
         var leafParent: BlockID?
         let doc = Document(url: URL(fileURLWithPath: "/x"), children: result.merged)
         doc.walk { block, _, parent in
@@ -109,11 +125,10 @@ struct ConflictMergerTests {
         let fromMac: Block = .paragraph(text: AttributedString("Mac"))
         let fromIPad: Block = .paragraph(text: AttributedString("iPad"))
 
-        let result = ConflictMerger.merge(
+        let result = PatchEngine.mergeConflict(
             survivor: [a],
             alternates: [[a, fromMac], [a, fromIPad]],
-            tombstones: [],
-            parentHashLookup: { _ in nil }
+            intent: intent()
         )
 
         #expect(Set(result.salvagedHashes) == [hash(fromMac), hash(fromIPad)])
@@ -126,28 +141,26 @@ struct ConflictMergerTests {
         let a: Block = .paragraph(text: AttributedString("A"))
         let b: Block = .paragraph(text: AttributedString("B"))
 
-        let result = ConflictMerger.merge(
+        let result = PatchEngine.mergeConflict(
             survivor: [a, b],
             alternates: [[a, b]],
-            tombstones: [],
-            parentHashLookup: { _ in nil }
+            intent: intent()
         )
 
         #expect(result.salvagedHashes.isEmpty)
     }
 
     @Test func childUnderLiveParentInAlternate() {
-        // Survivor has heading H with no children. Alternate has H with child X.
-        // X should land under H in the merged tree, not at the top level.
+        // Survivor has heading H with no children. Alternate has H with
+        // child X. X should land under H in the merged tree, not at top.
         let h: Block = .heading(level: .h1, text: AttributedString("H"))
         let x: Block = .paragraph(text: AttributedString("X"))
         let hWithX: Block = .heading(level: .h1, text: AttributedString("H"), children: [x])
 
-        let result = ConflictMerger.merge(
+        let result = PatchEngine.mergeConflict(
             survivor: [h],
             alternates: [[hWithX]],
-            tombstones: [],
-            parentHashLookup: { _ in nil }
+            intent: intent()
         )
 
         #expect(Set(result.salvagedHashes) == [hash(x)])
@@ -164,11 +177,10 @@ struct ConflictMergerTests {
         let a: Block = .paragraph(text: AttributedString("A"))
         let newTop: Block = .paragraph(text: AttributedString("NewTop"))
 
-        let result = ConflictMerger.merge(
+        let result = PatchEngine.mergeConflict(
             survivor: [a],
             alternates: [[a, newTop]],
-            tombstones: [],
-            parentHashLookup: { _ in nil }
+            intent: intent()
         )
 
         var newTopParent: BlockID?
@@ -176,6 +188,6 @@ struct ConflictMergerTests {
         doc.walk { block, _, parent in
             if hash(block) == hash(newTop) { newTopParent = parent }
         }
-        #expect(newTopParent == nil, "new top-level block should have nil parent")
+        #expect(newTopParent == nil)
     }
 }

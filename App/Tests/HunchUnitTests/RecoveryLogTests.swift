@@ -197,7 +197,7 @@ struct RecoveryLogTests {
 
     /// The first save records `body` with `toggle`'s hash as its parent in the
     /// log. Even after auto-tombstone-on-save fires for `body` on the second
-    /// save, `parentHash(forPage:hash:)` still returns the parent — but only
+    /// save, the journal's intent state still carries the parent metadata —
     /// for hashes whose latest record is an `add`. Here we keep `body` live
     /// so the latest record stays as `add`; the question is whether the
     /// parent metadata was recorded at first observation.
@@ -217,14 +217,14 @@ struct RecoveryLogTests {
 
         let toggleHash = toggle.atomicHash
         let bodyHash = body.atomicHash
-        let recorded = await clamshell.parentHash(forPage: "p.md", hash: bodyHash)
-        #expect(recorded == toggleHash)
+        let intent = PatchEngine.intent(from: clamshell.readJournal(forPage: "p.md"))
+        #expect(intent.parent(of: bodyHash) == toggleHash)
     }
 
-    /// Explicit `purgeLostBlock` still works for the case where a block is
-    /// surfaced as lost via another device's log (auto-tombstone never ran
-    /// because our device didn't perform the deletion). The Recover sheet's
-    /// dismiss action exercises this path.
+    /// Tombstoning a foreign hash via the editor's `purgeHash` path
+    /// suppresses it from `listLostBlocks` even though the original `add`
+    /// came from another device. The Recover sheet's dismiss action goes
+    /// through this same path.
     @MainActor
     @Test func purgeTombstoneSuppressesForeignLostBlock() async throws {
         let root = makeWorkspace()
@@ -253,8 +253,8 @@ struct RecoveryLogTests {
         try line.write(to: foreignURL, atomically: true, encoding: .utf8)
 
         var lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
-        let entry = try #require(lost.first(where: { $0.hash == h }))
-        try await clamshell.purgeLostBlock(entry)
+        #expect(lost.contains(where: { $0.hash == h }))
+        try await clamshell.purgeHash(h, in: "p.md")
         lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty, "purge tombstone should suppress entry")
     }
@@ -334,13 +334,12 @@ struct RecoveryLogTests {
         try await log.record(page: "p.md", blocks: [block])
         // 1ms guarantees a fresh timestamp; precision of `t` is ms.
         try await Task.sleep(for: .milliseconds(2))
-        try await log.record(
-            page: "p.md",
-            blocks: [],
-            removing: [block.atomicHash]
-        )
+        try await log.purge(page: "p.md", hash: block.atomicHash)
         try await Task.sleep(for: .milliseconds(2))
-        try await log.record(page: "p.md", blocks: [block])
+        // `record` short-circuits on the in-memory hash cache (block was
+        // already observed by this device), so to re-add we use `reAdd`
+        // which bypasses the cache. Mirrors the manual-restore code path.
+        try await log.reAdd(page: "p.md", block: block, parentHash: nil)
 
         // Plant the block as alive in .md so the live-set check excludes it
         // — the assertion is that it doesn't surface as "lost" even though
@@ -645,5 +644,97 @@ struct RecoveryLogTests {
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(!lost.contains(where: { $0.hash == h }),
                 "modern purge (with c) wins over legacy add (no c) regardless of t")
+    }
+
+    // MARK: - Phase 2: cache-after-purge invariant
+
+    /// Type X → delete X → type X again. After the cache-after-purge fix,
+    /// the second observation of X emits a fresh `add` (instead of being
+    /// silently skipped by the device cache). The log ends with three
+    /// records (add, purge, add) and the union considers X alive.
+    @MainActor
+    @Test func retypingPurgedContentEmitsFreshAdd() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("retype-me"))
+        let h = block.atomicHash
+
+        // 1) Initial save records the add.
+        try await log.record(page: "p.md", blocks: [block])
+        // 2) Editor purges (explicit user delete).
+        try await log.purge(page: "p.md", hash: h)
+        // 3) User retypes identical content. Without the fix the device
+        //    cache still says "already observed" and this is silently
+        //    dropped; with the fix the cache forgot X on purge so a
+        //    fresh add lands.
+        try await log.record(page: "p.md", blocks: [block])
+
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(lineCount(at: url) == 3, "add + purge + fresh add")
+
+        // Plant the block as alive in .md and check the union: latest
+        // record for h is the fresh add, so X is alive intent (not lost,
+        // not tombstoned).
+        try BlockSerializer.serialize([block])
+            .write(to: root.appendingPathComponent("p.md"), atomically: true, encoding: .utf8)
+        let lost = await log.enumerate(page: "p.md")
+        let purged = await log.enumeratePurged(page: "p.md", since: nil)
+        #expect(!lost.contains(where: { $0.hash == h }))
+        #expect(!purged.contains(where: { $0.hash == h }),
+                "latest record is the fresh add, not the purge")
+    }
+
+    /// Across a hydration boundary (new RecoveryLog instance reading our
+    /// existing log file), the cache-after-purge invariant still holds —
+    /// hydration replays add/purge transitions, so a hash purged before
+    /// hydration starts in the "not observed" state.
+    @MainActor
+    @Test func purgeSurvivesHydrationAcrossSessions() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let block = Block.paragraph(text: attr("survive-hydration"))
+        let h = block.atomicHash
+
+        // Session 1: add + purge.
+        let log1 = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+        try await log1.record(page: "p.md", blocks: [block])
+        try await log1.purge(page: "p.md", hash: h)
+
+        // Session 2: cold actor, hydrates from the existing log file.
+        // Retyping the block must produce a fresh add — the hydrated
+        // cache should treat X as "not observed" because the purge
+        // followed the add.
+        let log2 = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+        try await log2.record(page: "p.md", blocks: [block])
+
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(lineCount(at: url) == 3, "second session's add should append, not skip")
+    }
+
+    // MARK: - Phase 2: observation absorption
+
+    /// `append(observations:)` skips hashes our device has already logged
+    /// (cache short-circuit). Idempotent at the device level.
+    @MainActor
+    @Test func appendObservationsSkipsAlreadyLoggedHashes() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let a = Block.paragraph(text: attr("A"))
+        let b = Block.paragraph(text: attr("B"))
+        try await log.record(page: "p.md", blocks: [a])
+
+        let obs = [
+            PatchEngine.Observation(hash: a.atomicHash, parent: nil, markdown: BlockSerializer.serializeAtomic(a)),
+            PatchEngine.Observation(hash: b.atomicHash, parent: nil, markdown: BlockSerializer.serializeAtomic(b)),
+        ]
+        try await log.append(observations: obs, to: "p.md")
+
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(lineCount(at: url) == 2, "A skipped (already logged), B appended")
     }
 }
