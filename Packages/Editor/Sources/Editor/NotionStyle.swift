@@ -255,6 +255,22 @@ public enum BlockSpacing {
         }
     }
 
+    /// Y offset applied to the drag handle so its grip-dots-center lands on the
+    /// first line's visual center. The handle's frame is 28pt tall with the
+    /// grip glyph centered, so the dots-center sits 14pt below the frame top —
+    /// we shift the frame up/down to put that 14pt mark at the right place per
+    /// block kind. Body-font blocks (paragraph/quote/list items) only differ
+    /// in `intrinsicTopPadding`; headings start at the row top but have larger
+    /// fonts; code lives deep inside its row.
+    public static func dragHandleYOffset(_ block: Block) -> CGFloat {
+        switch block.kind {
+        case .heading: return 2
+        case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton: return 2
+        case .code: return 8
+        case .paragraph, .quote, .divider, .image: return 0
+        }
+    }
+
     /// Top-margins reverse-engineered from real Notion screenshots (not from react-notion-x's CSS,
     /// which doesn't match). Headings carry generous breathing room above; paragraphs sit on a
     /// margin that gives the ~24pt visual ink-to-ink gap Notion shows between stacked paragraphs

@@ -270,10 +270,19 @@ enum PageHoverCoordinateSpace {
     static let name = "EditorView.hover"
 }
 
+// Prefer the row whose y-range contains the point — picking by nearest midY
+// alone makes tall blocks lose to their neighbors near the edges (hovering
+// near the top of a tall paragraph is closer to the previous row's center
+// than to its own). Only check y, not full `.contains()`: the drag handle
+// sits in a gutter horizontally outside the row frame, and we want the
+// correct row to win even when the cursor is in that gutter. Fall back to
+// nearest midY when no row contains the y (above first / below last).
 func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> BlockID? {
-    frames.min { lhs, rhs in
-        abs(lhs.value.midY - point.y) < abs(rhs.value.midY - point.y)
-    }?.key
+    let containing = frames.filter { $0.value.minY <= point.y && point.y < $0.value.maxY }
+    if !containing.isEmpty {
+        return containing.min { abs($0.value.midY - point.y) < abs($1.value.midY - point.y) }?.key
+    }
+    return frames.min { abs($0.value.midY - point.y) < abs($1.value.midY - point.y) }?.key
 }
 
 struct IOSPageReorderGeometry {

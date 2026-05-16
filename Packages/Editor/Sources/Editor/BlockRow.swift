@@ -415,7 +415,7 @@ public struct BlockRow: View, Equatable {
             .overlay(alignment: .topLeading) {
                 DragHandle()
                     .opacity(isHandleVisible && !isEditing ? 1 : 0)
-                    .offset(x: -DragHandle.gutterWidth, y: 2)
+                    .offset(x: -DragHandle.gutterWidth, y: BlockSpacing.dragHandleYOffset(block))
                     .onHover(perform: onHandleHover)
                     .onTapGesture(perform: onHandleTap)
                     // Keep the handle hit-testable AND the gesture mounted for
