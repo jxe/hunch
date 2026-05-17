@@ -71,6 +71,30 @@ struct ReorderDropResolverTests {
         }
     }
 
+    // When the drift gap is rendered as layout space *between* row frames
+    // (not absorbed into the row below's frame), a finger anywhere in the
+    // visual gap region must stay at the slot above the gap. Before
+    // EditorView's geometry observer was moved above the reorder padding,
+    // the row below absorbed the gap into its frame, its midY shifted into
+    // the gap, and dragging into the lower half of the open gap flipped the
+    // slot to the next row.
+    @Test func dropSlotStaysStableAcrossEntireGapRegion() {
+        let frames: [ReorderDropFrame] = [
+            ReorderDropFrame(id: BlockID(), frame: CGRect(x: 0, y: 0,   width: 320, height: 30)),
+            ReorderDropFrame(id: BlockID(), frame: CGRect(x: 0, y: 72,  width: 320, height: 30)),
+            ReorderDropFrame(id: BlockID(), frame: CGRect(x: 0, y: 102, width: 320, height: 30)),
+        ]
+        for y: CGFloat in [31, 45, 60, 71] {
+            #expect(
+                ReorderDropResolver.insertionIndex(
+                    forY: y,
+                    rowFrames: frames,
+                    previousIndex: 1
+                ) == 1
+            )
+        }
+    }
+
     @Test func acceptsLargeJumpsWithoutStickyIntermediateSlots() {
         let frames = makeFrames(count: 5)
 

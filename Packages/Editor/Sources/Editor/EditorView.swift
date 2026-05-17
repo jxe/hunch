@@ -169,8 +169,7 @@ public struct EditorView: View {
                         let pinchExtraTopGap = pinchExtraGap(forIndex: k)
                         let reorderExtraTopGap = reorderDriftGap(at: k, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
                         rowView(for: bindingForBlock(id: block.id), depth: row.depth, snapshot: snapshot, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
-                            .padding(.top, gap + pinchExtraTopGap + reorderExtraTopGap)
-                            .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
+                            .padding(.top, gap + pinchExtraTopGap)
                             // Per-row geometry observation. Replaces a previous
                             // GeometryReader+PreferenceKey per row; that pattern's
                             // O(N) reduce step across siblings dominated layout when
@@ -179,11 +178,20 @@ public struct EditorView: View {
                             // that wouldn't terminate. `onGeometryChange` writes
                             // each row's frame directly into `rowFrames` (a non-
                             // observable reference type) and skips the reduce.
+                            //
+                            // The reorder drift gap is applied *after* this
+                            // observer so the cached frame excludes the gap —
+                            // including the gap put the row's midY inside the
+                            // visual gap region, so dragging the finger into the
+                            // open gap crossed midY and flipped the slot to the
+                            // wrong neighbor.
                             .onGeometryChange(for: CGRect.self) { proxy in
                                 proxy.frame(in: .named(PageHoverCoordinateSpace.name))
                             } action: { newValue in
                                 rowFrames.frames[block.id] = newValue
                             }
+                            .padding(.top, reorderExtraTopGap)
+                            .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
                             // LazyVStack unmounts rows that scroll outside its
                             // materialization window. `onGeometryChange` only
                             // fires while the view is mounted, so without this
