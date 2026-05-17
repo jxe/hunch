@@ -21,11 +21,11 @@ user-picked workspace folder.
   `Packages/Editor/README.md` for the embedding contract.
 - `App/Sources/` — Hunch.app target. `HunchApp` (root, owns `Workspace`),
   `ContentView` (one per `WindowGroup` body, owns a `WorkspaceWindow`),
-  `Workspace.swift` / `WorkspaceWindow.swift` (the host model — see below),
-  `EditorPageCoordinator.swift` (per-page `EditorHost` implementation that
-  bridges the editor's id-based callbacks to filesystem paths), and an
-  `EditorPage` wrapper view inside `ContentView.swift` that owns one
-  `EditorState` per navigation destination, plus Inter font registration:
+  `Workspace.swift` / `WorkspaceWindow.swift` (the host model — see below;
+  `WorkspaceWindow` is also the `EditorHost`, naturally keyed on
+  `openDocument`), and an `EditorPage` wrapper view inside
+  `ContentView.swift` that owns one `EditorState` per navigation
+  destination, plus Inter font registration:
   - `App/Sources/Clamshell/` — **Clamshell** is Hunch's persistent
     markdown format and its API. On disk a Clamshell is a folder of
     `*.md` plus `Trash/` (soft-deleted pages), `.history/<rel>/<device-id>.jsonl`
@@ -38,7 +38,8 @@ user-picked workspace folder.
     and `TrashStore` privately and exposes a single API:
     `scan / loadDocument / save / writeImmediately / flush / createPage /
     moveToTrash / listTrashedPages / restorePage / snapshotIntoRecoveryLog /
-    listLostBlocks / purgeLostBlock / parentHash(forPage:hash:)`, plus
+    listLostBlocks / listPurgedBlocks / purgeHash / unpurgeBlock /
+    resolveConflictVersions / classifyDiskContent`, plus
     `relativePath(of:)` and `url(for:)` for path conversion. The format
     takes care of itself where it can — every `save`/`writeImmediately`
     fires fire-and-forget `RecoveryLog.record` (appends one JSONL line
@@ -61,13 +62,17 @@ user-picked workspace folder.
     magnifying-glass) or subpage rows.
   - `App/Sources/Workspace.swift` — `Workspace` (workspace-level model,
     one per app instance: clamshell handle, page list, title cache,
-    disk-history, security-scoped URL, conflict resolution) and
-    `WorkspaceEntry` (filesystem-flavoured page reference, host-side
-    only — translated into `MentionItem` at the editor boundary).
+    security-scoped URL, conflict resolution) and `WorkspaceEntry`
+    (filesystem-flavoured page reference, host-side only — translated
+    into `MentionItem` at the editor boundary).
   - `App/Sources/WorkspaceWindow.swift` — per-window navigation and
-    edit-session state: `path: [URL]` (NavigationStack), `openDocument`,
-    debounced/backstop save lifecycle, file-presenter wiring, move-to
-    request plumbing, lost-block auto-restore on open. References the
+    edit-session state, AND the `EditorHost` implementation: `path: [URL]`
+    (NavigationStack), `openDocument`, `isDirty`/`isSaving` plus
+    600ms-debounce/30s-backstop save lifecycle, file-presenter wiring,
+    move-to request plumbing, lost-block auto-restore on open. The host
+    methods (`openLink`, `markDocumentDirty`, `didMutate`, `onBlur`, …)
+    live on the same type — one active doc per window, so the save
+    lifecycle is naturally keyed on `openDocument`. References the
     shared `Workspace` for filesystem ops.
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
   storage + parser/serializer (formerly SPM tests under `CoreTests/`).
@@ -95,21 +100,23 @@ xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform
 ## Architecture you need to know to make changes
 
 **One editor at a time.** Blocks render as read-only `Text` until
-`state.mode == .editing(block.id, _)`; that row swaps in `BlockTextEditor`.
-N simultaneous TextEditors are a focus-arbitration footgun on macOS —
-don't go back to that.
+`state.sessionState` is `.editing(block.id, _)`; that row swaps in
+`BlockTextEditor`. N simultaneous TextEditors are a focus-arbitration
+footgun on macOS — don't go back to that.
 
 **Editor session state lives in `EditorState`.** Selection, edit mode,
 in-flight gestures (reorder, pinch), expanded toggles, hover, drop targets
-— all on the `EditorState` `@Observable` class. The state space is two
-orthogonal axes: `mode: Mode` (`.navigating(Selection)` or
-`.editing(BlockID, overlay: Overlay?)`) and `gesture: Gesture?`
-(`.reordering(...)` / `.pinchOpening(...)`), plus ambient annotations.
+— all on the `EditorState` `@Observable` class. The state space is one
+enum, `sessionState: SessionState`:
+`.navigating(Selection, gesture: Gesture?)` or
+`.editing(BlockID, overlay: Overlay?)`, plus ambient annotations.
 Mention popover is `.editing(_, .mention(...))`, an overlay *within*
-edit mode, not a peer mode. Invariant: a non-nil `gesture` only
-coexists with `mode == .navigating(...)`. Mutation goes through named
-methods (`enterEditMode`, `setReorderLift`, `setMentionMenu`, etc.) —
-`internal(set)` blocks external writes so the host can read but not write.
+edit mode, not a peer mode. "Gesturing while editing" is structurally
+impossible — the gesture slot lives inside `.navigating`, so beginning
+a gesture commits or cancels any active edit first. Mutation goes
+through named methods (`enterEditMode`, `setReorderLift`,
+`setMentionMenu`, etc.) — `internal(set)` blocks external writes so the
+host can read but not write.
 
 **`@Observable` setters fire on every write, even same-value.** Writing
 `state.hoveredBlock = id` from inside `.onContinuousHover` /
@@ -131,23 +138,26 @@ assumes both inputs are stable.
 is the source of truth for what's open: `path == []` shows the home page,
 `path.last` is the visible doc, and a `.onChange(of: path)` calls
 `handlePathChange()` to flush the outgoing doc and load the new top.
-Subpage taps (`onSubpageTap` → `window.openSubpage`) append to `path`,
-pushing deeper. Search-sheet activation (`window.navigateFromSearch`)
-pushes a single entry on top of home (or drains to root when the picked
-page *is* home). `window.goBack()` pops; on iOS this is also driven by
+Subpage taps fire `host.openLink(.workspacePage(pageID))` →
+`window.openSubpage` and append to `path`, pushing deeper.
+Search-sheet activation (`window.navigateFromSearch`) pushes a single
+entry on top of home (or drains to root when the picked page *is*
+home). `window.goBack()` pops; on iOS this is also driven by
 edge-swipe-from-left, on macOS by the Cmd+[ menu and the system back
-chevron. Subpage rows are the existing render path: a paragraph that is
-a single `.md` link is detected in `BlockParser` and rendered via
+chevron. Subpage rows are the existing render path: a paragraph that
+is a single `.md` link is detected in `BlockParser` and rendered via
 `subpageRow` in `BlockRow.swift`. **Inline `[text](path.md)` clicks
-inside read-only body text** route through an `OpenURLAction` interceptor
-on the `NavigationStack` (see `ContentView.swift`) →
-`Workspace.workspaceRelativeMarkdownPath` →  `window.openSubpage`;
-non-`.md` URLs fall through to the system handler. Inline link taps
-*inside* an active TextEditor are not yet intercepted (NSTextView /
-UITextView own those gestures).
+inside read-only body text** route through an `OpenURLAction`
+interceptor *inside* `EditorView` (so the editor owns its link
+routing) → `host.openLink(.url(url))`. The host classifies the URL
+(`Workspace.workspaceRelativeMarkdownPath` → `window.openSubpage` for
+workspace-relative `.md`; return `false` to fall through to the system
+handler for external `http`/`https`). Inline link taps *inside* an
+active TextEditor are not yet intercepted (NSTextView / UITextView own
+those gestures).
 
-**Nav mode is multi-select.** `Mode.navigating(Selection)` carries
-`blocks: Set<BlockID>`, `cursor` (moving end), `anchor` (fixed end).
+**Nav mode is multi-select.** `SessionState.navigating(Selection, gesture:)`
+carries `blocks: Set<BlockID>`, `cursor` (moving end), `anchor` (fixed end).
 ↑/↓ collapses to a single block, Shift+↑/↓ extends, Return enters edit
 mode (only when `state.selection.count == 1`) or opens a selected
 subpage, → also opens a selected subpage, Esc exits, Delete removes the
@@ -193,12 +203,14 @@ pending writes at document switch / app suspend.
 **Structural mutations route through `EditorView.mutate(name:_:)`.**
 It commits the active editor's live text first (`commitActiveEditor`),
 snapshots `document.children`, runs the change closure, re-applies
-heading containment, registers the snapshot as the undo entry, and
-fires `host.onEdited()`. New ops: write through `mutate` and you get
-all five for free — no need to call `commitLiveText` manually before
-reading `block.text`. The exceptions are paths that don't mutate the
-document (Cmd-[ navigate-back, Esc) and the blur-time commit on
-`textDidEndEditing`; those stay explicit.
+heading containment, registers the snapshot as the undo entry, fires
+`host.didMutate(pre:post:name:)` (host's recovery-log + tombstone hook),
+and fires `host.markDocumentDirty()` (host's debounced-save kick).
+New ops: write through `mutate` and you get all six for free — no need
+to call `commitLiveText` manually before reading `block.text`. The
+exceptions are paths that don't mutate the document (Cmd-[
+navigate-back, Esc) and the blur-time commit on `textDidEndEditing`;
+those stay explicit.
 
 **Nav-mode keyboard goes through `EditorCommands`.**
 `handleNavKeyPress` looks the press up in `EditorView.navBindings`

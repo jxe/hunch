@@ -4,11 +4,15 @@
 
 **Read-only path: done.** Inline `[text](page.md)` link taps inside
 read-only rows now push the target onto the navigation stack. The
-implementation lives in [App/Sources/ContentView.swift](../App/Sources/ContentView.swift)
-(an `OpenURLAction` interceptor on the `NavigationStack`) plus
+`OpenURLAction` interceptor lives *inside* `EditorView` (so the editor
+owns its link routing) and dispatches via
+[EditorHost.openLink(_ target: LinkTarget) -> Bool](../Packages/Editor/Sources/Editor/EditorHost.swift).
+The host (`WorkspaceWindow`) classifies the URL via
 [Workspace.workspaceRelativeMarkdownPath](../App/Sources/Workspace.swift)
-(URL → workspace-relative resolver, covered by
-[WorkspaceRelativeLinkTests](../App/Tests/HunchUnitTests/WorkspaceRelativeLinkTests.swift)).
+(covered by
+[WorkspaceRelativeLinkTests](../App/Tests/HunchUnitTests/WorkspaceRelativeLinkTests.swift)),
+routes workspace-relative `.md` paths through `openSubpage`, and returns
+`false` for external `http`/`https` to fall through to the system handler.
 
 **Editor-mode path: not done.** When a link is inside the active
 TextEditor, NSTextView (macOS) and UITextView (iOS) own the click. The
@@ -17,25 +21,22 @@ remainder of this note tracks that piece.
 ## Goal
 
 Tapping an inline `[text](path.md)` link from inside an active
-`BlockTextEditor` should also route through `WorkspaceWindow.openSubpage`
+`BlockTextEditor` should also route through `host.openLink(.url(...))`
 instead of (a) doing nothing, or (b) opening the link in the system
 browser via `\.openURL`.
 
 ## Surfaces to extend
 
-- **macOS** — implement
-  `textView(_:clickedOnLink:at:)` in `MacBlockTextEditor.Coordinator`
+- **macOS** — implement `textView(_:clickedOnLink:at:)` in
+  `MacBlockTextEditor.Coordinator`
   ([Packages/Editor/Sources/Editor/Text/BlockTextEditor.swift](../Packages/Editor/Sources/Editor/Text/BlockTextEditor.swift)).
-  Walk up to the host's `OpenURLAction` (or expose a
-  `EditorHost.onOpenURL(URL) -> Bool` so the editor stays
-  filesystem-agnostic) and short-circuit if the host claims it.
+  Call `host.openLink(.url(url))`; return true if the host handled it.
 - **iOS** — `UITextItemMenuConfiguration` /
   `textItemConfiguration(for:defaultMenu:)`. Same routing: ask the host
-  first, fall through if it returns false.
+  first, fall through if `openLink` returns false.
 
-Adding `EditorHost.onOpenURL` keeps the SPM package free of any
-filesystem knowledge — the host (`EditorPageCoordinator`) already
-holds `WorkspaceWindow` and can dispatch.
+`EditorHost.openLink` already exists; both surfaces just need to call it
+and let the host decide.
 
 ## Out of scope
 

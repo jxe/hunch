@@ -66,10 +66,11 @@ kinds, distinguished by `op`:
   `p` is the parent hash *at first observation* (may go stale; see
   below). `m` is the atomic markdown — the block on its own, no
   children.
-- **`purge`** is a tombstone, appended explicitly by the editor at the
-  moment of structural removal (`EditorView.mutate` diffs pre/post block
-  IDs and fires one purge per removed id) or by the user dismissing a
-  recovered entry from the Recover sheet.
+- **`purge`** is a tombstone, appended explicitly by the host at the
+  moment of structural removal (the editor fires `host.didMutate(pre:post:name:)`
+  once per `EditorView.mutate` transaction; the host computes
+  `BlockTreeDiff.removedHashes(...)` and calls `purgeHash` for each) or by
+  the user dismissing a recovered entry from the Recover sheet.
 - **`t`** is unix seconds with millisecond precision. Used for display
   and the `since:` filter on `listPurgedBlocks`. Not the order resolver.
 - **`c`** is a per-page Lamport counter, monotonically incrementing per
@@ -196,15 +197,23 @@ existing instance and build a new one.
 | Group | Methods |
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)` |
-| Read | `scan()`, `loadDocument(at:)`, `loadDocumentAndRawText(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
+| Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
 | Write | `save(_:resolvingSubpageTitle:)`, `writeImmediately(_:resolvingSubpageTitle:)`, `flush(url:)`, `snapshotIntoRecoveryLog(at:blocks:)` |
+| Disk classification | `classifyDiskContent(at:expectingModificationDate:)` → `DiskClassification` (`.unchanged / .echo / .stomp / .external / .unreadable`) |
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Search | `searchPages(in:query:excluding:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Recovery log | `readJournal(forPage:)`, `appendObservations(_:forPage:)`, `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)`, `purgeHash(_:in:)`, `unpurgeBlock(_:in:parentHash:)` |
-| iCloud merge | `resolveConflictVersions(at:againstLive:resolvingSubpageTitle:)` |
+| iCloud merge | `resolveConflictVersions(at:againstLive:resolvingSubpageTitle:)` → `ConflictResolution` (`{ salvaged, liveDocumentMutated }`) |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
 | Metadata | `homeRelativePath` (read/write), `root` |
+
+`loadDocument(at:)`, `save(_:)`, and `writeImmediately(_:)` all seed the
+internal per-URL content-hash ring buffer that `classifyDiskContent`
+reads — so the file presenter can tell our own writes echoing back
+(`.echo`) from an iCloud rollback to an earlier state (`.stomp`) from a
+genuine external edit (`.external`). Callers don't have to seed
+anything; the ring buffer is cleared automatically on `moveToTrash`.
 
 The engine itself is at the same layer as Clamshell. Callers reaching
 into engine territory use `clamshell.readJournal` → `PatchEngine.intent`
@@ -268,9 +277,10 @@ It records the about-to-be-deleted block tree into the log *before* the
 mutation, covering the race where blocks live briefly in the doc, get
 deleted, and the autosave never fires while they're present.
 
-**Deletes are explicit, not inferred.** The editor calls
-`purgeHash(_:in:)` from inside `EditorView.mutate(_:_:)` for every
-block id present before a structural mutation but absent after.
+**Deletes are explicit, not inferred.** The editor fires
+`host.didMutate(pre:post:name:)` once per structural mutation; the host
+computes `BlockTreeDiff.removedHashes(pre, post)` and calls
+`purgeHash(_:in:)` for each block id present before but absent after.
 Save paths emit only `add` records; they never infer tombstones from
 diffing prior state. Consequences:
 - Typing inside a block (same id, different hash) does NOT fire a
