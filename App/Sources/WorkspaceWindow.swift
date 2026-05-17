@@ -34,13 +34,13 @@ final class WorkspaceWindow {
     }
 
     private var filePresenter: DocumentFilePresenter?
-    /// Owns the per-open-document save state machine (clean / dirty / saving /
-    /// flushing) plus debounce + backstop tasks. Nil before any document is
-    /// loaded and after `flushAndClose`. Replaced on every page-change.
-    private var saveSession: DocumentSaveSession?
-    private var isDirty: Bool { saveSession?.isDirty == true }
-    private var isSaving: Bool { saveSession?.isSaving == true }
-    private var documentCache: [URL: Document] = [:]
+    /// Weak handle to the currently-mounted `EditorPage`'s coordinator. Set by
+    /// `EditorPage.onAppear`, cleared on `onDisappear`. The save lifecycle
+    /// lives on the coordinator now — this window-level facade just routes
+    /// `markEdited` / `saveNow` / `flushAndClose` through here.
+    weak var activeCoordinator: EditorPageCoordinator?
+    private var isDirty: Bool { activeCoordinator?.isDirty == true }
+    private var isSaving: Bool { activeCoordinator?.isSaving == true }
     /// Per-URL memo of the hash set the last reconcile pass restored. If a
     /// fresh pass would emit the exact same set, something is keeping those
     /// hashes from sticking in `doc` (round-trip drift the engine couldn't
@@ -68,11 +68,9 @@ final class WorkspaceWindow {
             if path.isEmpty {
                 handlePathChange()
             } else {
-                cacheOpenDocument()
                 path = []
             }
         } else if path != [entry.url] {
-            cacheOpenDocument()
             path = [entry.url]
         }
     }
@@ -84,7 +82,6 @@ final class WorkspaceWindow {
     func navigateFromSearch(relativePath: String) {
         if relativePath == workspace.homeRelativePath {
             if !path.isEmpty {
-                cacheOpenDocument()
                 path = []
             }
             return
@@ -97,89 +94,42 @@ final class WorkspaceWindow {
         guard let clamshell = workspace.clamshell else { return }
         let target = clamshell.url(for: relativePath)
         if path.last == target { return }
-        cacheOpenDocument()
         path.append(target)
     }
 
     func goBack() {
         guard !path.isEmpty else { return }
-        cacheOpenDocument()
         path.removeLast()
     }
 
     func closeDocument() {
-        cacheOpenDocument()
         path = []
     }
 
     /// Reconcile `openDocument` with the currently visible page. Driven by
-    /// `.onChange(of: path)` in `ContentView`.
+    /// `.onChange(of: path)` in `ContentView`. The new page's coordinator
+    /// (which owns the save session) is built lazily by `EditorPage`; this
+    /// function loads the `Document` fresh from disk, installs the file
+    /// presenter, and kicks an initial reconcile. Back-navigation re-parses
+    /// — markdown parse is cheap, and not caching means there's only one
+    /// authoritative `Document` instance per page (the visible one) so no
+    /// invalidation bookkeeping.
     func handlePathChange() {
         let topURL = path.last ?? homeURL
         if openDocument?.url == topURL { return }
-        cacheOpenDocument()
         flushAndClose()
         guard let url = topURL else {
             openDocument = nil
             return
         }
-        if let cached = documentCache[url] {
-            openDocument = cached
-            installSaveSession(for: url)
-            installFilePresenter(for: url)
-            reconcileOpenDocumentAgainstLog(for: url)
-            return
-        }
         do {
-            openDocument = try workspace.loadDocument(at: url)
-            cacheOpenDocument()
-            installSaveSession(for: url)
+            let doc = try workspace.loadDocument(at: url)
+            openDocument = doc
+            workspace.refreshTitleCache(from: doc)
             installFilePresenter(for: url)
-            reconcileOpenDocumentAgainstLog(for: url)
+            reconcileOpenDocumentAgainstLog(doc)
         } catch {
             workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
-        }
-    }
-
-    /// Create a fresh `DocumentSaveSession` for the given URL and start its
-    /// 30s backstop. Captures the URL into the save/flush closures so the
-    /// session is self-contained.
-    private func installSaveSession(for url: URL) {
-        let session = DocumentSaveSession(
-            performSave: { [weak self] in
-                await self?.performSave(for: url) ?? false
-            },
-            performFlush: { [weak workspace] in
-                guard let clamshell = workspace?.clamshell else { return }
-                try? await clamshell.flush(url: url)
-            }
-        )
-        saveSession = session
-        session.startBackstop()
-    }
-
-    /// The actual save work: serialize, write through Clamshell, record disk
-    /// hash for stomp defense, refresh mtime/title cache, rescan the workspace.
-    /// Called by `DocumentSaveSession` when its state transitions to `.saving`.
-    private func performSave(for url: URL) async -> Bool {
-        guard let doc = openDocument, doc.url == url,
-              let clamshell = workspace.clamshell else { return true }
-        do {
-            let resolver = workspace.saveTitleResolver()
-            let serialized = try await clamshell.save(doc, resolvingSubpageTitle: resolver)
-            workspace.recordDiskText(serialized, for: doc.url)
-            if openDocument?.url == doc.url {
-                openDocument?.modificationDate = workspace.modificationDate(for: doc.url)
-                cacheOpenDocument()
-                if let openDocument {
-                    workspace.refreshTitleCache(from: openDocument)
-                }
-            }
-            workspace.rescan()
-            return true
-        } catch {
-            workspace.error = "Save failed: \(error.localizedDescription)"
-            return false
         }
     }
 
@@ -189,7 +139,6 @@ final class WorkspaceWindow {
         flushAndClose()
         openDocument = nil
         path = []
-        documentCache = [:]
         lastRestoredHashes = [:]
     }
 
@@ -216,42 +165,34 @@ final class WorkspaceWindow {
     // MARK: - Document binding
 
     func documentForPage(url: URL) -> Document? {
-        if openDocument?.url == url {
-            return openDocument
-        }
-        return documentCache[url]
+        openDocument?.url == url ? openDocument : nil
     }
 
     func updateDocumentForPage(_ document: Document) {
-        if documentCache[document.url] !== document {
-            documentCache[document.url] = document
-        }
         workspace.refreshTitleCache(from: document)
         if openDocument?.url == document.url, openDocument !== document {
             openDocument = document
         }
     }
 
-    // MARK: - Save lifecycle (thin façade over DocumentSaveSession)
+    // MARK: - Save lifecycle (thin façade over the active coordinator)
 
     func markEdited() {
-        cacheOpenDocument()
-        saveSession?.markDirty()
+        activeCoordinator?.markDirty()
     }
 
     @discardableResult
     func saveNow(force: Bool = false) async -> Bool {
-        await saveSession?.saveNow(force: force) ?? true
+        await activeCoordinator?.saveNow(force: force) ?? true
     }
 
-    /// Cancel pending tasks and ensure any unsaved edits land on disk before
-    /// returning. The save is enqueued through the per-URL coordinator (it
-    /// survives this caller returning) so a rapid page switch doesn't drop
-    /// the latest snapshot.
+    /// Tear down the file presenter and queue the active coordinator's final
+    /// save+flush. The save is enqueued through Clamshell's per-URL
+    /// `DocumentSaveCoordinator` (it survives this caller returning) so a
+    /// rapid page switch doesn't drop the latest snapshot.
     func flushAndClose() {
         removeFilePresenter()
-        saveSession?.flushAndClose()
-        saveSession = nil
+        activeCoordinator?.flushAndClose()
     }
 
     // MARK: - Trash & restore (per-window)
@@ -276,7 +217,6 @@ final class WorkspaceWindow {
             flushAndClose()
             self.openDocument = nil
         }
-        documentCache.removeValue(forKey: entry.url)
         path.removeAll { $0 == entry.url }
         return workspace.moveToTrash(at: entry.url)
     }
@@ -290,9 +230,6 @@ final class WorkspaceWindow {
         }
         if openDocument?.url == target {
             openDocument = doc
-            cacheOpenDocument()
-        } else {
-            documentCache[target] = doc
         }
         return true
     }
@@ -324,13 +261,16 @@ final class WorkspaceWindow {
     /// dirty or a save is in flight — the engine's invariant is `doc.children
     /// == parsed(.md)`, which is only true on a clean page.
     @MainActor
-    private func reconcileOpenDocumentAgainstLog(for url: URL) {
+    private func reconcileOpenDocumentAgainstLog(_ doc: Document) {
         guard let clamshell = workspace.clamshell else { return }
-        guard openDocument?.url == url, let doc = openDocument else { return }
+        // The doc must still be the open one — navigation can swap underneath
+        // a pending reconcile from a presenter wakeup.
+        guard openDocument === doc else { return }
         // Don't race with in-flight user edits or saves. The engine assumes
         // `doc.children == parsed(.md)` — only true when the page is clean.
         if isDirty || isSaving { return }
 
+        let url = doc.url
         let rel = clamshell.relativePath(of: url)
         let journal = clamshell.readJournal(forPage: rel)
         let intent = PatchEngine.intent(from: journal)
@@ -360,7 +300,11 @@ final class WorkspaceWindow {
                     .replacingOccurrences(of: "\n", with: "\\n")
                 Diag.merge.error("unrestorable hash=\(entry.hash, privacy: .public) reason=\(reasonLabel, privacy: .public) parent=\(entry.recordedParent ?? "nil", privacy: .public) recordedAt=\(entry.recordedAt.timeIntervalSince1970, privacy: .public) md=\(String(mdPreview), privacy: .public)")
                 Task { [clamshell, hash = entry.hash, rel] in
-                    try? await clamshell.purgeHash(hash, in: rel)
+                    do {
+                        try await clamshell.purgeHash(hash, in: rel)
+                    } catch {
+                        Diag.merge.error("quarantine purge failed page=\(rel, privacy: .public) hash=\(hash, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    }
                 }
             }
         }
@@ -369,7 +313,7 @@ final class WorkspaceWindow {
             lastRestoredHashes[url] = nil
             return
         }
-        guard openDocument?.url == url else { return }
+        guard openDocument === doc else { return }
 
         // Re-fire guard: if this pass would restore exactly the same set as
         // the previous pass for this URL, something is preventing those
@@ -385,7 +329,6 @@ final class WorkspaceWindow {
         lastRestoredHashes[url] = restoredSet
 
         PatchEngine.apply(recon, to: doc)
-        cacheOpenDocument()
         markEdited()
         let restored = recon.restoredHashes.count
         let noun = restored == 1 ? "block" : "blocks"
@@ -445,22 +388,21 @@ final class WorkspaceWindow {
 
             if useLiveDoc {
                 openDocument = doc
-                cacheOpenDocument()
                 markEdited()
             } else {
                 try clamshell.writeImmediately(doc, resolvingSubpageTitle: workspace.saveTitleResolver())
                 doc.modificationDate = workspace.modificationDate(for: target)
-                documentCache[target] = doc
-                if let raw = try? clamshell.readRawText(at: target) {
-                    workspace.recordDiskText(raw, for: target)
-                }
                 workspace.rescan()
             }
             // Purge every hash in the restored subtree so the Recover sheet
             // stops surfacing it. Includes the clicked entry's hash and any
             // descendants we pulled in.
             for hash in insert.coveredHashes {
-                try? await clamshell.purgeHash(hash, in: entry.source)
+                do {
+                    try await clamshell.purgeHash(hash, in: entry.source)
+                } catch {
+                    Diag.merge.error("restore purge failed page=\(entry.source, privacy: .public) hash=\(hash, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                }
             }
             return true
         } catch {
@@ -554,24 +496,23 @@ final class WorkspaceWindow {
             for hash in insert.coveredHashes {
                 guard let purgedRecord = purgedByHash[hash],
                       let parsed = BlockParser.parse(purgedRecord.markdown).first else { continue }
-                try? await clamshell.unpurgeBlock(
-                    parsed,
-                    in: group.source,
-                    parentHash: purgedRecord.parentHash
-                )
+                do {
+                    try await clamshell.unpurgeBlock(
+                        parsed,
+                        in: group.source,
+                        parentHash: purgedRecord.parentHash
+                    )
+                } catch {
+                    Diag.merge.error("unpurge failed page=\(group.source, privacy: .public) hash=\(hash, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                }
             }
 
             if useLiveDoc {
                 openDocument = doc
-                cacheOpenDocument()
                 markEdited()
             } else {
                 try clamshell.writeImmediately(doc, resolvingSubpageTitle: workspace.saveTitleResolver())
                 doc.modificationDate = workspace.modificationDate(for: target)
-                documentCache[target] = doc
-                if let raw = try? clamshell.readRawText(at: target) {
-                    workspace.recordDiskText(raw, for: target)
-                }
                 workspace.rescan()
             }
             return true
@@ -608,7 +549,7 @@ final class WorkspaceWindow {
     private func handlePresentedFileChange() async {
         guard let doc = openDocument else { workspace.rescan(); return }
         try? await Task.sleep(for: .milliseconds(250))
-        guard !Task.isCancelled, openDocument?.url == doc.url else { return }
+        guard !Task.isCancelled, openDocument === doc else { return }
 
         let url = doc.url
         // iCloud often delivers the `.md` and a sibling
@@ -618,28 +559,25 @@ final class WorkspaceWindow {
         // wakeup; the engine is idempotent (already-live hashes produce no
         // inserts; already-logged hashes produce no observations) so back-
         // to-back calls cost just a journal read.
-        defer { reconcileOpenDocumentAgainstLog(for: url) }
+        defer { reconcileOpenDocumentAgainstLog(doc) }
 
         // Auto-merge any unresolved iCloud conflict versions before falling
-        // back to the echo/stomp/external-edit branching. The live `doc` is
-        // mutated in place when blocks get salvaged, so subsequent state
-        // (diskHistory, mtime, title cache) needs reseeding.
+        // back to the echo/stomp/external-edit branching. When the resolver
+        // mutated the live `doc` in place, reseed per-doc state (mtime,
+        // title cache) and surface the banner. Clamshell records the merged
+        // bytes in its disk-content history internally.
         if let clamshell = workspace.clamshell {
             do {
-                let salvaged = try clamshell.resolveConflictVersions(
+                let resolution = try clamshell.resolveConflictVersions(
                     at: url,
                     againstLive: doc,
                     resolvingSubpageTitle: workspace.saveTitleResolver()
                 )
-                if salvaged > 0 {
-                    if let raw = try? clamshell.readRawText(at: url) {
-                        workspace.recordDiskText(raw, for: url)
-                    }
+                if resolution.liveDocumentMutated {
                     doc.modificationDate = workspace.modificationDate(for: url)
-                    cacheOpenDocument()
                     workspace.refreshTitleCache(from: doc)
-                    let noun = salvaged == 1 ? "block" : "blocks"
-                    workspace.banner = .init(message: "Merged \(salvaged) \(noun) from another device into \(doc.title)")
+                    let noun = resolution.salvaged == 1 ? "block" : "blocks"
+                    workspace.banner = .init(message: "Merged \(resolution.salvaged) \(noun) from another device into \(doc.title)")
                     workspace.rescan()
                     return
                 }
@@ -648,58 +586,38 @@ final class WorkspaceWindow {
             }
         }
 
-        let currentMTime = workspace.modificationDate(for: url)
-        if currentMTime == doc.modificationDate { workspace.rescan(); return }
-
-        guard let diskText = try? workspace.clamshell?.readRawText(at: url) else {
-            workspace.rescan(); return
-        }
-        let diskHash = diskText.hashValue
-        let history = workspace.diskHistory[url] ?? []
-
-        if history.first == diskHash {
-            // Echo of what we just loaded or wrote.
-            openDocument?.modificationDate = currentMTime
-            cacheOpenDocument()
+        guard let clamshell = workspace.clamshell else { workspace.rescan(); return }
+        switch clamshell.classifyDiskContent(at: url, expectingModificationDate: doc.modificationDate) {
+        case .unchanged:
             workspace.rescan()
-            return
-        }
-        if history.contains(diskHash) {
-            // Reverted to a prior state we've seen on disk → likely an
-            // iCloud Drive stomp. Re-save our in-memory authoritative copy,
-            // unless the user has a save in flight or fresh dirty edits
-            // (the upcoming debounce save will overwrite anyway).
+        case .echo:
+            openDocument?.modificationDate = workspace.modificationDate(for: url)
+            workspace.rescan()
+        case .stomp:
+            // Reverted to a prior state we've seen on disk → likely an iCloud
+            // Drive stomp. Re-save our in-memory authoritative copy, unless a
+            // save is in flight or fresh dirty edits are pending (the
+            // upcoming debounce save will overwrite anyway).
             if !isSaving && !isDirty {
                 Task { await self.saveNow(force: true) }
             }
             workspace.rescan()
-            return
-        }
-        // Genuinely new content from outside Hunch. Reload only if no
-        // unsaved in-memory edits would be lost.
-        if isSaving || isDirty {
+        case .external:
+            // Genuinely new content from outside Hunch. Reload only if no
+            // unsaved in-memory edits would be lost.
+            guard !isSaving, !isDirty else { workspace.rescan(); return }
+            do {
+                let reloaded = try workspace.loadDocument(at: url)
+                openDocument = reloaded
+                workspace.refreshTitleCache(from: reloaded)
+                workspace.rescan()
+            } catch {
+                workspace.error = "Failed to reload external changes: \(error.localizedDescription)"
+            }
+        case .unreadable:
             workspace.rescan()
-            return
-        }
-        do {
-            let reloaded = try workspace.loadDocument(at: url)
-            openDocument = reloaded
-            cacheOpenDocument()
-            workspace.refreshTitleCache(from: reloaded)
-            workspace.rescan()
-        } catch {
-            workspace.error = "Failed to reload external changes: \(error.localizedDescription)"
         }
     }
-
-    private func cacheOpenDocument() {
-        guard let openDocument else { return }
-        if documentCache[openDocument.url] !== openDocument {
-            documentCache[openDocument.url] = openDocument
-        }
-        workspace.refreshTitleCache(from: openDocument)
-    }
-
 }
 
 // MARK: - File presenter shim

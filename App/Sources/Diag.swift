@@ -17,4 +17,5 @@ enum Diag {
     static let subpage = Logger(subsystem: "org.nxhx.Hunch", category: "subpage")
     static let speech  = Logger(subsystem: "org.nxhx.Hunch", category: "speech")
     static let merge   = Logger(subsystem: "org.nxhx.Hunch", category: "merge")
+    static let log     = Logger(subsystem: "org.nxhx.Hunch", category: "log")
 }

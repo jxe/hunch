@@ -77,14 +77,6 @@ final class Workspace {
     /// is a per-device asset that has nothing to do with which page is open.
     let linkPreviewService = LinkPreviewService()
 
-    /// Per-URL ring buffer of recently observed on-disk content hashes
-    /// (most recent first, capped at 5). Used by
-    /// `WorkspaceWindow.handlePresentedFileChange` to distinguish:
-    ///  - our own write echoing back through the FS (matches head)
-    ///  - an iCloud Drive revert to a state we've previously seen (matches tail)
-    ///  - a genuine external edit (matches nothing)
-    private(set) var diskHistory: [URL: [Int]] = [:]
-
     private var titleCache: [URL: CachedTitle] = [:]
     private var titleRefreshTask: Task<Void, Never>?
     private var accessedWorkspaceURL: URL?
@@ -282,7 +274,6 @@ final class Workspace {
         homeRelativePath = nil
         scanResult = []
         titleCache = [:]
-        diskHistory = [:]
         openURLCounts = [:]
         clamshell = nil
         titleRefreshTask?.cancel()
@@ -334,19 +325,19 @@ final class Workspace {
             for url in candidates {
                 guard let self else { return }
                 guard self.workspaceURL == workspaceURL else { return }
-                let count: Int
+                let resolution: Clamshell.ConflictResolution
                 do {
-                    count = try clamshell.resolveConflictVersions(at: url, againstLive: nil)
+                    resolution = try clamshell.resolveConflictVersions(at: url, againstLive: nil)
                 } catch {
                     Diag.merge.error("scan-time resolve failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                     await Task.yield()
                     continue
                 }
-                if count > 0 {
+                if resolution.salvaged > 0 {
                     anyMerged = true
                     let title = titleByURL[url] ?? url.deletingPathExtension().lastPathComponent
-                    let noun = count == 1 ? "block" : "blocks"
-                    self.banner = Banner(message: "Merged \(count) \(noun) from another device into \(title)")
+                    let noun = resolution.salvaged == 1 ? "block" : "blocks"
+                    self.banner = Banner(message: "Merged \(resolution.salvaged) \(noun) from another device into \(title)")
                 }
                 await Task.yield()
             }
@@ -361,32 +352,13 @@ final class Workspace {
         clamshell?.homeRelativePath = entry.relativePath
     }
 
-    // MARK: - Disk-history (iCloud-stomp defense)
-
-    /// Record a hash of on-disk content for `url`. Most recent first; ring
-    /// buffer of 5 entries. Consecutive duplicates are deduped.
-    func recordDiskHash(_ hash: Int, for url: URL) {
-        var history = diskHistory[url] ?? []
-        if history.first == hash { return }
-        history.insert(hash, at: 0)
-        if history.count > 5 { history.removeLast(history.count - 5) }
-        diskHistory[url] = history
-    }
-
-    func recordDiskText(_ text: String, for url: URL) {
-        recordDiskHash(text.hashValue, for: url)
-    }
-
-    /// Load via Clamshell with disk-hash side-effects. Prefer this over
-    /// `clamshell?.loadDocument(at:)` from any host call site so the history
-    /// stays seeded.
+    /// Load via Clamshell. Clamshell maintains its own per-URL disk-content
+    /// history internally, so callers don't have to seed anything here.
     func loadDocument(at url: URL) throws -> Document {
         guard let clamshell else {
             throw NSError(domain: "Workspace", code: -1, userInfo: [NSLocalizedDescriptionKey: "No workspace"])
         }
-        let (document, raw) = try clamshell.loadDocumentAndRawText(at: url)
-        recordDiskText(raw, for: url)
-        return document
+        return try clamshell.loadDocument(at: url)
     }
 
     // MARK: - Read queries
@@ -473,7 +445,6 @@ final class Workspace {
     func moveToTrash(at url: URL) -> Bool {
         guard let clamshell else { return false }
         titleCache.removeValue(forKey: url)
-        diskHistory.removeValue(forKey: url)
         do {
             _ = try clamshell.moveToTrash(at: url)
             homeRelativePath = clamshell.homeRelativePath
@@ -491,11 +462,6 @@ final class Workspace {
             let path = try clamshell.createPage(title: title, requestedPath: requestedPath, blocks: initialContent)
             let target = clamshell.url(for: path)
             titleCache[target] = CachedTitle(title: title, modificationDate: modificationDate(for: target))
-            // Seed disk history for the freshly-created file so the presenter
-            // doesn't classify the create event as "external".
-            if let raw = try? clamshell.readRawText(at: target) {
-                recordDiskText(raw, for: target)
-            }
             rescan()
             return path
         } catch {
@@ -522,16 +488,15 @@ final class Workspace {
         let target = clamshell.url(for: relativePath)
         do {
             let doc = try loadDocument(at: target)
-            doc.children.append(contentsOf: blocks)
-            // Re-fold so the appended blocks land inside any heading that
-            // was at the end of the page, not as siblings of it.
-            doc.enforceHeadingContainment()
+            // Transaction handles heading containment automatically so the
+            // appended blocks land inside any heading that was at the end of
+            // the page, not as siblings of it. No undo manager attached to
+            // this freshly-loaded doc — the transaction just runs the change.
+            doc.transaction(name: "Append to subpage") { d in
+                d.insertSubtrees(blocks, at: DropPath(parent: nil, position: d.children.count))
+            }
             try clamshell.writeImmediately(doc, resolvingSubpageTitle: saveTitleResolver())
             doc.modificationDate = modificationDate(for: target)
-            // Seed history with the new on-disk text.
-            if let raw = try? clamshell.readRawText(at: target) {
-                recordDiskText(raw, for: target)
-            }
             refreshTitleCache(from: doc)
             return doc
         } catch {
@@ -573,15 +538,6 @@ final class Workspace {
 
     // MARK: - Recovery
 
-    /// Snapshot the about-to-be-mutated block tree into the recovery log
-    /// before a destructive UI action. Covers the race where blocks live
-    /// briefly in the doc, get deleted, and the autosave never fires while
-    /// they're present — without this, those blocks would never be logged
-    /// and would be unrecoverable.
-    func recordBlockDeletion(sourceURL: URL, previousBlocks: [Block]) {
-        guard let clamshell else { return }
-        clamshell.snapshotIntoRecoveryLog(at: sourceURL, blocks: previousBlocks)
-    }
 
     /// One-shot stream of recoverable entries (trash + lost blocks + purged
     /// blocks). Lost and purged blocks are tree-consolidated via

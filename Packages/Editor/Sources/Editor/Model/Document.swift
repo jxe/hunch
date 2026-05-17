@@ -21,13 +21,14 @@ public struct DropPath: Hashable, Sendable {
 /// Class-typed and `@Observable` so SwiftUI subscribes to mutations; Block
 /// stays a value type so undo snapshots are cheap (just `children`).
 ///
-/// Mutations funnel through the named methods on this class so the parent
-/// cache stays consistent. Direct `children = …` assignment works but
-/// invalidates the cache.
+/// External mutations must funnel through `transaction(name:_:)` (or its
+/// primitives `mutate` / `setText` / `insertSubtree` / `replaceSubtree`),
+/// which fires `preMutation` and registers undo. For bulk non-undoable
+/// replacement (conflict resolution, reload), use `replaceChildren(_:)`.
 @Observable @MainActor
 public final class Document: @MainActor Identifiable {
     public let url: URL
-    public var children: [Block] {
+    public internal(set) var children: [Block] {
         didSet { _parentCache = nil }
     }
     public var modificationDate: Date?
@@ -56,12 +57,6 @@ public final class Document: @MainActor Identifiable {
     @ObservationIgnored
     public var preMutation: (() -> Void)?
 
-    /// Host-supplied hook fired before every transaction's `change` closure.
-    /// Used to snapshot pre-mutation state into the recovery log. Set by the
-    /// host on document open.
-    @ObservationIgnored
-    public var willMutate: ((Document) -> Void)?
-
     /// Editor-supplied hook fired after an undo/redo apply restores a snapshot.
     /// Used to revalidate `EditorState` selection against the new block set and
     /// notify the host the document changed. Set by `EditorView` on mount.
@@ -82,10 +77,10 @@ public final class Document: @MainActor Identifiable {
     /// (typically from inside `preMutation` — e.g. `BlockTextEditor`'s typing
     /// path opens its own transaction to flush text — but also any explicit
     /// nested call) collapses into the outer: it runs its `change` closure
-    /// and returns without firing `preMutation` / `willMutate`, without
-    /// snapshotting, and without registering its own undo entry. The outer
-    /// transaction's snapshot captures the post-inner state, so undo of the
-    /// outer reverses both as one atomic action.
+    /// and returns without firing `preMutation`, without snapshotting, and
+    /// without registering its own undo entry. The outer transaction's
+    /// snapshot captures the post-inner state, so undo of the outer reverses
+    /// both as one atomic action.
     @ObservationIgnored
     private var inTransaction: Bool = false
 
@@ -105,9 +100,11 @@ public final class Document: @MainActor Identifiable {
     /// and any other rapid-fire same-thing mutations; pass `nil` for one-shot
     /// structural edits.
     ///
-    /// Fires `preMutation` (editor flush) and `willMutate` (host snapshot)
-    /// before the change, then `enforceHeadingContainment` after — both inside
-    /// the same atomic boundary so the registered undo restores a valid tree.
+    /// Fires `preMutation` (editor flush) before the change, then
+    /// `enforceHeadingContainment` after — both inside the same atomic
+    /// boundary so the registered undo restores a valid tree. The host-side
+    /// recovery-log capture happens via `EditorHost.didMutate(pre:post:name:)`
+    /// from `EditorView.mutate`, not as a hook inside the transaction.
     public func transaction(
         name: String,
         coalesceKey: AnyHashable? = nil,
@@ -115,7 +112,7 @@ public final class Document: @MainActor Identifiable {
     ) {
         // Nested call: absorb into the outer transaction. The outer's snapshot
         // already covers everything before its `change` closure runs, and its
-        // `preMutation` / `willMutate` already fired. Just apply the change.
+        // `preMutation` already fired. Just apply the change.
         if inTransaction {
             change(self)
             return
@@ -133,20 +130,18 @@ public final class Document: @MainActor Identifiable {
             // Coalesced — the existing undo entry's snapshot already captures
             // the burst start. Just flush + apply.
             preMutation?()
-            willMutate?(self)
             change(self)
             enforceHeadingContainment()
             lastTransactionTime = now
         } else {
-            // Snapshot BEFORE preMutation/willMutate, so any state mutations
-            // those hooks trigger via nested transactions (e.g. the typing
-            // path's `commitLiveText` flushing in-flight NSTextView text
-            // through a nested `transaction`) are also captured in `before`.
-            // Undo then reverts the whole logical action — flush + change —
-            // as one atomic step.
+            // Snapshot BEFORE preMutation, so any state mutations the hook
+            // triggers via nested transactions (e.g. the typing path's
+            // `commitLiveText` flushing in-flight NSTextView text through a
+            // nested `transaction`) are also captured in `before`. Undo then
+            // reverts the whole logical action — flush + change — as one
+            // atomic step.
             let before = snapshot()
             preMutation?()
-            willMutate?(self)
             change(self)
             enforceHeadingContainment()
             registerUndo(before: before, name: name)
@@ -197,9 +192,13 @@ public final class Document: @MainActor Identifiable {
     /// payloads (AttributedString, etc.) are COW.
     public func snapshot() -> [Block] { children }
 
-    /// Restore the tree from a previously-taken snapshot.
-    public func restore(_ snapshot: [Block]) {
-        children = snapshot
+    /// Bulk-replace the entire children list with a new tree. Bypasses undo
+    /// and the `preMutation` hook — intended for non-user operations like
+    /// conflict-resolution merges and external-edit reloads where the new
+    /// content is the authoritative state. Clears the parent cache via the
+    /// `children` setter's `didSet`.
+    public func replaceChildren(_ newChildren: [Block]) {
+        children = newChildren
     }
 
     // MARK: - Generic preorder walkers

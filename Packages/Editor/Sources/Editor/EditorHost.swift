@@ -13,6 +13,16 @@ public enum PageLookup: Equatable, Hashable, Sendable {
     case present(title: String?)
 }
 
+/// Destination of an inline-link / subpage-row click in the editor. Subpage
+/// rows arrive as `.workspacePage(pageID)` (the editor already knows the
+/// id). Inline `[text](url)` clicks arrive as `.url(URL)` — the host
+/// classifies them (workspace-relative `.md`, external `http`/`https`, mail
+/// link, etc.) and routes accordingly.
+public enum LinkTarget: Equatable, Hashable, Sendable {
+    case workspacePage(pageID: String)
+    case url(URL)
+}
+
 extension PageLookup {
     /// The resolved page title if known; nil for `.missing` and for
     /// `.present` whose title hasn't been cached yet.
@@ -38,8 +48,13 @@ public protocol EditorHost: AnyObject {
     /// the first 8 results; host owns filtering/ranking.
     func suggestPages(_ query: String) -> [MentionItem]
 
-    /// User tapped an inline subpage row — host pushes the page onto its nav stack.
-    func onSubpageTap(_ pageID: String)
+    /// User clicked an internal link or subpage row in the editor — host
+    /// dispatches to its navigation stack (workspace page) or system handler
+    /// (external URL). Returns true when the host fully handled the link;
+    /// false lets the editor fall through to the system's default URL
+    /// handler (used by SwiftUI's `OpenURLAction.systemAction`).
+    @discardableResult
+    func openLink(_ target: LinkTarget) -> Bool
 
     /// Resolve a `*.md` page id to its existence + title. Used by inline-link
     /// and subpage rows for display, and by the editor to gate navigation
@@ -85,15 +100,23 @@ public protocol EditorHost: AnyObject {
     /// "type-then-navigate" sequence would drop the last keystroke.
     func markDocumentDirty()
 
-    /// A structural mutation just removed a block whose atomic hash was `hash`
-    /// (block ids present before the mutation, absent after). The host records
-    /// this as a tombstone in the recovery log so the deleted content surfaces
-    /// in the Recover sheet's "Deleted on purpose" section. Fire-and-forget by
-    /// design — the host returns immediately. Only fires for structural
-    /// removals (delete-block, cut, replace-via-turn-into, move-to); typing
-    /// inside a block does not fire it even though the block's hash changes,
-    /// because the block's id is still present.
-    func purgeAtomicHash(_ hash: String)
+    /// One structural transaction just completed. `pre` is the block tree at
+    /// the moment the transaction's change closure was about to run (after the
+    /// editor flushed any in-flight typing); `post` is the document now. Fires
+    /// for every `EditorView.mutate(_:_:)` invocation — delete-block, cut,
+    /// paste, replace-via-turn-into, move-to, autotransform, mention commit,
+    /// etc. Typing inside a single block does NOT fire it (typing goes
+    /// through `document.transaction` directly without this wrapper).
+    ///
+    /// Hosts use this to:
+    /// - record `pre` and/or `post` into a recovery log (dedup is the host's
+    ///   responsibility — the editor doesn't know about logging),
+    /// - compute tombstones via `BlockTreeDiff.removedHashes(...)` for blocks
+    ///   the mutation removed (block ids present in `pre`, absent in `post`).
+    ///
+    /// Fire-and-forget: the host returns immediately; logging happens off the
+    /// mutation-commit thread.
+    func didMutate(pre: [Block], post: Document, name: String)
 
     /// Editor lost focus (focus left an active text editor). Host force-saves so
     /// user input doesn't sit in memory until app suspension. Async so callers
@@ -124,7 +147,7 @@ public protocol EditorHost: AnyObject {
 }
 
 extension EditorHost {
-    /// Default for hosts that don't care about recording deletions — keeps test
-    /// fakes and other minimal embedders source-compatible.
-    public func purgeAtomicHash(_ hash: String) {}
+    /// Default for hosts that don't care about recording mutations — keeps
+    /// test fakes and other minimal embedders source-compatible.
+    public func didMutate(pre: [Block], post: Document, name: String) {}
 }

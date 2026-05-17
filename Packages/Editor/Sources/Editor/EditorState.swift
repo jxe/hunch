@@ -7,24 +7,24 @@ import Foundation
 /// status bar. Mutation stays inside the package — `internal(set)` blocks
 /// external writes; transitions happen through named methods on the editor.
 ///
-/// The state space is two orthogonal axes plus ambient annotations:
+/// `sessionState` is what the user is fundamentally doing:
 ///
-/// - `mode` — what the user is fundamentally doing (navigating between blocks vs.
-///   editing the text of one block). The mention popover is a `.mention` overlay
-///   *inside* `.editing`, not a peer mode, because the text view still has focus
-///   and accepts keystrokes the same way.
-/// - `gesture` — a transient manipulation riding on top of nav mode (drag-reorder,
-///   pinch-to-insert). Invariant: a non-nil `gesture` only coexists with
-///   `mode == .navigating(...)` — beginning a gesture commits or cancels any
-///   active edit first.
+/// - `.navigating(Selection, gesture: Gesture?)` — block-level selection with no
+///   live caret. The optional `gesture` carries a transient manipulation that
+///   rides on top of nav mode (drag-reorder, pinch-to-insert). Beginning a
+///   gesture commits or cancels any active edit first, so gestures are
+///   structurally impossible in edit mode.
+/// - `.editing(BlockID, overlay: Overlay?)` — one block has the live editor
+///   mounted; cursor lives inside NSTextView/UITextView. The optional overlay is
+///   a modal popover layered on top (currently only the @-mention menu) — the
+///   text view still has focus and accepts keystrokes the same way.
 ///
 /// Ambient state (hover, drop target, expanded toggles, action toast) coexists
-/// with any combination of mode and gesture.
+/// with any session state.
 @Observable
 @MainActor
 public final class EditorState {
-    public internal(set) var mode: Mode = .navigating(Selection())
-    public internal(set) var gesture: Gesture? = nil
+    public internal(set) var sessionState: SessionState = .navigating(Selection(), gesture: nil)
 
     /// Where the live editor should park the cursor on its next mount of the
     /// editing block. Set when transitioning into edit mode (click point, start
@@ -95,13 +95,15 @@ public final class EditorState {
     }
 }
 
-// MARK: - Mode
+// MARK: - SessionState
 
-public enum Mode: Equatable, Sendable {
+public enum SessionState: Equatable, Sendable {
     /// Block-level selection, no caret. A `Selection` with empty `blocks` and
     /// nil cursor is the no-cursor variant (used briefly during document load
-    /// and after a delete-everything).
-    case navigating(Selection)
+    /// and after a delete-everything). The `gesture` rides on top of nav-mode
+    /// selection — nil during normal navigation, non-nil during drag-reorder
+    /// or pinch-to-insert.
+    case navigating(Selection, gesture: Gesture?)
     /// One block has the live `BlockTextEditor` mounted; cursor lives inside
     /// NSTextView/UITextView. The optional overlay is a modal popover layered
     /// on top of the editor (currently only the @-mention menu).
@@ -231,50 +233,50 @@ public enum DropTarget: Equatable, Sendable {
 
 // MARK: - Read accessors (computed)
 
-/// Convenience accessors that flatten `mode`/`gesture` cases back to the
+/// Convenience accessors that flatten `sessionState` cases back to the
 /// individual fields the editor's internals (and most consumers) read. These
 /// are derived; mutation goes through the named transition methods below.
 public extension EditorState {
     /// Set of currently-selected blocks. In edit mode this is `[editingBlock]`
     /// for the host's purposes (the user is "selecting" that one block).
     var selection: Set<BlockID> {
-        switch mode {
-        case .navigating(let sel): return sel.blocks
+        switch sessionState {
+        case .navigating(let sel, _): return sel.blocks
         case .editing(let id, _): return [id]
         }
     }
     /// Anchor of a Shift-extend operation. nil in edit mode.
     var anchor: BlockID? {
-        if case .navigating(let sel) = mode { return sel.anchor }
+        if case .navigating(let sel, _) = sessionState { return sel.anchor }
         return nil
     }
     /// Moving end of the selection / current focus block. In edit mode this
     /// is the editing block id.
     var cursor: BlockID? {
-        switch mode {
-        case .navigating(let sel): return sel.cursor
+        switch sessionState {
+        case .navigating(let sel, _): return sel.cursor
         case .editing(let id, _): return id
         }
     }
     /// The block whose text is currently mounted as a live editor; nil in
     /// nav mode.
     var editingBlock: BlockID? {
-        if case .editing(let id, _) = mode { return id }
+        if case .editing(let id, _) = sessionState { return id }
         return nil
     }
-    /// Active mention popover, if any. Only set while `mode == .editing(...)`.
+    /// Active mention popover, if any. Only set in edit mode.
     var mentionMenu: MentionMenuState? {
-        if case .editing(_, .some(.mention(let m))) = mode { return m }
+        if case .editing(_, .some(.mention(let m))) = sessionState { return m }
         return nil
     }
     /// Active drag-reorder lift, if any.
     var reorderLift: ReorderLift? {
-        if case .reordering(let lift) = gesture { return lift }
+        if case .navigating(_, .some(.reordering(let lift))) = sessionState { return lift }
         return nil
     }
     /// Active pinch-open-to-insert preview, if any.
     var pinchPreview: PinchPreviewState? {
-        if case .pinchOpening(let p) = gesture { return p }
+        if case .navigating(_, .some(.pinchOpening(let p))) = sessionState { return p }
         return nil
     }
     /// Insertion-path view of `currentDropTarget` — non-nil only when the
@@ -297,28 +299,29 @@ public extension EditorState {
 
 extension EditorState {
     /// Collapse selection to a single block in nav mode. The next Shift-extend
-    /// will pivot off this block.
+    /// will pivot off this block. Clears any in-flight gesture.
     func setCursor(_ id: BlockID) {
-        mode = .navigating(Selection(blocks: [id], anchor: id, cursor: id))
+        sessionState = .navigating(Selection(blocks: [id], anchor: id, cursor: id), gesture: nil)
     }
 
-    /// Drop to nav mode with no cursor / empty selection.
+    /// Drop to nav mode with no cursor / empty selection. Clears any in-flight gesture.
     func clearCursor() {
-        mode = .navigating(Selection())
+        sessionState = .navigating(Selection(), gesture: nil)
     }
 
     /// Set a multi-block nav-mode selection. The caller is responsible for
     /// ensuring `blocks` is contiguous in document order and `cursor ∈ blocks`.
+    /// Clears any in-flight gesture.
     func setNavSelection(blocks: Set<BlockID>, anchor: BlockID, cursor: BlockID) {
-        mode = .navigating(Selection(blocks: blocks, anchor: anchor, cursor: cursor))
+        sessionState = .navigating(Selection(blocks: blocks, anchor: anchor, cursor: cursor), gesture: nil)
     }
 
-    /// Replace just the anchor — used when starting an extend operation from
-    /// a single-block selection that has no anchor set yet.
+    /// Mutate the current nav-mode `Selection` in place. No-op outside nav mode.
+    /// Preserves any active gesture.
     func updateNavSelection(_ update: (inout Selection) -> Void) {
-        guard case .navigating(var sel) = mode else { return }
+        guard case .navigating(var sel, let gesture) = sessionState else { return }
         update(&sel)
-        mode = .navigating(sel)
+        sessionState = .navigating(sel, gesture: gesture)
     }
 }
 
@@ -331,21 +334,21 @@ extension EditorState {
     /// to end. The pending-cursor channel is rewritten on every call so a target
     /// from a previous edit session can't leak into the next mount.
     func enterEditMode(on id: BlockID, initialCursor: InitialCursorTarget? = nil) {
-        mode = .editing(id, overlay: nil)
+        sessionState = .editing(id, overlay: nil)
         pendingInitialCursor = initialCursor
     }
 
     /// Drop back to nav mode with the previously-editing block as the cursor.
     /// No-op if not in edit mode.
     func exitEditMode() {
-        guard case .editing(let id, _) = mode else { return }
-        mode = .navigating(Selection(blocks: [id], anchor: id, cursor: id))
+        guard case .editing(let id, _) = sessionState else { return }
+        sessionState = .navigating(Selection(blocks: [id], anchor: id, cursor: id), gesture: nil)
         pendingInitialCursor = nil
     }
 
     /// Drop edit mode AND any selection — page is unfocused entirely.
     func exitEditModeWithoutCursor() {
-        mode = .navigating(Selection())
+        sessionState = .navigating(Selection(), gesture: nil)
         pendingInitialCursor = nil
     }
 
@@ -353,7 +356,7 @@ extension EditorState {
     /// converts the row's block type and the editor is about to re-mount. No-op
     /// outside edit mode.
     func setPendingInitialCursor(_ target: InitialCursorTarget) {
-        guard case .editing = mode else { return }
+        guard case .editing = sessionState else { return }
         pendingInitialCursor = target
     }
 
@@ -375,20 +378,20 @@ extension EditorState {
     /// Open or update the mention popover on the currently-editing block.
     /// No-op if not in edit mode, or if the menu's blockID doesn't match.
     func setMentionMenu(_ menu: MentionMenuState) {
-        guard case .editing(let id, _) = mode, id == menu.blockID else { return }
-        mode = .editing(id, overlay: .mention(menu))
+        guard case .editing(let id, _) = sessionState, id == menu.blockID else { return }
+        sessionState = .editing(id, overlay: .mention(menu))
     }
 
     /// Close the mention popover without exiting edit mode.
     func closeMentionMenu() {
-        guard case .editing(let id, .mention) = mode else { return }
-        mode = .editing(id, overlay: nil)
+        guard case .editing(let id, .mention) = sessionState else { return }
+        sessionState = .editing(id, overlay: nil)
     }
 
     /// Close the mention popover only if it's attached to a specific block.
     func closeMentionMenu(forBlockID blockID: BlockID) {
-        if case .editing(let id, .mention(let m)) = mode, m.blockID == blockID {
-            mode = .editing(id, overlay: nil)
+        if case .editing(let id, .mention(let m)) = sessionState, m.blockID == blockID {
+            sessionState = .editing(id, overlay: nil)
         }
     }
 }
@@ -396,21 +399,26 @@ extension EditorState {
 // MARK: - Gesture transitions
 
 extension EditorState {
-    /// Begin or update a reorder lift. Pass nil to clear.
+    /// Begin or update a reorder lift. Pass nil to clear. No-op outside nav mode —
+    /// the editor commits/cancels any active edit before lifting.
     func setReorderLift(_ lift: ReorderLift?) {
+        guard case .navigating(let sel, let currentGesture) = sessionState else { return }
         if let lift {
-            gesture = .reordering(lift)
-        } else if case .reordering = gesture {
-            gesture = nil
+            sessionState = .navigating(sel, gesture: .reordering(lift))
+        } else if case .reordering = currentGesture {
+            sessionState = .navigating(sel, gesture: nil)
         }
     }
 
-    /// Begin or update a pinch-to-insert preview. Pass nil to clear.
+    /// Begin or update a pinch-to-insert preview. Pass nil to clear. No-op
+    /// outside nav mode — the editor commits/cancels any active edit before
+    /// the pinch starts.
     func setPinchPreview(_ preview: PinchPreviewState?) {
+        guard case .navigating(let sel, let currentGesture) = sessionState else { return }
         if let preview {
-            gesture = .pinchOpening(preview)
-        } else if case .pinchOpening = gesture {
-            gesture = nil
+            sessionState = .navigating(sel, gesture: .pinchOpening(preview))
+        } else if case .pinchOpening = currentGesture {
+            sessionState = .navigating(sel, gesture: nil)
         }
     }
 }
@@ -418,25 +426,25 @@ extension EditorState {
 // MARK: - Cross-document validation
 
 extension EditorState {
-    /// Reconcile state against a new block set after `document.blocks` was
+    /// Reconcile state against a new block set after `document.children` was
     /// replaced (e.g. by undo). Drops invalid IDs from selection, cursor,
     /// anchor; if the editing block disappeared, falls back to nav mode at
-    /// `fallbackCursor`.
+    /// `fallbackCursor`. Preserves any in-flight gesture.
     func revalidate(against validIDs: Set<BlockID>, fallbackCursor: BlockID?) {
-        switch mode {
-        case .navigating(var sel):
+        switch sessionState {
+        case .navigating(var sel, let gesture):
             sel.blocks = sel.blocks.intersection(validIDs)
             if let c = sel.cursor, !validIDs.contains(c) { sel.cursor = fallbackCursor }
             if let a = sel.anchor, !validIDs.contains(a) { sel.anchor = sel.cursor }
             if sel.blocks.isEmpty, let c = sel.cursor { sel.blocks = [c] }
-            mode = .navigating(sel)
+            sessionState = .navigating(sel, gesture: gesture)
         case .editing(let id, let overlay):
             if validIDs.contains(id) {
-                mode = .editing(id, overlay: overlay)
+                sessionState = .editing(id, overlay: overlay)
             } else if let c = fallbackCursor {
-                mode = .navigating(Selection(blocks: [c], anchor: c, cursor: c))
+                sessionState = .navigating(Selection(blocks: [c], anchor: c, cursor: c), gesture: nil)
             } else {
-                mode = .navigating(Selection())
+                sessionState = .navigating(Selection(), gesture: nil)
             }
         }
     }

@@ -41,10 +41,10 @@ public struct EditorView: View {
     /// Drives the active editor's `.focused()` on iOS (UITextView). On macOS this is
     /// written but never read as a focus source — the NSTextView grabs first responder
     /// directly via `MacBlockTextViewRegistry.makeFirstResponder`. Both writes are
-    /// driven from `.onChange(of: state.mode)` rather than scattered call sites.
+    /// driven from `.onChange(of: state.sessionState)` rather than scattered call sites.
     @FocusState var editorFocused: BlockID?
     /// Drives the page container's focusability for nav-mode key handling. Written only
-    /// from `.onChange(of: state.mode)` (and once on first appear).
+    /// from `.onChange(of: state.sessionState)` (and once on first appear).
     @FocusState var pageFocused: Bool
     /// Bumped by `forcePageFocusGrab()` to request a re-grab of page focus.
     /// A `.onChange(of: pageFocusToken)` in body runs the false→true flip on
@@ -61,7 +61,7 @@ public struct EditorView: View {
     @State var macActiveTextView = MacActiveTextView()
     #endif
     #if os(iOS)
-    /// One-tick overlap during inter-block focus transfer: when `state.mode` flips
+    /// One-tick overlap during inter-block focus transfer: when `state.sessionState` flips
     /// from `.editing(oldID, _)` to `.editing(newID, _)`, we keep `oldID` here for
     /// one runloop. The old row's `BlockTextEditor` stays mounted during that tick,
     /// so when SwiftUI mounts the new row's UITextView and `didMoveToWindow` calls
@@ -69,9 +69,9 @@ public struct EditorView: View {
     /// UIKit transfers first responder synchronously and the soft keyboard stays
     /// up — without this, splitting on Return makes the keyboard hide+show.
     ///
-    /// Written by `transferFocus(to:)` synchronously, BEFORE the `state.mode`
+    /// Written by `transferFocus(to:)` synchronously, BEFORE the `state.sessionState`
     /// mutation, so the first body re-render that sees the new mode also sees
-    /// this transitioning ID — `.onChange(of: state.mode)` fires after the
+    /// this transitioning ID — `.onChange(of: state.sessionState)` fires after the
     /// render completes, which would be one tick too late.
     @State var iosTransitioningEditorID: BlockID?
     #endif
@@ -323,7 +323,7 @@ public struct EditorView: View {
             // .focusable()/.focused() at the EditorView root registers the editor
             // tree in SwiftUI's focus engine, which then eagerly calls
             // resignFirstResponder on any nested UITextView whenever the view
-            // tree updates (insert a row, change state.mode). That race hides
+            // tree updates (insert a row, change state.sessionState). That race hides
             // the soft keyboard mid-split. Skip both on iOS.
             .focusable()
             .focused($pageFocused)
@@ -335,6 +335,16 @@ public struct EditorView: View {
                 installUndoApply()
                 wireEditorCommands()
             }
+            // Intercept inline `[text](path.md)` / `[text](https://…)` clicks
+            // inside read-only `Text` rows and route through `host.openLink`.
+            // The host classifies workspace-relative `.md` paths internally and
+            // returns false for external URLs to fall through to the system
+            // browser. Live-NSTextView link taps are still owned by the
+            // underlying view's click handling — this only catches read-only
+            // body text.
+            .environment(\.openURL, OpenURLAction { [host] url in
+                host.openLink(.url(url)) ? .handled : .systemAction
+            })
             .onChange(of: state.currentDropTarget) { _, newValue in
                 handleDropTargetChange(newValue)
             }
@@ -347,9 +357,9 @@ public struct EditorView: View {
                 }
             }
             #endif
-            .onChange(of: state.mode) { oldMode, newMode in
+            .onChange(of: state.sessionState) { oldState, newState in
                 if actionSheet != nil { actionSheet = nil }
-                handleModeChange(from: oldMode, to: newMode)
+                handleModeChange(from: oldState, to: newState)
             }
             // The `Binding<Document>` from the host can swap to a freshly-parsed
             // `Document` instance (e.g. external-change reload after autosave).
@@ -374,7 +384,7 @@ public struct EditorView: View {
                 DispatchQueue.main.async { pageFocused = true }
             }
             #if os(iOS)
-            // On iOS the user can lose editor focus without touching `state.mode`
+            // On iOS the user can lose editor focus without touching `state.sessionState`
             // (tap outside the editor, keyboard dismiss). `editorFocused` going nil is
             // the only real-time signal — fire onBlur so the host saves. macOS doesn't
             // need this: every focus loss there flows through `transferFocus(to: .nav)`,
@@ -497,7 +507,7 @@ public struct EditorView: View {
         }
         // Drag-handle click on macOS: collapse selection to this row before opening
         // the menu, so dismissing the sheet leaves the clicked row selected.
-        // `transferFocus` mutates `state.mode`, and `.onChange(of: state.mode)`
+        // `transferFocus` mutates `state.sessionState`, and `.onChange(of: state.sessionState)`
         // would clear a synchronously-set `actionSheet`; deferring to the next
         // runloop tick lets the change-handler run first.
         let onHandleTap: () -> Void = {
@@ -942,61 +952,27 @@ public struct EditorView: View {
     ///
     /// Thin wrapper over `document.transaction`: that handles flushing in-flight
     /// text via `preMutation`, snapshotting `[Block]` for undo, enforcing
-    /// heading containment, and registering the inverse. This caller adds the
-    /// host-dirty notification on top — and walks the pre/post tree to fire
-    /// `host.purgeAtomicHash` for every block id removed by the mutation
-    /// (the patch-theoretic equivalent of "user deleted this content").
-    /// Typing-path text changes go through `document.transaction` directly,
-    /// not through this wrapper, so the typing burst won't fire purges even
-    /// though it changes a block's hash.
+    /// heading containment, and registering the inverse. This caller adds two
+    /// things on top: `host.didMutate(pre:post:name:)` (pre/post tree handed to
+    /// the host so it can record into its recovery log and fire any tombstones
+    /// for blocks the mutation removed) and `host.markDocumentDirty()` (the
+    /// signal that wakes the host's debounced save). Typing-path text changes
+    /// go through `document.transaction` directly, not through this wrapper,
+    /// so the typing burst won't fire `didMutate` even though it changes a
+    /// block's hash.
     func mutate(_ name: String, _ change: () -> Void) {
-        var preByID: [BlockID: String] = [:]
+        var pre: [Block] = []
         document.transaction(name: name) { _ in
-            // Capture pre-mutation hashes inside the transaction, after
+            // Capture pre-mutation tree inside the transaction, after
             // `preMutation` has flushed any in-flight typing into the model.
-            // This gives the *current* hash of every block right at the moment
-            // of mutation — so a delete-while-typing fires a purge for the
-            // text the user actually had, not a stale pre-typing version.
-            preByID = Self.idToAtomicHash(document.children)
+            // This gives the *current* shape of every block right at the
+            // moment of mutation — so a delete-while-typing reports the text
+            // the user actually had, not a stale pre-typing version.
+            pre = document.children
             change()
         }
+        host.didMutate(pre: pre, post: document, name: name)
         host.markDocumentDirty()
-        for hash in Self.removedHashes(preByID: preByID, post: document.children) {
-            host.purgeAtomicHash(hash)
-        }
-    }
-
-    /// Block ids that were present in `preByID` but are no longer present
-    /// anywhere in `post`'s tree → their atomic hashes, in deterministic order.
-    /// Exposed for unit testing; production callers use `mutate(_:_:)`.
-    static func removedHashes(preByID: [BlockID: String], post: [Block]) -> [String] {
-        var postIDs: Set<BlockID> = []
-        collectIDs(post, into: &postIDs)
-        return preByID
-            .filter { !postIDs.contains($0.key) }
-            .sorted { $0.value < $1.value }
-            .map(\.value)
-    }
-
-    /// Walk the tree, mapping each `BlockID` to its current atomic hash.
-    static func idToAtomicHash(_ blocks: [Block]) -> [BlockID: String] {
-        var out: [BlockID: String] = [:]
-        collectIDHashes(blocks, into: &out)
-        return out
-    }
-
-    private static func collectIDHashes(_ blocks: [Block], into out: inout [BlockID: String]) {
-        for block in blocks {
-            out[block.id] = block.atomicHash
-            collectIDHashes(block.children, into: &out)
-        }
-    }
-
-    private static func collectIDs(_ blocks: [Block], into out: inout Set<BlockID>) {
-        for block in blocks {
-            out.insert(block.id)
-            collectIDs(block.children, into: &out)
-        }
     }
 
     /// Consume a host-supplied append payload (via `EditorState.appendBlocks`).
@@ -1027,7 +1003,7 @@ public struct EditorView: View {
     }
 
     /// Where focus should land. Both cases are model-shaped — they describe what the
-    /// next `state.mode` should be. The actual SwiftUI focus state (`pageFocused`,
+    /// next `state.sessionState` should be. The actual SwiftUI focus state (`pageFocused`,
     /// `editorFocused`) and AppKit first-responder updates are derived from the
     /// resulting mode change in `handleModeChange`, so callers never write focus
     /// state directly.
@@ -1039,7 +1015,7 @@ public struct EditorView: View {
     /// Single named operation for any focus hand-off between nav mode and an editor
     /// (or vice versa). The canonical primitive — call sites name a target and let
     /// the helper handle the order of operations. Synchronously commits any active
-    /// editor's live text, mutates `state.mode`, and lets `.onChange(of: state.mode)`
+    /// editor's live text, mutates `state.sessionState`, and lets `.onChange(of: state.sessionState)`
     /// (→ `handleModeChange`) derive the SwiftUI/AppKit focus update.
     func transferFocus(to target: FocusTarget) {
         // Commit in-flight editor text into the model before mutating mode. The state
@@ -1068,11 +1044,11 @@ public struct EditorView: View {
                 }
             }
             #if os(iOS)
-            // Set BEFORE the state.mode mutation so the next body render sees
-            // both new values together. Driving this from .onChange(of: state.mode)
+            // Set BEFORE the sessionState mutation so the next body render sees
+            // both new values together. Driving this from .onChange(of: state.sessionState)
             // fires too late — the old row unmounts in the first render that
             // sees the new mode, before .onChange runs. See `iosTransitioningEditorID`.
-            if case .editing(let oldID, _) = state.mode, oldID != id {
+            if case .editing(let oldID, _) = state.sessionState, oldID != id {
                 iosTransitioningEditorID = oldID
                 DispatchQueue.main.async { iosTransitioningEditorID = nil }
             }
@@ -1090,15 +1066,15 @@ public struct EditorView: View {
     }
 
     /// Single source of truth for keeping SwiftUI focus, AppKit first responder, and
-    /// the host's `onBlur` callback in sync with `state.mode`. Driven from
-    /// `.onChange(of: state.mode)` so any path that mutates mode (clicks, key
-    /// handlers, undo/redo, …) gets focus right automatically — no caller has to
-    /// remember to flip `pageFocused`.
-    func handleModeChange(from oldMode: Mode, to newMode: Mode) {
-        let wasEditing: Bool = { if case .editing = oldMode { return true } else { return false } }()
-        Diag.mode.debug("from=\(String(describing: oldMode), privacy: .public) to=\(String(describing: newMode), privacy: .public)")
+    /// the host's `onBlur` callback in sync with `state.sessionState`. Driven from
+    /// `.onChange(of: state.sessionState)` so any path that mutates state (clicks,
+    /// key handlers, undo/redo, …) gets focus right automatically — no caller has
+    /// to remember to flip `pageFocused`.
+    func handleModeChange(from oldState: SessionState, to newState: SessionState) {
+        let wasEditing: Bool = { if case .editing = oldState { return true } else { return false } }()
+        Diag.mode.debug("from=\(String(describing: oldState), privacy: .public) to=\(String(describing: newState), privacy: .public)")
 
-        switch newMode {
+        switch newState {
         case .editing(let id, _):
             editorFocused = id
             pageFocused = false
@@ -1110,13 +1086,13 @@ public struct EditorView: View {
             macActiveTextView.makeFirstResponder(for: id)
             #endif
             // iOS inter-block overlap (`iosTransitioningEditorID`) is set inside
-            // `transferFocus` BEFORE the state.mode mutation, not here — .onChange
-            // fires after the render that picks up the new mode, which is too late.
+            // `transferFocus` BEFORE the sessionState mutation, not here — .onChange
+            // fires after the render that picks up the new state, which is too late.
         case .navigating:
             editorFocused = nil
             // Only re-grab page focus on real edit→nav transitions. .onChange fires on
-            // intra-nav selection changes too (cursor moves, selection extends);
-            // re-grabbing every time would steal focus from menus and sheets.
+            // intra-nav selection changes (cursor moves, extends) and gesture ticks
+            // too; re-grabbing every time would steal focus from menus and sheets.
             if wasEditing {
                 forcePageFocusGrab()
                 Task { @MainActor [host] in await host.onBlur() }
@@ -1144,7 +1120,7 @@ public struct EditorView: View {
     /// `scrollPosition.scrollTo(id:)`, which SwiftUI resolves by walking the
     /// content forward until the id is reached.
     func ensureCursorVisible() {
-        guard case .navigating(let sel) = state.mode, let cursor = sel.cursor else { return }
+        guard case .navigating(let sel, _) = state.sessionState, let cursor = sel.cursor else { return }
         let viewportH = scrollMetrics.viewportHeight
         guard viewportH > 0 else { return }
         let visibleTop = scrollMetrics.topInset
@@ -2190,7 +2166,7 @@ public struct EditorView: View {
         // nav stack on a load that's going to fail.
         guard !host.lookupPage(path).isMissing else { return true }
         transferFocus(to: .nav(cursor: blockID))
-        host.onSubpageTap(path)
+        host.openLink(.workspacePage(pageID: path))
         return true
     }
 

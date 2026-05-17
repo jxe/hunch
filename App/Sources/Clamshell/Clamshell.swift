@@ -99,25 +99,75 @@ public final class Clamshell {
 
     @MainActor
     public func loadDocument(at url: URL) throws -> Document {
-        try files.loadDocument(at: url)
-    }
-
-    /// Load + return the raw bytes that produced the document. The raw text is
-    /// needed by the host to seed `Workspace.diskHistory`, which protects
-    /// in-memory edits from iCloud-Drive stomps (an external write reverting
-    /// the file to a previously-seen disk state triggers a defender re-save).
-    @MainActor
-    public func loadDocumentAndRawText(at url: URL) throws -> (Document, String) {
         let raw = try files.read(url)
         let blocks = BlockParser.parse(raw)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        return (Document(url: url, children: blocks, modificationDate: mtime), raw)
+        recordDiskContent(raw, at: url)
+        return Document(url: url, children: blocks, modificationDate: mtime)
     }
 
-    /// Read the raw bytes on disk without parsing — used for hashing into
-    /// `diskHistory` when only the bytes are needed (e.g. on a presenter event).
+    /// Read the raw bytes on disk without parsing — used by the file
+    /// presenter to compare against the open document's snapshot.
     nonisolated public func readRawText(at url: URL) throws -> String {
         try files.read(url)
+    }
+
+    // MARK: - Disk-content classification (iCloud-stomp / echo defense)
+
+    /// Ring buffer of recent on-disk content hashes per URL. Seeded by every
+    /// load/save/write that goes through Clamshell; consulted by
+    /// `classifyDiskContent` so the presenter callback can distinguish
+    /// "our own write echoed back" / "iCloud rolled us back" / "an external
+    /// editor changed the file".
+    private var contentHistory: [URL: [Int]] = [:]
+    private static let historyDepth = 5
+
+    private func recordDiskContent(_ text: String, at url: URL) {
+        var history = contentHistory[url] ?? []
+        let hash = text.hashValue
+        if history.first == hash { return }
+        history.insert(hash, at: 0)
+        if history.count > Self.historyDepth { history.removeLast(history.count - Self.historyDepth) }
+        contentHistory[url] = history
+    }
+
+    public enum DiskClassification: Equatable, Sendable {
+        /// mtime matches the open document's snapshot — nothing happened.
+        case unchanged
+        /// Disk content matches the most-recent hash we wrote/loaded —
+        /// wakeup is our own write echoing back.
+        case echo
+        /// Disk content matches an older hash we've seen (iCloud rollback).
+        /// Caller should re-save the authoritative in-memory copy.
+        case stomp
+        /// Disk content is unfamiliar — external edit. Caller should reload.
+        case external
+        /// File couldn't be read.
+        case unreadable
+    }
+
+    /// Classify the current on-disk content for `url` against the running
+    /// content-history ring buffer. `expectingModificationDate` is a fast-path
+    /// check; pass the open document's `modificationDate` to short-circuit
+    /// when the file's mtime hasn't moved since we last touched it.
+    @MainActor
+    public func classifyDiskContent(at url: URL, expectingModificationDate: Date? = nil) -> DiskClassification {
+        if let expected = expectingModificationDate {
+            let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            if mtime == expected { return .unchanged }
+        }
+        guard let text = try? files.read(url) else { return .unreadable }
+        let hash = text.hashValue
+        let history = contentHistory[url] ?? []
+        if history.first == hash { return .echo }
+        if history.contains(hash) { return .stomp }
+        return .external
+    }
+
+    /// Drop ring-buffer history for `url`. Called when a page is moved to
+    /// trash so a future page at the same path starts fresh.
+    private func forgetDiskContent(at url: URL) {
+        contentHistory.removeValue(forKey: url)
     }
 
     @MainActor
@@ -131,10 +181,10 @@ public final class Clamshell {
     /// so we serialize on the calling actor (MainActor) before handing the
     /// String + URL across to the save coordinator. After the write lands,
     /// fires a fire-and-forget `RecoveryLog.record` that logs any new atomic
-    /// block content this device hasn't seen before. Deletions are not
-    /// inferred here — the editor calls `purgeHash` explicitly at the
-    /// mutation site for blocks the user removes, so the save path stays
-    /// purely observational.
+    /// block content this device hasn't seen before — primarily the safety
+    /// net for non-editor write paths (`appendToSubpage`, lost-block restore,
+    /// conflict resolution); editor-driven mutations already captured `pre`
+    /// and `post` at mutation time via `EditorHost.didMutate`.
     @MainActor
     @discardableResult
     public func save(
@@ -146,16 +196,15 @@ public final class Clamshell {
         let rel = relativePath(of: url)
         let blocks = document.children
         try await saver.save(url: url, contents: newText)
+        recordDiskContent(newText, at: url)
         scheduleRecord(rel: rel, blocks: blocks)
         return newText
     }
 
     /// Synchronous full write — bypasses the coalescer. For modifications-as-a-unit
     /// (trashing a dirty open doc, appending to a subpage, restoring a lost block)
-    /// where the doc must be on disk before the next operation runs. Also schedules
-    /// a recovery-log append for any new atomic block content this device hasn't
-    /// seen before. Returns the serialized text so callers can reuse it (e.g.
-    /// to seed `diskHistory`) without re-running the serializer.
+    /// where the doc must be on disk before the next operation runs. Schedules
+    /// the same recovery-log capture as `save(_:)`.
     @MainActor
     @discardableResult
     public func writeImmediately(
@@ -167,6 +216,7 @@ public final class Clamshell {
         let rel = relativePath(of: url)
         let blocks = document.children
         try files.write(newText, to: url)
+        recordDiskContent(newText, at: url)
         scheduleRecord(rel: rel, blocks: blocks)
         return newText
     }
@@ -178,8 +228,12 @@ public final class Clamshell {
 
     @MainActor
     private func scheduleRecord(rel: String, blocks: [Block]) {
-        Task { [log] in
-            try? await log.record(page: rel, blocks: blocks)
+        Task { [log, rel] in
+            do {
+                try await log.record(page: rel, blocks: blocks)
+            } catch {
+                Diag.log.error("record failed page=\(rel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -208,29 +262,37 @@ public final class Clamshell {
 
     // MARK: - iCloud conflict resolution
 
+    /// Outcome of a conflict-resolution pass. `salvaged` counts block-hashes
+    /// pulled in from alternates that weren't already in the survivor;
+    /// `liveDocumentMutated` is true exactly when the live `Document` passed
+    /// in was rewritten in place — the caller's signal to reseed mtime, the
+    /// disk-content history, the title cache, and to show a banner.
+    public struct ConflictResolution: Equatable, Sendable {
+        public let salvaged: Int
+        public let liveDocumentMutated: Bool
+        public static let none = ConflictResolution(salvaged: 0, liveDocumentMutated: false)
+    }
+
     /// If `url` has any unresolved `NSFileVersion` conflict alternates,
     /// merge their blocks into the survivor (in-memory `doc` if provided,
     /// otherwise the on-disk text), write the merged document immediately,
-    /// and mark each alternate version resolved. Returns the count of
-    /// distinct block-hashes that were salvaged from alternates and weren't
-    /// already in the survivor. Returns 0 when there are no alternates or
-    /// when alternates contributed nothing new.
+    /// and mark each alternate version resolved.
     ///
-    /// Open-page callers: pass the live `Document`. On a non-zero return
-    /// the live doc's `children` and `title` are updated in place; the
-    /// caller is responsible for any post-update plumbing (cache refresh,
-    /// disk-hash seeding, banner).
+    /// Open-page callers: pass the live `Document`. When the return value's
+    /// `liveDocumentMutated` is true, the live doc's `children` was rewritten
+    /// in place and the caller must reseed its per-URL bookkeeping (mtime,
+    /// disk-hash, title cache, banner).
     ///
     /// Closed-page callers: pass `nil`. The merged result is written
-    /// straight to disk.
+    /// straight to disk; `liveDocumentMutated` is always false.
     @MainActor
     public func resolveConflictVersions(
         at url: URL,
         againstLive doc: Document? = nil,
         resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
-    ) throws -> Int {
+    ) throws -> ConflictResolution {
         let alternates = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
-        guard !alternates.isEmpty else { return 0 }
+        guard !alternates.isEmpty else { return .none }
 
         var alternateBlockLists: [[Block]] = []
         for version in alternates {
@@ -259,18 +321,22 @@ public final class Clamshell {
 
         if result.salvagedHashes.isEmpty {
             Clamshell.markAlternatesResolved(alternates)
-            return 0
+            return .none
         }
 
         let merged = Document(url: url, children: result.merged)
         try writeImmediately(merged, resolvingSubpageTitle: titleForPath)
 
+        let mutated: Bool
         if let doc {
-            doc.children = result.merged
+            doc.replaceChildren(result.merged)
+            mutated = true
+        } else {
+            mutated = false
         }
 
         Clamshell.markAlternatesResolved(alternates)
-        return result.salvagedHashes.count
+        return ConflictResolution(salvaged: result.salvagedHashes.count, liveDocumentMutated: mutated)
     }
 
     nonisolated private static func readCoordinated(_ url: URL) -> String? {
@@ -400,8 +466,13 @@ public final class Clamshell {
         if homeRelativePath == rel {
             homeRelativePath = nil
         }
+        forgetDiskContent(at: url)
         Task { [log, rel, result] in
-            try? await log.move(fromPage: rel, toPage: result)
+            do {
+                try await log.move(fromPage: rel, toPage: result)
+            } catch {
+                Diag.log.error("log move (trash) failed from=\(rel, privacy: .public) to=\(result, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
         }
         return result
     }
@@ -414,7 +485,11 @@ public final class Clamshell {
     public func restorePage(_ entry: TrashEntry) async throws -> URL {
         let restoredURL = try await trash.restorePage(entry)
         let restoredRel = relativePath(of: restoredURL)
-        try? await log.move(fromPage: entry.trashRelativePath, toPage: restoredRel)
+        do {
+            try await log.move(fromPage: entry.trashRelativePath, toPage: restoredRel)
+        } catch {
+            Diag.log.error("log move (restore) failed from=\(entry.trashRelativePath, privacy: .public) to=\(restoredRel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        }
         return restoredURL
     }
 
@@ -457,8 +532,12 @@ public final class Clamshell {
     @MainActor
     public func appendObservations(_ observations: [PatchEngine.Observation], forPage page: String) {
         guard !observations.isEmpty else { return }
-        Task { [log] in
-            try? await log.append(observations: observations, to: page)
+        Task { [log, page] in
+            do {
+                try await log.append(observations: observations, to: page)
+            } catch {
+                Diag.log.error("appendObservations failed page=\(page, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

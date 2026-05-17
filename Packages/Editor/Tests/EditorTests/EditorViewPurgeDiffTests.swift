@@ -19,11 +19,11 @@ struct EditorViewPurgeDiffTests {
         let pre: [Block] = [
             Block(id: id, kind: .paragraph(text: AttributedString("Hello")))
         ]
-        let preByID = EditorView.idToAtomicHash(pre)
+        let preByID = BlockTreeDiff.idToAtomicHash(pre)
         let post: [Block] = [
             Block(id: id, kind: .paragraph(text: AttributedString("Hello world")))
         ]
-        let removed = EditorView.removedHashes(preByID: preByID, post: post)
+        let removed = BlockTreeDiff.removedHashes(preByID: preByID, post: post)
         #expect(removed.isEmpty,
                 "same id, different content — typing is not a deletion")
     }
@@ -31,9 +31,9 @@ struct EditorViewPurgeDiffTests {
     @Test func structuralRemoveFiresPurgeForRemovedId() {
         let keep = block("keep")
         let drop = block("drop")
-        let preByID = EditorView.idToAtomicHash([keep, drop])
+        let preByID = BlockTreeDiff.idToAtomicHash([keep, drop])
         let dropHash = drop.atomicHash
-        let removed = EditorView.removedHashes(preByID: preByID, post: [keep])
+        let removed = BlockTreeDiff.removedHashes(preByID: preByID, post: [keep])
         #expect(removed == [dropHash])
     }
 
@@ -41,8 +41,8 @@ struct EditorViewPurgeDiffTests {
         let leaf1 = block("leaf-1")
         let leaf2 = block("leaf-2")
         let parent = Block.toggle(title: AttributedString("Parent"), children: [leaf1, leaf2])
-        let preByID = EditorView.idToAtomicHash([parent])
-        let removed = Set(EditorView.removedHashes(preByID: preByID, post: []))
+        let preByID = BlockTreeDiff.idToAtomicHash([parent])
+        let removed = Set(BlockTreeDiff.removedHashes(preByID: preByID, post: []))
         #expect(removed == Set([
             parent.atomicHash,
             leaf1.atomicHash,
@@ -57,8 +57,8 @@ struct EditorViewPurgeDiffTests {
         // captured by the recovery log on the next save.
         let oldBlock = block("before")
         let newBlock = block("after")
-        let preByID = EditorView.idToAtomicHash([oldBlock])
-        let removed = EditorView.removedHashes(preByID: preByID, post: [newBlock])
+        let preByID = BlockTreeDiff.idToAtomicHash([oldBlock])
+        let removed = BlockTreeDiff.removedHashes(preByID: preByID, post: [newBlock])
         #expect(removed == [oldBlock.atomicHash])
     }
 
@@ -66,8 +66,8 @@ struct EditorViewPurgeDiffTests {
         // Moving blocks around (same ids, different order) is not a delete.
         let a = block("a")
         let b = block("b")
-        let preByID = EditorView.idToAtomicHash([a, b])
-        let removed = EditorView.removedHashes(preByID: preByID, post: [b, a])
+        let preByID = BlockTreeDiff.idToAtomicHash([a, b])
+        let removed = BlockTreeDiff.removedHashes(preByID: preByID, post: [b, a])
         #expect(removed.isEmpty)
     }
 
@@ -75,8 +75,8 @@ struct EditorViewPurgeDiffTests {
         // Outdent / un-nest is an id-preserving move. No purge.
         let leaf = block("leaf")
         let parent = Block.toggle(title: AttributedString("Parent"), children: [leaf])
-        let preByID = EditorView.idToAtomicHash([parent])
-        let removed = EditorView.removedHashes(
+        let preByID = BlockTreeDiff.idToAtomicHash([parent])
+        let removed = BlockTreeDiff.removedHashes(
             preByID: preByID,
             post: [
                 Block(id: parent.id, kind: parent.kind, children: []),

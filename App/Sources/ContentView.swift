@@ -29,17 +29,6 @@ struct ContentView: View {
                             pageDetail(for: url)
                         }
                 }
-                .environment(\.openURL, OpenURLAction { url in
-                    let currentDocURL = window.path.last ?? workspace.homeURL
-                    if let rel = workspace.workspaceRelativeMarkdownPath(
-                        for: url,
-                        currentDocURL: currentDocURL
-                    ) {
-                        window.openSubpage(relativePath: rel)
-                        return .handled
-                    }
-                    return .systemAction
-                })
                 // `initial: true` covers the path-restored-by-tryRestore case where
                 // the NavigationStack mounts with a non-empty path; without it
                 // `openDocument` would never load and `pageDetail` would render
@@ -210,6 +199,15 @@ private struct EditorPage: View {
             state: editorState,
             host: coordinator
         )
+        .onAppear { window.activeCoordinator = coordinator }
+        .onDisappear {
+            // Final save+flush survives this caller returning; the per-URL
+            // DocumentSaveCoordinator inside Clamshell serializes writes.
+            coordinator.flushAndClose()
+            if window.activeCoordinator === coordinator {
+                window.activeCoordinator = nil
+            }
+        }
         .toolbar {
             #if os(iOS)
             ToolbarItem(placement: .primaryAction) {

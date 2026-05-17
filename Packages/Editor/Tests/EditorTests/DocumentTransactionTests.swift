@@ -3,7 +3,7 @@ import Foundation
 @testable import Editor
 
 /// Covers the unified mutation/undo entry point `Document.transaction`,
-/// including coalescing via `coalesceKey` and the `preMutation` / `willMutate` /
+/// including coalescing via `coalesceKey` and the `preMutation` /
 /// `didApplyUndo` hooks.
 @MainActor
 @Suite("Document.transaction — mutations, undo, coalescing")
@@ -161,19 +161,16 @@ struct DocumentTransactionTests {
         #expect(plainText(doc.children[0]) == "alpha")
     }
 
-    @Test func transactionFiresPreMutationAndWillMutateBeforeChange() {
+    @Test func transactionFiresPreMutationBeforeChange() {
         let doc = makeDoc()
         var preFiredAt: Int? = nil
-        var willFiredAt: Int? = nil
         var changeFiredAt: Int? = nil
         var tick = 0
         doc.preMutation = { tick += 1; preFiredAt = tick }
-        doc.willMutate = { _ in tick += 1; willFiredAt = tick }
         doc.transaction(name: "x") { _ in tick += 1; changeFiredAt = tick }
 
         #expect(preFiredAt == 1)
-        #expect(willFiredAt == 2)
-        #expect(changeFiredAt == 3)
+        #expect(changeFiredAt == 2)
     }
 
     @Test func didApplyUndoFiresOnUndoAndRedo() {
@@ -220,14 +217,13 @@ struct DocumentTransactionTests {
         // `transaction` call (typically from inside `preMutation` — e.g.
         // BlockTextEditor's typing path opens its own transaction to flush
         // live text) collapses into the outer. The inner runs its `change`
-        // closure, does NOT re-fire `preMutation`/`willMutate`, and does NOT
-        // register its own undo entry. The outer's snapshot captures the
-        // post-inner state, so undo reverses both as one atomic action.
+        // closure, does NOT re-fire `preMutation`, and does NOT register its
+        // own undo entry. The outer's snapshot captures the post-inner state,
+        // so undo reverses both as one atomic action.
         let (doc, mgr) = makeDocWithUndo()
         let id = doc.children[0].id
 
         var preMutationFires = 0
-        var willMutateFires = 0
         doc.preMutation = {
             preMutationFires += 1
             // Open a nested transaction (typing path's typical shape).
@@ -235,7 +231,6 @@ struct DocumentTransactionTests {
                 d.setText(id, AttributedString("inner"))
             }
         }
-        doc.willMutate = { _ in willMutateFires += 1 }
 
         tx(doc, mgr, name: "Outer") { d in
             // Outer change runs AFTER preMutation (which fired inner first).
@@ -244,9 +239,8 @@ struct DocumentTransactionTests {
             d.children.append(.paragraph(text: AttributedString("outer-added")))
         }
 
-        // preMutation/willMutate fire exactly once — only for the outer.
+        // preMutation fires exactly once — only for the outer.
         #expect(preMutationFires == 1)
-        #expect(willMutateFires == 1)
         // Both the inner and outer changes are visible after the transaction.
         #expect(plainText(doc.children[0]) == "inner")
         #expect(doc.children.count == 3)
