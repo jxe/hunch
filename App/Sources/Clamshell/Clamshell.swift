@@ -275,6 +275,10 @@ public final class Clamshell {
     /// this call returns) and schedules a tree-walk recovery-log
     /// catch-up so the new blocks reach the journal without waiting for
     /// the next reconcile pass to absorb them.
+    ///
+    /// Fires `didSave` after the write so callers get the same per-doc
+    /// bookkeeping (mtime, title cache, page rescan) as the editor save
+    /// path — no manual replay needed at each call site.
     @MainActor
     @discardableResult
     public func writeExternal(_ document: Document) throws -> String {
@@ -285,6 +289,7 @@ public final class Clamshell {
         try files.write(newText, to: url)
         recordDiskContent(newText, at: url)
         scheduleRecord(rel: rel, blocks: blocks)
+        didSave?(document)
         return newText
     }
 

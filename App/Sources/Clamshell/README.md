@@ -184,9 +184,10 @@ host's to assign.
 
 The presenter-wakeup path is different: it must update the live
 `Document` in place to preserve the editor's selection/cursor state,
-so it still uses `WorkspaceWindow.reconcileOpenDocumentAgainstLog`,
-which calls `PatchEngine.apply(_:to:)` on the live doc. That path
-gates on `Clamshell.isClean(at:)` — the engine assumes
+so the host calls `Clamshell.reconcile(liveDoc:)` (see
+[Clamshell+Reconcile.swift](Clamshell+Reconcile.swift)), which
+internally gates on `isQuiescent(at:)` and calls
+`PatchEngine.apply(_:to:)` on the live doc. The engine assumes
 `doc.children == parsed(.md)`, only true when nothing is pending.
 
 ### Conflict merge (iCloud sibling alternates)
@@ -243,20 +244,17 @@ try clamshell.moveToTrash(at: doc.url)
 let trashed = try await clamshell.listTrashedPages()
 let lost = await clamshell.listLostBlocks()
 
-// Open + reconcile in one step (host's open-doc path).
+// Open + reconcile in one step (host's open-doc path; fresh Document).
 let (doc, summary) = try await clamshell.loadAndReconcile(at: url)
 if summary.didChange { /* banner: "Restored N blocks..." */ }
 
-// Engine-direct (for the presenter-wakeup path, which must mutate the
-// live Document in place to preserve editor state):
-let journal = clamshell.readJournal(forPage: rel)
-let intent = PatchEngine.intent(from: journal)
-let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
-PatchEngine.apply(recon, to: doc)
-var entries: [Patch.Entry] = []
-for obs in recon.toAppend { entries.append(.add(hash: obs.hash, parent: obs.parent, markdown: obs.markdown)) }
-for q in recon.unrestorable { entries.append(.purge(hash: q.hash)) }
-try await clamshell.applyPatch(Patch(entries: entries), forPage: rel)
+// Presenter-wakeup / re-reconcile path (mutates the live Document in
+// place to preserve editor state). Gated internally on `isQuiescent`.
+let summary = await clamshell.reconcile(liveDoc: doc)
+
+// Restore one lost or purged block (host passes `openDocument` so the
+// splice mutates the live doc when the source page is open).
+_ = try await clamshell.restore(.lost(entry), liveDoc: openDocument)
 ```
 
 **One Clamshell per directory.** Construct with the root URL; never
@@ -271,9 +269,10 @@ existing instance and build a new one.
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)` |
 | Read | `scan()`, `loadDocument(at:)`, `loadAndReconcile(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
-| Editor-driven persistence | `documentDidChange(ops:in:)`, `flush(_:)`, `isClean(at:)` |
+| Editor-driven persistence | `documentDidChange(ops:in:)`, `flush(_:)`, `isQuiescent(at:)` |
+| Reconcile + restore | `reconcile(liveDoc:)`, `restore(_:liveDoc:)` (the host used to orchestrate this inline; lives on Clamshell now) |
 | Configuration | `subpageTitleResolver`, `didSave` (set once by the host) |
-| External write | `writeExternal(_:)` for callers that didn't flow through `documentDidChange` (conflict merge, restoring a lost block into a closed page, appending to a non-open subpage) |
+| External write | `writeExternal(_:)` for callers that didn't flow through `documentDidChange` (conflict merge, appending to a non-open subpage). Fires `didSave` after the write so callers get the same per-doc bookkeeping (mtime, title cache, page rescan) as the editor save path. |
 | Disk classification | `classifyDiskContent(at:expectingModificationDate:)` → `DiskClassification` (`.unchanged / .echo / .stomp / .external / .unreadable`) |
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Search | `searchPages(in:query:excluding:)` |
@@ -355,16 +354,19 @@ host calls `documentDidChange(ops:in:)` on every mutation: non-empty
 force-saves, and drains the per-URL coordinator — for blur, scenePhase
 backgrounding, navigation-away, app shutdown. Post-save bookkeeping
 (mtime refresh, title cache, page rescan) fires through the `didSave`
-callback the host wires once at startup. `isClean(at:)` lets the
-file-presenter / reconcile paths gate on "is the in-memory doc equal
-to disk".
+callback the host wires once at startup — also fired by
+`writeExternal` so closed-doc paths get the same bookkeeping for free.
+`isQuiescent(at:)` lets the file-presenter / reconcile paths gate on
+"no debounce armed, no log apply in flight, no save in flight".
 
 **`writeExternal(_:)` is the escape hatch.** It bypasses the
-coalescer AND writes a fire-and-forget recovery-log catch-up; use it
-when the next operation depends on the file being on disk now AND the
-caller didn't flow through the editor op stream — conflict merge,
-restoring a lost block into a closed page, appending blocks to a
-non-open subpage. The internal coalesced `save` path that
+coalescer AND writes a fire-and-forget recovery-log catch-up, then
+fires `didSave` so caller-side bookkeeping (mtime, title cache, page
+rescan) happens automatically; use it when the next operation depends
+on the file being on disk now AND the caller didn't flow through the
+editor op stream — conflict merge, restoring a lost block into a
+closed page (via `Clamshell.restore`), appending blocks to a non-open
+subpage. The internal coalesced `save` path that
 `documentDidChange` schedules deduplicates concurrent writes per URL —
 if a write is already in flight, the new snapshot replaces any pending
 one and is written after the in-flight write completes.
@@ -433,6 +435,12 @@ append" — `NSFileCoordinator` handles that.
 - [Clamshell.swift](Clamshell.swift) — the umbrella API. Orchestrates
   reads/writes, hands the engine its inputs, applies the engine's
   outputs.
+- [Clamshell+Saving.swift](Clamshell+Saving.swift) — editor-driven
+  save lifecycle: `documentDidChange`, `flush`, `isQuiescent`, per-URL
+  600ms debounce, log-task-before-file-write barrier.
+- [Clamshell+Reconcile.swift](Clamshell+Reconcile.swift) — engine
+  orchestration the host used to do inline: `reconcile(liveDoc:)` for
+  presenter wakeups, `restore(_:liveDoc:)` for the Recover sheet.
 - [PatchEngine.swift](PatchEngine.swift) — the engine. Pure
   Sendable types: `LogJournal`, `LogRecord`, `IntentState`,
   `Reconciliation`. Pure functions: `intent(from:)`,
@@ -477,9 +485,10 @@ append" — `NSFileCoordinator` handles that.
   `WorkspaceWindow`. Clamshell handles one persistent format; the
   host splits workspace-wide vs. per-window state across `Workspace`
   and `WorkspaceWindow`.
-- **No restore-of-lost-block live-doc plumbing.** The engine produces
-  insertion instructions; mutating the live `Document` and saving is
-  the host's job (`WorkspaceWindow.restoreLostBlock`).
+- **No banners or recovery-sheet UI.** `Clamshell.reconcile(liveDoc:)`
+  and `Clamshell.restore(_:liveDoc:)` do the engine work and return
+  outcomes; the host (`WorkspaceWindow`) shows the resulting banner
+  and routes from the Recover sheet's row taps.
 - **No move-as-operation.** Moving a block between parents on a device
   that already logged it doesn't append a new record. The original `p`
   goes stale; restore relies on chain-climbing through still-alive

@@ -508,8 +508,7 @@ final class Workspace {
                 d.insertSubtrees(blocks, at: DropPath(parent: nil, position: d.children.count))
             }
             try clamshell.writeExternal(doc)
-            doc.modificationDate = modificationDate(for: target)
-            refreshTitleCache(from: doc)
+            // mtime / title cache / rescan flow through `didSave`.
             return doc
         } catch {
             self.error = "Failed to move blocks into \(relativePath): \(error.localizedDescription)"

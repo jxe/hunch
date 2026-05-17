@@ -263,278 +263,43 @@ final class WorkspaceWindow {
         case .deletedPage(let trashEntry):
             return await workspace.restoreDeletedPage(trashEntry)
         case .lostBlock(let group):
-            return await restoreLostBlock(group.root)
-        case .purgedBlock(let purged):
-            return await restorePurgedBlock(purged)
+            return await performBlockRestore(.lost(group.root))
+        case .purgedBlock(let group):
+            return await performBlockRestore(.purged(group.root))
         }
     }
 
-    /// Reconcile the open document against the page's recovery-log journal:
-    ///
-    /// - Insert any block the journal considers `.alive` that isn't currently
-    ///   in `doc` (auto-restore), splicing under the closest live ancestor
-    ///   via the engine's recorded-parent chain climb.
-    /// - Lift any block present in `doc` but not in the journal (bare-md,
-    ///   external-editor additions) into our device's log as fresh `add`
-    ///   records, fire-and-forget.
-    ///
-    /// Called from `handlePathChange` (on page open) and the file-presenter
-    /// wakeup. Idempotent: with no changes pending, the second call reads
-    /// the journal and exits without I/O. Held off while the local doc is
-    /// dirty or a save is in flight — the engine's invariant is `doc.children
-    /// == parsed(.md)`, which is only true on a clean page.
-    @MainActor
+    private func performBlockRestore(_ target: Clamshell.RecoveryTarget) async -> Bool {
+        guard let clamshell = workspace.clamshell else { return false }
+        do {
+            _ = try await clamshell.restore(target, liveDoc: openDocument)
+            return true
+        } catch Clamshell.RestoreError.pageMissing(let source) {
+            workspace.error = "Original page no longer exists at \(source)."
+            return false
+        } catch Clamshell.RestoreError.unparseable {
+            workspace.error = "Couldn't parse the recovered block."
+            return false
+        } catch {
+            workspace.error = "Restore failed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Reconcile the open document against the page's recovery-log journal.
+    /// Thin wrapper around `Clamshell.reconcile(liveDoc:)` — the engine
+    /// plumbing (read journal, derive intent, splice, append observations,
+    /// quarantine unrestorables) lives there. Held off while the doc is
+    /// dirty or a save is in flight (gated inside Clamshell).
     private func reconcileOpenDocumentAgainstLog(_ doc: Document) {
         guard let clamshell = workspace.clamshell else { return }
-        // The doc must still be the open one — navigation can swap underneath
-        // a pending reconcile from a presenter wakeup.
-        guard openDocument === doc else { return }
-        // Don't race with in-flight user edits or saves. The engine assumes
-        // `doc.children == parsed(.md)` — only true when the page is clean.
-        if !clamshell.isClean(at: doc.url) { return }
-
-        let url = doc.url
-        let rel = clamshell.relativePath(of: url)
-        let journal = clamshell.readJournal(forPage: rel)
-        let intent = PatchEngine.intent(from: journal)
-        let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
-
-        // Reconcile produces two intent transitions:
-        //   - `toAppend`: lift bare-md / external-edit content into the log
-        //                 as fresh adds (engine already filtered against the
-        //                 union, so no duplicates).
-        //   - `unrestorable`: quarantine hashes the engine can't turn into
-        //                     valid Inserts (markdown won't parse, or parses
-        //                     to a different hash — typically a
-        //                     serialization-format drift). Without the
-        //                     quarantine, those hashes stay `.alive` in
-        //                     intent forever and reconcile re-fires.
-        var entries: [Patch.Entry] = []
-        for obs in recon.toAppend {
-            entries.append(.add(hash: obs.hash, parent: obs.parent, markdown: obs.markdown))
-        }
-        for entry in recon.unrestorable {
-            entries.append(.purge(hash: entry.hash))
-        }
-        if !recon.unrestorable.isEmpty {
-            let hashList = recon.unrestorable.map(\.hash).joined(separator: ",")
-            Diag.merge.error("reconcile quarantining url=\(url.lastPathComponent, privacy: .public) count=\(recon.unrestorable.count, privacy: .public) hashes=\(hashList, privacy: .public)")
-            for entry in recon.unrestorable {
-                let reasonLabel: String
-                switch entry.reason {
-                case .parseFailure: reasonLabel = "parseFailure"
-                case .hashMismatch(let actual, let kind): reasonLabel = "hashMismatch actual=\(actual) kind=\(kind)"
-                case .descendantOfUnrestorableRoot(let rootHash): reasonLabel = "descendantOf=\(rootHash)"
-                }
-                let mdPreview = entry.recordedMarkdown
-                    .prefix(160)
-                    .replacingOccurrences(of: "\n", with: "\\n")
-                Diag.merge.error("unrestorable hash=\(entry.hash, privacy: .public) reason=\(reasonLabel, privacy: .public) parent=\(entry.recordedParent ?? "nil", privacy: .public) recordedAt=\(entry.recordedAt.timeIntervalSince1970, privacy: .public) md=\(String(mdPreview), privacy: .public)")
-            }
-        }
-        if !entries.isEmpty {
-            let patch = Patch(entries: entries)
-            Task { [clamshell, rel] in
-                do {
-                    try await clamshell.applyPatch(patch, forPage: rel)
-                } catch {
-                    Diag.merge.error("reconcile patch apply failed page=\(rel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
-
-        guard recon.didChange else { return }
-        guard openDocument === doc else { return }
-
-        PatchEngine.apply(recon, to: doc)
-        clamshell.documentDidChange(ops: [], in: doc)
-        let restored = recon.restoredHashes.count
-        let noun = restored == 1 ? "block" : "blocks"
-        workspace.banner = .init(message: "Restored \(restored) \(noun) from another device into \(doc.title)")
-        Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(restored, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
-    }
-
-    @discardableResult
-    func restoreLostBlock(_ entry: LostBlock) async -> Bool {
-        guard let clamshell = workspace.clamshell, let workspaceURL = workspace.workspaceURL else { return false }
-        let target = workspaceURL.appendingPathComponent(entry.source).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: target.path) else {
-            workspace.error = "Original page no longer exists at \(entry.source)."
-            return false
-        }
-
-        do {
-            let (doc, isLive) = try openDocForRestore(at: target)
-
-            // Engine input: the page's journal + the current doc. Falls back
-            // to the entry passed in if the freshly-read journal no longer
-            // surfaces the hash (rare race with a refresh).
-            let journal = clamshell.readJournal(forPage: entry.source)
-            let intent = PatchEngine.intent(from: journal)
-            let candidates = intent.lostEntries(notIn: [], source: entry.source)
-            guard let insert = PatchEngine.insertion(
-                rootHash: entry.hash,
-                candidates: candidates,
-                intent: intent,
-                doc: doc.children
-            ) ?? PatchEngine.insertion(
-                rootHash: entry.hash,
-                candidates: [entry],
-                intent: intent,
-                doc: doc.children
-            ) else {
-                workspace.error = "Couldn't parse the recovered block."
-                return false
-            }
-
-            PatchEngine.apply(
-                PatchEngine.Reconciliation(
-                    inserts: [insert],
-                    restoredHashes: Array(insert.coveredHashes)
-                ),
-                to: doc
-            )
-            try persistRestoredDoc(doc, isLive: isLive, target: target)
-
-            // Purge every hash in the restored subtree so the Recover sheet
-            // stops surfacing it. Includes the clicked entry's hash and any
-            // descendants we pulled in. One batched log write instead of N.
-            let purgePatch = Patch(entries: insert.coveredHashes.map { .purge(hash: $0) })
-            do {
-                try await clamshell.applyPatch(purgePatch, forPage: entry.source)
-            } catch {
-                Diag.merge.error("restore purge failed page=\(entry.source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
-            return true
-        } catch {
-            workspace.error = "Restore failed: \(error.localizedDescription)"
-            return false
-        }
-    }
-
-    /// Load the destination doc for a restore. Reuses the in-memory live
-    /// document when the target is currently open (so `PatchEngine.apply`
-    /// mutates the same object the editor renders); otherwise reads from
-    /// disk. The `isLive` flag tells `persistRestoredDoc` which save path
-    /// to take.
-    private func openDocForRestore(at target: URL) throws -> (doc: Document, isLive: Bool) {
-        if let live = openDocument, live.url == target {
-            return (live, true)
-        }
-        return (try workspace.loadDocument(at: target), false)
-    }
-
-    /// Persist a restore that just mutated `doc`. Live docs go through the
-    /// debounced save by way of `clamshell.documentDidChange`; closed docs
-    /// are written synchronously and the page list is rescanned so
-    /// titles/mtimes refresh.
-    private func persistRestoredDoc(_ doc: Document, isLive: Bool, target: URL) throws {
-        guard let clamshell = workspace.clamshell else { return }
-        if isLive {
-            clamshell.documentDidChange(ops: [], in: doc)
-        } else {
-            try clamshell.writeExternal(doc)
-            doc.modificationDate = workspace.modificationDate(for: target)
-            workspace.rescan()
-        }
-    }
-
-    /// Restore a block the user intentionally deleted (latest log record is
-    /// a `purge`). Mirror of `restoreLostBlock`: pulls the full purged set
-    /// for the page, rebuilds the subtree rooted at the clicked entry, and
-    /// inserts it under the closest live ancestor. Writes a fresh `add`
-    /// record per restored hash so the union stops treating them as
-    /// tombstoned — a plain doc save would skip the hashes (the device
-    /// cache says "already recorded") and the tombstones would linger.
-    @discardableResult
-    func restorePurgedBlock(_ group: PurgedBlockGroup) async -> Bool {
-        guard let clamshell = workspace.clamshell, let workspaceURL = workspace.workspaceURL else { return false }
-        let target = workspaceURL.appendingPathComponent(group.source).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: target.path) else {
-            workspace.error = "Original page no longer exists at \(group.source)."
-            return false
-        }
-
-        do {
-            let (doc, isLive) = try openDocForRestore(at: target)
-
-            // Pull the full purged set for the page (no time cap — we know the
-            // entry exists in the union or the row wouldn't have rendered),
-            // adapt to LostBlock-shape (using purgedAt as recordedAt for forest
-            // sorting), and ask the engine to build the insertion.
-            let allPurged = await clamshell.listPurgedBlocks(
-                filter: .page(relativePath: group.source),
-                since: nil
-            )
-            let candidates: [LostBlock] = allPurged.map { p in
-                LostBlock.adapt(
-                    hash: p.hash,
-                    parentHash: p.parentHash,
-                    markdown: p.markdown,
-                    source: p.source,
-                    recordedAt: p.purgedAt
-                )
-            }
-            let fallbackCandidate = LostBlock.adapt(
-                hash: group.root.hash,
-                parentHash: group.root.parentHash,
-                markdown: group.root.markdown,
-                source: group.root.source,
-                recordedAt: group.root.purgedAt
-            )
-            let purgedByHash = Dictionary(uniqueKeysWithValues: allPurged.map { ($0.hash, $0) })
-
-            let journal = clamshell.readJournal(forPage: group.source)
-            let intent = PatchEngine.intent(from: journal)
-            guard let insert = PatchEngine.insertion(
-                rootHash: group.hash,
-                candidates: candidates,
-                intent: intent,
-                doc: doc.children
-            ) ?? PatchEngine.insertion(
-                rootHash: group.hash,
-                candidates: [fallbackCandidate],
-                intent: intent,
-                doc: doc.children
-            ) else {
-                workspace.error = "Couldn't parse the recovered block."
-                return false
-            }
-
-            PatchEngine.apply(
-                PatchEngine.Reconciliation(
-                    inserts: [insert],
-                    restoredHashes: Array(insert.coveredHashes)
-                ),
-                to: doc
-            )
-
-            // Fresh `add` per restored hash so each one's latest record in
-            // the union is no longer a `purge`. Counter mint > prior purge,
-            // so intent flips back to alive. One batched log write.
-            var unpurgeEntries: [Patch.Entry] = []
-            for hash in insert.coveredHashes {
-                guard let purgedRecord = purgedByHash[hash],
-                      let parsed = BlockParser.parse(purgedRecord.markdown).first else { continue }
-                unpurgeEntries.append(.add(
-                    hash: parsed.atomicHash,
-                    parent: purgedRecord.parentHash,
-                    markdown: BlockSerializer.serializeAtomic(parsed)
-                ))
-            }
-            if !unpurgeEntries.isEmpty {
-                do {
-                    try await clamshell.applyPatch(Patch(entries: unpurgeEntries), forPage: group.source)
-                } catch {
-                    Diag.merge.error("unpurge failed page=\(group.source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                }
-            }
-
-            try persistRestoredDoc(doc, isLive: isLive, target: target)
-            return true
-        } catch {
-            workspace.error = "Restore failed: \(error.localizedDescription)"
-            return false
+        Task { @MainActor [weak self] in
+            guard let self, self.openDocument === doc else { return }
+            let summary = await clamshell.reconcile(liveDoc: doc)
+            guard self.openDocument === doc, summary.didChange else { return }
+            let count = summary.restoredHashes.count
+            let noun = count == 1 ? "block" : "blocks"
+            self.workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
         }
     }
 
@@ -589,11 +354,11 @@ final class WorkspaceWindow {
                     againstLive: doc
                 )
                 if resolution.liveDocumentMutated {
-                    doc.modificationDate = workspace.modificationDate(for: url)
-                    workspace.refreshTitleCache(from: doc)
+                    // Mtime / title cache / rescan flow through `didSave`,
+                    // which `writeExternal` (inside `resolveConflictVersions`)
+                    // now fires.
                     let noun = resolution.salvaged == 1 ? "block" : "blocks"
                     workspace.banner = .init(message: "Merged \(resolution.salvaged) \(noun) from another device into \(doc.title)")
-                    workspace.rescan()
                     return
                 }
             } catch {
@@ -613,7 +378,7 @@ final class WorkspaceWindow {
             // Drive stomp. Re-save our in-memory authoritative copy, unless a
             // save is in flight or fresh dirty edits are pending (the
             // upcoming debounce save will overwrite anyway).
-            if clamshell.isClean(at: url), let doc = openDocument {
+            if clamshell.isQuiescent(at: url), let doc = openDocument {
                 Task { await clamshell.flush(doc) }
             }
             workspace.rescan()
@@ -624,7 +389,7 @@ final class WorkspaceWindow {
             // reference to the same Document instance — `didReplaceChildren`
             // fires inside, revalidating `state.cursor` / `state.selection`
             // against the freshly-parsed BlockIDs.
-            guard clamshell.isClean(at: url), let doc = openDocument else { workspace.rescan(); return }
+            guard clamshell.isQuiescent(at: url), let doc = openDocument else { workspace.rescan(); return }
             do {
                 let reloaded = try workspace.loadDocument(at: url)
                 doc.replaceChildren(reloaded.children)

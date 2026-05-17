@@ -74,10 +74,13 @@ extension Clamshell {
         pending[url]?.latestLogTask = nil
     }
 
-    /// True if there is no pending or in-flight save for `url`. Reconcile
-    /// and presenter paths gate on this — the engine's invariant is
-    /// `doc.children == parsed(.md)`, only true when nothing is pending.
-    public func isClean(at url: URL) -> Bool {
+    /// True if there is no debounced edit, log-apply task, or in-flight
+    /// save for `url`. Reconcile and presenter paths gate on this — the
+    /// engine's invariant is `doc.children == parsed(.md)`, only true
+    /// when the page is fully settled. "Quiescent" rather than "clean"
+    /// because the gate covers more than unsaved edits: it also rejects
+    /// the window where a log append is mid-flight or a save is writing.
+    public func isQuiescent(at url: URL) -> Bool {
         pending[url] == nil
     }
 
