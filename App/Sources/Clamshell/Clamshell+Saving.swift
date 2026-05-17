@@ -79,7 +79,7 @@ extension Clamshell {
     private func performSave(_ doc: Document) async -> Bool {
         pending[doc.url]?.isSaving = true
         do {
-            _ = try await save(doc, resolvingSubpageTitle: subpageTitleResolver)
+            _ = try await save(doc)
             pending[doc.url]?.isSaving = false
             didSave?(doc)
             return true

@@ -162,15 +162,21 @@ operations in the log.
 import Foundation
 
 let clamshell = Clamshell(root: workspaceURL)
+clamshell.subpageTitleResolver = { path in ... }   // optional
+clamshell.didSave = { doc in ... }                 // optional
+
 let entries = try clamshell.scan()
 
 // Read
 let doc = try clamshell.loadDocument(at: entries[0].url)
 
-// Write — coalesced autosave. The save path records new atomic blocks
-// into the recovery log internally; the caller doesn't pass any
-// "previous text."
-try await clamshell.save(doc)
+// Editor-driven write — appends ops to the recovery log and arms the
+// 600ms debounced save. Empty ops means a text-only edit. The host
+// fires this on every mutation; the lifecycle is owned by Clamshell.
+clamshell.documentDidChange(ops: ops, in: doc)
+
+// Force-save (blur, scenePhase background, navigation away, shutdown).
+await clamshell.flush(doc)
 
 // Trash a page. If it was the home page, homeRelativePath gets cleared.
 // The page's .history/<rel>/ dir is moved alongside the .md.
@@ -202,23 +208,23 @@ existing instance and build a new one.
 | Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
 | Editor-driven persistence | `documentDidChange(ops:in:)`, `flush(_:)`, `isClean(at:)` |
 | Configuration | `subpageTitleResolver`, `didSave` (set once by the host) |
-| Lower-level write | `save(_:resolvingSubpageTitle:)`, `writeExternal(_:resolvingSubpageTitle:)`, `flush(url:)` |
-| Editor op stream | `appendOps(_:forPage:)` (called internally by `documentDidChange`) |
+| External write | `writeExternal(_:)` for callers that didn't flow through `documentDidChange` (conflict merge, restoring a lost block into a closed page, appending to a non-open subpage) |
 | Disk classification | `classifyDiskContent(at:expectingModificationDate:)` → `DiskClassification` (`.unchanged / .echo / .stomp / .external / .unreadable`) |
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Search | `searchPages(in:query:excluding:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Recovery log | `readJournal(forPage:)`, `appendObservations(_:forPage:)`, `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)`, `purgeHash(_:in:)`, `unpurgeBlock(_:in:parentHash:)` |
-| iCloud merge | `resolveConflictVersions(at:againstLive:resolvingSubpageTitle:)` → `ConflictResolution` (`{ salvaged, liveDocumentMutated }`) |
+| iCloud merge | `resolveConflictVersions(at:againstLive:)` → `ConflictResolution` (`{ salvaged, liveDocumentMutated }`) |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
 | Metadata | `homeRelativePath` (read/write), `root` |
 
-`loadDocument(at:)`, `save(_:)`, and `writeExternal(_:)` all seed the
-internal per-URL content-hash ring buffer that `classifyDiskContent`
-reads — so the file presenter can tell our own writes echoing back
-(`.echo`) from an iCloud rollback to an earlier state (`.stomp`) from a
-genuine external edit (`.external`). Callers don't have to seed
-anything; the ring buffer is cleared automatically on `moveToTrash`.
+`loadDocument(at:)`, debounced editor saves (via `documentDidChange` /
+`flush(_:)`), and `writeExternal(_:)` all seed the internal per-URL
+content-hash ring buffer that `classifyDiskContent` reads — so the
+file presenter can tell our own writes echoing back (`.echo`) from an
+iCloud rollback to an earlier state (`.stomp`) from a genuine external
+edit (`.external`). Callers don't have to seed anything; the ring
+buffer is cleared automatically on `moveToTrash`.
 
 The engine itself is at the same layer as Clamshell. Callers reaching
 into engine territory use `clamshell.readJournal` → `PatchEngine.intent`
@@ -284,15 +290,15 @@ callback the host wires once at startup. `isClean(at:)` lets the
 file-presenter / reconcile paths gate on "is the in-memory doc equal
 to disk".
 
-**Lower-level writes still exist.** `save(_:) async` deduplicates
-concurrent writes for the same URL — if a write is already in flight,
-the new snapshot replaces any pending one and is written after the
-in-flight write completes. `documentDidChange` calls `save` under the
-hood. `writeExternal(_:) throws` bypasses the coalescer AND writes a
-fire-and-forget recovery-log catch-up; use it when the next operation
-depends on the file being on disk now AND the caller didn't flow
-through the editor op stream — conflict merge, restoring a lost block
-into a closed page, appending blocks to a non-open subpage.
+**`writeExternal(_:)` is the escape hatch.** It bypasses the
+coalescer AND writes a fire-and-forget recovery-log catch-up; use it
+when the next operation depends on the file being on disk now AND the
+caller didn't flow through the editor op stream — conflict merge,
+restoring a lost block into a closed page, appending blocks to a
+non-open subpage. The internal coalesced `save` path that
+`documentDidChange` schedules deduplicates concurrent writes per URL —
+if a write is already in flight, the new snapshot replaces any pending
+one and is written after the in-flight write completes.
 
 **Editor mutations stream as ops.** Each `EditorView.mutate(_:_:)`
 transaction derives a pre→post `[EditorOp]` diff via

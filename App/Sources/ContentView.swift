@@ -141,7 +141,7 @@ struct ContentView: View {
 
     private func moveToTrash(_ item: MentionItem) {
         if let entry = workspace.entries.first(where: { $0.relativePath == item.id }) {
-            _ = window.moveToTrash(entry)
+            Task { await window.moveToTrash(entry) }
         }
     }
 

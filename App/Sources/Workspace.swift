@@ -380,13 +380,6 @@ final class Workspace {
         return clamshell.searchPages(in: entries, query: query, excluding: excluding)
     }
 
-    func saveTitleResolver() -> @Sendable (String) -> String? {
-        let titlesByPath = Dictionary(uniqueKeysWithValues: entries.map { ($0.relativePath, $0.title) })
-        return { relativePath in
-            titlesByPath[relativePath]
-        }
-    }
-
     /// Build a configured `Clamshell` for `root`: hooks up the live subpage-
     /// title resolver and the post-save bookkeeping callback so the
     /// debounced save lifecycle (owned by Clamshell) can serialize and
@@ -514,7 +507,7 @@ final class Workspace {
             doc.transaction(name: "Append to subpage") { d in
                 d.insertSubtrees(blocks, at: DropPath(parent: nil, position: d.children.count))
             }
-            try clamshell.writeExternal(doc, resolvingSubpageTitle: saveTitleResolver())
+            try clamshell.writeExternal(doc)
             doc.modificationDate = modificationDate(for: target)
             refreshTitleCache(from: doc)
             return doc

@@ -205,21 +205,20 @@ public final class Clamshell {
 
     /// Coalesced async save (autosave path). Document is `@MainActor`-isolated,
     /// so we serialize on the calling actor (MainActor) before handing the
-    /// String + URL across to the save coordinator.
+    /// String + URL across to the save coordinator. Called internally by
+    /// `Clamshell+Saving.swift` — callers from outside use
+    /// `documentDidChange` or `flush(_:)`.
     ///
     /// Does NOT touch the recovery log. Editor-driven structural changes
     /// already flowed through `EditorView.mutate(_:_:)` →
-    /// `EditorHost.documentDidChange` → `Clamshell.appendOps`, so the log is
+    /// `EditorHost.documentDidChange` → log append, so the journal is
     /// current by the time the debounce fires. Bare-md and external-editor
     /// cases are absorbed at reconcile time (`PatchEngine.unloggedObservations`
     /// → `appendObservations`).
     @MainActor
     @discardableResult
-    public func save(
-        _ document: Document,
-        resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
-    ) async throws -> String {
-        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: titleForPath)
+    func save(_ document: Document) async throws -> String {
+        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: subpageTitleResolver)
         let url = document.url
         try await saver.save(url: url, contents: newText)
         recordDiskContent(newText, at: url)
@@ -235,11 +234,8 @@ public final class Clamshell {
     /// the next reconcile pass to absorb them.
     @MainActor
     @discardableResult
-    public func writeExternal(
-        _ document: Document,
-        resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
-    ) throws -> String {
-        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: titleForPath)
+    public func writeExternal(_ document: Document) throws -> String {
+        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: subpageTitleResolver)
         let url = document.url
         let rel = relativePath(of: url)
         let blocks = document.children
@@ -249,8 +245,9 @@ public final class Clamshell {
         return newText
     }
 
-    /// Awaits any in-flight + pending save for the URL.
-    nonisolated public func flush(url: URL) async throws {
+    /// Awaits any in-flight + pending save for the URL. Internal — outside
+    /// callers go through `flush(_:)` which both saves and drains.
+    nonisolated func flush(url: URL) async throws {
         try await saver.flush(url: url)
     }
 
@@ -265,14 +262,12 @@ public final class Clamshell {
         }
     }
 
-    /// Append the editor's structural ops to this page's recovery log as one
-    /// ordered batch. The editor derives these ops from a pre→post diff at
-    /// `EditorView.mutate(_:_:)` time and hands them through
-    /// `EditorHost.documentDidChange`; this method routes them to the
-    /// `RecoveryLog` actor for persistence. Fire-and-forget — returns
-    /// immediately, the append runs on a background Task.
+    /// Append the editor's structural ops to this page's recovery log as
+    /// one ordered batch. Called internally by `documentDidChange`;
+    /// fire-and-forget — returns immediately, the append runs on a
+    /// background Task.
     @MainActor
-    public func appendOps(_ ops: [EditorOp], forPage page: String) {
+    func appendOps(_ ops: [EditorOp], forPage page: String) {
         guard !ops.isEmpty else { return }
         Task { [log, page] in
             do {
@@ -324,8 +319,7 @@ public final class Clamshell {
     @MainActor
     public func resolveConflictVersions(
         at url: URL,
-        againstLive doc: Document? = nil,
-        resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
+        againstLive doc: Document? = nil
     ) throws -> ConflictResolution {
         let alternates = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
         guard !alternates.isEmpty else { return .none }
@@ -361,7 +355,7 @@ public final class Clamshell {
         }
 
         let merged = Document(url: url, children: result.merged)
-        try writeExternal(merged, resolvingSubpageTitle: titleForPath)
+        try writeExternal(merged)
 
         let mutated: Bool
         if let doc {

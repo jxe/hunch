@@ -181,16 +181,15 @@ final class WorkspaceWindow {
     // MARK: - Trash & restore (per-window)
 
     @discardableResult
-    func moveToTrash(_ entry: WorkspaceEntry) -> Bool {
-        guard workspace.clamshell != nil else { return false }
-        if openDocument?.url == entry.url {
-            // Drain any pending save before trashing so we don't lose the
-            // in-memory state, then close the open doc. The flush is fire-
-            // and-forget here — the trash op below races with it through
-            // Clamshell's per-URL coordinator, which serializes them in
-            // call order. If we ever need ordering guarantees, await the
-            // flush directly.
-            closeOpenDocument()
+    func moveToTrash(_ entry: WorkspaceEntry) async -> Bool {
+        guard let clamshell = workspace.clamshell else { return false }
+        if let doc = openDocument, doc.url == entry.url {
+            // Drain any pending save BEFORE trashing so the in-memory state
+            // is durably on disk first, then close the open doc. Awaiting
+            // here (instead of fire-and-forget) means the trash op below
+            // never races a save against a now-trashed URL.
+            removeFilePresenter()
+            await clamshell.flush(doc)
             self.openDocument = nil
         }
         path.removeAll { $0 == entry.url }
@@ -380,7 +379,7 @@ final class WorkspaceWindow {
         if isLive {
             clamshell.documentDidChange(ops: [], in: doc)
         } else {
-            try clamshell.writeExternal(doc, resolvingSubpageTitle: workspace.saveTitleResolver())
+            try clamshell.writeExternal(doc)
             doc.modificationDate = workspace.modificationDate(for: target)
             workspace.rescan()
         }
@@ -529,8 +528,7 @@ final class WorkspaceWindow {
             do {
                 let resolution = try clamshell.resolveConflictVersions(
                     at: url,
-                    againstLive: doc,
-                    resolvingSubpageTitle: workspace.saveTitleResolver()
+                    againstLive: doc
                 )
                 if resolution.liveDocumentMutated {
                     doc.modificationDate = workspace.modificationDate(for: url)
