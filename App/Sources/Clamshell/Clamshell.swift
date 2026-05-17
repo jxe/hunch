@@ -69,6 +69,12 @@ public final class Clamshell {
         /// URL) replaces it before the debounce fires.
         var pendingDoc: Document
         var isSaving: Bool
+        /// The most recent log-apply Task for this URL. The log actor
+        /// serializes apply calls, so awaiting the latest task guarantees
+        /// every prior batch's effects are durable on disk too. Both
+        /// `fireScheduledSave` and `flush` await this before writing the
+        /// `.md` so the log is always at or ahead of the file on disk.
+        var latestLogTask: Task<Void, Error>?
     }
 
     public init(root: URL) {
@@ -130,6 +136,43 @@ public final class Clamshell {
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         recordDiskContent(raw, at: url)
         return Document(url: url, children: blocks, modificationDate: mtime)
+    }
+
+    /// Load `url` and reconcile its parsed content against the journal in
+    /// one step. Returns the Document the host should display (disk
+    /// content with any lost-block subtrees spliced in) and a summary
+    /// describing what changed. The log is updated atomically with
+    /// observation lifts + unrestorable quarantines as one batched write,
+    /// awaited before return so the log is at-or-ahead of the file on
+    /// disk. If reconcile spliced any subtrees, a debounced save is
+    /// scheduled because the doc now differs from disk.
+    ///
+    /// Intended for the open-doc path. The presenter-wakeup path (which
+    /// must update an existing live Document in place to preserve editor
+    /// state) still goes through `reconcileOpenDocumentAgainstLog` in the
+    /// host.
+    @MainActor
+    public func loadAndReconcile(at url: URL) async throws -> (Document, PatchEngine.ReconcileSummary) {
+        let raw = try files.read(url)
+        let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        recordDiskContent(raw, at: url)
+
+        let rel = relativePath(of: url)
+        let journal = log.readJournal(page: rel)
+        let (blocks, patch, summary) = PatchEngine.reconcileFromDisk(rawMarkdown: raw, journal: journal)
+
+        if !patch.isEmpty {
+            try await log.apply(patch, to: rel)
+        }
+
+        let doc = Document(url: url, children: blocks, modificationDate: mtime)
+        if summary.didChange {
+            // No ops — pure structural restore; the file is now stale and
+            // needs a save. `documentDidChange` with empty ops just (re)arms
+            // the debounce without writing to the log.
+            documentDidChange(ops: [], in: doc)
+        }
+        return (doc, summary)
     }
 
     /// Read the raw bytes on disk without parsing — used by the file
@@ -253,30 +296,16 @@ public final class Clamshell {
 
     @MainActor
     private func scheduleRecord(rel: String, blocks: [Block]) {
+        let patch = Patch.adds(from: blocks)
         Task { [log, rel] in
             do {
-                try await log.record(page: rel, blocks: blocks)
+                try await log.apply(patch, to: rel)
             } catch {
                 Diag.log.error("record failed page=\(rel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             }
         }
     }
 
-    /// Append the editor's structural ops to this page's recovery log as
-    /// one ordered batch. Called internally by `documentDidChange`;
-    /// fire-and-forget — returns immediately, the append runs on a
-    /// background Task.
-    @MainActor
-    func appendOps(_ ops: [EditorOp], forPage page: String) {
-        guard !ops.isEmpty else { return }
-        Task { [log, page] in
-            do {
-                try await log.append(ops: ops, to: page)
-            } catch {
-                Diag.log.error("appendOps failed page=\(page, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
-        }
-    }
 
     static func atomicHashes(of blocks: [Block]) -> Set<String> {
         var out: Set<String> = []
@@ -538,13 +567,6 @@ public final class Clamshell {
         }
     }
 
-    /// Tombstone `hash` against `page` on this device's log. Called by
-    /// the editor at mutation time for every block removed structurally,
-    /// and by the manual-restore path when sweeping the descendant set
-    /// of a restored subtree out of the Recover sheet.
-    public func purgeHash(_ hash: String, in page: String) async throws {
-        try await log.purge(page: page, hash: hash)
-    }
 
     /// Read every device's per-page log and return as a `LogJournal` (engine
     /// input). Callers that drive auto-restore or the Recover sheet via
@@ -555,20 +577,13 @@ public final class Clamshell {
         log.readJournal(page: page)
     }
 
-    /// Append engine-supplied observations as `add` records on this device's
-    /// log. Fire-and-forget: returns immediately; the actor-isolated append
-    /// runs on a background Task. Used by the reconcile path to absorb
-    /// bare-md content and external-editor additions into the journal.
-    @MainActor
-    public func appendObservations(_ observations: [PatchEngine.Observation], forPage page: String) {
-        guard !observations.isEmpty else { return }
-        Task { [log, page] in
-            do {
-                try await log.append(observations: observations, to: page)
-            } catch {
-                Diag.log.error("appendObservations failed page=\(page, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
-        }
+    /// Apply an arbitrary patch to a page's recovery log. The unified path
+    /// used by reconcile (lift unlogged observations + quarantine
+    /// unrestorable hashes in one batched write) and by manual restore
+    /// (sweep covered hashes as purges, or fresh adds for unpurge).
+    public func applyPatch(_ patch: Patch, forPage page: String) async throws {
+        guard !patch.isEmpty else { return }
+        try await log.apply(patch, to: page)
     }
 
     /// Blocks deleted via the editor's op stream or a manual Recover-sheet
@@ -588,13 +603,6 @@ public final class Clamshell {
         }
     }
 
-    /// Restore-from-tombstone: append a fresh `add` for `block` so the log
-    /// union's latest record is no longer a `purge`. The caller is
-    /// responsible for inserting `block` back into the doc and saving — the
-    /// `reAdd` call alone changes only the log, not the `.md`.
-    public func unpurgeBlock(_ block: Block, in page: String, parentHash: String?) async throws {
-        try await log.reAdd(page: page, block: block, parentHash: parentHash)
-    }
 
     // MARK: - Assets (pasted images)
 

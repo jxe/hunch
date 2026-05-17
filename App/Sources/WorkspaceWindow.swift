@@ -97,11 +97,13 @@ final class WorkspaceWindow {
     /// Reconcile `openDocument` with the currently visible page. Driven by
     /// `.onChange(of: path)` in `ContentView`. The new page's coordinator
     /// (which owns the save session) is built lazily by `EditorPage`; this
-    /// function loads the `Document` fresh from disk, installs the file
-    /// presenter, and kicks an initial reconcile. Back-navigation re-parses
-    /// — markdown parse is cheap, and not caching means there's only one
-    /// authoritative `Document` instance per page (the visible one) so no
-    /// invalidation bookkeeping.
+    /// function loads the `Document` fresh from disk via
+    /// `clamshell.loadAndReconcile` (which parses, folds the journal, and
+    /// auto-restores any lost subtrees in one step), installs the file
+    /// presenter, and surfaces a banner if anything was restored.
+    /// Back-navigation re-parses — markdown parse is cheap, and not caching
+    /// means there's only one authoritative `Document` instance per page
+    /// (the visible one) so no invalidation bookkeeping.
     func handlePathChange() {
         let topURL = path.last ?? homeURL
         if openDocument?.url == topURL { return }
@@ -110,15 +112,57 @@ final class WorkspaceWindow {
             openDocument = nil
             return
         }
-        do {
-            let doc = try workspace.loadDocument(at: url)
-            openDocument = doc
-            workspace.refreshTitleCache(from: doc)
-            installFilePresenter(for: url)
-            reconcileOpenDocumentAgainstLog(doc)
-        } catch {
-            workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
+        guard let clamshell = workspace.clamshell else {
+            do {
+                let doc = try workspace.loadDocument(at: url)
+                openDocument = doc
+                workspace.refreshTitleCache(from: doc)
+            } catch {
+                workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
+            }
+            return
         }
+        Task { @MainActor in
+            do {
+                let (doc, summary) = try await clamshell.loadAndReconcile(at: url)
+                // The user may have navigated again while we were awaiting.
+                guard path.last ?? homeURL == url else { return }
+                openDocument = doc
+                workspace.refreshTitleCache(from: doc)
+                installFilePresenter(for: url)
+                postReconcileBanner(summary: summary, doc: doc, url: url)
+            } catch {
+                workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func postReconcileBanner(
+        summary: PatchEngine.ReconcileSummary,
+        doc: Document,
+        url: URL
+    ) {
+        if !summary.unrestorable.isEmpty {
+            let hashList = summary.unrestorable.map(\.hash).joined(separator: ",")
+            Diag.merge.error("reconcile quarantining url=\(url.lastPathComponent, privacy: .public) count=\(summary.unrestorable.count, privacy: .public) hashes=\(hashList, privacy: .public)")
+            for entry in summary.unrestorable {
+                let reasonLabel: String
+                switch entry.reason {
+                case .parseFailure: reasonLabel = "parseFailure"
+                case .hashMismatch(let actual, let kind): reasonLabel = "hashMismatch actual=\(actual) kind=\(kind)"
+                case .descendantOfUnrestorableRoot(let rootHash): reasonLabel = "descendantOf=\(rootHash)"
+                }
+                let mdPreview = entry.recordedMarkdown
+                    .prefix(160)
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                Diag.merge.error("unrestorable hash=\(entry.hash, privacy: .public) reason=\(reasonLabel, privacy: .public) parent=\(entry.recordedParent ?? "nil", privacy: .public) recordedAt=\(entry.recordedAt.timeIntervalSince1970, privacy: .public) md=\(String(mdPreview), privacy: .public)")
+            }
+        }
+        guard summary.didChange else { return }
+        let count = summary.restoredHashes.count
+        let noun = count == 1 ? "block" : "blocks"
+        workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
+        Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) hashes=\(summary.restoredHashes.joined(separator: ","), privacy: .public)")
     }
 
     /// Workspace was dropped (switchWorkspace, etc.). Clear all per-window
@@ -255,15 +299,23 @@ final class WorkspaceWindow {
         let intent = PatchEngine.intent(from: journal)
         let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
 
-        // Bare-md / external-edit absorption: lift any unlogged blocks into
-        // the journal as `add` observations. Fire-and-forget.
-        clamshell.appendObservations(recon.toAppend, forPage: rel)
-
-        // Quarantine hashes the engine can't make valid Inserts for
-        // (markdown won't parse, or parses to a different hash than what
-        // was recorded — typically a serialization-format drift). Without
-        // this, those hashes stay `.alive` in intent forever and the
-        // reconcile path re-fires on every wakeup.
+        // Reconcile produces two intent transitions:
+        //   - `toAppend`: lift bare-md / external-edit content into the log
+        //                 as fresh adds (engine already filtered against the
+        //                 union, so no duplicates).
+        //   - `unrestorable`: quarantine hashes the engine can't turn into
+        //                     valid Inserts (markdown won't parse, or parses
+        //                     to a different hash — typically a
+        //                     serialization-format drift). Without the
+        //                     quarantine, those hashes stay `.alive` in
+        //                     intent forever and reconcile re-fires.
+        var entries: [Patch.Entry] = []
+        for obs in recon.toAppend {
+            entries.append(.add(hash: obs.hash, parent: obs.parent, markdown: obs.markdown))
+        }
+        for entry in recon.unrestorable {
+            entries.append(.purge(hash: entry.hash))
+        }
         if !recon.unrestorable.isEmpty {
             let hashList = recon.unrestorable.map(\.hash).joined(separator: ",")
             Diag.merge.error("reconcile quarantining url=\(url.lastPathComponent, privacy: .public) count=\(recon.unrestorable.count, privacy: .public) hashes=\(hashList, privacy: .public)")
@@ -278,12 +330,15 @@ final class WorkspaceWindow {
                     .prefix(160)
                     .replacingOccurrences(of: "\n", with: "\\n")
                 Diag.merge.error("unrestorable hash=\(entry.hash, privacy: .public) reason=\(reasonLabel, privacy: .public) parent=\(entry.recordedParent ?? "nil", privacy: .public) recordedAt=\(entry.recordedAt.timeIntervalSince1970, privacy: .public) md=\(String(mdPreview), privacy: .public)")
-                Task { [clamshell, hash = entry.hash, rel] in
-                    do {
-                        try await clamshell.purgeHash(hash, in: rel)
-                    } catch {
-                        Diag.merge.error("quarantine purge failed page=\(rel, privacy: .public) hash=\(hash, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                    }
+            }
+        }
+        if !entries.isEmpty {
+            let patch = Patch(entries: entries)
+            Task { [clamshell, rel] in
+                do {
+                    try await clamshell.applyPatch(patch, forPage: rel)
+                } catch {
+                    Diag.merge.error("reconcile patch apply failed page=\(rel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 }
             }
         }
@@ -343,13 +398,12 @@ final class WorkspaceWindow {
 
             // Purge every hash in the restored subtree so the Recover sheet
             // stops surfacing it. Includes the clicked entry's hash and any
-            // descendants we pulled in.
-            for hash in insert.coveredHashes {
-                do {
-                    try await clamshell.purgeHash(hash, in: entry.source)
-                } catch {
-                    Diag.merge.error("restore purge failed page=\(entry.source, privacy: .public) hash=\(hash, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                }
+            // descendants we pulled in. One batched log write instead of N.
+            let purgePatch = Patch(entries: insert.coveredHashes.map { .purge(hash: $0) })
+            do {
+                try await clamshell.applyPatch(purgePatch, forPage: entry.source)
+            } catch {
+                Diag.merge.error("restore purge failed page=\(entry.source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             }
             return true
         } catch {
@@ -455,20 +509,24 @@ final class WorkspaceWindow {
                 to: doc
             )
 
-            // Unpurge each restored hash BEFORE the save so the save's
-            // recovery-log walk sees them as already-recorded (in the
-            // device cache) and doesn't immediately re-emit them.
+            // Fresh `add` per restored hash so each one's latest record in
+            // the union is no longer a `purge`. Counter mint > prior purge,
+            // so intent flips back to alive. One batched log write.
+            var unpurgeEntries: [Patch.Entry] = []
             for hash in insert.coveredHashes {
                 guard let purgedRecord = purgedByHash[hash],
                       let parsed = BlockParser.parse(purgedRecord.markdown).first else { continue }
+                unpurgeEntries.append(.add(
+                    hash: parsed.atomicHash,
+                    parent: purgedRecord.parentHash,
+                    markdown: BlockSerializer.serializeAtomic(parsed)
+                ))
+            }
+            if !unpurgeEntries.isEmpty {
                 do {
-                    try await clamshell.unpurgeBlock(
-                        parsed,
-                        in: group.source,
-                        parentHash: purgedRecord.parentHash
-                    )
+                    try await clamshell.applyPatch(Patch(entries: unpurgeEntries), forPage: group.source)
                 } catch {
-                    Diag.merge.error("unpurge failed page=\(group.source, privacy: .public) hash=\(hash, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    Diag.merge.error("unpurge failed page=\(group.source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 }
             }
 

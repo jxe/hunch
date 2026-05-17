@@ -69,6 +69,94 @@ public struct LogJournal: Sendable {
     public static let empty = LogJournal(devices: [])
 }
 
+// MARK: - Patch
+//
+// A `Patch` is a batch of intent transitions waiting to land on a page's
+// recovery log. Both editor mutations (`BlockTreeDiff` → adds + purges) and
+// engine outputs (reconcile's `toAppend` observations + `unrestorable`
+// quarantines) project to a `Patch`. Each entry becomes one `LogRecord` on
+// disk after `RecoveryLog` mints its Stamp (counter + deviceID + wall-clock).
+//
+// Patches are intentionally dumb value types — no counters, no timestamps,
+// no device-id. Those are persistence-layer concerns minted at append time.
+
+/// A batch of `add` / `purge` entries to be applied to one page's log.
+public struct Patch: Sendable {
+    public enum Op: Sendable, Hashable { case add, purge }
+
+    public struct Entry: Sendable, Hashable {
+        public let op: Op
+        public let hash: String
+        /// Parent hash at the moment this entry was authored. Meaningful for
+        /// `.add` only.
+        public let parent: String?
+        /// Atomic-markdown serialization of the block. Meaningful for `.add` only.
+        public let markdown: String?
+
+        public init(op: Op, hash: String, parent: String? = nil, markdown: String? = nil) {
+            self.op = op
+            self.hash = hash
+            self.parent = parent
+            self.markdown = markdown
+        }
+
+        public static func add(hash: String, parent: String?, markdown: String) -> Entry {
+            Entry(op: .add, hash: hash, parent: parent, markdown: markdown)
+        }
+
+        public static func purge(hash: String) -> Entry {
+            Entry(op: .purge, hash: hash)
+        }
+    }
+
+    public let entries: [Entry]
+    public var isEmpty: Bool { entries.isEmpty }
+
+    public init(entries: [Entry]) {
+        self.entries = entries
+    }
+
+    public static let empty = Patch(entries: [])
+
+    /// Walk a block tree preorder and emit one `.add` entry per block.
+    /// A parent's entry precedes its children, so if appended sequentially
+    /// each child's recorded `parent` already exists in the log.
+    public static func adds(from blocks: [Block]) -> Patch {
+        var out: [Entry] = []
+        walk(blocks, parent: nil, into: &out)
+        return Patch(entries: out)
+    }
+
+    /// Lift engine-supplied observations into a Patch of `.add` entries.
+    public static func adds(from observations: [PatchEngine.Observation]) -> Patch {
+        Patch(entries: observations.map {
+            .add(hash: $0.hash, parent: $0.parent, markdown: $0.markdown)
+        })
+    }
+
+    /// Project a batch of editor structural ops onto a Patch: inserts
+    /// become `.add` entries, removes become `.purge` entries, order
+    /// preserved.
+    public static func from(ops: [EditorOp]) -> Patch {
+        Patch(entries: ops.map { op in
+            switch op {
+            case .insert(let h, let p, let block):
+                return .add(hash: h, parent: p, markdown: BlockSerializer.serializeAtomic(block))
+            case .remove(let h):
+                return .purge(hash: h)
+            }
+        })
+    }
+
+    private static func walk(_ blocks: [Block], parent: String?, into out: inout [Entry]) {
+        for block in blocks {
+            let h = block.atomicHash
+            out.append(.add(hash: h, parent: parent, markdown: BlockSerializer.serializeAtomic(block)))
+            walk(block.children, parent: h, into: &out)
+        }
+    }
+}
+
 // MARK: - IntentState
 
 /// Pure derivation of "what does the union of every device's log say about
@@ -706,6 +794,69 @@ public extension PatchEngine {
         }
         doc.enforceHeadingContainment()
         return true
+    }
+}
+
+// MARK: - reconcileFromDisk
+
+public extension PatchEngine {
+    /// Side-effect-free description of what changed when reconciling a
+    /// fresh-from-disk doc against the journal: hashes the engine spliced
+    /// in (auto-restore), hashes it lifted as observations (bare-md /
+    /// external absorption), and hashes it quarantined (parse failures /
+    /// hash mismatches). Used for banners and diagnostics.
+    struct ReconcileSummary: Sendable {
+        public let restoredHashes: [String]
+        public let lifted: [String]
+        public let unrestorable: [UnrestorableEntry]
+        public var didChange: Bool { !restoredHashes.isEmpty }
+        public var isQuiet: Bool {
+            restoredHashes.isEmpty && lifted.isEmpty && unrestorable.isEmpty
+        }
+    }
+
+    /// Pure projection of a page's journal onto its `.md`. Given raw
+    /// markdown and the journal, returns: the blocks the user should see
+    /// (disk content with any auto-restore subtrees spliced in), the
+    /// patch the caller should apply to bring the log in line with the
+    /// merged content (observation lifts + unrestorable quarantines, as
+    /// one batched write), and a summary for the UI.
+    ///
+    /// No I/O, no actor hops, no live-doc mutation. Just three derivations
+    /// (parse, intent-fold, reconcile) plus a temp Document to splice the
+    /// inserts in a pure way.
+    @MainActor
+    static func reconcileFromDisk(
+        rawMarkdown: String,
+        journal: LogJournal
+    ) -> (blocks: [Block], patch: Patch, summary: ReconcileSummary) {
+        let diskBlocks = BlockParser.parse(rawMarkdown)
+        let intent = Self.intent(from: journal)
+        let recon = Self.reconcile(intent: intent, doc: diskBlocks)
+
+        // Splice inserts via a throwaway Document so we can return a
+        // value-type `[Block]` without reaching into the live editor.
+        let temp = Document(
+            url: URL(fileURLWithPath: "/reconcile-from-disk"),
+            children: diskBlocks
+        )
+        _ = apply(recon, to: temp)
+
+        var entries: [Patch.Entry] = []
+        entries.reserveCapacity(recon.toAppend.count + recon.unrestorable.count)
+        for obs in recon.toAppend {
+            entries.append(.add(hash: obs.hash, parent: obs.parent, markdown: obs.markdown))
+        }
+        for q in recon.unrestorable {
+            entries.append(.purge(hash: q.hash))
+        }
+
+        let summary = ReconcileSummary(
+            restoredHashes: recon.restoredHashes,
+            lifted: recon.toAppend.map(\.hash),
+            unrestorable: recon.unrestorable
+        )
+        return (temp.children, Patch(entries: entries), summary)
     }
 }
 

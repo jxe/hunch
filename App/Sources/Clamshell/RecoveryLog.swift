@@ -34,12 +34,6 @@ public actor RecoveryLog {
     nonisolated private let store: FileStore
     nonisolated private let deviceID: String
 
-    /// Cached set of hashes our device has already recorded for each page.
-    /// Hydrated on first record-attempt for that page after launch by reading
-    /// our own log; subsequent calls are pure in-memory checks. Eliminates
-    /// per-keystroke file I/O on the steady-state save path.
-    private var ourDeviceHashes: [String: Set<String>] = [:]
-
     /// Per-page next-counter value to mint on the next write. Re-validated
     /// against foreign device logs on every counter mint (see
     /// `ensureCounterLoaded`), so cross-device records that landed via
@@ -58,208 +52,53 @@ public actor RecoveryLog {
 
     // MARK: - Persistence: writes
 
-    /// Walk the document tree (top level + descendants), collecting every
-    /// (hash, parent-hash, atomic-markdown) tuple this device hasn't already
-    /// recorded for this page, and append them as one batched write to our
-    /// device's log. Steady-state saves with no new content perform zero file
-    /// I/O — the in-memory hash cache short-circuits ahead of the append.
-    public func record(page rel: String, blocks: [Block]) throws {
-        var known = try ensureDeviceHashesLoaded(for: rel)
-        var pending: [Pending] = []
-        collectNew(blocks: blocks, parentHash: nil, known: &known, into: &pending)
-        guard !pending.isEmpty else {
-            ourDeviceHashes[rel] = known
-            return
-        }
-        let now = Date().timeIntervalSince1970
-        var counter = try ensureCounterLoaded(for: rel)
-        var wires: [Wire] = []
-        wires.reserveCapacity(pending.count)
-        for entry in pending {
-            wires.append(Wire(
-                op: "add",
-                h: entry.hash,
-                p: entry.parent,
-                m: BlockSerializer.serializeAtomic(entry.block),
-                t: now,
-                c: counter
-            ))
-            counter += 1
-        }
-        let lines = wires.compactMap(Self.encode).joined(separator: "\n") + "\n"
-        try appendLines(lines, to: ourLogURL(for: rel))
-        ourDeviceHashes[rel] = known
-        nextCounter[rel] = counter
-    }
-
-    /// (hash, parent, block) triple pending counter assignment. Collected by
-    /// `collectNew` so we only pay the cross-device counter scan when there's
-    /// actually something to write.
-    private struct Pending {
-        let hash: String
-        let parent: String?
-        let block: Block
-    }
-
-    private func collectNew(
-        blocks: [Block],
-        parentHash: String?,
-        known: inout Set<String>,
-        into out: inout [Pending]
-    ) {
-        for block in blocks {
-            let h = block.atomicHash
-            if known.insert(h).inserted {
-                out.append(Pending(hash: h, parent: parentHash, block: block))
-            }
-            collectNew(blocks: block.children, parentHash: h, known: &known, into: &out)
-        }
-    }
-
-    /// Append a tombstone for `hash` against `page`. Other devices' log
-    /// reads union all tombstones across devices (any device can purge any
-    /// hash; latest write wins).
+    /// The unified write primitive. Mints sequential Lamport counters for
+    /// each entry in `patch`, encodes them as JSONL, and appends to our
+    /// device's log file in one batched write.
     ///
-    /// Drops `hash` from `ourDeviceHashes` after the append. Without this,
-    /// retyping the identical content (same hash) on this device after a
-    /// purge would short-circuit in `record()` — the cache would say
-    /// "already observed" — and no fresh `add` would land. The log would
-    /// then lie that the content is dead while the live `.md` shows it
-    /// alive. With the cache reset, the next `record()` emits a new `add`
-    /// whose counter strictly succeeds the purge, restoring intent to alive.
-    public func purge(page rel: String, hash: String) throws {
-        var known = try ensureDeviceHashesLoaded(for: rel)
-        let counter = try ensureCounterLoaded(for: rel)
-        let record = Wire(
-            op: "purge",
-            h: hash,
-            p: nil,
-            m: nil,
-            t: Date().timeIntervalSince1970,
-            c: counter
-        )
-        guard let line = Self.encode(record) else { return }
-        try appendLines(line + "\n", to: ourLogURL(for: rel))
-        nextCounter[rel] = counter + 1
-        known.remove(hash)
-        ourDeviceHashes[rel] = known
-    }
-
-    /// Append a batch of engine-supplied observations as fresh `add`
-    /// records, skipping anything our device has already logged (cache
-    /// short-circuit). Used by the reconcile path to lift bare-md and
-    /// external-edit content into the journal — the engine computed
-    /// "these hashes aren't in any device's log"; this method writes them
-    /// as ours. Counters are minted at write time; the engine doesn't see
-    /// or care about counter state.
-    public func append(observations: [PatchEngine.Observation], to rel: String) throws {
-        guard !observations.isEmpty else { return }
-        var known = try ensureDeviceHashesLoaded(for: rel)
-        var fresh: [PatchEngine.Observation] = []
-        for obs in observations {
-            if known.insert(obs.hash).inserted {
-                fresh.append(obs)
-            }
-        }
-        guard !fresh.isEmpty else {
-            ourDeviceHashes[rel] = known
-            return
-        }
-        let now = Date().timeIntervalSince1970
+    /// No dedup: every entry emits a record. Callers that care about not
+    /// re-logging known content filter upstream (the editor via
+    /// `BlockTreeDiff.derive`, reconcile via `PatchEngine.unloggedObservations`).
+    /// Duplicate `add` records for the same hash are harmless — intent is
+    /// computed as a latest-`(counter, deviceID)`-wins fold, so the union
+    /// collapses to the same intent regardless of duplicate count. The log
+    /// just gets a little chattier for callers that hand in
+    /// already-recorded hashes (e.g. `writeExternal` after a conflict merge).
+    ///
+    /// Counters within a patch are sequential, so the batch reads as a
+    /// coherent transaction on tail and observers see one ordered group.
+    public func apply(_ patch: Patch, to rel: String) throws {
+        guard !patch.isEmpty else { return }
         var counter = try ensureCounterLoaded(for: rel)
+        let now = Date().timeIntervalSince1970
         var wires: [Wire] = []
-        wires.reserveCapacity(fresh.count)
-        for obs in fresh {
-            wires.append(Wire(
-                op: "add",
-                h: obs.hash,
-                p: obs.parent,
-                m: obs.markdown,
-                t: now,
-                c: counter
-            ))
+        wires.reserveCapacity(patch.entries.count)
+        for entry in patch.entries {
+            switch entry.op {
+            case .add:
+                wires.append(Wire(
+                    op: "add",
+                    h: entry.hash,
+                    p: entry.parent,
+                    m: entry.markdown ?? "",
+                    t: now,
+                    c: counter
+                ))
+            case .purge:
+                wires.append(Wire(
+                    op: "purge",
+                    h: entry.hash,
+                    p: nil,
+                    m: nil,
+                    t: now,
+                    c: counter
+                ))
+            }
             counter += 1
         }
         let lines = wires.compactMap(Self.encode).joined(separator: "\n") + "\n"
         try appendLines(lines, to: ourLogURL(for: rel))
-        ourDeviceHashes[rel] = known
         nextCounter[rel] = counter
-    }
-
-    /// Append the editor's structural ops as one ordered batch. Inserts
-    /// short-circuit on the device hash cache (we don't double-log content
-    /// this device has already recorded); removes always append a purge
-    /// record and drop the hash from the cache so re-typing the same content
-    /// fires a fresh add. Both kinds share the per-page Lamport counter, so
-    /// counters within a batch are sequential and the batch reads as a
-    /// coherent transaction on tail.
-    public func append(ops: [EditorOp], to rel: String) throws {
-        guard !ops.isEmpty else { return }
-        var known = try ensureDeviceHashesLoaded(for: rel)
-        struct Effect {
-            let wire: (UInt64) -> Wire
-            let removeFromKnown: String?
-        }
-        var effects: [Effect] = []
-        let now = Date().timeIntervalSince1970
-        for op in ops {
-            switch op {
-            case .insert(let h, let p, let block):
-                guard known.insert(h).inserted else { continue }
-                let atomic = BlockSerializer.serializeAtomic(block)
-                effects.append(Effect(
-                    wire: { c in Wire(op: "add", h: h, p: p, m: atomic, t: now, c: c) },
-                    removeFromKnown: nil
-                ))
-            case .remove(let h):
-                effects.append(Effect(
-                    wire: { c in Wire(op: "purge", h: h, p: nil, m: nil, t: now, c: c) },
-                    removeFromKnown: h
-                ))
-            }
-        }
-        guard !effects.isEmpty else {
-            ourDeviceHashes[rel] = known
-            return
-        }
-        var counter = try ensureCounterLoaded(for: rel)
-        var wires: [Wire] = []
-        wires.reserveCapacity(effects.count)
-        for effect in effects {
-            wires.append(effect.wire(counter))
-            counter += 1
-            if let h = effect.removeFromKnown { known.remove(h) }
-        }
-        let lines = wires.compactMap(Self.encode).joined(separator: "\n") + "\n"
-        try appendLines(lines, to: ourLogURL(for: rel))
-        ourDeviceHashes[rel] = known
-        nextCounter[rel] = counter
-    }
-
-    /// Append a fresh `add` for `block` with the current timestamp,
-    /// bypassing the in-memory hash cache. Used by the
-    /// restore-from-tombstone path: a plain `record` would short-circuit
-    /// (the device has already observed this hash) and the purge would
-    /// remain the latest record, leaving the block tombstoned in the
-    /// union. Updates the cache so subsequent normal `record` calls don't
-    /// re-emit.
-    public func reAdd(page rel: String, block: Block, parentHash: String?) throws {
-        var known = try ensureDeviceHashesLoaded(for: rel)
-        let counter = try ensureCounterLoaded(for: rel)
-        let h = block.atomicHash
-        let record = Wire(
-            op: "add",
-            h: h,
-            p: parentHash,
-            m: BlockSerializer.serializeAtomic(block),
-            t: Date().timeIntervalSince1970,
-            c: counter
-        )
-        guard let line = Self.encode(record) else { return }
-        try appendLines(line + "\n", to: ourLogURL(for: rel))
-        known.insert(h)
-        ourDeviceHashes[rel] = known
-        nextCounter[rel] = counter + 1
     }
 
     /// Move a page's history dir. Used by trash / rename / restore so the
@@ -273,9 +112,6 @@ public actor RecoveryLog {
             withIntermediateDirectories: true
         )
         try FileManager.default.moveItem(at: from, to: to)
-        if let cached = ourDeviceHashes.removeValue(forKey: src) {
-            ourDeviceHashes[dst] = cached
-        }
     }
 
     // MARK: - Persistence: reads
@@ -339,29 +175,7 @@ public actor RecoveryLog {
         return out.sorted { $0.purgedAt > $1.purgedAt }
     }
 
-    // MARK: - Internals: hash cache
-
-    /// Replay our device's log to compute "hashes we currently consider
-    /// alive on this page." Apply `add` and `purge` records in file order
-    /// (which is the device's local Lamport order, monotonic per device):
-    /// `add` inserts, `purge` removes. The result reflects what the next
-    /// `record()` call should treat as "already observed" — re-typing a
-    /// purged hash must produce a fresh `add`, not a silent skip.
-    private func ensureDeviceHashesLoaded(for rel: String) throws -> Set<String> {
-        if let cached = ourDeviceHashes[rel] { return cached }
-        let url = ourLogURL(for: rel)
-        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-        var out: Set<String> = []
-        for record in readRecords(at: url) {
-            switch record.op {
-            case "add": out.insert(record.h)
-            case "purge": out.remove(record.h)
-            default: break
-            }
-        }
-        ourDeviceHashes[rel] = out
-        return out
-    }
+    // MARK: - Internals: counter mint
 
     /// Compute the next Lamport counter for the page, taking the max over (a)
     /// our cached value (everything we've already minted in this process) and

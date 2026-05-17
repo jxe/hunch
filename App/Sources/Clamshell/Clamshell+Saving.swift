@@ -18,17 +18,27 @@ import Editor
 extension Clamshell {
     static let debounceInterval: Duration = .milliseconds(600)
 
-    /// Editor or external mutator just changed `doc`. Non-empty `ops` are
-    /// queued for the recovery log (fire-and-forget on the log actor); the
-    /// 600ms debounce is (re)armed regardless. Empty `ops` means a text-
-    /// only typing edit or a pure reorder/move — nothing to log, but the
+    /// Editor or external mutator just changed `doc`. Non-empty `ops` spawn
+    /// a log-apply Task — tracked on the pending entry so the save side
+    /// can await its durability before writing the `.md`. The 600ms
+    /// debounce is (re)armed regardless. Empty `ops` means a text-only
+    /// typing edit or a pure reorder/move — nothing to log, but the
     /// debounce still fires.
     ///
     /// Synchronous so the host can call it from the mutation-commit thread
-    /// without ceremony; persistence happens off-actor.
+    /// without ceremony; durability happens off-actor and is barriered at
+    /// save time (see `awaitLogDurable`).
     public func documentDidChange(ops: [EditorOp], in doc: Document) {
+        let url = doc.url
         if !ops.isEmpty {
-            appendOps(ops, forPage: relativePath(of: doc.url))
+            let patch = Patch.from(ops: ops)
+            let page = relativePath(of: url)
+            let task: Task<Void, Error> = Task { [log] in
+                try await log.apply(patch, to: page)
+            }
+            var entry = pending[url] ?? PendingSave(debounceTask: nil, pendingDoc: doc, isSaving: false)
+            entry.latestLogTask = task
+            pending[url] = entry
         }
         scheduleDebouncedSave(for: doc)
     }
@@ -42,10 +52,26 @@ extension Clamshell {
         let url = doc.url
         pending[url]?.debounceTask?.cancel()
         pending[url]?.debounceTask = nil
+        await awaitLogDurable(url: url)
         let success = await performSave(doc)
         try? await saver.flush(url: url)
         clearPendingIfQuiet(url: url, after: doc)
         return success
+    }
+
+    /// Block until the latest log-apply Task for `url` has completed. The
+    /// log actor serializes apply calls, so awaiting the latest task
+    /// guarantees every prior batch's effects are also durable. Errors are
+    /// logged but not propagated — the file save still proceeds, and the
+    /// next open's reconcile lifts any unlogged content via observations.
+    private func awaitLogDurable(url: URL) async {
+        guard let task = pending[url]?.latestLogTask else { return }
+        do {
+            try await task.value
+        } catch {
+            Diag.log.error("log apply failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        }
+        pending[url]?.latestLogTask = nil
     }
 
     /// True if there is no pending or in-flight save for `url`. Reconcile
@@ -72,6 +98,7 @@ extension Clamshell {
         guard let entry = pending[url], !entry.isSaving else { return }
         let doc = entry.pendingDoc
         pending[url]?.debounceTask = nil
+        await awaitLogDurable(url: url)
         _ = await performSave(doc)
         clearPendingIfQuiet(url: url, after: doc)
     }
@@ -98,7 +125,8 @@ extension Clamshell {
         guard let post = pending[url],
               post.pendingDoc === doc,
               !post.isSaving,
-              post.debounceTask == nil else { return }
+              post.debounceTask == nil,
+              post.latestLogTask == nil else { return }
         pending[url] = nil
     }
 }

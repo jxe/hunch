@@ -37,41 +37,32 @@ struct RecoveryLogTests {
             .heading(level: .h1, text: attr("Title")),
             .paragraph(text: attr("Body."))
         ]
-        try await log.record(page: "page.md", blocks: blocks)
+        try await log.apply(Patch.adds(from: blocks), to: "page.md")
 
         let url = deviceLogURL(workspace: root, page: "page.md", deviceID: "dev-A")
         #expect(lineCount(at: url) == 2)
     }
 
-    @Test func resaveOfSameContentAppendsZeroLines() async throws {
+    /// Duplicate `add` records for the same hash collapse to one intent.
+    /// The log may have N adds (no write-time dedup) but the union's
+    /// latest-wins fold keeps the hash alive once — idempotence at the
+    /// intent level.
+    @Test func duplicateAddsCollapseToOneAliveIntent() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
 
-        let blocks: [Block] = [.paragraph(text: attr("steady"))]
-        try await log.record(page: "p.md", blocks: blocks)
-        try await log.record(page: "p.md", blocks: blocks)
+        let block = Block.paragraph(text: attr("steady"))
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
 
-        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
-        #expect(lineCount(at: url) == 1, "no new line on identical re-save")
-    }
-
-    @Test func editingOneBlockAppendsOneLine() async throws {
-        let root = makeWorkspace()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
-
-        try await log.record(page: "p.md", blocks: [
-            .paragraph(text: attr("alpha")),
-            .paragraph(text: attr("beta"))
-        ])
-        try await log.record(page: "p.md", blocks: [
-            .paragraph(text: attr("alpha")),
-            .paragraph(text: attr("beta-edited"))
-        ])
-
-        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
-        #expect(lineCount(at: url) == 3, "alpha + beta + beta-edited")
+        let journal = log.readJournal(page: "p.md")
+        let intent = PatchEngine.intent(from: journal)
+        guard case .alive = intent.status(of: block.atomicHash) else {
+            Issue.record("expected alive intent after three duplicate adds")
+            return
+        }
     }
 
     @Test func nestedChildrenRecordTheirImmediateParent() async throws {
@@ -81,7 +72,7 @@ struct RecoveryLogTests {
 
         let child = Block.paragraph(text: attr("Body of toggle"))
         let toggle = Block.toggle(title: attr("Outer"), children: [child])
-        try await log.record(page: "p.md", blocks: [toggle])
+        try await log.apply(Patch.adds(from: [toggle]), to: "p.md")
 
         // Both blocks are still alive, so listLostBlocks returns nothing.
         // To assert the parent header was written, we check the file contents.
@@ -119,8 +110,8 @@ struct RecoveryLogTests {
             children: [Block.paragraph(text: attr("Keep"))],
             modificationDate: nil
         ))
-        // The editor would call `purgeHash` for the removed block — simulate it.
-        try await clamshell.purgeHash(lose.atomicHash, in: "p.md")
+        // The editor would emit a purge for the removed block — simulate it.
+        try await clamshell.applyPatch(Patch(entries: [.purge(hash: lose.atomicHash)]), forPage: "p.md")
         try await Task.sleep(for: .milliseconds(80))
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
@@ -176,7 +167,7 @@ struct RecoveryLogTests {
         try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
-        try await clamshell.purgeHash(ghost.atomicHash, in: "p.md")
+        try await clamshell.applyPatch(Patch(entries: [.purge(hash: ghost.atomicHash)]), forPage: "p.md")
         try await Task.sleep(for: .milliseconds(80))
 
         // Intermediate: explicitly purged, so nothing is "lost".
@@ -255,7 +246,7 @@ struct RecoveryLogTests {
 
         var lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.contains(where: { $0.hash == h }))
-        try await clamshell.purgeHash(h, in: "p.md")
+        try await clamshell.applyPatch(Patch(entries: [.purge(hash: h)]), forPage: "p.md")
         lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty, "purge tombstone should suppress entry")
     }
@@ -332,15 +323,21 @@ struct RecoveryLogTests {
         let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
 
         let block = Block.paragraph(text: attr("phoenix"))
-        try await log.record(page: "p.md", blocks: [block])
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
         // 1ms guarantees a fresh timestamp; precision of `t` is ms.
         try await Task.sleep(for: .milliseconds(2))
-        try await log.purge(page: "p.md", hash: block.atomicHash)
+        try await log.apply(Patch(entries: [.purge(hash: block.atomicHash)]), to: "p.md")
         try await Task.sleep(for: .milliseconds(2))
-        // `record` short-circuits on the in-memory hash cache (block was
-        // already observed by this device), so to re-add we use `reAdd`
-        // which bypasses the cache. Mirrors the manual-restore code path.
-        try await log.reAdd(page: "p.md", block: block, parentHash: nil)
+        // Re-add the same hash: a higher counter on the fresh `add` beats
+        // the prior purge in the union (latest `(c, deviceID)` wins).
+        try await log.apply(
+            Patch(entries: [.add(
+                hash: block.atomicHash,
+                parent: nil,
+                markdown: BlockSerializer.serializeAtomic(block)
+            )]),
+            to: "p.md"
+        )
 
         // Plant the block as alive in .md so the live-set check excludes it
         // — the assertion is that it doesn't surface as "lost" even though
@@ -395,7 +392,7 @@ struct RecoveryLogTests {
             children: [Block.paragraph(text: attr("Keep"))],
             modificationDate: nil
         ))
-        try await clamshell.purgeHash(lose.atomicHash, in: "p.md")
+        try await clamshell.applyPatch(Patch(entries: [.purge(hash: lose.atomicHash)]), forPage: "p.md")
         try await Task.sleep(for: .milliseconds(80))
 
         let purged = await clamshell.listPurgedBlocks(
@@ -466,7 +463,7 @@ struct RecoveryLogTests {
         try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
-        try await clamshell.purgeHash(block.atomicHash, in: "p.md")
+        try await clamshell.applyPatch(Patch(entries: [.purge(hash: block.atomicHash)]), forPage: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         // External writer brings the hash back into the log via a foreign
@@ -508,7 +505,7 @@ struct RecoveryLogTests {
         try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
-        try await clamshell.purgeHash(doomed.atomicHash, in: "p.md")
+        try await clamshell.applyPatch(Patch(entries: [.purge(hash: doomed.atomicHash)]), forPage: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         // It's now purged.
@@ -519,10 +516,18 @@ struct RecoveryLogTests {
         #expect(purgedBefore.count == 1)
         let entry = try #require(purgedBefore.first)
 
-        // Sleep across a ms boundary so the reAdd timestamp beats the purge.
+        // Sleep across a ms boundary so the fresh add's timestamp beats the
+        // purge (the counter would suffice either way; t is for display).
         try await Task.sleep(for: .milliseconds(20))
         let block = Block.paragraph(text: attr("doomed"))
-        try await clamshell.unpurgeBlock(block, in: "p.md", parentHash: entry.parentHash)
+        try await clamshell.applyPatch(
+            Patch(entries: [.add(
+                hash: block.atomicHash,
+                parent: entry.parentHash,
+                markdown: BlockSerializer.serializeAtomic(block)
+            )]),
+            forPage: "p.md"
+        )
 
         let purgedAfter = await clamshell.listPurgedBlocks(
             filter: .page(relativePath: "p.md"),
@@ -543,15 +548,15 @@ struct RecoveryLogTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
 
-        try await log.record(page: "p.md", blocks: [
+        try await log.apply(Patch.adds(from: [
             .paragraph(text: attr("first")),
             .paragraph(text: attr("second"))
-        ])
-        try await log.record(page: "p.md", blocks: [
+        ]), to: "p.md")
+        try await log.apply(Patch.adds(from: [
             .paragraph(text: attr("first")),
             .paragraph(text: attr("second")),
             .paragraph(text: attr("third"))
-        ])
+        ]), to: "p.md")
 
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         let text = try String(contentsOf: url, encoding: .utf8)
@@ -561,7 +566,7 @@ struct RecoveryLogTests {
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
             return (obj["c"] as? UInt64) ?? (obj["c"] as? Int).flatMap { UInt64(exactly: $0) }
         }
-        #expect(counters.count == 3, "three add records")
+        #expect(counters.count == 5, "2 adds from first apply + 3 from second; no write-time dedup")
         #expect(counters == counters.sorted(), "counters strictly monotonic")
         #expect(Set(counters).count == counters.count, "no duplicate counters")
     }
@@ -584,7 +589,7 @@ struct RecoveryLogTests {
         try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
-        try await clamshell.purgeHash(block.atomicHash, in: "p.md")
+        try await clamshell.applyPatch(Patch(entries: [.purge(hash: block.atomicHash)]), forPage: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         // Foreign device: counter 9999 but wall-clock 100s in the *past*.
@@ -616,7 +621,7 @@ struct RecoveryLogTests {
         let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
 
         // Session start: our device records, hydrating nextCounter to 2.
-        try await log.record(page: "p.md", blocks: [.paragraph(text: attr("first"))])
+        try await log.apply(Patch.adds(from: [.paragraph(text: attr("first"))]), to: "p.md")
 
         // Foreign device's log lands on disk via iCloud — counter 9999, well
         // above anything we know about. Hand-planted to simulate the sync.
@@ -637,10 +642,10 @@ struct RecoveryLogTests {
 
         // Now we record again. The new add must mint a counter strictly
         // above 9999 — the per-call foreign rescan picks up B's record.
-        try await log.record(page: "p.md", blocks: [
+        try await log.apply(Patch.adds(from: [
             .paragraph(text: attr("first")),
             .paragraph(text: attr("second"))
-        ])
+        ]), to: "p.md")
 
         let ourURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         let text = try String(contentsOf: ourURL, encoding: .utf8)
@@ -692,7 +697,7 @@ struct RecoveryLogTests {
 
         // Our device purges H. The purge counter must exceed 500 so the
         // union picks the purge as latest and H is tombstoned, not alive.
-        try await clamshell.purgeHash(h, in: "p.md")
+        try await clamshell.applyPatch(Patch(entries: [.purge(hash: h)]), forPage: "p.md")
 
         let intent = PatchEngine.intent(from: clamshell.readJournal(forPage: "p.md"))
         switch intent.status(of: h) {
@@ -737,7 +742,7 @@ struct RecoveryLogTests {
         try legacyAdd.write(to: legacyURL, atomically: true, encoding: .utf8)
 
         // Now our device purges. The purge record carries `c`.
-        try await clamshell.purgeHash(h, in: "p.md")
+        try await clamshell.applyPatch(Patch(entries: [.purge(hash: h)]), forPage: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
@@ -761,14 +766,14 @@ struct RecoveryLogTests {
         let h = block.atomicHash
 
         // 1) Initial save records the add.
-        try await log.record(page: "p.md", blocks: [block])
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
         // 2) Editor purges (explicit user delete).
-        try await log.purge(page: "p.md", hash: h)
+        try await log.apply(Patch(entries: [.purge(hash: h)]), to: "p.md")
         // 3) User retypes identical content. Without the fix the device
         //    cache still says "already observed" and this is silently
         //    dropped; with the fix the cache forgot X on purge so a
         //    fresh add lands.
-        try await log.record(page: "p.md", blocks: [block])
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
 
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         #expect(lineCount(at: url) == 3, "add + purge + fresh add")
@@ -799,49 +804,25 @@ struct RecoveryLogTests {
 
         // Session 1: add + purge.
         let log1 = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
-        try await log1.record(page: "p.md", blocks: [block])
-        try await log1.purge(page: "p.md", hash: h)
+        try await log1.apply(Patch.adds(from: [block]), to: "p.md")
+        try await log1.apply(Patch(entries: [.purge(hash: h)]), to: "p.md")
 
         // Session 2: cold actor, hydrates from the existing log file.
         // Retyping the block must produce a fresh add — the hydrated
         // cache should treat X as "not observed" because the purge
         // followed the add.
         let log2 = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
-        try await log2.record(page: "p.md", blocks: [block])
+        try await log2.apply(Patch.adds(from: [block]), to: "p.md")
 
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         #expect(lineCount(at: url) == 3, "second session's add should append, not skip")
     }
 
-    // MARK: - Phase 2: observation absorption
-
-    /// `append(observations:)` skips hashes our device has already logged
-    /// (cache short-circuit). Idempotent at the device level.
-    @MainActor
-    @Test func appendObservationsSkipsAlreadyLoggedHashes() async throws {
-        let root = makeWorkspace()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
-
-        let a = Block.paragraph(text: attr("A"))
-        let b = Block.paragraph(text: attr("B"))
-        try await log.record(page: "p.md", blocks: [a])
-
-        let obs = [
-            PatchEngine.Observation(hash: a.atomicHash, parent: nil, markdown: BlockSerializer.serializeAtomic(a)),
-            PatchEngine.Observation(hash: b.atomicHash, parent: nil, markdown: BlockSerializer.serializeAtomic(b)),
-        ]
-        try await log.append(observations: obs, to: "p.md")
-
-        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
-        #expect(lineCount(at: url) == 2, "A skipped (already logged), B appended")
-    }
-
     // MARK: - PR 2: editor op-batch append
 
-    /// `append(ops:)` writes mixed inserts and removes as one ordered batch
-    /// with sequential per-page counters. The remove-then-insert ordering
-    /// from `BlockTreeDiff.derive` is preserved on disk.
+    /// Applying an ops patch writes mixed inserts and removes as one ordered
+    /// batch with sequential per-page counters. The remove-then-insert
+    /// ordering from `BlockTreeDiff.derive` is preserved on disk.
     @MainActor
     @Test func appendOpsWritesMixedBatchSequentially() async throws {
         let root = makeWorkspace()
@@ -854,7 +835,7 @@ struct RecoveryLogTests {
             .remove(hash: gone.atomicHash),
             .insert(hash: arriving.atomicHash, parent: nil, block: arriving),
         ]
-        try await log.append(ops: ops, to: "p.md")
+        try await log.apply(Patch.from(ops: ops), to: "p.md")
 
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         let text = try String(contentsOf: url, encoding: .utf8)
@@ -872,30 +853,6 @@ struct RecoveryLogTests {
         #expect(c1 == c0 + 1, "counters sequential within batch")
     }
 
-    /// Inserts already in this device's hash cache short-circuit; the batch
-    /// still emits its removes. Mirrors today's `record()` dedup semantics.
-    @MainActor
-    @Test func appendOpsSkipsAlreadyKnownInsertsButEmitsRemoves() async throws {
-        let root = makeWorkspace()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
-
-        let known = Block.paragraph(text: attr("known"))
-        let gone = Block.paragraph(text: attr("gone"))
-        // Pre-seed the cache: known is already in our device's log.
-        try await log.record(page: "p.md", blocks: [known])
-
-        // Batch: re-insert known (should skip), remove gone (should emit).
-        let ops: [EditorOp] = [
-            .remove(hash: gone.atomicHash),
-            .insert(hash: known.atomicHash, parent: nil, block: known),
-        ]
-        try await log.append(ops: ops, to: "p.md")
-
-        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
-        #expect(lineCount(at: url) == 2, "original add + new purge; duplicate insert short-circuited")
-    }
-
     /// Empty op batches perform zero I/O (no file write, no log churn).
     @MainActor
     @Test func appendOpsWithEmptyBatchIsNoop() async throws {
@@ -903,7 +860,7 @@ struct RecoveryLogTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
 
-        try await log.append(ops: [], to: "p.md")
+        try await log.apply(Patch.from(ops: []), to: "p.md")
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         #expect(!FileManager.default.fileExists(atPath: url.path),
                 "empty batch should not create the log file")
@@ -911,7 +868,7 @@ struct RecoveryLogTests {
 
     /// After `remove(hash)`, the device cache forgets the hash — so a
     /// subsequent `insert` of identical content emits a fresh add (intent
-    /// flips back to alive). Mirrors today's `purge()` then `record()` flow.
+    /// flips back to alive). Mirrors today's purge-then-add flow.
     @MainActor
     @Test func appendOpsRemoveThenInsertProducesFreshAdd() async throws {
         let root = makeWorkspace()
@@ -919,11 +876,11 @@ struct RecoveryLogTests {
         let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
 
         let block = Block.paragraph(text: attr("retype"))
-        try await log.record(page: "p.md", blocks: [block])
-        try await log.append(ops: [.remove(hash: block.atomicHash)], to: "p.md")
-        try await log.append(ops: [
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
+        try await log.apply(Patch.from(ops: [.remove(hash: block.atomicHash)]), to: "p.md")
+        try await log.apply(Patch.from(ops: [
             .insert(hash: block.atomicHash, parent: nil, block: block)
-        ], to: "p.md")
+        ]), to: "p.md")
 
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         #expect(lineCount(at: url) == 3, "initial add + purge + fresh add")
