@@ -98,7 +98,7 @@ final class WorkspaceWindow {
     /// `.onChange(of: path)` in `ContentView`. The new page's coordinator
     /// (which owns the save session) is built lazily by `EditorPage`; this
     /// function loads the `Document` fresh from disk via
-    /// `clamshell.loadAndReconcile` (which parses, folds the journal, and
+    /// `clamshell.reconcile(at:)` (which parses, folds the journal, and
     /// auto-restores any lost subtrees in one step), installs the file
     /// presenter, and surfaces a banner if anything was restored.
     /// Back-navigation re-parses — markdown parse is cheap, and not caching
@@ -124,7 +124,7 @@ final class WorkspaceWindow {
         }
         Task { @MainActor in
             do {
-                let (doc, summary) = try await clamshell.loadAndReconcile(at: url)
+                let (doc, summary) = try await clamshell.reconcile(at: url)
                 // The user may have navigated again while we were awaiting.
                 guard path.last ?? homeURL == url else { return }
                 openDocument = doc
@@ -287,7 +287,7 @@ final class WorkspaceWindow {
     }
 
     /// Reconcile the open document against the page's recovery-log journal.
-    /// Thin wrapper around `Clamshell.reconcile(liveDoc:)` — the engine
+    /// Thin wrapper around `Clamshell.reconcile(at:liveDoc:)` — the engine
     /// plumbing (read journal, derive intent, splice, append observations,
     /// quarantine unrestorables) lives there. Held off while the doc is
     /// dirty or a save is in flight (gated inside Clamshell).
@@ -295,11 +295,15 @@ final class WorkspaceWindow {
         guard let clamshell = workspace.clamshell else { return }
         Task { @MainActor [weak self] in
             guard let self, self.openDocument === doc else { return }
-            let summary = await clamshell.reconcile(liveDoc: doc)
-            guard self.openDocument === doc, summary.didChange else { return }
-            let count = summary.restoredHashes.count
-            let noun = count == 1 ? "block" : "blocks"
-            self.workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
+            do {
+                let (_, summary) = try await clamshell.reconcile(at: doc.url, liveDoc: doc)
+                guard self.openDocument === doc, summary.didChange else { return }
+                let count = summary.restoredHashes.count
+                let noun = count == 1 ? "block" : "blocks"
+                self.workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
+            } catch {
+                Diag.merge.error("reconcile failed url=\(doc.url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -349,14 +353,14 @@ final class WorkspaceWindow {
         // bytes in its disk-content history internally.
         if let clamshell = workspace.clamshell {
             do {
-                let resolution = try clamshell.resolveConflictVersions(
+                let resolution = try await clamshell.resolveConflictVersions(
                     at: url,
                     againstLive: doc
                 )
                 if resolution.liveDocumentMutated {
                     // Mtime / title cache / rescan flow through `didSave`,
-                    // which `writeExternal` (inside `resolveConflictVersions`)
-                    // now fires.
+                    // which `write(_:patch:)` (inside `resolveConflictVersions`)
+                    // fires after the file write lands.
                     let noun = resolution.salvaged == 1 ? "block" : "blocks"
                     workspace.banner = .init(message: "Merged \(resolution.salvaged) \(noun) from another device into \(doc.title)")
                     return

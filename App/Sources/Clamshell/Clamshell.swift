@@ -57,25 +57,9 @@ public final class Clamshell {
     /// debounce timer.
     public var didSave: ((Document) -> Void)?
 
-    /// Per-URL pending save state. An entry exists while a debounce is
-    /// armed or a save is in flight; cleared once the save completes and
-    /// no new edits are pending. See `Clamshell+Saving.swift`.
-    var pending: [URL: PendingSave] = [:]
-
-    struct PendingSave {
-        var debounceTask: Task<Void, Never>?
-        /// The most recent Document passed to `documentDidChange`. Captured
-        /// here so a later call (e.g. from a second window editing the same
-        /// URL) replaces it before the debounce fires.
-        var pendingDoc: Document
-        var isSaving: Bool
-        /// The most recent log-apply Task for this URL. The log actor
-        /// serializes apply calls, so awaiting the latest task guarantees
-        /// every prior batch's effects are durable on disk too. Both
-        /// `fireScheduledSave` and `flush` await this before writing the
-        /// `.md` so the log is always at or ahead of the file on disk.
-        var latestLogTask: Task<Void, Error>?
-    }
+    /// Per-URL save state. Absent ⇒ clean. The explicit state machine
+    /// (`.armed` / `.saving`) lives in `Clamshell+Saving.swift`.
+    var saveStates: [URL: SaveState] = [:]
 
     public init(root: URL) {
         self.root = root
@@ -138,42 +122,6 @@ public final class Clamshell {
         return Document(url: url, children: blocks, modificationDate: mtime)
     }
 
-    /// Load `url` and reconcile its parsed content against the journal in
-    /// one step. Returns the Document the host should display (disk
-    /// content with any lost-block subtrees spliced in) and a summary
-    /// describing what changed. The log is updated atomically with
-    /// observation lifts + unrestorable quarantines as one batched write,
-    /// awaited before return so the log is at-or-ahead of the file on
-    /// disk. If reconcile spliced any subtrees, a debounced save is
-    /// scheduled because the doc now differs from disk.
-    ///
-    /// Intended for the open-doc path. The presenter-wakeup path (which
-    /// must update an existing live Document in place to preserve editor
-    /// state) still goes through `reconcileOpenDocumentAgainstLog` in the
-    /// host.
-    @MainActor
-    public func loadAndReconcile(at url: URL) async throws -> (Document, PatchEngine.ReconcileSummary) {
-        let raw = try files.read(url)
-        let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        recordDiskContent(raw, at: url)
-
-        let rel = relativePath(of: url)
-        let journal = log.readJournal(page: rel)
-        let (blocks, patch, summary) = PatchEngine.reconcileFromDisk(rawMarkdown: raw, journal: journal)
-
-        if !patch.isEmpty {
-            try await log.apply(patch, to: rel)
-        }
-
-        let doc = Document(url: url, children: blocks, modificationDate: mtime)
-        if summary.didChange {
-            // No ops — pure structural restore; the file is now stale and
-            // needs a save. `documentDidChange` with empty ops just (re)arms
-            // the debounce without writing to the log.
-            documentDidChange(ops: [], in: doc)
-        }
-        return (doc, summary)
-    }
 
     /// Read the raw bytes on disk without parsing — used by the file
     /// presenter to compare against the open document's snapshot.
@@ -191,7 +139,7 @@ public final class Clamshell {
     private var contentHistory: [URL: [Int]] = [:]
     private static let historyDepth = 5
 
-    private func recordDiskContent(_ text: String, at url: URL) {
+    func recordDiskContent(_ text: String, at url: URL) {
         var history = contentHistory[url] ?? []
         let hash = text.hashValue
         if history.first == hash { return }
@@ -268,47 +216,63 @@ public final class Clamshell {
         return newText
     }
 
-    /// Synchronous full write for callers that didn't flow through the
-    /// editor's `documentDidChange` op pipeline — conflict merge,
-    /// appending to a non-open subpage, restoring a lost block into a
-    /// closed page. Bypasses the coalescer (the doc is on disk before
-    /// this call returns) and schedules a tree-walk recovery-log
-    /// catch-up so the new blocks reach the journal without waiting for
-    /// the next reconcile pass to absorb them.
+    /// Apply `patch` to the recovery log, then persist `document` to disk.
+    /// Awaited end-to-end so log lands strictly before file — a crash
+    /// anywhere leaves the log at-or-ahead of disk and the next reconcile
+    /// heals. Used by conflict merge and closed-page manual restore.
+    /// Editor mutations go through `documentDidChange`; the sync append-
+    /// onto-subpage path goes through `append(_:toPage:)`.
     ///
-    /// Fires `didSave` after the write so callers get the same per-doc
-    /// bookkeeping (mtime, title cache, page rescan) as the editor save
-    /// path — no manual replay needed at each call site.
+    /// Fires `didSave` after the file write so the host's mtime / title /
+    /// rescan bookkeeping flows through the same callback as the
+    /// editor-debounced save path.
+    @MainActor
+    public func write(_ document: Document, patch: Patch) async throws {
+        let url = document.url
+        if !patch.isEmpty {
+            try await log.apply(patch, to: relativePath(of: url))
+        }
+        _ = try await save(document)
+        didSave?(document)
+    }
+
+    /// Append `blocks` to the end of `relativePath`. The file is written
+    /// synchronously (caller gets durability on return) and the new
+    /// blocks are logged in the background. Carved out as a named
+    /// operation because it's the one path called from a synchronous
+    /// editor-host protocol method (`onAppendToSubpage`) and can't
+    /// await — the file-before-log gap here is brief and recovered by
+    /// the observation lifter on next reconcile.
+    ///
+    /// Returns the loaded-and-mutated `Document` so callers can splice
+    /// the appended content into any open window of the same URL.
     @MainActor
     @discardableResult
-    public func writeExternal(_ document: Document) throws -> String {
-        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: subpageTitleResolver)
-        let url = document.url
-        let rel = relativePath(of: url)
-        let blocks = document.children
+    public func append(_ blocks: [Block], toPage relativePath: String) throws -> Document {
+        let url = self.url(for: relativePath)
+        let doc = try loadDocument(at: url)
+        doc.transaction(name: "Append to subpage") { d in
+            d.insertSubtrees(blocks, at: DropPath(parent: nil, position: d.children.count))
+        }
+        let newText = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: subpageTitleResolver)
         try files.write(newText, to: url)
         recordDiskContent(newText, at: url)
-        scheduleRecord(rel: rel, blocks: blocks)
-        didSave?(document)
-        return newText
+        let patch = Patch.adds(from: blocks)
+        Task { [log, relativePath] in
+            do {
+                try await log.apply(patch, to: relativePath)
+            } catch {
+                Diag.log.error("append log apply failed page=\(relativePath, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
+        }
+        didSave?(doc)
+        return doc
     }
 
     /// Awaits any in-flight + pending save for the URL. Internal — outside
     /// callers go through `flush(_:)` which both saves and drains.
     nonisolated func flush(url: URL) async throws {
         try await saver.flush(url: url)
-    }
-
-    @MainActor
-    private func scheduleRecord(rel: String, blocks: [Block]) {
-        let patch = Patch.adds(from: blocks)
-        Task { [log, rel] in
-            do {
-                try await log.apply(patch, to: rel)
-            } catch {
-                Diag.log.error("record failed page=\(rel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
-        }
     }
 
 
@@ -340,8 +304,9 @@ public final class Clamshell {
 
     /// If `url` has any unresolved `NSFileVersion` conflict alternates,
     /// merge their blocks into the survivor (in-memory `doc` if provided,
-    /// otherwise the on-disk text), write the merged document immediately,
-    /// and mark each alternate version resolved.
+    /// otherwise the on-disk text), apply the salvaged blocks to the log
+    /// then write the merged document to disk, and mark each alternate
+    /// version resolved.
     ///
     /// Open-page callers: pass the live `Document`. When the return value's
     /// `liveDocumentMutated` is true, the live doc's `children` was rewritten
@@ -354,7 +319,7 @@ public final class Clamshell {
     public func resolveConflictVersions(
         at url: URL,
         againstLive doc: Document? = nil
-    ) throws -> ConflictResolution {
+    ) async throws -> ConflictResolution {
         let alternates = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
         guard !alternates.isEmpty else { return .none }
 
@@ -389,7 +354,7 @@ public final class Clamshell {
         }
 
         let merged = Document(url: url, children: result.merged)
-        try writeExternal(merged)
+        try await write(merged, patch: Patch.adds(from: merged.children))
 
         let mutated: Bool
         if let doc {

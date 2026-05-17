@@ -99,14 +99,13 @@ public protocol EditorHost: AnyObject {
     /// When the change came through `EditorView.mutate(_:_:)`, `ops` carries
     /// the pre→post diff from `BlockTreeDiff.derive(pre:post:)`:
     /// `.insert(hash, parent, block)` for new (or content-changed) blocks and
-    /// `.remove(hash)` for ids that disappeared. Hosts append the batch to
-    /// their recovery log as one ordered unit — the op stream IS the log
-    /// update, no diff inference needed.
+    /// `.remove(hash)` for ids that disappeared. The host translates these
+    /// to a recovery-log batch (one ordered unit) and kicks its debounced
+    /// save.
     ///
     /// When `ops` is empty, the change is a text-only typing edit or a pure
     /// reorder/move where the id-and-hash set is unchanged: nothing to log,
-    /// but the host should still kick its debounced save and mark the
-    /// document dirty in any UI it surfaces.
+    /// but the host should still kick its debounced save.
     ///
     /// Called *synchronously* on the mutation-commit thread so the host's
     /// dirty flag is readable in immediate flush-on-close paths — a fast

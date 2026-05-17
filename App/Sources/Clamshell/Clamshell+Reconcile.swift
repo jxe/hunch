@@ -46,21 +46,38 @@ extension Clamshell {
         case unparseable
     }
 
-    /// Reconcile a live open `Document` against its journal. Splices any
-    /// auto-restore subtrees into `doc` in-place, lifts bare-md / external
-    /// observations as fresh `add` records on this device's log, and
-    /// quarantines hashes the engine can't restore. Held off while the doc
-    /// is dirty or a save is in flight — the engine assumes
-    /// `doc.children == parsed(.md)`, which is only true on a quiet page.
+    /// Reconcile `url`'s on-disk state against its journal in one step.
     ///
-    /// Idempotent: with no changes pending, a second call reads the journal
-    /// and exits without I/O. Returns a summary the caller can use to drive
-    /// a banner.
+    /// - Pass `liveDoc: nil` for the open-doc path. Loads from disk,
+    ///   parses, reconciles, returns a fresh Document. Throws on read
+    ///   failure.
+    /// - Pass `liveDoc: doc` for the presenter-wakeup / periodic path.
+    ///   Gated on `isQuiescent(at:)` — the engine assumes
+    ///   `doc.children == parsed(.md)`, only true on a settled page —
+    ///   then mutates `doc` in place and returns it.
+    ///
+    /// Either way: any auto-restore subtrees are spliced into the doc,
+    /// bare-md / external observations are lifted as `.add` records, and
+    /// hashes the engine can't restore are quarantined. The catch-up
+    /// patch lands atomically before return (log strictly before .md), so
+    /// a markDirty fires only after the log is durable.
     @discardableResult
-    public func reconcile(liveDoc doc: Document) async -> PatchEngine.ReconcileSummary {
-        let url = doc.url
-        guard isQuiescent(at: url) else {
-            return PatchEngine.ReconcileSummary(restoredHashes: [], lifted: [], unrestorable: [])
+    public func reconcile(
+        at url: URL,
+        liveDoc: Document? = nil
+    ) async throws -> (Document, PatchEngine.ReconcileSummary) {
+        let doc: Document
+        if let liveDoc {
+            guard isQuiescent(at: url) else {
+                let empty = PatchEngine.ReconcileSummary(restoredHashes: [], lifted: [], unrestorable: [])
+                return (liveDoc, empty)
+            }
+            doc = liveDoc
+        } else {
+            let raw = try files.read(url)
+            let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            recordDiskContent(raw, at: url)
+            doc = Document(url: url, children: BlockParser.parse(raw), modificationDate: mtime)
         }
 
         let rel = relativePath(of: url)
@@ -78,34 +95,29 @@ extension Clamshell {
         }
         Self.logUnrestorables(recon.unrestorable, url: url)
 
-        // Splice synchronously and arm the debounce before any await, so the
-        // live doc and the host's view of dirty/quiet stay coherent.
+        if !entries.isEmpty {
+            try await log.apply(Patch(entries: entries), to: rel)
+        }
+
         if recon.didChange {
             PatchEngine.apply(recon, to: doc)
-            documentDidChange(ops: [], in: doc)
+            markDirty(doc)
             let count = recon.restoredHashes.count
             Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
         }
 
-        if !entries.isEmpty {
-            do {
-                try await log.apply(Patch(entries: entries), to: rel)
-            } catch {
-                Diag.merge.error("reconcile patch apply failed page=\(rel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
-        }
-
-        return PatchEngine.ReconcileSummary(
+        let summary = PatchEngine.ReconcileSummary(
             restoredHashes: recon.restoredHashes,
             lifted: recon.toAppend.map(\.hash),
             unrestorable: recon.unrestorable
         )
+        return (doc, summary)
     }
 
     /// Restore a single lost or purged block into its source page. Pass
     /// `liveDoc` when the source page is currently open in some window so
     /// the splice mutates the same `Document` the editor renders; pass nil
-    /// to load-from-disk and persist synchronously via `writeExternal`.
+    /// to load-from-disk and persist via the awaited `write(_:patch:)`.
     ///
     /// Lost-restore appends one `.purge` per covered hash so the Recover
     /// sheet stops surfacing the row. Purged-restore appends a fresh `.add`
@@ -205,16 +217,28 @@ extension Clamshell {
         }
 
         if isLive {
-            documentDidChange(ops: [], in: doc)
+            // Splice already mutated `doc` in place; arm the debounced save
+            // for the .md and apply the follow-up to the log separately.
+            markDirty(doc)
+            if !followUp.isEmpty {
+                do {
+                    try await log.apply(followUp, to: source)
+                } catch {
+                    Diag.merge.error("restore follow-up failed page=\(source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                }
+            }
         } else {
-            _ = try writeExternal(doc)
-        }
-
-        if !followUp.isEmpty {
+            // Closed page: log the follow-up (purges-for-lost or
+            // adds-for-purged) and the doc-blocks observation in one
+            // batched apply, then write the merged .md. The doc-blocks
+            // catch-up matches the prior `writeExternal` behavior so
+            // any bare-md absorbed at load time reaches the journal.
+            let combined = Patch(entries: Patch.adds(from: doc.children).entries + followUp.entries)
             do {
-                try await log.apply(followUp, to: source)
+                try await write(doc, patch: combined)
             } catch {
-                Diag.merge.error("restore follow-up failed page=\(source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                Diag.merge.error("restore write failed page=\(source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                throw error
             }
         }
 

@@ -327,7 +327,7 @@ final class Workspace {
                 guard self.workspaceURL == workspaceURL else { return }
                 let resolution: Clamshell.ConflictResolution
                 do {
-                    resolution = try clamshell.resolveConflictVersions(at: url, againstLive: nil)
+                    resolution = try await clamshell.resolveConflictVersions(at: url, againstLive: nil)
                 } catch {
                     Diag.merge.error("scan-time resolve failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                     await Task.yield()
@@ -497,19 +497,8 @@ final class Workspace {
     @discardableResult
     func appendToSubpage(relativePath: String, blocks: [Block]) -> Document? {
         guard !blocks.isEmpty, let clamshell else { return nil }
-        let target = clamshell.url(for: relativePath)
         do {
-            let doc = try loadDocument(at: target)
-            // Transaction handles heading containment automatically so the
-            // appended blocks land inside any heading that was at the end of
-            // the page, not as siblings of it. No undo manager attached to
-            // this freshly-loaded doc — the transaction just runs the change.
-            doc.transaction(name: "Append to subpage") { d in
-                d.insertSubtrees(blocks, at: DropPath(parent: nil, position: d.children.count))
-            }
-            try clamshell.writeExternal(doc)
-            // mtime / title cache / rescan flow through `didSave`.
-            return doc
+            return try clamshell.append(blocks, toPage: relativePath)
         } catch {
             self.error = "Failed to move blocks into \(relativePath): \(error.localizedDescription)"
             return nil
