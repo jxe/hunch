@@ -107,14 +107,14 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let lose = Block.paragraph(text: attr("Lose"))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url,
             children: [Block.paragraph(text: attr("Keep")), lose],
             modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
 
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url,
             children: [Block.paragraph(text: attr("Keep"))],
             modificationDate: nil
@@ -138,7 +138,7 @@ struct RecoveryLogTests {
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url,
             children: [
                 Block.paragraph(text: attr("Keep")),
@@ -169,11 +169,11 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let ghost = Block.paragraph(text: attr("ghost"))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [ghost], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
         try await clamshell.purgeHash(ghost.atomicHash, in: "p.md")
@@ -186,7 +186,7 @@ struct RecoveryLogTests {
         // Subsecond timestamps could collide with the prior purge; sleep
         // through a millisecond boundary so latest-wins picks the new add.
         try await Task.sleep(for: .milliseconds(20))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url,
             children: [Block.paragraph(text: attr("ghost"))],
             modificationDate: nil
@@ -211,7 +211,7 @@ struct RecoveryLogTests {
 
         let body = Block.paragraph(text: attr("inside"))
         let toggle = Block.toggle(title: attr("Outer"), children: [body])
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [toggle], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
@@ -233,7 +233,7 @@ struct RecoveryLogTests {
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
@@ -268,7 +268,7 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         // Plant an empty live page so the live-set check excludes nothing.
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
@@ -300,7 +300,7 @@ struct RecoveryLogTests {
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url,
             children: [Block.paragraph(text: attr("alive"))],
             modificationDate: nil
@@ -383,14 +383,14 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let lose = Block.paragraph(text: attr("Lose"))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url,
             children: [Block.paragraph(text: attr("Keep")), lose],
             modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
 
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url,
             children: [Block.paragraph(text: attr("Keep"))],
             modificationDate: nil
@@ -433,7 +433,7 @@ struct RecoveryLogTests {
         try (addLine + purgeLine).write(to: logURL, atomically: true, encoding: .utf8)
 
         // Plant the live .md so it's a valid scan target.
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
@@ -459,11 +459,11 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let block = Block.paragraph(text: attr("phoenix"))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [block], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
         try await clamshell.purgeHash(block.atomicHash, in: "p.md")
@@ -499,13 +499,13 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let doomed = Block.paragraph(text: attr("doomed"))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url,
             children: [doomed],
             modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
         try await clamshell.purgeHash(doomed.atomicHash, in: "p.md")
@@ -577,11 +577,11 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let block = Block.paragraph(text: attr("phoenix"))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [block], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
         try await clamshell.purgeHash(block.atomicHash, in: "p.md")
@@ -668,7 +668,7 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         // Empty live page; hydrate our nextCounter low.
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))
@@ -714,7 +714,7 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         // Seed with an empty live page so the live-set excludes nothing.
-        try clamshell.writeImmediately(Document(
+        try clamshell.writeExternal(Document(
             url: url, children: [], modificationDate: nil
         ))
         try await Task.sleep(for: .milliseconds(40))

@@ -40,10 +40,36 @@ public final class Clamshell {
         case page(relativePath: String)
     }
 
-    nonisolated private let files: FileStore
-    nonisolated private let saver: DocumentSaveCoordinator
-    nonisolated private let trash: TrashStore
-    nonisolated private let log: RecoveryLog
+    nonisolated let files: FileStore
+    nonisolated let saver: DocumentSaveCoordinator
+    nonisolated let trash: TrashStore
+    nonisolated let log: RecoveryLog
+
+    /// Resolves a subpage's title given its relative path. Set once by
+    /// the host so `documentDidChange` / `flush(_:)` can serialize without
+    /// the host threading a resolver through every call site. Default
+    /// returns nil (subpage rows fall back to their cached title).
+    public var subpageTitleResolver: (String) -> String? = { _ in nil }
+
+    /// Fired on the main actor after every successful save (debounced or
+    /// via `flush(_:)`). Host wires per-doc bookkeeping here — modification
+    /// date refresh, title cache, page rescan — without owning the
+    /// debounce timer.
+    public var didSave: ((Document) -> Void)?
+
+    /// Per-URL pending save state. An entry exists while a debounce is
+    /// armed or a save is in flight; cleared once the save completes and
+    /// no new edits are pending. See `Clamshell+Saving.swift`.
+    var pending: [URL: PendingSave] = [:]
+
+    struct PendingSave {
+        var debounceTask: Task<Void, Never>?
+        /// The most recent Document passed to `documentDidChange`. Captured
+        /// here so a later call (e.g. from a second window editing the same
+        /// URL) replaces it before the debounce fires.
+        var pendingDoc: Document
+        var isSaving: Bool
+    }
 
     public init(root: URL) {
         self.root = root
@@ -183,10 +209,10 @@ public final class Clamshell {
     ///
     /// Does NOT touch the recovery log. Editor-driven structural changes
     /// already flowed through `EditorView.mutate(_:_:)` →
-    /// `EditorHost.didApplyOps` → `Clamshell.appendOps`, so the log is current
-    /// by the time the debounce fires. Bare-md and external-editor cases are
-    /// absorbed at reconcile time (`PatchEngine.unloggedObservations` →
-    /// `appendObservations`).
+    /// `EditorHost.documentDidChange` → `Clamshell.appendOps`, so the log is
+    /// current by the time the debounce fires. Bare-md and external-editor
+    /// cases are absorbed at reconcile time (`PatchEngine.unloggedObservations`
+    /// → `appendObservations`).
     @MainActor
     @discardableResult
     public func save(
@@ -200,16 +226,16 @@ public final class Clamshell {
         return newText
     }
 
-    /// Synchronous full write — bypasses the coalescer. For modifications-as-a-unit
-    /// (trashing a dirty open doc, appending to a subpage, restoring a lost block,
-    /// conflict-merge) where the doc must be on disk before the next operation
-    /// runs. Schedules a tree-walk record into the recovery log because these
-    /// callers don't flow through the editor's `mutate(_:_:)` op pipeline —
-    /// without this catch-up, their new blocks wouldn't reach the log until
-    /// the next reconcile pass absorbs them.
+    /// Synchronous full write for callers that didn't flow through the
+    /// editor's `documentDidChange` op pipeline — conflict merge,
+    /// appending to a non-open subpage, restoring a lost block into a
+    /// closed page. Bypasses the coalescer (the doc is on disk before
+    /// this call returns) and schedules a tree-walk recovery-log
+    /// catch-up so the new blocks reach the journal without waiting for
+    /// the next reconcile pass to absorb them.
     @MainActor
     @discardableResult
-    public func writeImmediately(
+    public func writeExternal(
         _ document: Document,
         resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
     ) throws -> String {
@@ -242,7 +268,7 @@ public final class Clamshell {
     /// Append the editor's structural ops to this page's recovery log as one
     /// ordered batch. The editor derives these ops from a pre→post diff at
     /// `EditorView.mutate(_:_:)` time and hands them through
-    /// `EditorHost.didApplyOps`; this method routes them to the
+    /// `EditorHost.documentDidChange`; this method routes them to the
     /// `RecoveryLog` actor for persistence. Fire-and-forget — returns
     /// immediately, the append runs on a background Task.
     @MainActor
@@ -335,7 +361,7 @@ public final class Clamshell {
         }
 
         let merged = Document(url: url, children: result.merged)
-        try writeImmediately(merged, resolvingSubpageTitle: titleForPath)
+        try writeExternal(merged, resolvingSubpageTitle: titleForPath)
 
         let mutated: Bool
         if let doc {

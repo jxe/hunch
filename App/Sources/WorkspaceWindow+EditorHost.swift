@@ -2,11 +2,12 @@ import Foundation
 import Editor
 
 /// `WorkspaceWindow` is the `EditorHost` for the editor mounted in this
-/// window. The save lifecycle (debounce + backstop + flush-and-close) lives
-/// on the window itself; these methods route the rest of the editor's
-/// integration surface — link dispatch, subpage lifecycle, mention queries,
-/// pasteboard codec, image persistence — through `Workspace` and the
-/// per-window navigation/file-presenter state.
+/// window. The save lifecycle (debounce + per-URL coalescing) lives on
+/// `Clamshell` — see `Clamshell+Saving.swift`. These methods route the
+/// editor's integration surface — link dispatch, subpage lifecycle,
+/// mention queries, pasteboard codec, image persistence — through
+/// `Workspace` and the per-window navigation/file-presenter state, and
+/// forward mutation/blur signals straight to Clamshell.
 extension WorkspaceWindow: EditorHost {
     func suggestPages(_ query: String) -> [MentionItem] {
         workspace.pages(matching: query, excluding: openDocument?.url)
@@ -46,14 +47,14 @@ extension WorkspaceWindow: EditorHost {
     func onAbsorbSubpage(_ pageID: String) async -> Bool {
         // The editor calls this immediately after the inline-content mutation
         // and relies on the host to durably persist the parent doc before the
-        // source file is trashed. Without the force-save here, the autosave is
+        // source file is trashed. Without the flush here, the autosave is
         // still debounced — and a crash in that window would leave the source
         // gone and the inlined content unpersisted.
-        guard let clamshell = workspace.clamshell else { return false }
+        guard let clamshell = workspace.clamshell, let parent = openDocument else { return false }
         let target = clamshell.url(for: pageID)
         guard FileManager.default.fileExists(atPath: target.path) else { return false }
-        guard await saveNow(force: true) else {
-            Diag.subpage.error("onAbsorbSubpage: force-save failed; skipping trash of \(pageID, privacy: .public) to avoid data loss")
+        guard await clamshell.flush(parent) else {
+            Diag.subpage.error("onAbsorbSubpage: flush failed; skipping trash of \(pageID, privacy: .public) to avoid data loss")
             return false
         }
         return workspace.moveSubpageToTrash(relativePath: pageID)
@@ -71,18 +72,13 @@ extension WorkspaceWindow: EditorHost {
         goBack()
     }
 
-    func markDocumentDirty() {
-        markEdited()
-    }
-
-    func didApplyOps(_ ops: [EditorOp], on post: Document) {
-        guard !ops.isEmpty, let clamshell = workspace.clamshell else { return }
-        let rel = clamshell.relativePath(of: post.url)
-        clamshell.appendOps(ops, forPage: rel)
+    func documentDidChange(ops: [EditorOp], on post: Document) {
+        workspace.clamshell?.documentDidChange(ops: ops, in: post)
     }
 
     func onBlur() async {
-        await saveNow(force: true)
+        guard let clamshell = workspace.clamshell, let doc = openDocument else { return }
+        await clamshell.flush(doc)
     }
 
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {

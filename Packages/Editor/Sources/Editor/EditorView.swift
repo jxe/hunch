@@ -530,7 +530,7 @@ public struct EditorView: View {
             block: block,
             state: state,
             onBlockChange: { newBlock in binding.wrappedValue = newBlock },
-            markDirty: host.markDocumentDirty,
+            markDirty: { host.documentDidChange(ops: [], on: document) },
             depth: depth,
             editor: editing,
             isPageTitle: isPageTitleBlock(block, snapshot: snapshot),
@@ -940,13 +940,12 @@ public struct EditorView: View {
     ///
     /// Thin wrapper over `document.transaction`: that handles flushing in-flight
     /// text via `preMutation`, snapshotting `[Block]` for undo, enforcing
-    /// heading containment, and registering the inverse. This caller adds two
-    /// things on top: derives the pre→post diff into `[EditorOp]` and hands
-    /// it to `host.didApplyOps(_:on:)` (the host appends those ops to its
-    /// recovery log as one ordered batch), then calls
-    /// `host.markDocumentDirty()` to wake the debounced save. Typing-path
-    /// text changes go through `document.transaction` directly, not through
-    /// this wrapper, so the typing burst doesn't compute a diff or emit ops.
+    /// heading containment, and registering the inverse. This caller adds one
+    /// thing on top: derives the pre→post diff into `[EditorOp]` and hands it
+    /// to `host.documentDidChange(ops:on:)` so the host can append the batch
+    /// to its recovery log and kick its debounced save. Typing-path text
+    /// changes don't go through this wrapper — they fire
+    /// `host.documentDidChange(ops: [], on:)` directly from the row.
     func mutate(_ name: String, _ change: () -> Void) {
         var pre: [Block] = []
         document.transaction(name: name) { _ in
@@ -959,8 +958,7 @@ public struct EditorView: View {
             change()
         }
         let ops = BlockTreeDiff.derive(pre: pre, post: document.children)
-        host.didApplyOps(ops, on: document)
-        host.markDocumentDirty()
+        host.documentDidChange(ops: ops, on: document)
     }
 
     /// Consume a host-supplied append payload (via `EditorState.appendBlocks`).

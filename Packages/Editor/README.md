@@ -144,8 +144,7 @@ final class MyHost: EditorHost {
     func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) -> Bool { false }
     func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) {}
     func onNavigateBack() {}
-    func markDocumentDirty() {}
-    func didApplyOps(_ ops: [EditorOp], on post: Document) {}
+    func documentDidChange(ops: [EditorOp], on post: Document) {}
     func onBlur() async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
@@ -168,8 +167,8 @@ struct ContentView: View {
 }
 ```
 
-`didApplyOps` has a default no-op extension, so a minimal embedder can
-omit it (recovery logging only matters for hosts that have one). The
+`documentDidChange` has a default no-op extension, so a minimal embedder
+can omit it (persistence only matters for hosts that have one). The
 other methods are required.
 
 That's a working editor. Most methods can be no-ops in early integration
@@ -308,7 +307,7 @@ public final class Document {
   `title` (sidebar, window title). Structural mutation goes through the
   editor's `EditorView.mutate(_:_:)`, which wraps `document.transaction`,
   derives the pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
-  `host.didApplyOps(_:on:)` afterward.
+  `host.documentDidChange(ops:on:)` afterward.
 
 ---
 
@@ -389,10 +388,11 @@ where the host wants to append new content while honoring undo.
 ## Host protocol
 
 Hosts conform to `EditorHost` (class-bound, `@MainActor`). Each method
-is one extension point. Only `didApplyOps` has a default no-op (it's
-purely for recovery-log integration); the others must be implemented,
-which keeps it obvious from the host class which extension points are
-wired and which are stubbed out for early integration.
+is one extension point. Only `documentDidChange` has a default no-op
+(it's purely for persistence integration); the others must be
+implemented, which keeps it obvious from the host class which
+extension points are wired and which are stubbed out for early
+integration.
 
 | Method | Signature | When it fires | Return semantics |
 |--------|-----------|---------------|------------------|
@@ -405,8 +405,7 @@ wired and which are stubbed out for early integration.
 | `onAppendToSubpage` | `(_ pageID: String, _ blocks: [Block]) -> Bool` | User drops blocks onto a subpage row. | true = host wrote them to the child file. false = no-op. |
 | `onRequestMoveDestination` | `(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) -> Void` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, calls `pick` with a `MoveDestination` (`.page` or `.block`) or nil to cancel. | Move performed asynchronously via the `pick` continuation. |
 | `onNavigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |
-| `markDocumentDirty` | `() -> Void` | After every mutation that changes the document. Called *synchronously* on the mutation-commit thread so the host's dirty flag is readable in immediate flush-on-close paths. | Host marks dirty, kicks debounced save. |
-| `didApplyOps` | `(_ ops: [EditorOp], _ on: Document) -> Void` | Once per `EditorView.mutate(_:_:)` transaction (delete, paste, replace-via-turn-into, move-to, autotransform, etc.). Typing inside a single block does NOT fire it. Moves and reorders (same id, same hash) produce an empty `ops` list. | Host appends `ops` to its recovery log as one ordered batch. `ops` is the canonical pre→post diff from `BlockTreeDiff.derive(_:_:)`: `.insert(hash, parent, block)` for new or content-changed blocks, `.remove(hash)` for ids that disappeared. Fire-and-forget; default impl is a no-op. |
+| `documentDidChange` | `(_ ops: [EditorOp], _ on: Document) -> Void` | After every mutation — typing, structural transactions, autotransforms, undo, paste, move-to. Called *synchronously* on the mutation-commit thread so the host's dirty flag is readable in immediate flush-on-close paths. When the change came through `EditorView.mutate(_:_:)`, `ops` is the pre→post diff from `BlockTreeDiff.derive(_:_:)`: `.insert(hash, parent, block)` for new or content-changed blocks, `.remove(hash)` for ids that disappeared. When `ops` is empty, the change is a text-only typing edit or a pure reorder/move (same id, same hash). | Host appends non-empty `ops` to its recovery log as one ordered batch, and kicks its debounced save regardless. Fire-and-forget; default impl is a no-op. |
 | `onBlur` | `() async -> Void` | Editor loses focus (window/key/scene transitions, document switch). Async so callers can await durability where it matters. | Host should flush any pending save. |
 | `serializeBlocksForPasteboard` | `(_ blocks: [Block]) -> String` | User cuts or copies. | Host returns a string for the system pasteboard (markdown, RTF, plain — host's choice). Empty string cancels the copy. |
 | `parseBlocksFromPasteboard` | `(_ string: String) -> [Block]?` | User pastes. | Host returns blocks parsed from the pasteboard string. nil cancels the paste. |

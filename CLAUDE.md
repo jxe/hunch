@@ -36,17 +36,23 @@ user-picked workspace folder.
     `DocumentSaveCoordinator` (per-URL serial, snapshot-coalescing actor),
     `RecoveryLog` (per-device JSONL appender + cross-device read union),
     and `TrashStore` privately and exposes a single API:
-    `scan / loadDocument / save / writeImmediately / flush / appendOps /
-    createPage / moveToTrash / listTrashedPages / restorePage /
-    listLostBlocks / listPurgedBlocks / purgeHash / unpurgeBlock /
-    appendObservations / resolveConflictVersions / classifyDiskContent`,
-    plus `relativePath(of:)` and `url(for:)` for path conversion. The
-    format takes care of itself where it can — editor mutations land in
-    the log via `appendOps` (called from `host.didApplyOps`) so `save`
-    just writes the `.md`; non-editor write paths (`writeImmediately`)
-    fire a fire-and-forget `RecoveryLog.record` as a catch-up, and
-    `moveToTrash` clears `homeRelativePath` if it matched and moves the
-    page's `.history/<rel>/` dir along with the `.md`. Also where the
+    `scan / loadDocument / documentDidChange / flush / save /
+    writeExternal / appendOps / createPage / moveToTrash /
+    listTrashedPages / restorePage / listLostBlocks / listPurgedBlocks /
+    purgeHash / unpurgeBlock / appendObservations / resolveConflictVersions
+    / classifyDiskContent / isClean`, plus `relativePath(of:)` and
+    `url(for:)` for path conversion. **Editor-driven persistence** is
+    `documentDidChange(ops:in:)` (called on every mutation — appends ops
+    to the log, (re)arms the per-URL 600ms debounce) and `flush(_:)`
+    (force-save + drain, used for blur/scenePhase/navigation). The host
+    sets `subpageTitleResolver` and `didSave` once via
+    `Workspace.makeClamshell`; everything else is internal — no
+    debounce/dirty plumbing on the host. **Non-editor writes**
+    (`writeExternal`) fire a fire-and-forget `RecoveryLog.record`
+    catch-up for callers that didn't flow through the editor op stream
+    (conflict merge, restore-into-closed-page, etc.). `moveToTrash`
+    clears `homeRelativePath` if it matched and moves the page's
+    `.history/<rel>/` dir along with the `.md`. Also where the
     markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown
     lives here, not in the Editor), and `BlockFingerprint` (16-char
     prefix for compact display, full SHA-256 for the recovery log's
@@ -68,13 +74,13 @@ user-picked workspace folder.
     into `MentionItem` at the editor boundary).
   - `App/Sources/WorkspaceWindow.swift` — per-window navigation and
     edit-session state, AND the `EditorHost` implementation: `path: [URL]`
-    (NavigationStack), `openDocument`, `isDirty`/`isSaving` plus
-    600ms-debounce/30s-backstop save lifecycle, file-presenter wiring,
-    move-to request plumbing, lost-block auto-restore on open. The host
-    methods (`openLink`, `markDocumentDirty`, `didApplyOps`, `onBlur`, …)
-    live on the same type — one active doc per window, so the save
-    lifecycle is naturally keyed on `openDocument`. References the
-    shared `Workspace` for filesystem ops.
+    (NavigationStack), `openDocument`, file-presenter wiring, move-to
+    request plumbing, lost-block auto-restore on open. The host methods
+    (`openLink`, `documentDidChange`, `onBlur`, …) live on the same
+    type and forward to `Clamshell` for persistence — the save
+    lifecycle (debounce, per-URL coalescing, post-save bookkeeping)
+    lives in `Clamshell+Saving.swift`, not on the window. References
+    the shared `Workspace` for filesystem ops.
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
   storage + parser/serializer (formerly SPM tests under `CoreTests/`).
   The test target depends only on the `Hunch` app target — Editor's
@@ -196,25 +202,28 @@ non-text parts (markers, paddings) fall through to the row's
 `cursorIsOnFirstLine()` / `cursorIsOnLastLine()` consult NSLayoutManager
 so wrapped paragraphs still allow intra-block arrow nav in the middle.
 
-**Autosave fans into `DocumentSaveCoordinator`** (Core actor, per-URL
-in-flight + pending-snapshot coalesce). Triggers: 600ms debounce, blur,
-`scenePhase != .active`, 30s backstop. `flushAndClose()` waits on
-pending writes at document switch / app suspend.
+**Autosave lives on `Clamshell`** ([`Clamshell+Saving.swift`](App/Sources/Clamshell/Clamshell+Saving.swift)):
+`documentDidChange(ops:in:)` appends ops to the recovery log and (re)arms
+a per-URL 600ms debounce; `flush(_:)` force-saves and drains. The host
+calls `documentDidChange` on every mutation and `flush` on blur /
+`scenePhase != .active` / navigation away. Per-URL coalescing happens at
+two levels: the new debounce coalesces back-to-back edits within 600ms;
+`DocumentSaveCoordinator` underneath coalesces overlapping save calls.
+Post-save bookkeeping (mtime, title cache, rescan) fires through
+Clamshell's `didSave` callback, set once by `Workspace.makeClamshell`.
 
 **Structural mutations route through `EditorView.mutate(name:_:)`.**
 It commits the active editor's live text first (`commitActiveEditor`),
 snapshots `document.children`, runs the change closure, re-applies
 heading containment, registers the snapshot as the undo entry, derives
-the pre→post diff via `BlockTreeDiff.derive(_:_:)`, fires
-`host.didApplyOps(_:on:)` with the `[EditorOp]` batch (host appends
-inserts + removes to its recovery log in one ordered fsync), and fires
-`host.markDocumentDirty()` (host's debounced-save kick). New ops: write
-through `mutate` and you get all six for free — no need to call
-`commitLiveText` manually before reading `block.text`. Moves and
-reorders produce an empty op list by design (id stable, hash stable). The
-exceptions are paths that don't mutate the document (Cmd-[
-navigate-back, Esc) and the blur-time commit on `textDidEndEditing`;
-those stay explicit.
+the pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
+`host.documentDidChange(ops:on:)` with the `[EditorOp]` batch (host
+appends inserts + removes to its recovery log in one ordered fsync and
+kicks its debounced save). Moves and reorders produce an empty op list
+by design (id stable, hash stable); typing fires the same callback
+with empty ops from the row's `markDirty` closure. The exceptions are
+paths that don't mutate the document (Cmd-[ navigate-back, Esc) and
+the blur-time commit on `textDidEndEditing`; those stay explicit.
 
 **Nav-mode keyboard goes through `EditorCommands`.**
 `handleNavKeyPress` looks the press up in `EditorView.navBindings`

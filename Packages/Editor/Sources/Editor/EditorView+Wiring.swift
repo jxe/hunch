@@ -186,7 +186,7 @@ extension EditorView {
             var validIDs: Set<BlockID> = []
             document.walk { block, _, _ in validIDs.insert(block.id) }
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
-            host.markDocumentDirty()
+            host.documentDidChange(ops: [], on: document)
         }
 
         document.didReplaceChildren = {

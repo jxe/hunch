@@ -82,8 +82,8 @@ struct ContentView: View {
             if new == nil { window.reset() }
         }
         .onChange(of: scenePhase) { _, new in
-            if new != .active {
-                Task { await window.saveNow() }
+            if new != .active, let clamshell = workspace.clamshell, let doc = window.openDocument {
+                Task { await clamshell.flush(doc) }
             }
         }
         .alert("Error", isPresented: errorBinding) {

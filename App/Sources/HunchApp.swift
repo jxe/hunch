@@ -169,7 +169,7 @@ private struct SwitchWorkspaceMenuButton: View {
 
     var body: some View {
         Button("Switch Workspace…") {
-            window?.flushAndClose()
+            window?.closeOpenDocument()
             workspace.switchWorkspace()
         }
     }

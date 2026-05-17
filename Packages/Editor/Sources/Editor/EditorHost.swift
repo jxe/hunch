@@ -93,31 +93,27 @@ public protocol EditorHost: AnyObject {
     /// User pressed Cmd-[ / swipe-back / etc. — host pops its navigation stack.
     func onNavigateBack()
 
-    /// Document was just mutated. Host marks dirty *synchronously* on the
-    /// mutation-commit thread. Not replaceable by `@Observable` notification
-    /// because the host's flush-on-close and trash paths read its dirty flag
-    /// synchronously when the user navigates away — without this, a fast
-    /// "type-then-navigate" sequence would drop the last keystroke.
-    func markDocumentDirty()
-
-    /// One structural transaction just completed. `ops` is the pre→post diff
-    /// derived by `BlockTreeDiff.derive(pre:post:)`: a list of
-    /// `EditorOp.insert`s for hashes that are new (or whose owning block's
-    /// content changed) and `EditorOp.remove`s for ids that disappeared.
-    /// `post` is the document now, supplied for any host-side bookkeeping
-    /// that wants to reference current state (e.g. title cache refresh).
+    /// Document was just mutated. Fires for every change — typing, structural
+    /// transactions, autotransforms, undo, paste, move-to, etc.
     ///
-    /// Fires for every `EditorView.mutate(_:_:)` invocation — delete-block,
-    /// cut, paste, replace-via-turn-into, move-to, autotransform, mention
-    /// commit, etc. Typing inside a single block does NOT fire it (typing
-    /// goes through `document.transaction` directly without this wrapper).
-    /// Moves and reorders (same id, same hash) produce an empty `ops` list.
+    /// When the change came through `EditorView.mutate(_:_:)`, `ops` carries
+    /// the pre→post diff from `BlockTreeDiff.derive(pre:post:)`:
+    /// `.insert(hash, parent, block)` for new (or content-changed) blocks and
+    /// `.remove(hash)` for ids that disappeared. Hosts append the batch to
+    /// their recovery log as one ordered unit — the op stream IS the log
+    /// update, no diff inference needed.
     ///
-    /// Hosts append `ops` to their recovery log as one ordered batch — the
-    /// op stream IS the log update, no diff inference or pre/post snapshot
-    /// needed. Fire-and-forget: the host returns immediately; persistence
-    /// happens off the mutation-commit thread.
-    func didApplyOps(_ ops: [EditorOp], on post: Document)
+    /// When `ops` is empty, the change is a text-only typing edit or a pure
+    /// reorder/move where the id-and-hash set is unchanged: nothing to log,
+    /// but the host should still kick its debounced save and mark the
+    /// document dirty in any UI it surfaces.
+    ///
+    /// Called *synchronously* on the mutation-commit thread so the host's
+    /// dirty flag is readable in immediate flush-on-close paths — a fast
+    /// "type-then-navigate" sequence relies on this to not drop the last
+    /// keystroke. Persistence (log append, disk write) is fire-and-forget
+    /// from the host's side.
+    func documentDidChange(ops: [EditorOp], on post: Document)
 
     /// Editor lost focus (focus left an active text editor). Host force-saves so
     /// user input doesn't sit in memory until app suspension. Async so callers
@@ -148,7 +144,7 @@ public protocol EditorHost: AnyObject {
 }
 
 extension EditorHost {
-    /// Default for hosts that don't care about recording mutations — keeps
-    /// test fakes and other minimal embedders source-compatible.
-    public func didApplyOps(_ ops: [EditorOp], on post: Document) {}
+    /// Default for hosts that don't care about persistence — keeps test
+    /// fakes and other minimal embedders source-compatible.
+    public func documentDidChange(ops: [EditorOp], on post: Document) {}
 }

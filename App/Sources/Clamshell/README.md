@@ -69,8 +69,8 @@ kinds, distinguished by `op`:
 - **`purge`** is a tombstone, appended at the moment of structural
   removal. The editor's `mutate(_:_:)` derives a pre→post `[EditorOp]`
   diff via `BlockTreeDiff.derive(_:_:)` and fires
-  `host.didApplyOps(_:on:)`; the host routes the batch (inserts +
-  removes together) to `Clamshell.appendOps(_:forPage:)` for one
+  `host.documentDidChange(ops:on:)`; the host routes the batch (inserts
+  + removes together) to `Clamshell.appendOps(_:forPage:)` for one
   ordered append. Removes also appear when the user dismisses a
   recovered entry from the Recover sheet (manual `purgeHash`).
 - **`t`** is unix seconds with millisecond precision. Used for display
@@ -200,8 +200,10 @@ existing instance and build a new one.
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)` |
 | Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
-| Write | `save(_:resolvingSubpageTitle:)`, `writeImmediately(_:resolvingSubpageTitle:)`, `flush(url:)` |
-| Editor op stream | `appendOps(_:forPage:)` |
+| Editor-driven persistence | `documentDidChange(ops:in:)`, `flush(_:)`, `isClean(at:)` |
+| Configuration | `subpageTitleResolver`, `didSave` (set once by the host) |
+| Lower-level write | `save(_:resolvingSubpageTitle:)`, `writeExternal(_:resolvingSubpageTitle:)`, `flush(url:)` |
+| Editor op stream | `appendOps(_:forPage:)` (called internally by `documentDidChange`) |
 | Disk classification | `classifyDiskContent(at:expectingModificationDate:)` → `DiskClassification` (`.unchanged / .echo / .stomp / .external / .unreadable`) |
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Search | `searchPages(in:query:excluding:)` |
@@ -211,7 +213,7 @@ existing instance and build a new one.
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
 | Metadata | `homeRelativePath` (read/write), `root` |
 
-`loadDocument(at:)`, `save(_:)`, and `writeImmediately(_:)` all seed the
+`loadDocument(at:)`, `save(_:)`, and `writeExternal(_:)` all seed the
 internal per-URL content-hash ring buffer that `classifyDiskContent`
 reads — so the file presenter can tell our own writes echoing back
 (`.echo`) from an iCloud rollback to an earlier state (`.stomp`) from a
@@ -229,7 +231,7 @@ into engine territory use `clamshell.readJournal` → `PatchEngine.intent`
 **Recovery log is per-device, write-once-per-content.** Editor
 mutations stream through `appendOps`, which short-circuits inserts
 whose hash this device has already recorded against an in-memory
-device-hash cache. `writeImmediately(_:)` walks the full tree as a
+device-hash cache. `writeExternal(_:)` walks the full tree as a
 catch-up for non-editor write paths (conflict merge, subpage append,
 lost-block restore into a closed page) where no op stream exists.
 `save(_:)` performs zero log I/O — the op stream keeps the journal
@@ -271,22 +273,35 @@ again automatically without any log mutation.
 `.history/<rel>/` directory moves alongside the `.md`, so trash +
 restore is a page-bundle operation.
 
-**Coalesced vs immediate writes.** `save(_:) async` deduplicates
+**Editor-driven persistence is `documentDidChange` + `flush`.** The
+host calls `documentDidChange(ops:in:)` on every mutation: non-empty
+`ops` are appended to the recovery log, and a per-URL 600ms debounce is
+(re)armed for the markdown save. `flush(_:)` cancels the debounce,
+force-saves, and drains the per-URL coordinator — for blur, scenePhase
+backgrounding, navigation-away, app shutdown. Post-save bookkeeping
+(mtime refresh, title cache, page rescan) fires through the `didSave`
+callback the host wires once at startup. `isClean(at:)` lets the
+file-presenter / reconcile paths gate on "is the in-memory doc equal
+to disk".
+
+**Lower-level writes still exist.** `save(_:) async` deduplicates
 concurrent writes for the same URL — if a write is already in flight,
 the new snapshot replaces any pending one and is written after the
-in-flight write completes. Use it for the autosave path. `writeImmediately(_:) throws`
-bypasses the coalescer; use it when the next operation depends on the
-file being on disk now — trashing a dirty open doc, appending blocks to
-a non-open subpage, restoring a lost block back into a closed page.
+in-flight write completes. `documentDidChange` calls `save` under the
+hood. `writeExternal(_:) throws` bypasses the coalescer AND writes a
+fire-and-forget recovery-log catch-up; use it when the next operation
+depends on the file being on disk now AND the caller didn't flow
+through the editor op stream — conflict merge, restoring a lost block
+into a closed page, appending blocks to a non-open subpage.
 
 **Editor mutations stream as ops.** Each `EditorView.mutate(_:_:)`
 transaction derives a pre→post `[EditorOp]` diff via
-`BlockTreeDiff.derive(_:_:)` and fires `host.didApplyOps(_:on:)`. The
-host routes the batch to `Clamshell.appendOps(_:forPage:)`, which writes
-its inserts and removes to the recovery log in one ordered fsync with
-sequential counters. No pre/post tree snapshot, no diff inference: the
-op stream IS the log update. Save itself does not touch the log — the
-journal is already current by the time the debounce fires.
+`BlockTreeDiff.derive(_:_:)` and fires `host.documentDidChange(ops:on:)`.
+The host's adapter calls `Clamshell.documentDidChange(ops:in:)`, which
+routes the batch to the log actor as one ordered fsync with sequential
+counters and rearms the debounce. No pre/post tree snapshot, no diff
+inference: the op stream IS the log update. Save itself does not touch
+the log — the journal is already current by the time the debounce fires.
 
 **Deletes are explicit, not inferred.** The op diff emits a
 `.remove(hash)` for every block id present in pre but absent in post.

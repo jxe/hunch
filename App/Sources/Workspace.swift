@@ -162,7 +162,7 @@ final class Workspace {
         if let url = WorkspaceBookmark.resolve() {
             accessedWorkspaceURL = url
             workspaceURL = url
-            let clamshell = Clamshell(root: url)
+            let clamshell = makeClamshell(root: url)
             self.clamshell = clamshell
             homeRelativePath = clamshell.homeRelativePath
             rescan()
@@ -172,7 +172,7 @@ final class Workspace {
     private func installLaunchArgWorkspace(path: String) {
         let root = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
         workspaceURL = root
-        let clamshell = Clamshell(root: root)
+        let clamshell = makeClamshell(root: root)
         // Fixture clamshells contain a single `everything.md` — open it
         // directly so snap-diff sees content immediately on launch.
         if clamshell.homeRelativePath == nil {
@@ -190,7 +190,7 @@ final class Workspace {
             try WorkspaceBookmark.save(url: root)
             activateWorkspaceAccess(for: root)
             workspaceURL = root
-            let clamshell = Clamshell(root: root)
+            let clamshell = makeClamshell(root: root)
             clamshell.homeRelativePath = homePath
             self.clamshell = clamshell
             homeRelativePath = homePath
@@ -205,7 +205,7 @@ final class Workspace {
             try WorkspaceBookmark.save(url: url)
             activateWorkspaceAccess(for: url)
             workspaceURL = url
-            let clamshell = Clamshell(root: url)
+            let clamshell = makeClamshell(root: url)
             self.clamshell = clamshell
             homeRelativePath = clamshell.homeRelativePath
             rescan()
@@ -387,6 +387,25 @@ final class Workspace {
         }
     }
 
+    /// Build a configured `Clamshell` for `root`: hooks up the live subpage-
+    /// title resolver and the post-save bookkeeping callback so the
+    /// debounced save lifecycle (owned by Clamshell) can serialize and
+    /// refresh state without the host threading either through every call
+    /// site. Use this everywhere Clamshell is instantiated.
+    private func makeClamshell(root: URL) -> Clamshell {
+        let clamshell = Clamshell(root: root)
+        clamshell.subpageTitleResolver = { [weak self] relPath in
+            self?.entries.first { $0.relativePath == relPath }?.title
+        }
+        clamshell.didSave = { [weak self] doc in
+            guard let self else { return }
+            doc.modificationDate = self.modificationDate(for: doc.url)
+            self.refreshTitleCache(from: doc)
+            self.rescan()
+        }
+        return clamshell
+    }
+
     func modificationDate(for url: URL) -> Date? {
         try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
@@ -495,7 +514,7 @@ final class Workspace {
             doc.transaction(name: "Append to subpage") { d in
                 d.insertSubtrees(blocks, at: DropPath(parent: nil, position: d.children.count))
             }
-            try clamshell.writeImmediately(doc, resolvingSubpageTitle: saveTitleResolver())
+            try clamshell.writeExternal(doc, resolvingSubpageTitle: saveTitleResolver())
             doc.modificationDate = modificationDate(for: target)
             refreshTitleCache(from: doc)
             return doc
@@ -692,7 +711,7 @@ final class Workspace {
             """
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
             workspaceURL = root
-            let clamshell = Clamshell(root: root)
+            let clamshell = makeClamshell(root: root)
             self.clamshell = clamshell
             scanResult = (try? clamshell.scan()) ?? []
         } catch {
@@ -715,7 +734,7 @@ final class Workspace {
             let source = lines.joined(separator: "\n\n")
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
             workspaceURL = root
-            let clamshell = Clamshell(root: root)
+            let clamshell = makeClamshell(root: root)
             clamshell.homeRelativePath = "everything.md"
             self.clamshell = clamshell
             homeRelativePath = "everything.md"
