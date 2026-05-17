@@ -100,23 +100,24 @@ public protocol EditorHost: AnyObject {
     /// "type-then-navigate" sequence would drop the last keystroke.
     func markDocumentDirty()
 
-    /// One structural transaction just completed. `pre` is the block tree at
-    /// the moment the transaction's change closure was about to run (after the
-    /// editor flushed any in-flight typing); `post` is the document now. Fires
-    /// for every `EditorView.mutate(_:_:)` invocation — delete-block, cut,
-    /// paste, replace-via-turn-into, move-to, autotransform, mention commit,
-    /// etc. Typing inside a single block does NOT fire it (typing goes
-    /// through `document.transaction` directly without this wrapper).
+    /// One structural transaction just completed. `ops` is the pre→post diff
+    /// derived by `BlockTreeDiff.derive(pre:post:)`: a list of
+    /// `EditorOp.insert`s for hashes that are new (or whose owning block's
+    /// content changed) and `EditorOp.remove`s for ids that disappeared.
+    /// `post` is the document now, supplied for any host-side bookkeeping
+    /// that wants to reference current state (e.g. title cache refresh).
     ///
-    /// Hosts use this to:
-    /// - record `pre` and/or `post` into a recovery log (dedup is the host's
-    ///   responsibility — the editor doesn't know about logging),
-    /// - compute tombstones via `BlockTreeDiff.removedHashes(...)` for blocks
-    ///   the mutation removed (block ids present in `pre`, absent in `post`).
+    /// Fires for every `EditorView.mutate(_:_:)` invocation — delete-block,
+    /// cut, paste, replace-via-turn-into, move-to, autotransform, mention
+    /// commit, etc. Typing inside a single block does NOT fire it (typing
+    /// goes through `document.transaction` directly without this wrapper).
+    /// Moves and reorders (same id, same hash) produce an empty `ops` list.
     ///
-    /// Fire-and-forget: the host returns immediately; logging happens off the
-    /// mutation-commit thread.
-    func didMutate(pre: [Block], post: Document, name: String)
+    /// Hosts append `ops` to their recovery log as one ordered batch — the
+    /// op stream IS the log update, no diff inference or pre/post snapshot
+    /// needed. Fire-and-forget: the host returns immediately; persistence
+    /// happens off the mutation-commit thread.
+    func didApplyOps(_ ops: [EditorOp], on post: Document)
 
     /// Editor lost focus (focus left an active text editor). Host force-saves so
     /// user input doesn't sit in memory until app suspension. Async so callers
@@ -149,5 +150,5 @@ public protocol EditorHost: AnyObject {
 extension EditorHost {
     /// Default for hosts that don't care about recording mutations — keeps
     /// test fakes and other minimal embedders source-compatible.
-    public func didMutate(pre: [Block], post: Document, name: String) {}
+    public func didApplyOps(_ ops: [EditorOp], on post: Document) {}
 }

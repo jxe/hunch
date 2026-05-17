@@ -128,8 +128,9 @@ struct RecoveryLogTests {
     }
 
     /// External (non-Hunch) loss of a block whose log entry exists from a
-    /// prior save surfaces as a lost block — no save fired to auto-tombstone,
-    /// so the log union's latest record is still `add`.
+    /// prior save surfaces as a lost block — Hunch can't infer intent from
+    /// a write it didn't author, so no purge fires and the log union's
+    /// latest record is still `add`.
     @MainActor
     @Test func externalLossOfBlockSurfacesAsLost() async throws {
         let root = makeWorkspace()
@@ -148,7 +149,7 @@ struct RecoveryLogTests {
         try await Task.sleep(for: .milliseconds(80))
 
         // Simulate an external editor / iCloud stomp: overwrite .md directly,
-        // bypassing the Clamshell save path so no auto-tombstone fires.
+        // bypassing the Clamshell save + editor op-stream so no purge fires.
         try "# p\n\nKeep\n".write(to: url, atomically: true, encoding: .utf8)
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
@@ -195,12 +196,12 @@ struct RecoveryLogTests {
         #expect(lost.isEmpty, "alive in .md, latest-record is add → not lost")
     }
 
-    /// The first save records `body` with `toggle`'s hash as its parent in the
-    /// log. Even after auto-tombstone-on-save fires for `body` on the second
-    /// save, the journal's intent state still carries the parent metadata —
-    /// for hashes whose latest record is an `add`. Here we keep `body` live
-    /// so the latest record stays as `add`; the question is whether the
-    /// parent metadata was recorded at first observation.
+    /// The first save records `body` with `toggle`'s hash as its parent in
+    /// the log. The journal's intent state still carries the parent
+    /// metadata even after a later purge — for hashes whose latest record
+    /// is an `add`. Here we keep `body` live so the latest record stays as
+    /// `add`; the question is whether the parent metadata was recorded at
+    /// first observation.
     @MainActor
     @Test func nestedChildRecordsParentHashThroughClamshell() async throws {
         let root = makeWorkspace()
@@ -603,6 +604,104 @@ struct RecoveryLogTests {
                 "higher counter wins regardless of past wall-clock t")
     }
 
+    /// A foreign device's record that lands on disk after our initial counter
+    /// hydration must still raise our next-mint above the foreign max. Without
+    /// the per-call foreign rescan, our `nextCounter[rel]` cache strands us
+    /// below the foreign's counter and our next purge can lose to a stale
+    /// foreign add even though we observed it first.
+    @MainActor
+    @Test func freshForeignRecordRaisesNextCounter() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        // Session start: our device records, hydrating nextCounter to 2.
+        try await log.record(page: "p.md", blocks: [.paragraph(text: attr("first"))])
+
+        // Foreign device's log lands on disk via iCloud — counter 9999, well
+        // above anything we know about. Hand-planted to simulate the sync.
+        let foreign = Block.paragraph(text: attr("from-elsewhere"))
+        let h = foreign.atomicHash
+        let m = BlockSerializer.serializeAtomic(foreign)
+        let escaped = m
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let line = "{\"c\":9999,\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":\(Date().timeIntervalSince1970)}\n"
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: foreignURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try line.write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        // Now we record again. The new add must mint a counter strictly
+        // above 9999 — the per-call foreign rescan picks up B's record.
+        try await log.record(page: "p.md", blocks: [
+            .paragraph(text: attr("first")),
+            .paragraph(text: attr("second"))
+        ])
+
+        let ourURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        let text = try String(contentsOf: ourURL, encoding: .utf8)
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        let counters = lines.compactMap { line -> UInt64? in
+            guard let data = String(line).data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            return (obj["c"] as? UInt64) ?? (obj["c"] as? Int).flatMap { UInt64(exactly: $0) }
+        }
+        let ourLatest = try #require(counters.max())
+        #expect(ourLatest > 9999,
+                "post-foreign mint should strictly exceed foreign max=9999, got \(ourLatest)")
+    }
+
+    /// The dual of the above: if we purge a hash after observing a foreign
+    /// add for it, our purge's counter must beat the foreign add's counter
+    /// so the union picks our purge as the latest record. Without the
+    /// per-call rescan, our purge counter strands below the foreign's and
+    /// the data silently resurrects.
+    @MainActor
+    @Test func purgeAfterForeignAddWinsViaCausalCounter() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = root.appendingPathComponent("p.md")
+
+        // Empty live page; hydrate our nextCounter low.
+        try clamshell.writeImmediately(Document(
+            url: url, children: [], modificationDate: nil
+        ))
+        try await Task.sleep(for: .milliseconds(40))
+
+        // Foreign device's add for hash H lands on disk with counter 500.
+        let block = Block.paragraph(text: attr("to-purge"))
+        let h = block.atomicHash
+        let m = BlockSerializer.serializeAtomic(block)
+        let escaped = m
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let now = Date().timeIntervalSince1970
+        let line = "{\"c\":500,\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":\(now)}\n"
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: foreignURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try line.write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        // Our device purges H. The purge counter must exceed 500 so the
+        // union picks the purge as latest and H is tombstoned, not alive.
+        try await clamshell.purgeHash(h, in: "p.md")
+
+        let intent = PatchEngine.intent(from: clamshell.readJournal(forPage: "p.md"))
+        switch intent.status(of: h) {
+        case .tombstoned: break
+        case .alive: Issue.record("expected tombstoned, got alive — purge lost the union race")
+        case .none: Issue.record("expected tombstoned, got no status")
+        }
+    }
+
     /// Modern records (with `c`) always beat legacy records (without `c`)
     /// in the union, regardless of `t`. This is the migration story: legacy
     /// records pre-date the upgrade and can never appear strictly after a
@@ -736,5 +835,97 @@ struct RecoveryLogTests {
 
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         #expect(lineCount(at: url) == 2, "A skipped (already logged), B appended")
+    }
+
+    // MARK: - PR 2: editor op-batch append
+
+    /// `append(ops:)` writes mixed inserts and removes as one ordered batch
+    /// with sequential per-page counters. The remove-then-insert ordering
+    /// from `BlockTreeDiff.derive` is preserved on disk.
+    @MainActor
+    @Test func appendOpsWritesMixedBatchSequentially() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let gone = Block.paragraph(text: attr("gone"))
+        let arriving = Block.paragraph(text: attr("arriving"))
+        let ops: [EditorOp] = [
+            .remove(hash: gone.atomicHash),
+            .insert(hash: arriving.atomicHash, parent: nil, block: arriving),
+        ]
+        try await log.append(ops: ops, to: "p.md")
+
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        #expect(lines.count == 2, "remove + insert = two records")
+
+        let records = lines.compactMap { line -> [String: Any]? in
+            guard let data = line.data(using: .utf8) else { return nil }
+            return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+        #expect(records[0]["op"] as? String == "purge")
+        #expect(records[1]["op"] as? String == "add")
+        let c0 = (records[0]["c"] as? UInt64) ?? UInt64(records[0]["c"] as? Int ?? -1)
+        let c1 = (records[1]["c"] as? UInt64) ?? UInt64(records[1]["c"] as? Int ?? -1)
+        #expect(c1 == c0 + 1, "counters sequential within batch")
+    }
+
+    /// Inserts already in this device's hash cache short-circuit; the batch
+    /// still emits its removes. Mirrors today's `record()` dedup semantics.
+    @MainActor
+    @Test func appendOpsSkipsAlreadyKnownInsertsButEmitsRemoves() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let known = Block.paragraph(text: attr("known"))
+        let gone = Block.paragraph(text: attr("gone"))
+        // Pre-seed the cache: known is already in our device's log.
+        try await log.record(page: "p.md", blocks: [known])
+
+        // Batch: re-insert known (should skip), remove gone (should emit).
+        let ops: [EditorOp] = [
+            .remove(hash: gone.atomicHash),
+            .insert(hash: known.atomicHash, parent: nil, block: known),
+        ]
+        try await log.append(ops: ops, to: "p.md")
+
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(lineCount(at: url) == 2, "original add + new purge; duplicate insert short-circuited")
+    }
+
+    /// Empty op batches perform zero I/O (no file write, no log churn).
+    @MainActor
+    @Test func appendOpsWithEmptyBatchIsNoop() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        try await log.append(ops: [], to: "p.md")
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(!FileManager.default.fileExists(atPath: url.path),
+                "empty batch should not create the log file")
+    }
+
+    /// After `remove(hash)`, the device cache forgets the hash — so a
+    /// subsequent `insert` of identical content emits a fresh add (intent
+    /// flips back to alive). Mirrors today's `purge()` then `record()` flow.
+    @MainActor
+    @Test func appendOpsRemoveThenInsertProducesFreshAdd() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("retype"))
+        try await log.record(page: "p.md", blocks: [block])
+        try await log.append(ops: [.remove(hash: block.atomicHash)], to: "p.md")
+        try await log.append(ops: [
+            .insert(hash: block.atomicHash, parent: nil, block: block)
+        ], to: "p.md")
+
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(lineCount(at: url) == 3, "initial add + purge + fresh add")
     }
 }

@@ -66,11 +66,13 @@ kinds, distinguished by `op`:
   `p` is the parent hash *at first observation* (may go stale; see
   below). `m` is the atomic markdown — the block on its own, no
   children.
-- **`purge`** is a tombstone, appended explicitly by the host at the
-  moment of structural removal (the editor fires `host.didMutate(pre:post:name:)`
-  once per `EditorView.mutate` transaction; the host computes
-  `BlockTreeDiff.removedHashes(...)` and calls `purgeHash` for each) or by
-  the user dismissing a recovered entry from the Recover sheet.
+- **`purge`** is a tombstone, appended at the moment of structural
+  removal. The editor's `mutate(_:_:)` derives a pre→post `[EditorOp]`
+  diff via `BlockTreeDiff.derive(_:_:)` and fires
+  `host.didApplyOps(_:on:)`; the host routes the batch (inserts +
+  removes together) to `Clamshell.appendOps(_:forPage:)` for one
+  ordered append. Removes also appear when the user dismisses a
+  recovered entry from the Recover sheet (manual `purgeHash`).
 - **`t`** is unix seconds with millisecond precision. Used for display
   and the `since:` filter on `listPurgedBlocks`. Not the order resolver.
 - **`c`** is a per-page Lamport counter, monotonically incrementing per
@@ -198,7 +200,8 @@ existing instance and build a new one.
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)` |
 | Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
-| Write | `save(_:resolvingSubpageTitle:)`, `writeImmediately(_:resolvingSubpageTitle:)`, `flush(url:)`, `snapshotIntoRecoveryLog(at:blocks:)` |
+| Write | `save(_:resolvingSubpageTitle:)`, `writeImmediately(_:resolvingSubpageTitle:)`, `flush(url:)` |
+| Editor op stream | `appendOps(_:forPage:)` |
 | Disk classification | `classifyDiskContent(at:expectingModificationDate:)` → `DiskClassification` (`.unchanged / .echo / .stomp / .external / .unreadable`) |
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Search | `searchPages(in:query:excluding:)` |
@@ -223,12 +226,14 @@ into engine territory use `clamshell.readJournal` → `PatchEngine.intent`
 
 ## Behaviors worth knowing
 
-**Recovery log is per-device, write-once-per-content.** Every
-`save(_:)` and `writeImmediately(_:)` walks the document's atomic block
-tree; for any block whose hash this device hasn't already recorded, it
-appends a single `add` line to *this device's* log file. Steady-state
-saves with no new content perform zero file I/O — an in-memory hash
-cache short-circuits ahead of the file open.
+**Recovery log is per-device, write-once-per-content.** Editor
+mutations stream through `appendOps`, which short-circuits inserts
+whose hash this device has already recorded against an in-memory
+device-hash cache. `writeImmediately(_:)` walks the full tree as a
+catch-up for non-editor write paths (conflict merge, subpage append,
+lost-block restore into a closed page) where no op stream exists.
+`save(_:)` performs zero log I/O — the op stream keeps the journal
+current ahead of every debounce.
 
 **The hash cache replays adds AND purges.** Hydration walks our
 device's log in file order and applies `add` (insert) and `purge`
@@ -244,7 +249,10 @@ but never modified. The union compares on `(c, device-id)` lex
 (Lamport, clock-skew-immune); legacy records without a `c` fall back
 to `t` and lose to any modern record. Tombstones from any device
 suppress the hash globally when their `(c, device-id)` is the latest
-pair.
+pair. Counter mints rescan foreign device logs every call, so a
+record sync'd in via iCloud after our last write still raises our
+next mint — purges authored after observing a foreign add reliably
+beat that add in the union.
 
 **Bare-md and external edits are absorbed.** `reconcile()` emits an
 `Observation` for any block present in `doc` but absent from the
@@ -271,18 +279,19 @@ bypasses the coalescer; use it when the next operation depends on the
 file being on disk now — trashing a dirty open doc, appending blocks to
 a non-open subpage, restoring a lost block back into a closed page.
 
-**Pre-save snapshots.** `snapshotIntoRecoveryLog(at:blocks:)` exists
-for the editor's destructive-mutation sites (multi-block delete, cut).
-It records the about-to-be-deleted block tree into the log *before* the
-mutation, covering the race where blocks live briefly in the doc, get
-deleted, and the autosave never fires while they're present.
+**Editor mutations stream as ops.** Each `EditorView.mutate(_:_:)`
+transaction derives a pre→post `[EditorOp]` diff via
+`BlockTreeDiff.derive(_:_:)` and fires `host.didApplyOps(_:on:)`. The
+host routes the batch to `Clamshell.appendOps(_:forPage:)`, which writes
+its inserts and removes to the recovery log in one ordered fsync with
+sequential counters. No pre/post tree snapshot, no diff inference: the
+op stream IS the log update. Save itself does not touch the log — the
+journal is already current by the time the debounce fires.
 
-**Deletes are explicit, not inferred.** The editor fires
-`host.didMutate(pre:post:name:)` once per structural mutation; the host
-computes `BlockTreeDiff.removedHashes(pre, post)` and calls
-`purgeHash(_:in:)` for each block id present before but absent after.
-Save paths emit only `add` records; they never infer tombstones from
-diffing prior state. Consequences:
+**Deletes are explicit, not inferred.** The op diff emits a
+`.remove(hash)` for every block id present in pre but absent in post.
+`appendOps` writes those as `purge` records. Save paths never infer
+tombstones from comparing prior state to current state. Consequences:
 - Typing inside a block (same id, different hash) does NOT fire a
   purge — text editing is not deletion.
 - External edits to the `.md` (iCloud / other markdown apps) surface

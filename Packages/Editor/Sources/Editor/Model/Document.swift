@@ -110,7 +110,7 @@ public final class Document: @MainActor Identifiable {
     /// Fires `preMutation` (editor flush) before the change, then
     /// `enforceHeadingContainment` after — both inside the same atomic
     /// boundary so the registered undo restores a valid tree. The host-side
-    /// recovery-log capture happens via `EditorHost.didMutate(pre:post:name:)`
+    /// recovery-log capture happens via `EditorHost.didApplyOps(_:on:)`
     /// from `EditorView.mutate`, not as a hook inside the transaction.
     public func transaction(
         name: String,

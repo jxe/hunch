@@ -75,31 +75,10 @@ extension WorkspaceWindow: EditorHost {
         markEdited()
     }
 
-    func didMutate(pre: [Block], post: Document, name: String) {
-        guard let clamshell = workspace.clamshell else { return }
+    func didApplyOps(_ ops: [EditorOp], on post: Document) {
+        guard !ops.isEmpty, let clamshell = workspace.clamshell else { return }
         let rel = clamshell.relativePath(of: post.url)
-        // Snapshot pre into recovery log to catch any blocks the device hasn't
-        // seen — including transient blocks that appeared in an earlier
-        // mutation, were never saved (debounce window), and are about to
-        // change here. Cheap when nothing's new (RecoveryLog dedupes by
-        // device-known hash set).
-        clamshell.snapshotIntoRecoveryLog(at: post.url, blocks: pre)
-        // Snapshot post too: blocks added by *this* mutation aren't in `pre`,
-        // so without this path they'd only land in the log via the next
-        // mutation's pre snapshot — and never at all if no further mutation
-        // happens. The dedup cache makes a second walk effectively free.
-        clamshell.snapshotIntoRecoveryLog(at: post.url, blocks: post.children)
-        // Tombstone any block whose id was in pre but isn't in post.
-        let preByID = BlockTreeDiff.idToAtomicHash(pre)
-        for hash in BlockTreeDiff.removedHashes(preByID: preByID, post: post.children) {
-            Task { [clamshell, rel, hash] in
-                do {
-                    try await clamshell.purgeHash(hash, in: rel)
-                } catch {
-                    Diag.merge.error("purgeHash failed page=\(rel, privacy: .public) hash=\(hash, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
+        clamshell.appendOps(ops, forPage: rel)
     }
 
     func onBlur() async {

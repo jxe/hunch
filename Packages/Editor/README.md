@@ -145,7 +145,7 @@ final class MyHost: EditorHost {
     func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) {}
     func onNavigateBack() {}
     func markDocumentDirty() {}
-    func didMutate(pre: [Block], post: Document, name: String) {}
+    func didApplyOps(_ ops: [EditorOp], on post: Document) {}
     func onBlur() async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
@@ -168,7 +168,7 @@ struct ContentView: View {
 }
 ```
 
-`didMutate` has a default no-op extension, so a minimal embedder can
+`didApplyOps` has a default no-op extension, so a minimal embedder can
 omit it (recovery logging only matters for hosts that have one). The
 other methods are required.
 
@@ -306,8 +306,9 @@ public final class Document {
   it; pass any stable URL (`/dev/null` for ephemeral cases works).
 - **Hosts mostly read**: typically `children` (to serialize on save) and
   `title` (sidebar, window title). Structural mutation goes through the
-  editor's `EditorView.mutate(_:_:)`, which wraps `document.transaction`
-  and fires `host.didMutate(pre:post:name:)` afterward.
+  editor's `EditorView.mutate(_:_:)`, which wraps `document.transaction`,
+  derives the pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
+  `host.didApplyOps(_:on:)` afterward.
 
 ---
 
@@ -388,7 +389,7 @@ where the host wants to append new content while honoring undo.
 ## Host protocol
 
 Hosts conform to `EditorHost` (class-bound, `@MainActor`). Each method
-is one extension point. Only `didMutate` has a default no-op (it's
+is one extension point. Only `didApplyOps` has a default no-op (it's
 purely for recovery-log integration); the others must be implemented,
 which keeps it obvious from the host class which extension points are
 wired and which are stubbed out for early integration.
@@ -405,7 +406,7 @@ wired and which are stubbed out for early integration.
 | `onRequestMoveDestination` | `(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) -> Void` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, calls `pick` with a `MoveDestination` (`.page` or `.block`) or nil to cancel. | Move performed asynchronously via the `pick` continuation. |
 | `onNavigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |
 | `markDocumentDirty` | `() -> Void` | After every mutation that changes the document. Called *synchronously* on the mutation-commit thread so the host's dirty flag is readable in immediate flush-on-close paths. | Host marks dirty, kicks debounced save. |
-| `didMutate` | `(_ pre: [Block], _ post: Document, _ name: String) -> Void` | Once per `EditorView.mutate(_:_:)` transaction (delete, paste, replace-via-turn-into, move-to, autotransform, etc.). Typing inside a single block does NOT fire it. | Host snapshots `pre` and/or `post` into its recovery log (dedup is the host's concern) and computes tombstones via `BlockTreeDiff.removedHashes(...)`. Fire-and-forget; default impl is a no-op. |
+| `didApplyOps` | `(_ ops: [EditorOp], _ on: Document) -> Void` | Once per `EditorView.mutate(_:_:)` transaction (delete, paste, replace-via-turn-into, move-to, autotransform, etc.). Typing inside a single block does NOT fire it. Moves and reorders (same id, same hash) produce an empty `ops` list. | Host appends `ops` to its recovery log as one ordered batch. `ops` is the canonical pre→post diff from `BlockTreeDiff.derive(_:_:)`: `.insert(hash, parent, block)` for new or content-changed blocks, `.remove(hash)` for ids that disappeared. Fire-and-forget; default impl is a no-op. |
 | `onBlur` | `() async -> Void` | Editor loses focus (window/key/scene transitions, document switch). Async so callers can await durability where it matters. | Host should flush any pending save. |
 | `serializeBlocksForPasteboard` | `(_ blocks: [Block]) -> String` | User cuts or copies. | Host returns a string for the system pasteboard (markdown, RTF, plain — host's choice). Empty string cancels the copy. |
 | `parseBlocksFromPasteboard` | `(_ string: String) -> [Block]?` | User pastes. | Host returns blocks parsed from the pasteboard string. nil cancels the paste. |

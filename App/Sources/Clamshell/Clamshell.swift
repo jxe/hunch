@@ -179,12 +179,14 @@ public final class Clamshell {
 
     /// Coalesced async save (autosave path). Document is `@MainActor`-isolated,
     /// so we serialize on the calling actor (MainActor) before handing the
-    /// String + URL across to the save coordinator. After the write lands,
-    /// fires a fire-and-forget `RecoveryLog.record` that logs any new atomic
-    /// block content this device hasn't seen before — primarily the safety
-    /// net for non-editor write paths (`appendToSubpage`, lost-block restore,
-    /// conflict resolution); editor-driven mutations already captured `pre`
-    /// and `post` at mutation time via `EditorHost.didMutate`.
+    /// String + URL across to the save coordinator.
+    ///
+    /// Does NOT touch the recovery log. Editor-driven structural changes
+    /// already flowed through `EditorView.mutate(_:_:)` →
+    /// `EditorHost.didApplyOps` → `Clamshell.appendOps`, so the log is current
+    /// by the time the debounce fires. Bare-md and external-editor cases are
+    /// absorbed at reconcile time (`PatchEngine.unloggedObservations` →
+    /// `appendObservations`).
     @MainActor
     @discardableResult
     public func save(
@@ -193,18 +195,18 @@ public final class Clamshell {
     ) async throws -> String {
         let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: titleForPath)
         let url = document.url
-        let rel = relativePath(of: url)
-        let blocks = document.children
         try await saver.save(url: url, contents: newText)
         recordDiskContent(newText, at: url)
-        scheduleRecord(rel: rel, blocks: blocks)
         return newText
     }
 
     /// Synchronous full write — bypasses the coalescer. For modifications-as-a-unit
-    /// (trashing a dirty open doc, appending to a subpage, restoring a lost block)
-    /// where the doc must be on disk before the next operation runs. Schedules
-    /// the same recovery-log capture as `save(_:)`.
+    /// (trashing a dirty open doc, appending to a subpage, restoring a lost block,
+    /// conflict-merge) where the doc must be on disk before the next operation
+    /// runs. Schedules a tree-walk record into the recovery log because these
+    /// callers don't flow through the editor's `mutate(_:_:)` op pipeline —
+    /// without this catch-up, their new blocks wouldn't reach the log until
+    /// the next reconcile pass absorbs them.
     @MainActor
     @discardableResult
     public func writeImmediately(
@@ -237,14 +239,22 @@ public final class Clamshell {
         }
     }
 
-    /// Force a recovery-log snapshot of `blocks` for the page at `url`. Used
-    /// by the editor right before a destructive mutation so transient blocks
-    /// that never hit the autosave still land in the log. Never tombstones —
-    /// the snapshot is a *pre*-mutation capture; the post-mutation autosave
-    /// is the one that derives tombstones.
-    public func snapshotIntoRecoveryLog(at url: URL, blocks: [Block]) {
-        let rel = relativePath(of: url)
-        scheduleRecord(rel: rel, blocks: blocks)
+    /// Append the editor's structural ops to this page's recovery log as one
+    /// ordered batch. The editor derives these ops from a pre→post diff at
+    /// `EditorView.mutate(_:_:)` time and hands them through
+    /// `EditorHost.didApplyOps`; this method routes them to the
+    /// `RecoveryLog` actor for persistence. Fire-and-forget — returns
+    /// immediately, the append runs on a background Task.
+    @MainActor
+    public func appendOps(_ ops: [EditorOp], forPage page: String) {
+        guard !ops.isEmpty else { return }
+        Task { [log, page] in
+            do {
+                try await log.append(ops: ops, to: page)
+            } catch {
+                Diag.log.error("appendOps failed page=\(page, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     static func atomicHashes(of blocks: [Block]) -> Set<String> {
@@ -541,11 +551,11 @@ public final class Clamshell {
         }
     }
 
-    /// Blocks the user (or auto-tombstone) deleted on purpose: the log
-    /// union's latest record is a `purge`, but a prior `add` carries the
-    /// markdown + parent metadata so we can reconstruct them. `since`
-    /// caps the result to recent purges (default: last 30 days). Pass
-    /// `since: nil` to disable the cap.
+    /// Blocks deleted via the editor's op stream or a manual Recover-sheet
+    /// dismiss: the log union's latest record is a `purge`, but a prior
+    /// `add` carries the markdown + parent metadata so we can reconstruct
+    /// them. `since` caps the result to recent purges (default: last 30
+    /// days). Pass `since: nil` to disable the cap.
     public func listPurgedBlocks(
         filter: LostBlocksFilter = .all,
         since: Date? = Date().addingTimeInterval(-30 * 86_400)

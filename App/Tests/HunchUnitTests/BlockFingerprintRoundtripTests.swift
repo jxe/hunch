@@ -182,6 +182,25 @@ struct BlockFingerprintRoundtripTests {
         assertRoundTrip(.code(source: "", language: nil), "code empty")
     }
 
+    @Test func codeContainingToggleMarker() {
+        // The toggle pre-pass lifts `▸ ` paragraphs to toggle containers but
+        // explicitly treats fenced code as opaque. Round-trip must preserve
+        // the literal text rather than re-interpret the line as a toggle.
+        assertRoundTrip(
+            .code(source: "▸ this is text, not a toggle\nstill code", language: nil),
+            "code containing toggle marker"
+        )
+    }
+
+    @Test func codeContainingFenceText() {
+        // Three backticks inside the source. The serializer must escape or
+        // disambiguate so the fence boundary is unambiguous on re-parse.
+        assertRoundTrip(
+            .code(source: "let s = \"```\"", language: "swift"),
+            "code containing triple backticks"
+        )
+    }
+
     // MARK: - Toggle (atomic = title-only; children are not part of the record)
 
     @Test func togglePlain() {

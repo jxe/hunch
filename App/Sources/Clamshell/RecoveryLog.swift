@@ -40,11 +40,10 @@ public actor RecoveryLog {
     /// per-keystroke file I/O on the steady-state save path.
     private var ourDeviceHashes: [String: Set<String>] = [:]
 
-    /// Per-page next-counter value to mint on the next write. Hydrated lazily
-    /// from the union of every device's log so our new records' counters
-    /// strictly exceed anything we've observed (modulo concurrent writes from
-    /// other devices we haven't seen yet, which the latest-counter-wins union
-    /// resolves on read).
+    /// Per-page next-counter value to mint on the next write. Re-validated
+    /// against foreign device logs on every counter mint (see
+    /// `ensureCounterLoaded`), so cross-device records that landed via
+    /// iCloud after our last mint still raise our next value.
     private var nextCounter: [String: UInt64] = [:]
 
     public init(
@@ -66,57 +65,54 @@ public actor RecoveryLog {
     /// I/O — the in-memory hash cache short-circuits ahead of the append.
     public func record(page rel: String, blocks: [Block]) throws {
         var known = try ensureDeviceHashesLoaded(for: rel)
-        var newRecords: [Wire] = []
-        let now = Date().timeIntervalSince1970
-        var counter = try ensureCounterLoaded(for: rel)
-        collectAdds(
-            blocks: blocks,
-            parentHash: nil,
-            known: &known,
-            now: now,
-            counter: &counter,
-            into: &newRecords
-        )
-        guard !newRecords.isEmpty else {
+        var pending: [Pending] = []
+        collectNew(blocks: blocks, parentHash: nil, known: &known, into: &pending)
+        guard !pending.isEmpty else {
             ourDeviceHashes[rel] = known
-            nextCounter[rel] = counter
             return
         }
-        let lines = newRecords.compactMap(Self.encode).joined(separator: "\n") + "\n"
+        let now = Date().timeIntervalSince1970
+        var counter = try ensureCounterLoaded(for: rel)
+        var wires: [Wire] = []
+        wires.reserveCapacity(pending.count)
+        for entry in pending {
+            wires.append(Wire(
+                op: "add",
+                h: entry.hash,
+                p: entry.parent,
+                m: BlockSerializer.serializeAtomic(entry.block),
+                t: now,
+                c: counter
+            ))
+            counter += 1
+        }
+        let lines = wires.compactMap(Self.encode).joined(separator: "\n") + "\n"
         try appendLines(lines, to: ourLogURL(for: rel))
         ourDeviceHashes[rel] = known
         nextCounter[rel] = counter
     }
 
-    private func collectAdds(
+    /// (hash, parent, block) triple pending counter assignment. Collected by
+    /// `collectNew` so we only pay the cross-device counter scan when there's
+    /// actually something to write.
+    private struct Pending {
+        let hash: String
+        let parent: String?
+        let block: Block
+    }
+
+    private func collectNew(
         blocks: [Block],
         parentHash: String?,
         known: inout Set<String>,
-        now: TimeInterval,
-        counter: inout UInt64,
-        into out: inout [Wire]
+        into out: inout [Pending]
     ) {
         for block in blocks {
             let h = block.atomicHash
             if known.insert(h).inserted {
-                out.append(Wire(
-                    op: "add",
-                    h: h,
-                    p: parentHash,
-                    m: BlockSerializer.serializeAtomic(block),
-                    t: now,
-                    c: counter
-                ))
-                counter += 1
+                out.append(Pending(hash: h, parent: parentHash, block: block))
             }
-            collectAdds(
-                blocks: block.children,
-                parentHash: h,
-                known: &known,
-                now: now,
-                counter: &counter,
-                into: &out
-            )
+            collectNew(blocks: block.children, parentHash: h, known: &known, into: &out)
         }
     }
 
@@ -159,11 +155,21 @@ public actor RecoveryLog {
     public func append(observations: [PatchEngine.Observation], to rel: String) throws {
         guard !observations.isEmpty else { return }
         var known = try ensureDeviceHashesLoaded(for: rel)
-        var counter = try ensureCounterLoaded(for: rel)
-        let now = Date().timeIntervalSince1970
-        var wires: [Wire] = []
+        var fresh: [PatchEngine.Observation] = []
         for obs in observations {
-            guard known.insert(obs.hash).inserted else { continue }
+            if known.insert(obs.hash).inserted {
+                fresh.append(obs)
+            }
+        }
+        guard !fresh.isEmpty else {
+            ourDeviceHashes[rel] = known
+            return
+        }
+        let now = Date().timeIntervalSince1970
+        var counter = try ensureCounterLoaded(for: rel)
+        var wires: [Wire] = []
+        wires.reserveCapacity(fresh.count)
+        for obs in fresh {
             wires.append(Wire(
                 op: "add",
                 h: obs.hash,
@@ -174,10 +180,55 @@ public actor RecoveryLog {
             ))
             counter += 1
         }
-        guard !wires.isEmpty else {
+        let lines = wires.compactMap(Self.encode).joined(separator: "\n") + "\n"
+        try appendLines(lines, to: ourLogURL(for: rel))
+        ourDeviceHashes[rel] = known
+        nextCounter[rel] = counter
+    }
+
+    /// Append the editor's structural ops as one ordered batch. Inserts
+    /// short-circuit on the device hash cache (we don't double-log content
+    /// this device has already recorded); removes always append a purge
+    /// record and drop the hash from the cache so re-typing the same content
+    /// fires a fresh add. Both kinds share the per-page Lamport counter, so
+    /// counters within a batch are sequential and the batch reads as a
+    /// coherent transaction on tail.
+    public func append(ops: [EditorOp], to rel: String) throws {
+        guard !ops.isEmpty else { return }
+        var known = try ensureDeviceHashesLoaded(for: rel)
+        struct Effect {
+            let wire: (UInt64) -> Wire
+            let removeFromKnown: String?
+        }
+        var effects: [Effect] = []
+        let now = Date().timeIntervalSince1970
+        for op in ops {
+            switch op {
+            case .insert(let h, let p, let block):
+                guard known.insert(h).inserted else { continue }
+                let atomic = BlockSerializer.serializeAtomic(block)
+                effects.append(Effect(
+                    wire: { c in Wire(op: "add", h: h, p: p, m: atomic, t: now, c: c) },
+                    removeFromKnown: nil
+                ))
+            case .remove(let h):
+                effects.append(Effect(
+                    wire: { c in Wire(op: "purge", h: h, p: nil, m: nil, t: now, c: c) },
+                    removeFromKnown: h
+                ))
+            }
+        }
+        guard !effects.isEmpty else {
             ourDeviceHashes[rel] = known
-            nextCounter[rel] = counter
             return
+        }
+        var counter = try ensureCounterLoaded(for: rel)
+        var wires: [Wire] = []
+        wires.reserveCapacity(effects.count)
+        for effect in effects {
+            wires.append(effect.wire(counter))
+            counter += 1
+            if let h = effect.removeFromKnown { known.remove(h) }
         }
         let lines = wires.compactMap(Self.encode).joined(separator: "\n") + "\n"
         try appendLines(lines, to: ourLogURL(for: rel))
@@ -267,9 +318,9 @@ public actor RecoveryLog {
         return out.sorted { $0.recordedAt > $1.recordedAt }
     }
 
-    /// Blocks the user (or auto-tombstone) deleted on purpose: the latest
-    /// record for the hash is a `purge`, but a prior `add` for the same hash
-    /// still carries the markdown + parent metadata.
+    /// Blocks deleted via the editor's op stream or a manual Recover-sheet
+    /// dismiss: the latest record for the hash is a `purge`, but a prior
+    /// `add` for the same hash still carries the markdown + parent metadata.
     public func enumeratePurged(page rel: String, since: Date? = nil) -> [PurgedBlock] {
         let journal = readJournal(page: rel)
         let intent = PatchEngine.intent(from: journal)
@@ -312,19 +363,31 @@ public actor RecoveryLog {
         return out
     }
 
-    /// Lazy hydration of the next Lamport counter for the page. On first call,
-    /// scans every device's log to compute the max counter ever observed; new
-    /// records get `max + 1` and the cache is bumped accordingly. nil counters
-    /// in legacy records (pre-Lamport) don't affect the bump.
+    /// Compute the next Lamport counter for the page, taking the max over (a)
+    /// our cached value (everything we've already minted in this process) and
+    /// (b) every foreign device's log on disk. Foreign logs are re-scanned on
+    /// every call so that records sync'd in via iCloud after our initial
+    /// hydration still raise our counter — without this, our next mint can
+    /// undershoot a foreign record that's already on disk, and the union's
+    /// `(c, deviceID)` lex tiebreak silently elevates the wrong record.
+    ///
+    /// Cost: one stat + read per foreign device log per call. Callers reach
+    /// here only when they have something to write, so steady-state saves
+    /// pay zero log I/O.
     private func ensureCounterLoaded(for rel: String) throws -> UInt64 {
-        if let cached = nextCounter[rel] { return cached }
+        let cached = nextCounter[rel]
+        let ourLog = ourLogURL(for: rel)
         var maxObserved: UInt64 = 0
         for url in deviceLogURLs(for: rel) {
+            // Skip our own log once it's been hydrated — `cached` already
+            // reflects everything we've minted, and the initial hydration
+            // (cached == nil) walked our log along with the rest.
+            if cached != nil, url == ourLog { continue }
             for record in readRecords(at: url) {
                 if let c = record.c { maxObserved = max(maxObserved, c) }
             }
         }
-        let next = maxObserved + 1
+        let next = max(cached ?? 0, maxObserved + 1)
         nextCounter[rel] = next
         return next
     }

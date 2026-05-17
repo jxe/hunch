@@ -941,13 +941,12 @@ public struct EditorView: View {
     /// Thin wrapper over `document.transaction`: that handles flushing in-flight
     /// text via `preMutation`, snapshotting `[Block]` for undo, enforcing
     /// heading containment, and registering the inverse. This caller adds two
-    /// things on top: `host.didMutate(pre:post:name:)` (pre/post tree handed to
-    /// the host so it can record into its recovery log and fire any tombstones
-    /// for blocks the mutation removed) and `host.markDocumentDirty()` (the
-    /// signal that wakes the host's debounced save). Typing-path text changes
-    /// go through `document.transaction` directly, not through this wrapper,
-    /// so the typing burst won't fire `didMutate` even though it changes a
-    /// block's hash.
+    /// things on top: derives the pre→post diff into `[EditorOp]` and hands
+    /// it to `host.didApplyOps(_:on:)` (the host appends those ops to its
+    /// recovery log as one ordered batch), then calls
+    /// `host.markDocumentDirty()` to wake the debounced save. Typing-path
+    /// text changes go through `document.transaction` directly, not through
+    /// this wrapper, so the typing burst doesn't compute a diff or emit ops.
     func mutate(_ name: String, _ change: () -> Void) {
         var pre: [Block] = []
         document.transaction(name: name) { _ in
@@ -959,7 +958,8 @@ public struct EditorView: View {
             pre = document.children
             change()
         }
-        host.didMutate(pre: pre, post: document, name: name)
+        let ops = BlockTreeDiff.derive(pre: pre, post: document.children)
+        host.didApplyOps(ops, on: document)
         host.markDocumentDirty()
     }
 

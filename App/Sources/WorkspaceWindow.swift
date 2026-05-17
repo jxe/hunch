@@ -51,12 +51,6 @@ final class WorkspaceWindow {
     private var debounceTask: Task<Void, Never>?
     private var backstopTask: Task<Void, Never>?
 
-    /// Per-URL memo of the hash set the last reconcile pass restored. If a
-    /// fresh pass would emit the exact same set, something is keeping those
-    /// hashes from sticking in `doc` (round-trip drift the engine couldn't
-    /// detect, e.g. save-time content transform). Break the loop and log.
-    private var lastRestoredHashes: [URL: Set<String>] = [:]
-
     init(workspace: Workspace) {
         self.workspace = workspace
         startBackstop()
@@ -150,7 +144,6 @@ final class WorkspaceWindow {
         flushAndClose()
         openDocument = nil
         path = []
-        lastRestoredHashes = [:]
     }
 
     // MARK: - Move-to picker
@@ -409,24 +402,8 @@ final class WorkspaceWindow {
             }
         }
 
-        guard recon.didChange else {
-            lastRestoredHashes[url] = nil
-            return
-        }
+        guard recon.didChange else { return }
         guard openDocument === doc else { return }
-
-        // Re-fire guard: if this pass would restore exactly the same set as
-        // the previous pass for this URL, something is preventing those
-        // hashes from sticking in `doc` after save (round-trip drift the
-        // engine's mismatch check didn't catch). Break the loop and log so
-        // we can see what's drifting.
-        let restoredSet = Set(recon.restoredHashes)
-        if let prior = lastRestoredHashes[url], prior == restoredSet {
-            Diag.merge.error("reconcile re-fire detected url=\(url.lastPathComponent, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public) — bailing to break loop")
-            lastRestoredHashes[url] = nil
-            return
-        }
-        lastRestoredHashes[url] = restoredSet
 
         PatchEngine.apply(recon, to: doc)
         markEdited()
@@ -446,13 +423,7 @@ final class WorkspaceWindow {
         }
 
         do {
-            let useLiveDoc = (openDocument?.url == target)
-            let doc: Document
-            if useLiveDoc, let live = openDocument {
-                doc = live
-            } else {
-                doc = try workspace.loadDocument(at: target)
-            }
+            let (doc, isLive) = try openDocForRestore(at: target)
 
             // Engine input: the page's journal + the current doc. Falls back
             // to the entry passed in if the freshly-read journal no longer
@@ -460,41 +431,30 @@ final class WorkspaceWindow {
             let journal = clamshell.readJournal(forPage: entry.source)
             let intent = PatchEngine.intent(from: journal)
             let candidates = intent.lostEntries(notIn: [], source: entry.source)
-            let insert: PatchEngine.Insert
-            if let primary = PatchEngine.insertion(
+            guard let insert = PatchEngine.insertion(
                 rootHash: entry.hash,
                 candidates: candidates,
                 intent: intent,
                 doc: doc.children
-            ) {
-                insert = primary
-            } else if let fallback = PatchEngine.insertion(
+            ) ?? PatchEngine.insertion(
                 rootHash: entry.hash,
                 candidates: [entry],
                 intent: intent,
                 doc: doc.children
-            ) {
-                insert = fallback
-            } else {
+            ) else {
                 workspace.error = "Couldn't parse the recovered block."
                 return false
             }
 
-            let recon = PatchEngine.Reconciliation(
-                inserts: [insert],
-                restoredHashes: Array(insert.coveredHashes)
+            PatchEngine.apply(
+                PatchEngine.Reconciliation(
+                    inserts: [insert],
+                    restoredHashes: Array(insert.coveredHashes)
+                ),
+                to: doc
             )
-            PatchEngine.apply(recon, to: doc)
+            try persistRestoredDoc(doc, isLive: isLive, target: target)
 
-            if useLiveDoc {
-                // `doc` IS openDocument; PatchEngine.apply already mutated
-                // its children in place via `transaction(...)`. Just mark dirty.
-                markEdited()
-            } else {
-                try clamshell.writeImmediately(doc, resolvingSubpageTitle: workspace.saveTitleResolver())
-                doc.modificationDate = workspace.modificationDate(for: target)
-                workspace.rescan()
-            }
             // Purge every hash in the restored subtree so the Recover sheet
             // stops surfacing it. Includes the clicked entry's hash and any
             // descendants we pulled in.
@@ -509,6 +469,32 @@ final class WorkspaceWindow {
         } catch {
             workspace.error = "Restore failed: \(error.localizedDescription)"
             return false
+        }
+    }
+
+    /// Load the destination doc for a restore. Reuses the in-memory live
+    /// document when the target is currently open (so `PatchEngine.apply`
+    /// mutates the same object the editor renders); otherwise reads from
+    /// disk. The `isLive` flag tells `persistRestoredDoc` which save path
+    /// to take.
+    private func openDocForRestore(at target: URL) throws -> (doc: Document, isLive: Bool) {
+        if let live = openDocument, live.url == target {
+            return (live, true)
+        }
+        return (try workspace.loadDocument(at: target), false)
+    }
+
+    /// Persist a restore that just mutated `doc`. Live docs go through the
+    /// debounced save by way of `markEdited()`; closed docs are written
+    /// synchronously and the page list is rescanned so titles/mtimes refresh.
+    private func persistRestoredDoc(_ doc: Document, isLive: Bool, target: URL) throws {
+        if isLive {
+            markEdited()
+        } else {
+            guard let clamshell = workspace.clamshell else { return }
+            try clamshell.writeImmediately(doc, resolvingSubpageTitle: workspace.saveTitleResolver())
+            doc.modificationDate = workspace.modificationDate(for: target)
+            workspace.rescan()
         }
     }
 
@@ -529,13 +515,7 @@ final class WorkspaceWindow {
         }
 
         do {
-            let useLiveDoc = (openDocument?.url == target)
-            let doc: Document
-            if useLiveDoc, let live = openDocument {
-                doc = live
-            } else {
-                doc = try workspace.loadDocument(at: target)
-            }
+            let (doc, isLive) = try openDocForRestore(at: target)
 
             // Pull the full purged set for the page (no time cap — we know the
             // entry exists in the union or the row wouldn't have rendered),
@@ -565,31 +545,28 @@ final class WorkspaceWindow {
 
             let journal = clamshell.readJournal(forPage: group.source)
             let intent = PatchEngine.intent(from: journal)
-            let insert: PatchEngine.Insert
-            if let primary = PatchEngine.insertion(
+            guard let insert = PatchEngine.insertion(
                 rootHash: group.hash,
                 candidates: candidates,
                 intent: intent,
                 doc: doc.children
-            ) {
-                insert = primary
-            } else if let fallback = PatchEngine.insertion(
+            ) ?? PatchEngine.insertion(
                 rootHash: group.hash,
                 candidates: [fallbackCandidate],
                 intent: intent,
                 doc: doc.children
-            ) {
-                insert = fallback
-            } else {
+            ) else {
                 workspace.error = "Couldn't parse the recovered block."
                 return false
             }
 
-            let recon = PatchEngine.Reconciliation(
-                inserts: [insert],
-                restoredHashes: Array(insert.coveredHashes)
+            PatchEngine.apply(
+                PatchEngine.Reconciliation(
+                    inserts: [insert],
+                    restoredHashes: Array(insert.coveredHashes)
+                ),
+                to: doc
             )
-            PatchEngine.apply(recon, to: doc)
 
             // Unpurge each restored hash BEFORE the save so the save's
             // recovery-log walk sees them as already-recorded (in the
@@ -608,15 +585,7 @@ final class WorkspaceWindow {
                 }
             }
 
-            if useLiveDoc {
-                // `doc` IS openDocument; PatchEngine.apply already mutated
-                // its children in place via `transaction(...)`. Just mark dirty.
-                markEdited()
-            } else {
-                try clamshell.writeImmediately(doc, resolvingSubpageTitle: workspace.saveTitleResolver())
-                doc.modificationDate = workspace.modificationDate(for: target)
-                workspace.rescan()
-            }
+            try persistRestoredDoc(doc, isLive: isLive, target: target)
             return true
         } catch {
             workspace.error = "Restore failed: \(error.localizedDescription)"

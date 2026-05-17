@@ -36,14 +36,15 @@ user-picked workspace folder.
     `DocumentSaveCoordinator` (per-URL serial, snapshot-coalescing actor),
     `RecoveryLog` (per-device JSONL appender + cross-device read union),
     and `TrashStore` privately and exposes a single API:
-    `scan / loadDocument / save / writeImmediately / flush / createPage /
-    moveToTrash / listTrashedPages / restorePage / snapshotIntoRecoveryLog /
+    `scan / loadDocument / save / writeImmediately / flush / appendOps /
+    createPage / moveToTrash / listTrashedPages / restorePage /
     listLostBlocks / listPurgedBlocks / purgeHash / unpurgeBlock /
-    resolveConflictVersions / classifyDiskContent`, plus
-    `relativePath(of:)` and `url(for:)` for path conversion. The format
-    takes care of itself where it can — every `save`/`writeImmediately`
-    fires fire-and-forget `RecoveryLog.record` (appends one JSONL line
-    per new atomic block content this device hasn't seen before), and
+    appendObservations / resolveConflictVersions / classifyDiskContent`,
+    plus `relativePath(of:)` and `url(for:)` for path conversion. The
+    format takes care of itself where it can — editor mutations land in
+    the log via `appendOps` (called from `host.didApplyOps`) so `save`
+    just writes the `.md`; non-editor write paths (`writeImmediately`)
+    fire a fire-and-forget `RecoveryLog.record` as a catch-up, and
     `moveToTrash` clears `homeRelativePath` if it matched and moves the
     page's `.history/<rel>/` dir along with the `.md`. Also where the
     markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown
@@ -70,7 +71,7 @@ user-picked workspace folder.
     (NavigationStack), `openDocument`, `isDirty`/`isSaving` plus
     600ms-debounce/30s-backstop save lifecycle, file-presenter wiring,
     move-to request plumbing, lost-block auto-restore on open. The host
-    methods (`openLink`, `markDocumentDirty`, `didMutate`, `onBlur`, …)
+    methods (`openLink`, `markDocumentDirty`, `didApplyOps`, `onBlur`, …)
     live on the same type — one active doc per window, so the save
     lifecycle is naturally keyed on `openDocument`. References the
     shared `Workspace` for filesystem ops.
@@ -203,11 +204,14 @@ pending writes at document switch / app suspend.
 **Structural mutations route through `EditorView.mutate(name:_:)`.**
 It commits the active editor's live text first (`commitActiveEditor`),
 snapshots `document.children`, runs the change closure, re-applies
-heading containment, registers the snapshot as the undo entry, fires
-`host.didMutate(pre:post:name:)` (host's recovery-log + tombstone hook),
-and fires `host.markDocumentDirty()` (host's debounced-save kick).
-New ops: write through `mutate` and you get all six for free — no need
-to call `commitLiveText` manually before reading `block.text`. The
+heading containment, registers the snapshot as the undo entry, derives
+the pre→post diff via `BlockTreeDiff.derive(_:_:)`, fires
+`host.didApplyOps(_:on:)` with the `[EditorOp]` batch (host appends
+inserts + removes to its recovery log in one ordered fsync), and fires
+`host.markDocumentDirty()` (host's debounced-save kick). New ops: write
+through `mutate` and you get all six for free — no need to call
+`commitLiveText` manually before reading `block.text`. Moves and
+reorders produce an empty op list by design (id stable, hash stable). The
 exceptions are paths that don't mutate the document (Cmd-[
 navigate-back, Esc) and the blur-time commit on `textDidEndEditing`;
 those stay explicit.
