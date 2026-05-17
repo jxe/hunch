@@ -63,6 +63,13 @@ public final class Document: @MainActor Identifiable {
     @ObservationIgnored
     public var didApplyUndo: (() -> Void)?
 
+    /// Editor-supplied hook fired after `replaceChildren(_:)` swaps the tree
+    /// wholesale (external-edit reloads, conflict merges). Fresh parse →
+    /// fresh BlockIDs, so the editor needs to revalidate `EditorState`
+    /// against the new id set. Set by `EditorView` on mount.
+    @ObservationIgnored
+    public var didReplaceChildren: (() -> Void)?
+
     /// Coalesce window — same `coalesceKey` within this interval is folded into
     /// the previous transaction's undo entry (no new entry registered).
     public static let coalesceInterval: TimeInterval = 1.0
@@ -196,9 +203,15 @@ public final class Document: @MainActor Identifiable {
     /// and the `preMutation` hook — intended for non-user operations like
     /// conflict-resolution merges and external-edit reloads where the new
     /// content is the authoritative state. Clears the parent cache via the
-    /// `children` setter's `didSet`.
+    /// `children` setter's `didSet`. Fires `didReplaceChildren` so the editor
+    /// can revalidate selection / cursor against the new BlockID set, and
+    /// breaks coalescing so the next user transaction starts a fresh undo
+    /// entry (a disk-driven swap shouldn't fold into the prior burst).
     public func replaceChildren(_ newChildren: [Block]) {
         children = newChildren
+        lastTransactionKey = nil
+        lastTransactionTime = nil
+        didReplaceChildren?()
     }
 
     // MARK: - Generic preorder walkers

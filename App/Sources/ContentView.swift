@@ -170,6 +170,8 @@ struct ContentView: View {
 /// Per-URL editor page. Owns an `EditorState` whose lifetime matches the
 /// navigation destination's view-identity — pushing a new URL mounts a fresh
 /// `EditorPage` (and a fresh `EditorState`); navigating back unmounts it.
+/// The `EditorHost` is the window itself; the save lifecycle lives there
+/// and is naturally keyed on `openDocument` (one active doc per window).
 private struct EditorPage: View {
     let url: URL
     let document: Document
@@ -177,37 +179,14 @@ private struct EditorPage: View {
     @Bindable var window: WorkspaceWindow
 
     @State private var editorState = EditorState()
-    @State private var coordinator: EditorPageCoordinator
     @FocusedValue(\.documentUndoController) private var undoController
-
-    init(url: URL, document: Document, workspace: Workspace, window: WorkspaceWindow) {
-        self.url = url
-        self.document = document
-        self._workspace = Bindable(workspace)
-        self._window = Bindable(window)
-        self._coordinator = State(
-            initialValue: EditorPageCoordinator(url: url, document: document, workspace: workspace, window: window)
-        )
-    }
 
     var body: some View {
         EditorView(
-            document: Binding(
-                get: { window.documentForPage(url: url) ?? document },
-                set: { window.updateDocumentForPage($0) }
-            ),
+            document: document,
             state: editorState,
-            host: coordinator
+            host: window
         )
-        .onAppear { window.activeCoordinator = coordinator }
-        .onDisappear {
-            // Final save+flush survives this caller returning; the per-URL
-            // DocumentSaveCoordinator inside Clamshell serializes writes.
-            coordinator.flushAndClose()
-            if window.activeCoordinator === coordinator {
-                window.activeCoordinator = nil
-            }
-        }
         .toolbar {
             #if os(iOS)
             ToolbarItem(placement: .primaryAction) {

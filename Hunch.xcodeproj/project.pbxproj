@@ -32,6 +32,7 @@
 		83407D2B20E40C8CC73BB9AB /* TrashStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D433D497F5377461A70E47E /* TrashStoreTests.swift */; };
 		9245A5F0D515374FE64FBFD4 /* WelcomeContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADBC532DB9A1E9EF1B3F9FA /* WelcomeContent.swift */; };
 		96052357A5A3DF167EBAEFE7 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D68ED38B354E02D3C714C9F /* ContentView.swift */; };
+		972D37F624C91A6B2DC50454 /* WorkspaceWindow+EditorHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BEFD45270C885363076629E /* WorkspaceWindow+EditorHost.swift */; };
 		998D86BA0C67125C47E336D7 /* FileStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C720F60C39E316833209F75 /* FileStoreTests.swift */; };
 		9A199EFB5C714918EDC33DE1 /* DocumentSaveCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3231E2F91BA71E5463D5113B /* DocumentSaveCoordinatorTests.swift */; };
 		A015923C1B74E1431EC063D0 /* LinkPreviewCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55F9D8DDFDBD126289D6957C /* LinkPreviewCache.swift */; };
@@ -49,7 +50,6 @@
 		CA658357BA6A169272DEBD08 /* DocumentSaveCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E370B1BF7897B78733986CE /* DocumentSaveCoordinator.swift */; };
 		CB53208075BF30FCC290AF1D /* TrashStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBF5AC98CF7B5213C676903 /* TrashStore.swift */; };
 		D474865E25285B0A3054E20C /* Editor in Frameworks */ = {isa = PBXBuildFile; productRef = 958167F9196AF3C05B22D091 /* Editor */; };
-		DB0E106BB91A5CC1C9E8597F /* EditorPageCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0151C2F42360D5C2F999A0ED /* EditorPageCoordinator.swift */; };
 		DB9326C1A5FE79087202B71B /* PageSpeechRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E013E1FDA4330D76E480B5C4 /* PageSpeechRecorder.swift */; };
 		DED5F3333AF106B7B03733CE /* ConflictMergerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27594EFFCF6AEDC2FDDF749E /* ConflictMergerTests.swift */; };
 		E28792EC216EA90AF7FBC30C /* RecoveryLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19C92BF27537F62FADF06872 /* RecoveryLogTests.swift */; };
@@ -79,7 +79,6 @@
 
 /* Begin PBXFileReference section */
 		00870C5C9061DB320F414983 /* HunchSplitKeyboardUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HunchSplitKeyboardUITests.swift; sourceTree = "<group>"; };
-		0151C2F42360D5C2F999A0ED /* EditorPageCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorPageCoordinator.swift; sourceTree = "<group>"; };
 		03A95B584DA472A6EEE3FB22 /* LinkPreviewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkPreviewService.swift; sourceTree = "<group>"; };
 		0C720F60C39E316833209F75 /* FileStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileStoreTests.swift; sourceTree = "<group>"; };
 		183298CC2343E1CDBC8E27A9 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
@@ -103,6 +102,7 @@
 		6B0CEECA177750C83715122D /* RecordingButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingButton.swift; sourceTree = "<group>"; };
 		73FA877A12A327BB5FA77D83 /* VoiceRecordingLaunchRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecordingLaunchRequest.swift; sourceTree = "<group>"; };
 		7ADBC532DB9A1E9EF1B3F9FA /* WelcomeContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeContent.swift; sourceTree = "<group>"; };
+		7BEFD45270C885363076629E /* WorkspaceWindow+EditorHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WorkspaceWindow+EditorHost.swift"; sourceTree = "<group>"; };
 		7BF8364C13DB45F36866FE4A /* HunchEditScrollUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HunchEditScrollUITests.swift; sourceTree = "<group>"; };
 		8C71A9C43C1D37F3712FE704 /* RecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryView.swift; sourceTree = "<group>"; };
 		8F11150420DF76AAA0F96008 /* BannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BannerView.swift; sourceTree = "<group>"; };
@@ -287,7 +287,6 @@
 				573EDB9EE7E75299C1A6A1A7 /* Shell */,
 				1D68ED38B354E02D3C714C9F /* ContentView.swift */,
 				ADBD47A7CADD0F953053FE59 /* Diag.swift */,
-				0151C2F42360D5C2F999A0ED /* EditorPageCoordinator.swift */,
 				5F377A4E9DAA12643BB2666D /* FontRegistration.swift */,
 				4EDE9175735C2BEE33F669B6 /* HunchApp.swift */,
 				E013E1FDA4330D76E480B5C4 /* PageSpeechRecorder.swift */,
@@ -297,6 +296,7 @@
 				7ADBC532DB9A1E9EF1B3F9FA /* WelcomeContent.swift */,
 				183298CC2343E1CDBC8E27A9 /* Workspace.swift */,
 				F40BF2D87C103EC5F23D76AE /* WorkspaceWindow.swift */,
+				7BEFD45270C885363076629E /* WorkspaceWindow+EditorHost.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -458,7 +458,6 @@
 				2A56AD20C0BCB86D2C72CAF5 /* DeviceID.swift in Sources */,
 				C8D66E78DE747B7C1B518CF4 /* Diag.swift in Sources */,
 				CA658357BA6A169272DEBD08 /* DocumentSaveCoordinator.swift in Sources */,
-				DB0E106BB91A5CC1C9E8597F /* EditorPageCoordinator.swift in Sources */,
 				F70ABF6CF6A83F55B5C10876 /* FileStore.swift in Sources */,
 				3EEA45994B20513A94C2EF04 /* FontRegistration.swift in Sources */,
 				262D29CF7CAA3118EBB12F92 /* HunchApp.swift in Sources */,
@@ -480,6 +479,7 @@
 				9245A5F0D515374FE64FBFD4 /* WelcomeContent.swift in Sources */,
 				3AEFF62B4A43227F6DC54959 /* Workspace.swift in Sources */,
 				E435BE3FEC464693DD180764 /* WorkspaceBookmark.swift in Sources */,
+				972D37F624C91A6B2DC50454 /* WorkspaceWindow+EditorHost.swift in Sources */,
 				F0EBD1DFC3F2FD8D6D676A43 /* WorkspaceWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

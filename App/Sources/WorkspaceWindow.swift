@@ -34,13 +34,23 @@ final class WorkspaceWindow {
     }
 
     private var filePresenter: DocumentFilePresenter?
-    /// Weak handle to the currently-mounted `EditorPage`'s coordinator. Set by
-    /// `EditorPage.onAppear`, cleared on `onDisappear`. The save lifecycle
-    /// lives on the coordinator now — this window-level facade just routes
-    /// `markEdited` / `saveNow` / `flushAndClose` through here.
-    weak var activeCoordinator: EditorPageCoordinator?
-    private var isDirty: Bool { activeCoordinator?.isDirty == true }
-    private var isSaving: Bool { activeCoordinator?.isSaving == true }
+
+    // MARK: - Save lifecycle state
+    //
+    // Tracks the in-memory dirty/saving status of `openDocument`. One bool
+    // each: `Clamshell.DocumentSaveCoordinator` already serializes writes per
+    // URL, so there's no `.savingDirty` distinction to track. The debounce
+    // task is single-shot (rescheduled on every `markEdited`); the backstop
+    // runs for the lifetime of the window and periodically fires `saveNow`
+    // (no-op when not dirty).
+    static let debounceInterval: Duration = .milliseconds(600)
+    static let backstopInterval: Duration = .seconds(30)
+
+    private(set) var isDirty: Bool = false
+    private(set) var isSaving: Bool = false
+    private var debounceTask: Task<Void, Never>?
+    private var backstopTask: Task<Void, Never>?
+
     /// Per-URL memo of the hash set the last reconcile pass restored. If a
     /// fresh pass would emit the exact same set, something is keeping those
     /// hashes from sticking in `doc` (round-trip drift the engine couldn't
@@ -49,6 +59,7 @@ final class WorkspaceWindow {
 
     init(workspace: Workspace) {
         self.workspace = workspace
+        startBackstop()
     }
 
     var homeURL: URL? { workspace.homeURL }
@@ -162,37 +173,122 @@ final class WorkspaceWindow {
         req.completion(destination)
     }
 
-    // MARK: - Document binding
+    // MARK: - Document lookup
 
+    /// Returns `openDocument` iff its URL matches — used by `ContentView` to
+    /// gate the EditorPage construction on "is this page loaded yet". External
+    /// reloads mutate the existing instance via `Document.replaceChildren`
+    /// rather than swapping, so once `EditorPage` is mounted the Document
+    /// reference is stable for its lifetime.
     func documentForPage(url: URL) -> Document? {
         openDocument?.url == url ? openDocument : nil
     }
 
-    func updateDocumentForPage(_ document: Document) {
-        workspace.refreshTitleCache(from: document)
-        if openDocument?.url == document.url, openDocument !== document {
-            openDocument = document
+    // MARK: - Save lifecycle
+
+    /// Note that `openDocument` was edited. Flips `isDirty` and (re)schedules
+    /// the 600ms debounce. Callable from any path that mutates the open doc
+    /// (`EditorHost.markDocumentDirty`, reconcile/restore paths below).
+    func markEdited() {
+        guard openDocument != nil else { return }
+        isDirty = true
+        scheduleDebounce()
+    }
+
+    /// Save `openDocument` immediately. Cancels any pending debounce. Returns
+    /// true on success or when there was nothing to save; false on save
+    /// failure. `force: true` saves even when not dirty (used by the
+    /// trash-while-dirty and absorb-subpage paths, which need a guaranteed-
+    /// on-disk snapshot).
+    @discardableResult
+    func saveNow(force: Bool = false) async -> Bool {
+        debounceTask?.cancel(); debounceTask = nil
+        guard let doc = openDocument else { return true }
+        guard force || isDirty else { return true }
+        // Claim the current dirty bit for this save. New edits arriving during
+        // the save will flip it back to true and the post-completion branch
+        // schedules another debounce.
+        isDirty = false
+        isSaving = true
+        let success = await Self.performSave(document: doc, workspace: workspace, visibilityCheck: self)
+        isSaving = false
+        if !success {
+            isDirty = true
+            scheduleDebounce()
+        } else if isDirty {
+            scheduleDebounce()
+        }
+        return success
+    }
+
+    /// Tear down the file presenter, cancel the pending debounce, and queue
+    /// a final save+flush for the *current* `openDocument`. The queued save
+    /// survives this caller returning (Clamshell's per-URL
+    /// `DocumentSaveCoordinator` serializes writes), so a rapid page switch
+    /// doesn't drop the latest snapshot. The backstop stays running — only
+    /// `reset()` tears it down. Idempotent for the current page.
+    func flushAndClose() {
+        removeFilePresenter()
+        debounceTask?.cancel(); debounceTask = nil
+        guard let doc = openDocument else { return }
+        let wasDirty = isDirty
+        isDirty = false
+        Task { [workspace, wasDirty] in
+            if wasDirty {
+                _ = await Self.performSave(document: doc, workspace: workspace)
+            }
+            try? await workspace.clamshell?.flush(url: doc.url)
         }
     }
 
-    // MARK: - Save lifecycle (thin façade over the active coordinator)
-
-    func markEdited() {
-        activeCoordinator?.markDirty()
+    private func scheduleDebounce() {
+        debounceTask?.cancel()
+        debounceTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.debounceInterval)
+            guard !Task.isCancelled else { return }
+            await self?.saveNow()
+        }
     }
 
-    @discardableResult
-    func saveNow(force: Bool = false) async -> Bool {
-        await activeCoordinator?.saveNow(force: force) ?? true
+    private func startBackstop() {
+        backstopTask?.cancel()
+        backstopTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.backstopInterval)
+                guard !Task.isCancelled else { return }
+                await self?.saveNow()
+            }
+        }
     }
 
-    /// Tear down the file presenter and queue the active coordinator's final
-    /// save+flush. The save is enqueued through Clamshell's per-URL
-    /// `DocumentSaveCoordinator` (it survives this caller returning) so a
-    /// rapid page switch doesn't drop the latest snapshot.
-    func flushAndClose() {
-        removeFilePresenter()
-        activeCoordinator?.flushAndClose()
+    /// Serialize + persist `document` through Clamshell, then update per-doc
+    /// bookkeeping (mtime, title cache, rescan). The optional `visibilityCheck`
+    /// gates the per-doc bookkeeping on "is this still the visible doc" — so
+    /// a stale backstop save landing after the user navigated away doesn't
+    /// stomp a fresher page's state. The actual disk write happens regardless.
+    ///
+    /// Static so `flushAndClose` can dispatch its final save without holding
+    /// `self` alive — the queued Task captures `document` and `workspace`
+    /// directly.
+    private static func performSave(
+        document: Document,
+        workspace: Workspace,
+        visibilityCheck window: WorkspaceWindow? = nil
+    ) async -> Bool {
+        guard let clamshell = workspace.clamshell else { return true }
+        do {
+            let resolver = workspace.saveTitleResolver()
+            _ = try await clamshell.save(document, resolvingSubpageTitle: resolver)
+            if let window, window.openDocument === document {
+                document.modificationDate = workspace.modificationDate(for: document.url)
+                workspace.refreshTitleCache(from: document)
+            }
+            workspace.rescan()
+            return true
+        } catch {
+            workspace.error = "Save failed: \(error.localizedDescription)"
+            return false
+        }
     }
 
     // MARK: - Trash & restore (per-window)
@@ -228,8 +324,12 @@ final class WorkspaceWindow {
         guard let doc = workspace.appendToSubpage(relativePath: relativePath, blocks: blocks) else {
             return false
         }
-        if openDocument?.url == target {
-            openDocument = doc
+        // If this window has the subpage open (multi-window scenario), splice
+        // the appended content into the live instance rather than swapping —
+        // keeps the editor's state references stable.
+        if let live = openDocument, live.url == target, live !== doc {
+            live.replaceChildren(doc.children)
+            live.modificationDate = doc.modificationDate
         }
         return true
     }
@@ -387,7 +487,8 @@ final class WorkspaceWindow {
             PatchEngine.apply(recon, to: doc)
 
             if useLiveDoc {
-                openDocument = doc
+                // `doc` IS openDocument; PatchEngine.apply already mutated
+                // its children in place via `transaction(...)`. Just mark dirty.
                 markEdited()
             } else {
                 try clamshell.writeImmediately(doc, resolvingSubpageTitle: workspace.saveTitleResolver())
@@ -508,7 +609,8 @@ final class WorkspaceWindow {
             }
 
             if useLiveDoc {
-                openDocument = doc
+                // `doc` IS openDocument; PatchEngine.apply already mutated
+                // its children in place via `transaction(...)`. Just mark dirty.
                 markEdited()
             } else {
                 try clamshell.writeImmediately(doc, resolvingSubpageTitle: workspace.saveTitleResolver())
@@ -604,12 +706,17 @@ final class WorkspaceWindow {
             workspace.rescan()
         case .external:
             // Genuinely new content from outside Hunch. Reload only if no
-            // unsaved in-memory edits would be lost.
-            guard !isSaving, !isDirty else { workspace.rescan(); return }
+            // unsaved in-memory edits would be lost. Swap the tree in place
+            // via `replaceChildren` so the editor's `EditorState` keeps its
+            // reference to the same Document instance — `didReplaceChildren`
+            // fires inside, revalidating `state.cursor` / `state.selection`
+            // against the freshly-parsed BlockIDs.
+            guard !isSaving, !isDirty, let doc = openDocument else { workspace.rescan(); return }
             do {
                 let reloaded = try workspace.loadDocument(at: url)
-                openDocument = reloaded
-                workspace.refreshTitleCache(from: reloaded)
+                doc.replaceChildren(reloaded.children)
+                doc.modificationDate = reloaded.modificationDate
+                workspace.refreshTitleCache(from: doc)
                 workspace.rescan()
             } catch {
                 workspace.error = "Failed to reload external changes: \(error.localizedDescription)"

@@ -165,6 +165,10 @@ extension EditorView {
     ///     a transaction snapshots.
     ///   - `document.didApplyUndo` revalidates `EditorState` against the new
     ///     tree on undo/redo and notifies the host.
+    ///   - `document.didReplaceChildren` revalidates `EditorState` against the
+    ///     new tree on bulk-replace (external-edit reload, conflict merge).
+    ///     Fresh parse → fresh BlockIDs, so without this `state.cursor` /
+    ///     `state.selection` would silently break nav and delete.
     ///   - `undoController.document` points at this document, so the typing
     ///     path in `BlockTextEditor` can call `undoController.transaction(...)`.
     func installUndoApply() {
@@ -183,6 +187,13 @@ extension EditorView {
             document.walk { block, _, _ in validIDs.insert(block.id) }
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
             host.markDocumentDirty()
+        }
+
+        document.didReplaceChildren = {
+            var validIDs: Set<BlockID> = []
+            document.walk { block, _, _ in validIDs.insert(block.id) }
+            Diag.mode.debug("document children replaced — revalidating state against \(validIDs.count, privacy: .public) blocks")
+            state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
         }
     }
 

@@ -20,7 +20,7 @@ public extension Notification.Name {
 /// `EditorView` with a fresh `EditorState` (typically by giving each navigation
 /// destination its own wrapper view that owns the state).
 public struct EditorView: View {
-    @Binding public var document: Document
+    public let document: Document
     /// Editor session state — selection, edit mode, gestures, hover, expanded
     /// toggles, drop targets. Owned by the host (typically `@State` in a parent
     /// view) so sibling UI can observe what the user is doing. Mutation flows
@@ -124,11 +124,11 @@ public struct EditorView: View {
     @State var actionSheet: BlockActionSheet?
 
     public init(
-        document: Binding<Document>,
+        document: Document,
         state: EditorState,
         host: any EditorHost
     ) {
-        self._document = document
+        self.document = document
         self.state = state
         self.host = host
     }
@@ -360,18 +360,6 @@ public struct EditorView: View {
             .onChange(of: state.sessionState) { oldState, newState in
                 if actionSheet != nil { actionSheet = nil }
                 handleModeChange(from: oldState, to: newState)
-            }
-            // The `Binding<Document>` from the host can swap to a freshly-parsed
-            // `Document` instance (e.g. external-change reload after autosave).
-            // Fresh parse → fresh BlockIDs → every `state.cursor` / `state.selection`
-            // ID is now stale, which silently breaks nav-mode highlight and delete
-            // (both guard `document.find(id)` and skip on miss). `Document.id` is
-            // the URL and survives the swap, so we key on `ObjectIdentifier`.
-            .onChange(of: ObjectIdentifier(document)) { _, _ in
-                var validIDs: Set<BlockID> = []
-                document.walk { block, _, _ in validIDs.insert(block.id) }
-                Diag.mode.debug("document instance swap — revalidating state against \(validIDs.count, privacy: .public) blocks")
-                state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
             }
             // Single home for the focus-pump dance. `forcePageFocusGrab()`
             // bumps `pageFocusToken`, which lands here and flips
@@ -1028,9 +1016,9 @@ public struct EditorView: View {
         case .editor(let id, let initialCursor):
             // Soft lookup: only redirect to nav on POSITIVE confirmation that the
             // block is non-editable. On absence we assume editable and proceed.
-            // SwiftUI snapshots `@Binding<Document>` at last view-render time and
-            // doesn't re-call the host's `get` within the same event handler, so
-            // a block that was just inserted via `mutate(...)` won't appear in
+            // SwiftUI snapshots `document.children` at last view-render time and
+            // doesn't re-read it within the same event handler, so a block that
+            // was just inserted via `mutate(...)` won't appear in
             // `document.blocks` until SwiftUI re-renders. A hard guard here would
             // silently bail for that exact (common) case — Cmd+Return creating a
             // new row was the canonical bug.
@@ -1745,9 +1733,8 @@ public struct EditorView: View {
         }
 
         // Sanity check: selection IDs all missing from the doc — would silently
-        // no-op. Should be unreachable now that `.onChange(of:
-        // ObjectIdentifier(document))` revalidates state on doc-instance
-        // swaps; log loudly if it ever fires again.
+        // no-op. Should be unreachable now that `Document.didReplaceChildren`
+        // revalidates state on bulk-replace; log loudly if it ever fires again.
         if !roots.contains(where: { document.documentOrder(of: $0) != nil }) {
             Diag.mode.error("deleteBlocks: selection has no doc-present IDs roots=\(roots.count, privacy: .public)")
             return

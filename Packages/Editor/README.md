@@ -120,8 +120,10 @@ drag-drop) alongside NSTextView's typing-undo on the same shared
 
 ## Quickstart
 
-`EditorView` takes three things: a `Document` binding, an `EditorState`,
-and a host conforming to `EditorHost`. The host is class-bound and held
+`EditorView` takes three things: a `Document` reference, an `EditorState`,
+and a host conforming to `EditorHost`. `Document` is `@Observable` and
+swapped in place via `replaceChildren(_:)` on external reloads, so a plain
+reference suffices — no `Binding` needed. The host is class-bound and held
 by reference; keep one stable instance per editor (e.g. `@State` on a
 parent view) rather than constructing a fresh one each render — the
 editor's row-level `.equatable()` gating relies on the host's identity
@@ -161,7 +163,7 @@ struct ContentView: View {
     @State var host = MyHost()
 
     var body: some View {
-        EditorView(document: $document, state: editorState, host: host)
+        EditorView(document: document, state: editorState, host: host)
     }
 }
 ```
