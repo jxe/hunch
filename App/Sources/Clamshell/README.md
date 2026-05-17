@@ -60,8 +60,8 @@ kinds, distinguished by `op`:
 {"op":"purge","h":"<full-sha256>","t":1714867200.123,"c":43}
 ```
 
-- **`add`** is appended the first time a device observes a given atomic
-  block content. `h` is the full SHA-256 of the canonical block (see
+- **`add`** carries content. `h` is the full SHA-256 of the canonical
+  block (see
   [BlockFingerprint](../../../Packages/Editor/Sources/Editor/BlockFingerprint.swift)).
   `p` is the parent hash *at first observation* (may go stale; see
   below). `m` is the atomic markdown — the block on its own, no
@@ -69,16 +69,45 @@ kinds, distinguished by `op`:
 - **`purge`** is a tombstone, appended at the moment of structural
   removal. The editor's `mutate(_:_:)` derives a pre→post `[EditorOp]`
   diff via `BlockTreeDiff.derive(_:_:)` and fires
-  `host.documentDidChange(ops:on:)`; the host routes the batch (inserts
-  + removes together) to `Clamshell.appendOps(_:forPage:)` for one
-  ordered append. Removes also appear when the user dismisses a
-  recovered entry from the Recover sheet (manual `purgeHash`).
+  `host.documentDidChange(ops:on:)`; the host projects the batch onto
+  a `Patch` (inserts → `.add`, removes → `.purge`) and routes it to
+  `RecoveryLog.apply(_:to:)` for one ordered append with sequential
+  counters. Removes also appear in the patches assembled by reconcile
+  (unrestorable quarantines) and by the manual Recover-sheet sweep.
 - **`t`** is unix seconds with millisecond precision. Used for display
   and the `since:` filter on `listPurgedBlocks`. Not the order resolver.
 - **`c`** is a per-page Lamport counter, monotonically incrementing per
   device. Records compare on `(c, device-id)` lex; legacy records (no
   `c`) fall back to `t` and always lose to modern records in mixed
   comparisons — they predate the upgrade in any realistic timeline.
+
+### Patches as the write unit
+
+Every write to the log goes through one primitive:
+
+```swift
+public actor RecoveryLog {
+    public func apply(_ patch: Patch, to rel: String) throws
+}
+```
+
+A `Patch` is a batch of `add` / `purge` entries (see
+[PatchEngine.swift](PatchEngine.swift)). Static factories project from
+the three callers' natural shapes onto the unified type:
+
+- `Patch.adds(from blocks: [Block])` — full-doc walks (used by
+  `writeExternal`).
+- `Patch.adds(from observations: [PatchEngine.Observation])` — engine
+  lifts from reconcile.
+- `Patch.from(ops: [EditorOp])` — editor structural diffs.
+
+`apply` mints sequential per-page Lamport counters for each entry in
+the patch, encodes them as JSONL, and appends to our device's log file
+in one batched write. No write-time dedup: every entry emits a record.
+Duplicate `add`s for the same hash are harmless — intent is a
+latest-`(counter, deviceID)`-wins fold, so the union collapses them to
+the same intent at read time. The log just gets a little chattier on
+the rare `writeExternal`-style full-doc-walk callers.
 
 ### Journal
 
@@ -127,10 +156,38 @@ The contract is four rules:
    get a synthesized `add`.
 4. **Idempotence**: `reconcile(intent ∪ toAppend, doc') == (doc', [])`.
 
-`WorkspaceWindow.reconcileOpenDocumentAgainstLog` calls it on every
-page open and every file-presenter wakeup. Held off while the doc is
-dirty or a save is in flight — the engine assumes
-`doc.children == parsed(.md)`.
+### reconcileFromDisk: the open-doc entry point
+
+The open-doc path uses a thin wrapper over `reconcile`:
+
+```swift
+public static func reconcileFromDisk(
+    rawMarkdown: String,
+    journal: LogJournal
+) -> (blocks: [Block], patch: Patch, summary: ReconcileSummary)
+```
+
+Parses markdown, folds the journal, splices auto-restore inserts via a
+throwaway Document, and returns:
+- **`blocks`** — what the user should see (disk content with restored
+  subtrees spliced in).
+- **`patch`** — the single batched Patch combining observation lifts
+  + unrestorable quarantines.
+- **`summary`** — restored hashes / lifted hashes / unrestorable
+  entries for banners and diagnostics.
+
+`Clamshell.loadAndReconcile(at:)` composes this with file I/O, log
+apply (awaited), and a debounced save (if anything was spliced). One
+function for the host's open-doc path; no `isClean` gate inside, no
+live-doc mutation. The output Document is fresh, identity is the
+host's to assign.
+
+The presenter-wakeup path is different: it must update the live
+`Document` in place to preserve the editor's selection/cursor state,
+so it still uses `WorkspaceWindow.reconcileOpenDocumentAgainstLog`,
+which calls `PatchEngine.apply(_:to:)` on the live doc. That path
+gates on `Clamshell.isClean(at:)` — the engine assumes
+`doc.children == parsed(.md)`, only true when nothing is pending.
 
 ### Conflict merge (iCloud sibling alternates)
 
@@ -186,12 +243,20 @@ try clamshell.moveToTrash(at: doc.url)
 let trashed = try await clamshell.listTrashedPages()
 let lost = await clamshell.listLostBlocks()
 
-// Engine-direct: open a page, reconcile, apply.
+// Open + reconcile in one step (host's open-doc path).
+let (doc, summary) = try await clamshell.loadAndReconcile(at: url)
+if summary.didChange { /* banner: "Restored N blocks..." */ }
+
+// Engine-direct (for the presenter-wakeup path, which must mutate the
+// live Document in place to preserve editor state):
 let journal = clamshell.readJournal(forPage: rel)
 let intent = PatchEngine.intent(from: journal)
 let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
 PatchEngine.apply(recon, to: doc)
-clamshell.appendObservations(recon.toAppend, forPage: rel)
+var entries: [Patch.Entry] = []
+for obs in recon.toAppend { entries.append(.add(hash: obs.hash, parent: obs.parent, markdown: obs.markdown)) }
+for q in recon.unrestorable { entries.append(.purge(hash: q.hash)) }
+try await clamshell.applyPatch(Patch(entries: entries), forPage: rel)
 ```
 
 **One Clamshell per directory.** Construct with the root URL; never
@@ -205,7 +270,7 @@ existing instance and build a new one.
 | Group | Methods |
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)` |
-| Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
+| Read | `scan()`, `loadDocument(at:)`, `loadAndReconcile(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
 | Editor-driven persistence | `documentDidChange(ops:in:)`, `flush(_:)`, `isClean(at:)` |
 | Configuration | `subpageTitleResolver`, `didSave` (set once by the host) |
 | External write | `writeExternal(_:)` for callers that didn't flow through `documentDidChange` (conflict merge, restoring a lost block into a closed page, appending to a non-open subpage) |
@@ -213,7 +278,7 @@ existing instance and build a new one.
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Search | `searchPages(in:query:excluding:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
-| Recovery log | `readJournal(forPage:)`, `appendObservations(_:forPage:)`, `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)`, `purgeHash(_:in:)`, `unpurgeBlock(_:in:parentHash:)` |
+| Recovery log | `readJournal(forPage:)`, `applyPatch(_:forPage:)`, `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)` |
 | iCloud merge | `resolveConflictVersions(at:againstLive:)` → `ConflictResolution` (`{ salvaged, liveDocumentMutated }`) |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
 | Metadata | `homeRelativePath` (read/write), `root` |
@@ -234,22 +299,25 @@ into engine territory use `clamshell.readJournal` → `PatchEngine.intent`
 
 ## Behaviors worth knowing
 
-**Recovery log is per-device, write-once-per-content.** Editor
-mutations stream through `appendOps`, which short-circuits inserts
-whose hash this device has already recorded against an in-memory
-device-hash cache. `writeExternal(_:)` walks the full tree as a
-catch-up for non-editor write paths (conflict merge, subpage append,
-lost-block restore into a closed page) where no op stream exists.
-`save(_:)` performs zero log I/O — the op stream keeps the journal
-current ahead of every debounce.
+**Recovery log is per-device, append-only, no write-time dedup.**
+Editor mutations are projected to a `Patch` and applied as one batched
+write per mutation. The log actor mints sequential per-page Lamport
+counters, encodes JSONL, appends to our device's file. There's no
+device-hash cache short-circuiting duplicates: callers either filter
+upstream (the editor's `BlockTreeDiff` only emits ops for structural
+changes; reconcile's `unloggedObservations` filters against journal
+intent) or accept a small amount of log bloat (full-doc-walk callers
+like `writeExternal` after a conflict merge). Intent is unchanged —
+duplicate `add`s for the same hash resolve to the same alive intent at
+read time, so chattier logs are correctness-equivalent.
 
-**The hash cache replays adds AND purges.** Hydration walks our
-device's log in file order and applies `add` (insert) and `purge`
-(remove) as transitions. Retyping content this device previously
-purged produces a fresh `add` whose counter beats the prior purge in
-the union, restoring intent to alive. Without this transition replay,
-the log would lie that content is dead while the live `.md` shows it
-alive.
+**Log durable before file durable.** `Clamshell+Saving.swift` tracks
+the most-recent log-apply Task on the pending entry. `fireScheduledSave`
+and `flush` await it before writing the `.md`. At any point a crash
+can happen, the log is at-or-ahead of the file on disk → reconcile
+heals on next open. The save side gets a barrier; the editor's
+`documentDidChange` stays synchronous so the typing path doesn't pay
+an actor-hop per structural mutation.
 
 **Cross-device merging happens on read, not write.** Each device only
 ever writes its own `<device-id>.jsonl`. Other devices' files are read
@@ -264,10 +332,11 @@ beat that add in the union.
 
 **Bare-md and external edits are absorbed.** `reconcile()` emits an
 `Observation` for any block present in `doc` but absent from the
-journal. `Clamshell.appendObservations` writes them as fresh `add`
-records on this device's log. A `.md` opened with no `.history/` dir
-gets fully logged on first reconcile; a block an external editor wrote
-gets logged on the next file-presenter wakeup.
+journal. The open-doc path (`loadAndReconcile`) folds these into the
+same Patch that carries unrestorable quarantines, applied as one log
+write. A `.md` opened with no `.history/` dir gets fully logged on
+first reconcile; a block an external editor wrote gets logged on the
+next file-presenter wakeup.
 
 **Live filtering.** A journal entry is only "lost" if its hash isn't
 in the live page's atomic-block set right now — re-creating the same
@@ -304,14 +373,17 @@ one and is written after the in-flight write completes.
 transaction derives a pre→post `[EditorOp]` diff via
 `BlockTreeDiff.derive(_:_:)` and fires `host.documentDidChange(ops:on:)`.
 The host's adapter calls `Clamshell.documentDidChange(ops:in:)`, which
-routes the batch to the log actor as one ordered fsync with sequential
-counters and rearms the debounce. No pre/post tree snapshot, no diff
-inference: the op stream IS the log update. Save itself does not touch
-the log — the journal is already current by the time the debounce fires.
+projects the batch onto a `Patch` (inserts → `.add`, removes →
+`.purge`), spawns a Task that calls `log.apply` (tracked on the
+pending entry), and rearms the debounce. No pre/post tree snapshot,
+no diff inference: the op stream IS the log update. The debounced
+save awaits the latest log Task before writing the `.md` — log
+durability is the file save's barrier.
 
 **Deletes are explicit, not inferred.** The op diff emits a
 `.remove(hash)` for every block id present in pre but absent in post.
-`appendOps` writes those as `purge` records. Save paths never infer
+`Patch.from(ops:)` projects those to `.purge` entries that
+`log.apply` writes as `purge` records. Save paths never infer
 tombstones from comparing prior state to current state. Consequences:
 - Typing inside a block (same id, different hash) does NOT fire a
   purge — text editing is not deletion.
@@ -325,10 +397,12 @@ tombstones from comparing prior state to current state. Consequences:
 are tracked alongside "lost" entries — the union remembers both the
 latest record (purge) and the latest prior `add` (carrying markdown +
 parent). `listPurgedBlocks` surfaces them so the user can bring back
-something they deleted on purpose; `unpurgeBlock` appends a fresh
-`add` whose counter beats the prior purge under `(c, device-id)` lex,
-lifting the tombstone from the union. Defaults to a 30-day window for
-surface area; pass `since: nil` to see everything.
+something they deleted on purpose. To restore, the host builds a
+`Patch` with a fresh `.add` for the hash and calls
+`Clamshell.applyPatch`; the new counter beats the prior purge under
+`(c, device-id)` lex, lifting the tombstone from the union.
+`listPurgedBlocks` defaults to a 30-day window for surface area; pass
+`since: nil` to see everything.
 
 ---
 
@@ -371,10 +445,10 @@ append" — `NSFileCoordinator` handles that.
 - [DocumentSaveCoordinator.swift](DocumentSaveCoordinator.swift) —
   per-URL serial, snapshot-coalescing actor for autosaves.
 - [RecoveryLog.swift](RecoveryLog.swift) — JSONL persistence only.
-  Reads return `LogJournal`s for the engine; writes are `record`
-  (save-path tree walk), `append(observations:)` (engine-driven),
-  `purge` (explicit deletes), `reAdd` (restore from tombstone), and
-  `move` (page renames). All business logic lives in `PatchEngine`.
+  Reads return `LogJournal`s for the engine; writes go through one
+  primitive, `apply(_ patch: Patch, to:)`. The only other write is
+  `move(fromPage:toPage:)` for page renames. All business logic lives
+  in `PatchEngine`.
 - [DeviceID.swift](DeviceID.swift) — per-install UUID stored in
   `UserDefaults`. Names this device's recovery log file.
 - [TrashStore.swift](TrashStore.swift) — lists `Trash/` and restores

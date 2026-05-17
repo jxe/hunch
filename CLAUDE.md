@@ -34,23 +34,29 @@ user-picked workspace folder.
     home page pointer). `Clamshell` is the umbrella type — one per open
     directory, never reconfigured. Composes `FileStore`,
     `DocumentSaveCoordinator` (per-URL serial, snapshot-coalescing actor),
-    `RecoveryLog` (per-device JSONL appender + cross-device read union),
+    `RecoveryLog` (per-device JSONL appender + cross-device read union;
+    every write goes through one primitive, `apply(Patch, to:)`),
     and `TrashStore` privately and exposes a single API:
-    `scan / loadDocument / documentDidChange / flush / save /
-    writeExternal / appendOps / createPage / moveToTrash /
-    listTrashedPages / restorePage / listLostBlocks / listPurgedBlocks /
-    purgeHash / unpurgeBlock / appendObservations / resolveConflictVersions
-    / classifyDiskContent / isClean`, plus `relativePath(of:)` and
-    `url(for:)` for path conversion. **Editor-driven persistence** is
-    `documentDidChange(ops:in:)` (called on every mutation — appends ops
-    to the log, (re)arms the per-URL 600ms debounce) and `flush(_:)`
-    (force-save + drain, used for blur/scenePhase/navigation). The host
-    sets `subpageTitleResolver` and `didSave` once via
-    `Workspace.makeClamshell`; everything else is internal — no
-    debounce/dirty plumbing on the host. **Non-editor writes**
-    (`writeExternal`) fire a fire-and-forget `RecoveryLog.record`
-    catch-up for callers that didn't flow through the editor op stream
-    (conflict merge, restore-into-closed-page, etc.). `moveToTrash`
+    `scan / loadDocument / loadAndReconcile / documentDidChange /
+    flush / save / writeExternal / applyPatch / createPage /
+    moveToTrash / listTrashedPages / restorePage / listLostBlocks /
+    listPurgedBlocks / resolveConflictVersions / classifyDiskContent /
+    isClean`, plus `relativePath(of:)` and `url(for:)` for path
+    conversion. **Editor-driven persistence** is
+    `documentDidChange(ops:in:)` (called on every mutation — projects
+    ops to a `Patch`, spawns a tracked log-apply Task, (re)arms the
+    per-URL 600ms debounce) and `flush(_:)` (await latest log task +
+    force-save + drain, used for blur/scenePhase/navigation). The save
+    side (`fireScheduledSave`, `flush`) awaits the latest log task
+    before writing the `.md`, establishing the invariant: **log durable
+    before file durable** — crash anywhere, log is at-or-ahead of file,
+    reconcile heals on next open. The host sets `subpageTitleResolver`
+    and `didSave` once via `Workspace.makeClamshell`; everything else
+    is internal — no debounce/dirty plumbing on the host. **Non-editor
+    writes** (`writeExternal`) fire a fire-and-forget log catch-up via
+    `apply(Patch.adds(from: blocks))` for callers that didn't flow
+    through the editor op stream (conflict merge,
+    restore-into-closed-page, etc.). `moveToTrash`
     clears `homeRelativePath` if it matched and moves the page's
     `.history/<rel>/` dir along with the `.md`. Also where the
     markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown
@@ -203,14 +209,19 @@ non-text parts (markers, paddings) fall through to the row's
 so wrapped paragraphs still allow intra-block arrow nav in the middle.
 
 **Autosave lives on `Clamshell`** ([`Clamshell+Saving.swift`](App/Sources/Clamshell/Clamshell+Saving.swift)):
-`documentDidChange(ops:in:)` appends ops to the recovery log and (re)arms
-a per-URL 600ms debounce; `flush(_:)` force-saves and drains. The host
-calls `documentDidChange` on every mutation and `flush` on blur /
-`scenePhase != .active` / navigation away. Per-URL coalescing happens at
-two levels: the new debounce coalesces back-to-back edits within 600ms;
-`DocumentSaveCoordinator` underneath coalesces overlapping save calls.
-Post-save bookkeeping (mtime, title cache, rescan) fires through
-Clamshell's `didSave` callback, set once by `Workspace.makeClamshell`.
+`documentDidChange(ops:in:)` projects ops to a `Patch`, spawns a
+tracked log-apply Task on the pending entry, and (re)arms a per-URL
+600ms debounce; `flush(_:)` awaits the latest log task, force-saves,
+and drains. Both `fireScheduledSave` and `flush` await the latest log
+task before writing the `.md` — log durable before file durable, so
+crash recovery is trivially correct (reconcile heals any divergence on
+next open). The host calls `documentDidChange` on every mutation and
+`flush` on blur / `scenePhase != .active` / navigation away. Per-URL
+coalescing happens at two levels: the debounce coalesces back-to-back
+edits within 600ms; `DocumentSaveCoordinator` underneath coalesces
+overlapping save calls. Post-save bookkeeping (mtime, title cache,
+rescan) fires through Clamshell's `didSave` callback, set once by
+`Workspace.makeClamshell`.
 
 **Structural mutations route through `EditorView.mutate(name:_:)`.**
 It commits the active editor's live text first (`commitActiveEditor`),
@@ -218,8 +229,9 @@ snapshots `document.children`, runs the change closure, re-applies
 heading containment, registers the snapshot as the undo entry, derives
 the pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
 `host.documentDidChange(ops:on:)` with the `[EditorOp]` batch (host
-appends inserts + removes to its recovery log in one ordered fsync and
-kicks its debounced save). Moves and reorders produce an empty op list
+projects to a `Patch` and applies it to the recovery log in one
+ordered fsync, then kicks its debounced save). Moves and reorders
+produce an empty op list
 by design (id stable, hash stable); typing fires the same callback
 with empty ops from the row's `markDirty` closure. The exceptions are
 paths that don't mutate the document (Cmd-[ navigate-back, Esc) and
