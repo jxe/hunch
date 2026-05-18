@@ -6,12 +6,6 @@ import AppKit
 // MARK: - Reorder lift, drop targets, and block-move helpers
 
 extension EditorView {
-    func orderedDropFrames(snapshot: [Block]) -> [ReorderDropFrame] {
-        snapshot.compactMap { block in
-            rowFrames[block.id].map { ReorderDropFrame(id: block.id, frame: $0) }
-        }
-    }
-
     /// Drift gap rendered above the visible-row at `slot` (or at the trailing
     /// slot == visibleRows.count). Both `hoverSlot` and `liftFootprint` are
     /// precomputed once per body pass — `hoverSlot` is the visible slot
@@ -531,23 +525,6 @@ extension EditorView {
         case .intoSubpage(_, let path):
             Task { await moveBlocks(ids: payload.ids, intoSubpagePath: path) }
         }
-    }
-
-    /// Convert "kth visible row above the drop" into a snapshot index that lies
-    /// outside any collapsed subtree. Without this, dropping in the gap below a
-    /// closed toggle/templateButton lands as a hidden child.
-    fileprivate func snapshotIndex(forVisibleCount k: Int, snapshot: [Block], hidden: Set<BlockID>) -> Int {
-        if k <= 0 { return 0 }
-        var seen = 0
-        for i in snapshot.indices where !hidden.contains(snapshot[i].id) {
-            seen += 1
-            if seen == k {
-                var j = i + 1
-                while j < snapshot.count && hidden.contains(snapshot[j].id) { j += 1 }
-                return j
-            }
-        }
-        return snapshot.count
     }
 
     /// Haptic on drop-target changes during an active reorder. Two layers of
