@@ -97,8 +97,6 @@ the three callers' natural shapes onto the unified type:
 
 - `Patch.adds(from blocks: [Block])` — full-doc walks (used by
   `writeClosedPage(_:patch:)` and `append(_:toPage:)`).
-- `Patch.adds(from observations: [PatchEngine.Observation])` — engine
-  lifts from reconcile.
 - `Patch.from(ops: [EditorOp])` — editor structural diffs.
 
 `apply` mints sequential per-page Lamport counters for each entry in
@@ -127,8 +125,7 @@ that classifies every hash the journal mentions:
 | `.tombstoned`  | Latest record is a `purge`. Carries the prior `add` for restore display.|
 
 `IntentState` also exposes `parent(of:)` (the latest add's `p`, useful
-even on tombstoned hashes for chain climbs), `tombstones()`, and
-`parentChain(from:)`.
+even on tombstoned hashes for chain climbs) and `tombstones()`.
 
 ### Reconciliation
 
@@ -288,7 +285,7 @@ let lost = await clamshell.listLostBlocks()
 
 // Restore one lost or purged block (host passes `openDocument` so the
 // splice mutates the live doc when the source page is open).
-_ = try await clamshell.restoreBlocks(.lost(entry), liveDoc: openDocument)
+try await clamshell.restoreBlocks(.lost(entry), liveDoc: openDocument)
 ```
 
 **One Clamshell per directory.** Construct with the root URL; never
@@ -527,11 +524,12 @@ append" — `NSFileCoordinator` handles that.
   `WorkspaceWindow`. Clamshell handles one persistent format; the
   host splits workspace-wide vs. per-window state across `Workspace`
   and `WorkspaceWindow`.
-- **No banners or recovery-sheet UI.** `Clamshell.openPage(...)` and
-  `Clamshell.restoreBlocks(_:liveDoc:)` do the engine work and return
-  outcomes (summary + presenter events); the host (`WorkspaceWindow`)
-  shows the resulting banner and routes from the Recover sheet's row
-  taps.
+- **No banners or recovery-sheet UI.** `Clamshell.openPage(...)` does
+  the engine work and surfaces outcomes via `PresenterEvent`s on the
+  `onEvent` callback; `Clamshell.restoreBlocks(_:liveDoc:)` and
+  `Clamshell.restorePage(_:)` mutate state and throw on failure. The
+  host (`WorkspaceWindow`) shows the resulting banner and routes from
+  the Recover sheet's row taps.
 - **No move-as-operation.** Moving a block between parents on a device
   that already logged it doesn't append a new record. The original `p`
   goes stale; restore relies on chain-climbing through still-alive

@@ -10,7 +10,7 @@ import UIKit
 /// `.point` is what click-to-edit captures; the editor maps the point to a character
 /// index via NSTextView's `characterIndexForInsertion(at:)`. `.offset` is what split /
 /// programmatic-focus paths use when they already know the desired character index.
-public enum InitialCursorTarget: Sendable, Equatable {
+enum InitialCursorTarget: Sendable, Equatable {
     case point(CGPoint)
     case offset(Int)
 }
@@ -26,10 +26,10 @@ public enum InitialCursorTarget: Sendable, Equatable {
 /// `.environment(\.macActiveTextView, ...)`. ContainedTextView assigns/clears its
 /// `view` slot from `viewDidMoveToWindow` / `viewWillMove(toWindow: nil)`.
 @MainActor
-public final class MacActiveTextView {
+final class MacActiveTextView {
     weak var view: ContainedTextView?
 
-    public init() {}
+    init() {}
 
     /// Synchronously grab AppKit first responder for `id` if the active NSTextView
     /// is already mounted for that block. Returns true on success; false if the row
@@ -53,7 +53,7 @@ private struct MacActiveTextViewKey: EnvironmentKey {
 extension EnvironmentValues {
     /// Editor-scoped active-NSTextView handle. Set by EditorView; nil when reading
     /// outside an editor.
-    public var macActiveTextView: MacActiveTextView? {
+    var macActiveTextView: MacActiveTextView? {
         get { self[MacActiveTextViewKey.self] }
         set { self[MacActiveTextViewKey.self] = newValue }
     }
@@ -61,7 +61,7 @@ extension EnvironmentValues {
 #endif
 
 /// Block-level keyboard events the page-level handler reacts to.
-public enum BlockKey: Sendable, Equatable {
+enum BlockKey: Sendable, Equatable {
     /// Return pressed. Carries the full selection at the time of press so
     /// `splitBlock` can delete any selected range as part of the split (Return
     /// over a selection behaves like inserting `\n`: the selection is replaced).
@@ -116,7 +116,7 @@ public enum BlockKey: Sendable, Equatable {
 /// (insets, focus, key-event control). The iOS path also needs a real subclass so we can
 /// override `deleteBackward()` — SwiftUI's `TextEditor` swallows soft-keyboard backspace
 /// events on empty text, which broke "delete blank block to remove it".
-public struct BlockTextEditor: View {
+struct BlockTextEditor: View {
     @Binding var text: AttributedString
 #if os(iOS)
     /// Side-channel held by reference so the SwiftUI keyboard toolbar can drive
@@ -166,7 +166,7 @@ public struct BlockTextEditor: View {
     @Environment(\.macActiveTextView) private var macActiveTextView
     #endif
 
-    public init(
+    init(
         text: Binding<AttributedString>,
         font: Font,
         fontSize: CGFloat = 16,
@@ -196,7 +196,7 @@ public struct BlockTextEditor: View {
         self.consumeInitialCursor = consumeInitialCursor
     }
 
-    public var body: some View {
+    var body: some View {
         #if os(macOS)
         // The editor only mounts when its row is the active editing block (EditorView gates
         // this via `isEditing`). So unconditionally request focus on mount — `@FocusState`

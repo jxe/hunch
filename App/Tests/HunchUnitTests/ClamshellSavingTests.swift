@@ -66,15 +66,15 @@ struct ClamshellSavingTests {
         // 2. Journal: v0 tombstoned, v1 alive.
         let journal = clamshell.log.readJournal(page: "p.md")
         let intent = PatchEngine.intent(from: journal)
-        if case .tombstoned = intent.status(of: v0.atomicHash) {
+        if case .tombstoned = intent.byHash[v0.atomicHash] {
             // expected
         } else {
-            Issue.record("expected v0 hash tombstoned after typing commit, got \(String(describing: intent.status(of: v0.atomicHash)))")
+            Issue.record("expected v0 hash tombstoned after typing commit, got \(String(describing: intent.byHash[v0.atomicHash]))")
         }
-        if case .alive = intent.status(of: v1.atomicHash) {
+        if case .alive = intent.byHash[v1.atomicHash] {
             // expected
         } else {
-            Issue.record("expected v1 hash alive, got \(String(describing: intent.status(of: v1.atomicHash)))")
+            Issue.record("expected v1 hash alive, got \(String(describing: intent.byHash[v1.atomicHash]))")
         }
 
         // 3. Reconcile against the current doc must not auto-restore v0.
@@ -140,13 +140,13 @@ struct ClamshellSavingTests {
         #expect(mdText.contains("abc"), "final .md reflects last commit")
 
         let intent = PatchEngine.intent(from: clamshell.log.readJournal(page: "p.md"))
-        if case .alive = intent.status(of: v2.atomicHash) {} else {
+        if case .alive = intent.byHash[v2.atomicHash] {} else {
             Issue.record("v2 hash should be alive")
         }
-        if case .tombstoned = intent.status(of: v1.atomicHash) {} else {
+        if case .tombstoned = intent.byHash[v1.atomicHash] {} else {
             Issue.record("v1 hash should be tombstoned")
         }
-        if case .tombstoned = intent.status(of: v0.atomicHash) {} else {
+        if case .tombstoned = intent.byHash[v0.atomicHash] {} else {
             Issue.record("v0 hash should be tombstoned")
         }
     }

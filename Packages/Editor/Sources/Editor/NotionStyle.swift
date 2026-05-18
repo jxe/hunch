@@ -202,10 +202,10 @@ public enum NotionStyle {
 /// `max(prev.bottomMargin, curr.topMargin)` (CSS margin-collapse). SwiftUI doesn't collapse
 /// margins, so we compute the gap explicitly and apply it via `.padding(.top, gap)` on the
 /// second block.
-public enum BlockSpacing {
+enum BlockSpacing {
     /// Inter-block gap to insert *above* `current`, given the immediately preceding sibling
     /// in document order (visible-flat order, may be a sibling at a different tree depth).
-    public static func gap(before current: Block, depth: Int, after prev: Block?, prevDepth: Int) -> CGFloat {
+    static func gap(before current: Block, depth: Int, after prev: Block?, prevDepth: Int) -> CGFloat {
         guard let prev else {
             // First child of a container — no gap above.
             return 0
@@ -237,7 +237,7 @@ public enum BlockSpacing {
     /// Negative values are allowed: SwiftUI honors negative padding, and it's the only way to
     /// pull the row frame *inside* the font's built-in leading (cap-top buffer / descender
     /// buffer). See `intrinsicTopPadding` / `intrinsicBottomPadding`.
-    public static func intrinsicTopPadding(_ block: Block) -> CGFloat {
+    static func intrinsicTopPadding(_ block: Block) -> CGFloat {
         switch block.kind {
         case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton: return 5
         case .code: return 16
@@ -246,7 +246,7 @@ public enum BlockSpacing {
         }
     }
 
-    public static func intrinsicBottomPadding(_ block: Block) -> CGFloat {
+    static func intrinsicBottomPadding(_ block: Block) -> CGFloat {
         switch block.kind {
         case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton: return 5
         case .code: return 16
@@ -262,7 +262,7 @@ public enum BlockSpacing {
     /// block kind. Body-font blocks (paragraph/quote/list items) only differ
     /// in `intrinsicTopPadding`; headings start at the row top but have larger
     /// fonts; code lives deep inside its row.
-    public static func dragHandleYOffset(_ block: Block) -> CGFloat {
+    static func dragHandleYOffset(_ block: Block) -> CGFloat {
         switch block.kind {
         case .heading: return 2
         case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton: return 2

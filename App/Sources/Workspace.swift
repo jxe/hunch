@@ -1,15 +1,15 @@
 import Foundation
 import Editor
 
-public struct WorkspaceEntry: Identifiable, Sendable, Hashable {
-    public let url: URL
-    public let relativePath: String
-    public let title: String
-    public let modificationDate: Date
+struct WorkspaceEntry: Identifiable, Sendable, Hashable {
+    let url: URL
+    let relativePath: String
+    let title: String
+    let modificationDate: Date
 
-    public var id: URL { url }
+    var id: URL { url }
 
-    public init(url: URL, relativePath: String, title: String, modificationDate: Date) {
+    init(url: URL, relativePath: String, title: String, modificationDate: Date) {
         self.url = url
         self.relativePath = relativePath
         self.title = title
@@ -513,56 +513,56 @@ final class Workspace {
     }
 }
 
-public enum RecoveryListFilter: Sendable, Hashable, Identifiable {
+enum RecoveryListFilter: Sendable, Hashable, Identifiable {
     case all
     case page(relativePath: String)
 
-    public var id: Self { self }
+    var id: Self { self }
 }
 
 /// Tree-consolidated view of a lost block forest root. Wraps the root
 /// `LostBlock` (used for restore — the `WorkspaceWindow` path reconstructs
 /// the subtree from this hash) plus the set of hashes covered by the
 /// assembled tree (for "+N more" affordances and post-restore purge).
-public struct LostBlockGroup: Sendable, Hashable, Identifiable {
-    public let root: LostBlock
-    public let descendantHashes: Set<String>
+struct LostBlockGroup: Sendable, Hashable, Identifiable {
+    let root: LostBlock
+    let descendantHashes: Set<String>
 
-    public var id: String { root.id }
-    public var source: String { root.source }
-    public var recordedAt: Date { root.recordedAt }
-    public var markdown: String { root.markdown }
-    public var nestedCount: Int { descendantHashes.count - 1 }
+    var id: String { root.id }
+    var source: String { root.source }
+    var recordedAt: Date { root.recordedAt }
+    var markdown: String { root.markdown }
+    var nestedCount: Int { descendantHashes.count - 1 }
 
-    public init(root: LostBlock, descendantHashes: Set<String>) {
+    init(root: LostBlock, descendantHashes: Set<String>) {
         self.root = root
         self.descendantHashes = descendantHashes
     }
 }
 
 /// Same shape as `LostBlockGroup` but for intentionally-deleted blocks.
-public struct PurgedBlockGroup: Sendable, Hashable, Identifiable {
-    public let root: PurgedBlock
-    public let descendantHashes: Set<String>
+struct PurgedBlockGroup: Sendable, Hashable, Identifiable {
+    let root: PurgedBlock
+    let descendantHashes: Set<String>
 
-    public var id: String { root.id }
-    public var source: String { root.source }
-    public var purgedAt: Date { root.purgedAt }
-    public var markdown: String { root.markdown }
-    public var nestedCount: Int { descendantHashes.count - 1 }
+    var id: String { root.id }
+    var source: String { root.source }
+    var purgedAt: Date { root.purgedAt }
+    var markdown: String { root.markdown }
+    var nestedCount: Int { descendantHashes.count - 1 }
 
-    public init(root: PurgedBlock, descendantHashes: Set<String>) {
+    init(root: PurgedBlock, descendantHashes: Set<String>) {
         self.root = root
         self.descendantHashes = descendantHashes
     }
 }
 
-public enum RecoverableEntry: Identifiable, Sendable, Hashable {
+enum RecoverableEntry: Identifiable, Sendable, Hashable {
     case deletedPage(TrashEntry)
     case lostBlock(LostBlockGroup)
     case purgedBlock(PurgedBlockGroup)
 
-    public var id: String {
+    var id: String {
         switch self {
         case .deletedPage(let e): return "page:\(e.id)"
         case .lostBlock(let g): return "lost:\(g.id)"
@@ -570,7 +570,7 @@ public enum RecoverableEntry: Identifiable, Sendable, Hashable {
         }
     }
 
-    public var timestamp: Date {
+    var timestamp: Date {
         switch self {
         case .deletedPage(let e): return e.timestamp
         case .lostBlock(let g): return g.recordedAt
@@ -578,7 +578,7 @@ public enum RecoverableEntry: Identifiable, Sendable, Hashable {
         }
     }
 
-    public var sourcePath: String {
+    var sourcePath: String {
         switch self {
         case .deletedPage(let e): return e.sourcePath
         case .lostBlock(let g): return g.source
@@ -586,7 +586,7 @@ public enum RecoverableEntry: Identifiable, Sendable, Hashable {
         }
     }
 
-    public var displayTitle: String {
+    var displayTitle: String {
         switch self {
         case .deletedPage(let e): return e.displayTitle
         case .lostBlock(let g): return RecoverableEntry.previewLine(from: g.markdown)
@@ -594,14 +594,14 @@ public enum RecoverableEntry: Identifiable, Sendable, Hashable {
         }
     }
 
-    public var isPurged: Bool {
+    var isPurged: Bool {
         if case .purgedBlock = self { return true }
         return false
     }
 
     /// Count of additional blocks (beyond the root) bundled in this entry.
     /// Used by `RecoveryView` to show "+N more" on tree-consolidated rows.
-    public var nestedCount: Int {
+    var nestedCount: Int {
         switch self {
         case .deletedPage: return 0
         case .lostBlock(let g): return g.nestedCount

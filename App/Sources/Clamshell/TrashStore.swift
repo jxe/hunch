@@ -109,11 +109,11 @@ actor TrashStore {
     }
 }
 
-public struct TrashEntry: Sendable, Identifiable, Hashable {
-    public let trashRelativePath: String
-    public let timestamp: Date
-    public let displayTitle: String
-    public let sourcePath: String
+struct TrashEntry: Sendable, Identifiable, Hashable {
+    let trashRelativePath: String
+    let timestamp: Date
+    let displayTitle: String
+    let sourcePath: String
 
-    public var id: String { "page:\(trashRelativePath)" }
+    var id: String { "page:\(trashRelativePath)" }
 }

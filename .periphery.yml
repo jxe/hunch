@@ -1,0 +1,24 @@
+# Periphery config for the Hunch app target.
+#
+# Run from the repo root: `periphery scan`
+#
+# - Includes HunchUnitTests so `@testable import Hunch` references count.
+#   Without this, every symbol only consumed by a test would surface as
+#   "declared public, but not used outside of Hunch".
+# - Retain flags below address systematic false positives (SwiftUI Previews
+#   that Periphery can't trace, App Intent dynamic registration via
+#   `AppShortcutsProvider`, Codable property reflection). Anything beyond
+#   that stays unconfigured on purpose — better an occasional false
+#   positive than permanently hidden dead code.
+
+project: Hunch.xcodeproj
+schemes:
+  - Hunch
+targets:
+  - Hunch
+  - HunchUnitTests
+retain_swift_ui_previews: true
+retain_objc_accessible: true
+retain_codable_properties: true
+relative_results: true
+disable_update_check: true

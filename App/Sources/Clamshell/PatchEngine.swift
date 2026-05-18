@@ -125,13 +125,6 @@ struct Patch: Sendable {
         return Patch(entries: out)
     }
 
-    /// Lift engine-supplied observations into a Patch of `.add` entries.
-    static func adds(from observations: [PatchEngine.Observation]) -> Patch {
-        Patch(entries: observations.map {
-            .add(hash: $0.hash, parent: $0.parent, markdown: $0.markdown)
-        })
-    }
-
     /// Project a batch of editor structural ops onto a Patch: inserts
     /// become `.add` entries, removes become `.purge` entries, order
     /// preserved.
@@ -181,8 +174,6 @@ struct IntentState: Sendable {
         self.byHash = byHash
     }
 
-    func status(of hash: String) -> Status? { byHash[hash] }
-
     /// Latest `add`'s recorded parent for `hash`. Latest-add survives a later
     /// `purge` so this works on tombstoned hashes too.
     func parent(of hash: String) -> String? {
@@ -199,36 +190,6 @@ struct IntentState: Sendable {
         var out: Set<String> = []
         for (hash, status) in byHash {
             if case .tombstoned = status { out.insert(hash) }
-        }
-        return out
-    }
-
-    /// Hash → recorded-parent map for every hash whose latest add has a parent.
-    /// Backwards-compat for `ConflictMerger`'s `parentHashLookup` callback.
-    func recordedParents() -> [String: String] {
-        var out: [String: String] = [:]
-        for (hash, status) in byHash {
-            switch status {
-            case .alive(let add):
-                if let p = add.parent { out[hash] = p }
-            case .tombstoned(let latestAdd, _):
-                if let p = latestAdd?.parent { out[hash] = p }
-            }
-        }
-        return out
-    }
-
-    /// Walk the recorded-parent chain starting from `hash`'s parent, returning
-    /// each ancestor in order. Cycle-safe and bounded at 64 hops.
-    func parentChain(from hash: String) -> [String] {
-        var out: [String] = []
-        var seen: Set<String> = []
-        var current = parent(of: hash)
-        var safety = 64
-        while let h = current, safety > 0, seen.insert(h).inserted {
-            out.append(h)
-            current = parent(of: h)
-            safety -= 1
         }
         return out
     }
@@ -798,15 +759,11 @@ extension PatchEngine {
 // MARK: - ReconcileSummary
 
 extension PatchEngine {
-    /// Side-effect-free description of what changed during a reconcile
-    /// pass: hashes the engine spliced in (auto-restore), hashes it
-    /// lifted as observations (bare-md / external absorption), and
-    /// hashes it quarantined (parse failures / hash mismatches). Used
-    /// for banners and diagnostics.
+    /// Side-effect-free description of what a reconcile pass spliced in
+    /// (auto-restore). Used for the post-restore banner and the
+    /// `.restored(count:)` presenter event.
     struct ReconcileSummary: Sendable {
         let restoredHashes: [String]
-        let lifted: [String]
-        let unrestorable: [UnrestorableEntry]
         var didChange: Bool { !restoredHashes.isEmpty }
     }
 }

@@ -21,13 +21,13 @@ import Editor
 /// instance and build a new one.
 @MainActor
 @Observable
-public final class Clamshell {
-    @ObservationIgnored nonisolated public let root: URL
+final class Clamshell {
+    @ObservationIgnored nonisolated let root: URL
 
     /// Path (relative to `root`) of the page designated as "home", or nil if unset.
     /// Persisted to `.clamshell.json` at the root; written atomically on every change.
     /// Cleared automatically when the home page is moved to trash.
-    public var homeRelativePath: String? {
+    var homeRelativePath: String? {
         didSet {
             guard oldValue != homeRelativePath else { return }
             persistMetadata()
@@ -35,7 +35,7 @@ public final class Clamshell {
     }
 
     /// Scope for `listLostBlocks(filter:)`.
-    public enum LostBlocksFilter: Sendable {
+    enum LostBlocksFilter: Sendable {
         /// Every page in the workspace, including trashed ones.
         case all
         /// One specific page only.
@@ -80,7 +80,7 @@ public final class Clamshell {
     /// no work pending (i.e. `isQuiescent(at:)`).
     @ObservationIgnored private var saveChain: [URL: Task<Void, Never>] = [:]
 
-    public init(root: URL) {
+    init(root: URL) {
         let total = perfStart()
         self.root = root
         let files = FileStore()
@@ -120,7 +120,7 @@ public final class Clamshell {
 
     // MARK: - Path conversions
 
-    nonisolated public func relativePath(of url: URL) -> String {
+    nonisolated func relativePath(of url: URL) -> String {
         let rootPath = root.standardizedFileURL.path
         let filePath = url.standardizedFileURL.path
         if filePath.hasPrefix(rootPath + "/") {
@@ -129,7 +129,7 @@ public final class Clamshell {
         return url.lastPathComponent
     }
 
-    nonisolated public func url(for relativePath: String) -> URL {
+    nonisolated func url(for relativePath: String) -> URL {
         root.appendingPathComponent(relativePath).standardizedFileURL
     }
 
@@ -139,7 +139,7 @@ public final class Clamshell {
     /// non-`.md` targets, and anything resolving outside the root. Resolves
     /// relative URLs against `currentDocURL?.deletingLastPathComponent()`
     /// when provided, otherwise against the workspace root.
-    nonisolated public func pageID(for url: URL, relativeTo currentDocURL: URL? = nil) -> String? {
+    nonisolated func pageID(for url: URL, relativeTo currentDocURL: URL? = nil) -> String? {
         Self.resolvePageID(for: url, currentDocURL: currentDocURL, workspaceRoot: root)
     }
 
@@ -181,7 +181,7 @@ public final class Clamshell {
     /// is populated on-demand (see `lookupPage` / `requestTitleWarm`),
     /// not at scan time, so entries for un-warmed pages carry the
     /// filename-derived fallback title.
-    public var entries: [WorkspaceEntry] {
+    var entries: [WorkspaceEntry] {
         scanResult.map { entry in
             let title: String
             if let cached = titleCache[entry.url], cached.modificationDate == entry.modificationDate {
@@ -206,7 +206,7 @@ public final class Clamshell {
     /// part of a minute. Titles populate lazily through `lookupPage`
     /// cache misses as subpage rows render. Result lands on the observable
     /// `entries` property — callers should react there.
-    public func rescan() throws {
+    func rescan() throws {
         let scanT = perfStart()
         let result = try files.scan(workspaceRoot: root)
         perfEnd(scanT, "Clamshell.rescan.scan", "count=\(result.count)")
@@ -218,7 +218,7 @@ public final class Clamshell {
     /// hasn't been warmed for the URL yet — that case kicks an off-main
     /// warm so the next render returns the cached title via @Observable.
     /// Safe to call from a SwiftUI body: warm requests are deduped by URL.
-    public func lookupPage(_ relativePath: String) -> PageLookup {
+    func lookupPage(_ relativePath: String) -> PageLookup {
         guard relativePath.hasSuffix(".md") else { return .missing }
         let url = self.url(for: relativePath)
         guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
@@ -236,7 +236,7 @@ public final class Clamshell {
     /// query returns the full pool in mtime-descending order.
     /// `excluding` omits a specific URL — typically the currently-open
     /// document (move-to / mention / jump-to). Pass nil to include it.
-    public func pages(matching query: String, excluding: URL? = nil) -> [MentionItem] {
+    func pages(matching query: String, excluding: URL? = nil) -> [MentionItem] {
         let q = query.lowercased()
         let pool = entries
             .filter { $0.url != excluding }
@@ -274,7 +274,7 @@ public final class Clamshell {
     /// seeded into history can otherwise later misclassify a wakeup as
     /// `.echo`. Disk read + parse run off-MainActor; hops back only to
     /// touch the ring buffer and build the `Document`.
-    public func loadDocument(at url: URL, tracksDiskHistory: Bool = true) async throws -> Document {
+    func loadDocument(at url: URL, tracksDiskHistory: Bool = true) async throws -> Document {
         let files = self.files
         let raw: String = try await Task.detached(priority: .userInitiated) {
             try files.read(url)
@@ -419,7 +419,7 @@ public final class Clamshell {
     /// own work, so rapid-fire commits land in order. Sync entry so the
     /// editor can call it from the mutation-commit thread without
     /// ceremony.
-    public func documentDidChange(ops: [EditorOp], in doc: Document) {
+    func documentDidChange(ops: [EditorOp], in doc: Document) {
         let patch: Patch = ops.isEmpty ? .empty : Patch.from(ops: ops)
         enqueueSave(doc, patch: patch)
     }
@@ -428,7 +428,7 @@ public final class Clamshell {
     /// not trigger a save — that's what `documentDidChange` is for. Used
     /// on navigation / blur / scenePhase / close to make sure the bytes
     /// for the just-fired commit are on disk before the editor unmounts.
-    public func flush(_ doc: Document) async {
+    func flush(_ doc: Document) async {
         guard let pending = saveChain[doc.url] else { return }
         await pending.value
         saveChain.removeValue(forKey: doc.url)
@@ -516,7 +516,7 @@ public final class Clamshell {
     /// the appended content into any open window of the same URL.
     @MainActor
     @discardableResult
-    public func append(_ blocks: [Block], toPage relativePath: String) async throws -> Document {
+    func append(_ blocks: [Block], toPage relativePath: String) async throws -> Document {
         let url = self.url(for: relativePath)
         let doc = try await loadDocument(at: url)
         doc.transaction(name: "Append to subpage") {
@@ -566,10 +566,10 @@ public final class Clamshell {
     /// `liveDocumentMutated` is true exactly when the live `Document` passed
     /// in was rewritten in place — the caller's signal to reseed mtime, the
     /// disk-content history, the title cache, and to show a banner.
-    public struct ConflictResolution: Equatable, Sendable {
-        public let salvaged: Int
-        public let liveDocumentMutated: Bool
-        public static let none = ConflictResolution(salvaged: 0, liveDocumentMutated: false)
+    struct ConflictResolution: Equatable, Sendable {
+        let salvaged: Int
+        let liveDocumentMutated: Bool
+        static let none = ConflictResolution(salvaged: 0, liveDocumentMutated: false)
     }
 
     /// If `url` has any unresolved `NSFileVersion` conflict alternates,
@@ -586,7 +586,7 @@ public final class Clamshell {
     /// Closed-page callers: pass `nil`. The merged result is written
     /// straight to disk; `liveDocumentMutated` is always false.
     @MainActor
-    public func resolveConflictVersions(
+    func resolveConflictVersions(
         at url: URL,
         againstLive doc: Document? = nil
     ) async throws -> ConflictResolution {
@@ -672,7 +672,7 @@ public final class Clamshell {
     /// are created as needed. Refreshes `entries` and seeds the title
     /// cache so the new page shows up immediately in pickers / sidebar.
     @discardableResult
-    public func createPage(
+    func createPage(
         title: String,
         requestedPath: String?,
         blocks: [Block]?
@@ -723,7 +723,7 @@ public final class Clamshell {
     /// The page's recovery log dir travels with it so restoration brings the
     /// per-block log entries back too.
     @discardableResult
-    public func moveToTrash(at url: URL) throws -> String {
+    func moveToTrash(at url: URL) throws -> String {
         let rel = relativePath(of: url)
         let result = try files.moveToTrash(relativePath: rel, workspaceRoot: root)
         if homeRelativePath == rel {
@@ -742,12 +742,12 @@ public final class Clamshell {
         return result
     }
 
-    nonisolated public func listTrashedPages() async throws -> [TrashEntry] {
+    nonisolated func listTrashedPages() async throws -> [TrashEntry] {
         try await trash.listEntries()
     }
 
     @discardableResult
-    public func restorePage(_ entry: TrashEntry) async throws -> URL {
+    func restorePage(_ entry: TrashEntry) async throws -> URL {
         let restoredURL = try await trash.restorePage(entry)
         let restoredRel = relativePath(of: restoredURL)
         do {
@@ -765,7 +765,7 @@ public final class Clamshell {
     /// live `.md` right now (and aren't tombstoned). Each entry arrives
     /// fully populated — JSONL gives us hash, parent hash, atomic
     /// markdown, and timestamp per line. Sorted by recordedAt descending.
-    public func listLostBlocks(filter: LostBlocksFilter = .all) async -> [LostBlock] {
+    func listLostBlocks(filter: LostBlocksFilter = .all) async -> [LostBlock] {
         switch filter {
         case .page(let rel):
             return await log.enumerate(page: rel)
@@ -780,7 +780,7 @@ public final class Clamshell {
     /// `add` carries the markdown + parent metadata so we can reconstruct
     /// them. `since` caps the result to recent purges (default: last 30
     /// days). Pass `since: nil` to disable the cap.
-    public func listPurgedBlocks(
+    func listPurgedBlocks(
         filter: LostBlocksFilter = .all,
         since: Date? = Date().addingTimeInterval(-30 * 86_400)
     ) async -> [PurgedBlock] {
@@ -803,7 +803,7 @@ public final class Clamshell {
     /// in any other markdown app.
     ///
     /// One-shot, content-immutable writes — no need to chain through `saveChain`.
-    nonisolated public func writeImage(_ image: PastedImage) throws -> String {
+    nonisolated func writeImage(_ image: PastedImage) throws -> String {
         let safeExt = sanitizeImageExtension(image.ext)
         let filename = pastedImageFilename(ext: safeExt)
         let assetsURL = root.appendingPathComponent(Clamshell.assetsFolderName, isDirectory: true)
@@ -816,7 +816,7 @@ public final class Clamshell {
     /// Resolve an image block's `source` field to a file URL the renderer can
     /// load. Returns nil if the source has a scheme we don't handle, escapes
     /// the workspace, or the file is missing — the renderer shows a placeholder.
-    nonisolated public func resolveImage(source: String) -> URL? {
+    nonisolated func resolveImage(source: String) -> URL? {
         guard !source.isEmpty else { return nil }
         // `http://...` etc. — let it pass through to the renderer (which
         // currently doesn't load remote URLs). For now treat as missing.

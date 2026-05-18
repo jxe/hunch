@@ -14,12 +14,12 @@ import SwiftUI
 ///
 /// Used only here for the page editor. The reorder lift overlay uses a slim
 /// read-only sibling, `BlockRowPreview`, which strips every editor closure.
-public struct BlockRow: View, Equatable {
+struct BlockRow: View, Equatable {
     /// Block content as a value. Mutations route through `onBlockChange` —
     /// keeping the row free of `@Binding` lets `.equatable()` actually gate
     /// `body` (DynamicProperty wrappers like `@Binding` reset per parent
     /// re-render and force body to run regardless of `==`).
-    public let block: Block
+    let block: Block
     /// Editor session state. Held as a plain `let` (NOT `@Bindable`) so it
     /// doesn't defeat `BlockRow`'s `.equatable()` gating. Read inside `body`
     /// for fields that should drive a *row-local* invalidation rather than
@@ -28,56 +28,56 @@ public struct BlockRow: View, Equatable {
     /// re-evaluate only the rows that observed the change, leaving the
     /// `LazyVStack` layout untouched — a structural guard against the
     /// hover→write→invalidate→layout→hover-redispatch feedback loop.
-    public let state: EditorState
-    public let onBlockChange: (Block) -> Void
+    let state: EditorState
+    let onBlockChange: (Block) -> Void
     /// Toggles the `done` state of a `.todo` block. Routed through the host's
     /// mutate path (which computes a `BlockTreeDiff` and emits ops) instead of
     /// the row's binding so the recovery journal sees the hash flip — a bare
     /// `onBlockChange` would skip the diff and leave the prior hash `.alive`.
-    public let onToggleTodo: (BlockID) -> Void
+    let onToggleTodo: (BlockID) -> Void
     /// Depth of this block in the document tree. Replaces the old per-case
     /// `indent` field — passed in by the visible-layout walk so the row
     /// renders the right leading inset without consulting the model directly.
-    public let depth: Int
-    public let isPageTitle: Bool
-    public let numberingIndex: Int?
-    public let isSelected: Bool
+    let depth: Int
+    let isPageTitle: Bool
+    let numberingIndex: Int?
+    let isSelected: Bool
     /// nil → render this row read-only. Non-nil → swap in `BlockTextEditor`
     /// for the text area and route key/autotransform/mention events through
     /// these callbacks. At most one row per `EditorView` carries this non-nil
     /// at a time (the row currently being edited).
-    public let editor: TextEditing?
+    let editor: TextEditing?
     /// Toggle expansion is owned by the parent (EditorView) so the body blocks render as
     /// regular siblings in the page's block loop. Ignored for non-toggle blocks.
-    public let isExpanded: Bool
+    let isExpanded: Bool
     /// Drag-and-drop hovering this row as the "drop on parent" target — paints a
     /// child-slot preview indicating the dragged content will be appended inside.
-    public let isDropTarget: Bool
+    let isDropTarget: Bool
     /// True when the block action popover (Cmd-/ menu) is targeting this row —
     /// paints a ring around it so the popover's anchor block is unambiguous.
-    public let isActionMenuTarget: Bool
+    let isActionMenuTarget: Bool
 
     /// Action-menu popover is currently presenting against this row.
-    public let isActionMenuPresented: Bool
+    let isActionMenuPresented: Bool
     /// A page pinch gesture is in flight — disable iOS swipe affordances on
     /// this row so the two gestures don't fight.
-    public let isPinching: Bool
+    let isPinching: Bool
     /// Opacity to apply to the row — used to dim the source row of an
     /// in-flight reorder lift.
-    public let reorderSourceOpacity: Double
+    let reorderSourceOpacity: Double
     /// True when this row is part of the in-flight reorder lift — surfaces
     /// in accessibility as `reorder-source`.
-    public let isReorderingThisBlock: Bool
+    let isReorderingThisBlock: Bool
     /// True when this row is the multi-select drag-handle anchor (topmost
     /// row in a multi-block selection). The hover-driven side of handle
     /// visibility is read from `state` inside `body` so hover writes don't
     /// invalidate `EditorView.body`.
-    public let isSelectionHandleRow: Bool
+    let isSelectionHandleRow: Bool
     /// Whether this row is the source of an in-flight macOS drag — keeps the
     /// handle hit-testable / gesture mounted even if the cursor drifts off.
-    public let isMacDragSource: Bool
-    public let accessibilityID: String
-    public let accessibilityLabelText: String
+    let isMacDragSource: Bool
+    let accessibilityID: String
+    let accessibilityLabelText: String
 
     /// Render-relevant subset of `BlockRow`'s stored properties. Auto-derived
     /// `Equatable` so the row's `==` is a one-liner instead of a 20-line
@@ -145,7 +145,7 @@ public struct BlockRow: View, Equatable {
         )
     }
 
-    nonisolated public static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
+    nonisolated static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
         MainActor.assumeIsolated {
             lhs.equalitySnapshot == rhs.equalitySnapshot
         }
@@ -155,11 +155,11 @@ public struct BlockRow: View, Equatable {
     /// edited. Bundled together so `BlockRow` doesn't carry text-editor
     /// plumbing for read-only rows (and so the lift's `BlockRowPreview`
     /// sibling doesn't even exist as a temptation to add it back).
-    public struct TextEditing {
+    struct TextEditing {
         /// Plain-typed focus binding (NOT `@FocusState.Binding`). Held by value
         /// so it doesn't defeat `BlockRow`'s `.equatable()` gating; only read
         /// inside `BlockTextEditor`.
-        public let editorFocused: FocusState<BlockID?>.Binding
+        let editorFocused: FocusState<BlockID?>.Binding
         /// True when this row is the actively-edited block (i.e. the one that
         /// should hold first responder). False during the iOS one-tick overlap
         /// where the just-vacated row stays mounted so the new row's UITextView
@@ -167,22 +167,22 @@ public struct BlockRow: View, Equatable {
         /// see `iosTransitioningEditorID` in EditorView. The transitioning row's
         /// `BlockTextEditor` reads this to set `wantsFocus = false` and avoid
         /// fighting the new editor for first responder.
-        public let isActive: Bool
+        let isActive: Bool
         /// True when the `@`-mention popover is interacting with this row —
         /// the only `TextEditing` field whose change has to invalidate body,
         /// hence the only one compared in `BlockRow`'s `==`.
-        public let mentionActive: Bool
-        public let onKey: (BlockKey) -> KeyPress.Result
-        public let onAutotransform: (BlockTransform, AttributedString) -> Void
+        let mentionActive: Bool
+        let onKey: (BlockKey) -> KeyPress.Result
+        let onAutotransform: (BlockTransform, AttributedString) -> Void
         /// Fires whenever the cursor sits after an in-progress `@query` (or
         /// transitions out of one). EditorView holds the popover state.
-        public let onMentionTriggerChange: (MentionTrigger?) -> Void
+        let onMentionTriggerChange: (MentionTrigger?) -> Void
         /// Called once on first mount to fetch the cursor target captured at
         /// tap/split/merge time. EditorView's closure atomically reads and
         /// clears `EditorState.pendingInitialCursor`.
-        public let consumeInitialCursor: () -> InitialCursorTarget?
+        let consumeInitialCursor: () -> InitialCursorTarget?
 
-        public init(
+        init(
             editorFocused: FocusState<BlockID?>.Binding,
             isActive: Bool = true,
             mentionActive: Bool,
@@ -240,7 +240,7 @@ public struct BlockRow: View, Equatable {
     let actionMenuContent: () -> AnyView
     let mentionMenuContent: () -> AnyView
 
-    public init(
+    init(
         block: Block,
         state: EditorState,
         onBlockChange: @escaping (Block) -> Void,
@@ -339,7 +339,7 @@ public struct BlockRow: View, Equatable {
             || state.hoveredHandle == block.id
     }
 
-    public var body: some View {
+    var body: some View {
         let externalURLs = collectExternalURLs(in: block.text)
         return content
             .padding(.top, BlockSpacing.intrinsicTopPadding(block))
@@ -913,16 +913,16 @@ private func decodeFavicon(_ data: Data) -> Image? {
 /// `editorFocused`, …) or hover/drop state. Equatable so the lift overlay can
 /// re-render cheaply if the dragged block's text or page-title resolution
 /// changes mid-drag.
-public struct BlockRowPreview: View, Equatable {
-    public let block: Block
-    public let depth: Int
-    public let isPageTitle: Bool
-    public let numberingIndex: Int?
-    public let isExpanded: Bool
-    public let pageLookups: [String: PageLookup]
-    public let linkPreviews: [URL: LinkPreview]
+struct BlockRowPreview: View, Equatable {
+    let block: Block
+    let depth: Int
+    let isPageTitle: Bool
+    let numberingIndex: Int?
+    let isExpanded: Bool
+    let pageLookups: [String: PageLookup]
+    let linkPreviews: [URL: LinkPreview]
 
-    public init(
+    init(
         block: Block,
         depth: Int,
         isPageTitle: Bool = false,
@@ -940,7 +940,7 @@ public struct BlockRowPreview: View, Equatable {
         self.linkPreviews = linkPreviews
     }
 
-    public var body: some View {
+    var body: some View {
         content
             .padding(.top, BlockSpacing.intrinsicTopPadding(block))
             .padding(.bottom, BlockSpacing.intrinsicBottomPadding(block))

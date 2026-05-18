@@ -61,8 +61,8 @@ public enum EditorPredicate: Sendable {
     case canOutdent
 }
 
-public struct EditorCommandsFocusKey: FocusedValueKey {
-    public typealias Value = EditorCommands
+struct EditorCommandsFocusKey: FocusedValueKey {
+    typealias Value = EditorCommands
 }
 
 extension FocusedValues {

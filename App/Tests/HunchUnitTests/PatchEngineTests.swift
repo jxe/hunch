@@ -184,7 +184,7 @@ struct PatchEngineTests {
             ("dev-A", [addRecord(x, counter: 1, t: 1_000_000_000)]),
             ("dev-B", [purgeRecord(x, counter: 2, t: 1)])
         ))
-        let status = try #require(intent.status(of: x.atomicHash))
+        let status = try #require(intent.byHash[x.atomicHash])
         if case .alive = status {
             Issue.record("Expected tombstoned (higher counter wins over wall clock)")
         }
@@ -198,7 +198,7 @@ struct PatchEngineTests {
             ("dev-A", [addRecord(x, counter: nil, t: 999_999_999)]),
             ("dev-B", [purgeRecord(x, counter: 1, t: 1)])
         ))
-        let status = try #require(intent.status(of: x.atomicHash))
+        let status = try #require(intent.byHash[x.atomicHash])
         if case .alive = status {
             Issue.record("Expected tombstoned (modern record beats legacy)")
         }
@@ -211,7 +211,7 @@ struct PatchEngineTests {
             ("dev-A", [addRecord(x, counter: 5)]),
             ("dev-Z", [purgeRecord(x, counter: 5)])
         ))
-        let status = try #require(intent.status(of: x.atomicHash))
+        let status = try #require(intent.byHash[x.atomicHash])
         if case .alive = status {
             Issue.record("Expected tombstoned (dev-Z > dev-A on lex)")
         }
@@ -283,18 +283,6 @@ struct PatchEngineTests {
         ])))
 
         #expect(intent.tombstones() == [p.atomicHash])
-        #expect(intent.recordedParents()[x.atomicHash] == p.atomicHash)
-    }
-
-    @Test func parentChainTerminatesOnCycle() {
-        let intent = IntentState(byHash: [
-            "h1": .alive(latestAdd: .init(parent: "h2", markdown: "", recordedAt: Date())),
-            "h2": .alive(latestAdd: .init(parent: "h1", markdown: "", recordedAt: Date())),
-        ])
-
-        let chain = intent.parentChain(from: "h1")
-
-        #expect(chain == ["h2", "h1"], "visits each node once before cycle detection halts")
     }
 
     @Test func lostEntriesListsAliveMissingFromLiveSet() {

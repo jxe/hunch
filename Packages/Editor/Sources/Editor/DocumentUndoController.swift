@@ -14,8 +14,8 @@ extension EnvironmentValues {
     }
 }
 
-public struct DocumentUndoControllerFocusKey: FocusedValueKey {
-    public typealias Value = DocumentUndoController
+struct DocumentUndoControllerFocusKey: FocusedValueKey {
+    typealias Value = DocumentUndoController
 }
 
 extension FocusedValues {

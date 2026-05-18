@@ -76,11 +76,7 @@ extension Clamshell {
         switch outcome {
         case .skipped:
             perfEnd(foldT, "runReconcile.skipped", "rel=\(rel)")
-            return PatchEngine.ReconcileSummary(
-                restoredHashes: [],
-                lifted: [],
-                unrestorable: []
-            )
+            return PatchEngine.ReconcileSummary(restoredHashes: [])
         case .folded(let recon, let mode):
             perfEnd(foldT, "runReconcile.folded", "rel=\(rel) mode=\(mode) inserts=\(recon.inserts.count) lift=\(recon.toAppend.count) quarantine=\(recon.unrestorable.count)")
             var entries: [Patch.Entry] = []
@@ -110,11 +106,7 @@ extension Clamshell {
                 Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
             }
 
-            return PatchEngine.ReconcileSummary(
-                restoredHashes: recon.restoredHashes,
-                lifted: recon.toAppend.map(\.hash),
-                unrestorable: recon.unrestorable
-            )
+            return PatchEngine.ReconcileSummary(restoredHashes: recon.restoredHashes)
         }
     }
 

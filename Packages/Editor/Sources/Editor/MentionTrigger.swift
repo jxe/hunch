@@ -22,7 +22,7 @@ public struct MentionTrigger: Equatable, Sendable {
 ///   * The query crosses a hard stop (newline / tab) — clearly the user moved on
 ///   * The `@` is glued to a word character (so `email@host` doesn't trigger)
 ///   * No `@` is found before hitting a hard stop or the start of the string
-public func detectMentionTrigger(plain: String, cursor: Int) -> MentionTrigger? {
+func detectMentionTrigger(plain: String, cursor: Int) -> MentionTrigger? {
     let ns = plain as NSString
     guard cursor >= 0, cursor <= ns.length else { return nil }
 

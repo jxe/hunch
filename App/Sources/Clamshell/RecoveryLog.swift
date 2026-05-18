@@ -651,26 +651,26 @@ actor RecoveryLog {
 /// longer in its source page's live set and isn't tombstoned. Identity is
 /// `(source, hash)` — same content re-orphaned twice on the same page
 /// collapses into one entry.
-public struct LostBlock: Sendable, Identifiable {
-    public let markdown: String
-    public let hash: String
-    public let parentHash: String?
-    public let source: String
-    public let recordedAt: Date
+struct LostBlock: Sendable, Identifiable {
+    let markdown: String
+    let hash: String
+    let parentHash: String?
+    let source: String
+    let recordedAt: Date
 
-    public var id: String { "\(source)|\(hash)" }
+    var id: String { "\(source)|\(hash)" }
 }
 
 extension LostBlock: Hashable {
-    public static func == (lhs: LostBlock, rhs: LostBlock) -> Bool { lhs.id == rhs.id }
-    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    static func == (lhs: LostBlock, rhs: LostBlock) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 extension LostBlock {
     /// Construct a `LostBlock` from raw fields. Used by `PatchEngine` and
     /// by code paths that re-group `PurgedBlock`s through the same forest
     /// assembler.
-    public static func adapt(
+    static func adapt(
         hash: String,
         parentHash: String?,
         markdown: String,
@@ -693,19 +693,19 @@ extension LostBlock {
 /// whose markdown + parent metadata we still have from a prior `add`.
 /// Surfaces in the Recover sheet's "deleted on purpose" section so the
 /// user can bring back intentional deletions when needed.
-public struct PurgedBlock: Sendable, Identifiable {
-    public let markdown: String
-    public let hash: String
-    public let parentHash: String?
-    public let source: String
-    public let purgedAt: Date
+struct PurgedBlock: Sendable, Identifiable {
+    let markdown: String
+    let hash: String
+    let parentHash: String?
+    let source: String
+    let purgedAt: Date
 
-    public var id: String { "\(source)|\(hash)" }
+    var id: String { "\(source)|\(hash)" }
 }
 
 extension PurgedBlock: Hashable {
-    public static func == (lhs: PurgedBlock, rhs: PurgedBlock) -> Bool { lhs.id == rhs.id }
-    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    static func == (lhs: PurgedBlock, rhs: PurgedBlock) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 extension PurgedBlock {

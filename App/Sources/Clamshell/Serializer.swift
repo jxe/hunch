@@ -1,14 +1,14 @@
 import Foundation
 import Editor
 
-public enum BlockSerializer {
+enum BlockSerializer {
     /// Serialize a tree of blocks to markdown. The tree's depth is recursively
     /// translated into leading-space indentation (2 spaces per level). Each
     /// container kind owns its own envelope: toggles emit `▸ Title` + their
     /// children; templates wrap children in `:::{template-button}` fences;
     /// headings emit their hash-prefix line and recurse into children at the
     /// same depth (heading containment is purely a parser concern).
-    public static func serialize(_ blocks: [Block], resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }, consecutiveNumbering: Bool = false) -> String {
+    static func serialize(_ blocks: [Block], resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }, consecutiveNumbering: Bool = false) -> String {
         var out = ""
         serializeChildren(blocks, depth: 0, into: &out, titleForPath: titleForPath, isTopLevel: true, consecutiveNumbering: consecutiveNumbering)
         if !out.hasSuffix("\n") { out += "\n" }

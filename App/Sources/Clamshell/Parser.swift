@@ -2,7 +2,7 @@ import Foundation
 import Editor
 import Markdown
 
-public enum BlockParser {
+enum BlockParser {
     /// ASCII-only whitespace — used in `flushRegular` so that NBSP-only buffers
     /// (the empty-paragraph spacer marker) fall through to swift-markdown rather
     /// than being skipped. Foundation's `.whitespacesAndNewlines` includes U+00A0.
@@ -18,7 +18,7 @@ public enum BlockParser {
     /// 4. `foldHeadings` — post-pass that collapses sibling sequences of
     ///    `[heading, …, heading, …]` into a tree where each heading owns the
     ///    blocks until the next heading at the same or higher level.
-    public static func parse(_ source: String) -> [Block] {
+    static func parse(_ source: String) -> [Block] {
         let templated = parseTemplateContainers(source)
         return foldHeadings(templated)
     }

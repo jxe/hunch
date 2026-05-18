@@ -14,7 +14,7 @@ extension Clamshell {
     /// preceded by Clamshell doing the filesystem-level work in place
     /// (conflict merge, content reload, journal reconcile). The host
     /// reacts only with UI/workspace bookkeeping.
-    public enum PresenterEvent: Sendable {
+    enum PresenterEvent: Sendable {
         /// Presenter woke up but no page-content change was significant.
         /// Sibling files may have changed — host typically rescans the
         /// workspace.
@@ -74,8 +74,8 @@ extension Clamshell {
     /// The journal fold runs asynchronously after `openPage` returns; any
     /// restored subtrees splice into `document` in place and surface via
     /// `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
-    public struct OpenPage {
-        public let document: Document
+    struct OpenPage {
+        let document: Document
         let presenter: PresenterHandle
     }
 
@@ -100,7 +100,7 @@ extension Clamshell {
     /// restored anything). Filesystem-level work is already done by the
     /// time the callback runs.
     @MainActor
-    public func openPage(
+    func openPage(
         at url: URL,
         onEvent: @escaping @MainActor (PresenterEvent) -> Void
     ) async throws -> OpenPage {
@@ -147,7 +147,7 @@ extension Clamshell {
     /// document and tear down its file presenter. Idempotent on repeated
     /// calls with the same `OpenPage`.
     @MainActor
-    public func closePage(_ open: OpenPage) async {
+    func closePage(_ open: OpenPage) async {
         _ = await flush(open.document)
         removePresenter(open.presenter)
     }

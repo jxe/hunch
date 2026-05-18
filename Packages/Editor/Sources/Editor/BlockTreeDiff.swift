@@ -39,7 +39,7 @@ public extension EditorOp {
 
 /// Pre→post tree diff that produces the `EditorOp` stream
 /// `EditorView.mutate(_:_:)` hands to the host. Pure; no I/O.
-public enum BlockTreeDiff {
+enum BlockTreeDiff {
     /// Diff pre→post into a stream of `EditorOp`s the host can apply to its
     /// recovery log as one ordered batch. Walks post preorder so a parent
     /// insert always precedes its children's inserts; removes are emitted
@@ -49,7 +49,7 @@ public enum BlockTreeDiff {
     /// Skips blocks whose `(id, hash)` pair is unchanged: no op, no log entry,
     /// no churn. This is the property that makes moves and reorders silent
     /// (id stable, hash stable — but tree position changed).
-    public static func derive(pre: [Block], post: [Block]) -> [EditorOp] {
+    static func derive(pre: [Block], post: [Block]) -> [EditorOp] {
         var preIDToHash: [BlockID: String] = [:]
         collectIDHashes(pre, into: &preIDToHash)
         var postIDToHash: [BlockID: String] = [:]

@@ -34,7 +34,7 @@ public final class EditorState {
     /// clears any unconsumed value so a stale target can't leak across sessions.
     /// Nil means
     /// "seek to end".
-    public internal(set) var pendingInitialCursor: InitialCursorTarget? = nil
+    internal(set) var pendingInitialCursor: InitialCursorTarget? = nil
 
     // Hover — visible across all modes/gestures, drives drag-handle reveal.
     //

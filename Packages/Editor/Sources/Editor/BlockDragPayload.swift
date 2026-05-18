@@ -11,10 +11,10 @@ import CoreTransferable
 /// gets routed via the macOS file-promise pipeline (NSFileCoordinator + temp file
 /// round-trip), which adds ~1.5 seconds of latency to in-app drops. String transfers
 /// stay in memory and complete in milliseconds.
-public struct BlockDragPayload: Codable, Transferable, Sendable {
-    public let ids: [BlockID]
+struct BlockDragPayload: Codable, Transferable, Sendable {
+    let ids: [BlockID]
 
-    public init(ids: [BlockID]) {
+    init(ids: [BlockID]) {
         self.ids = ids
     }
 
@@ -26,7 +26,7 @@ public struct BlockDragPayload: Codable, Transferable, Sendable {
         self = payload
     }
 
-    public static var transferRepresentation: some TransferRepresentation {
+    static var transferRepresentation: some TransferRepresentation {
         ProxyRepresentation(exporting: { (payload: BlockDragPayload) -> String in
             let data = (try? JSONEncoder().encode(payload)) ?? Data()
             return String(data: data, encoding: .utf8) ?? ""

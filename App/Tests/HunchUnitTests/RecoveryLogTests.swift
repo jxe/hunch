@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-import Editor
+@testable import Editor
 
 @Suite("RecoveryLog")
 struct RecoveryLogTests {
@@ -59,7 +59,7 @@ struct RecoveryLogTests {
 
         let journal = log.readJournal(page: "p.md")
         let intent = PatchEngine.intent(from: journal)
-        guard case .alive = intent.status(of: block.atomicHash) else {
+        guard case .alive = intent.byHash[block.atomicHash] else {
             Issue.record("expected alive intent after three duplicate adds")
             return
         }
@@ -666,7 +666,7 @@ struct RecoveryLogTests {
         try await clamshell.log.apply(Patch(entries: [.purge(hash: h)]), to: "p.md")
 
         let intent = PatchEngine.intent(from: clamshell.log.readJournal(page: "p.md"))
-        switch intent.status(of: h) {
+        switch intent.byHash[h] {
         case .tombstoned: break
         case .alive: Issue.record("expected tombstoned, got alive — purge lost the union race")
         case .none: Issue.record("expected tombstoned, got no status")
@@ -874,12 +874,12 @@ struct RecoveryLogTests {
         let journal = log.readJournal(page: "p.md")
         let intent = PatchEngine.intent(from: journal)
 
-        if case .tombstoned = intent.status(of: paragraph.atomicHash) {
+        if case .tombstoned = intent.byHash[paragraph.atomicHash] {
             // expected
         } else {
-            Issue.record("expected paragraph hash tombstoned, got \(String(describing: intent.status(of: paragraph.atomicHash)))")
+            Issue.record("expected paragraph hash tombstoned, got \(String(describing: intent.byHash[paragraph.atomicHash]))")
         }
-        if case .alive = intent.status(of: bullet.atomicHash) {
+        if case .alive = intent.byHash[bullet.atomicHash] {
             // expected
         } else {
             Issue.record("expected bullet hash alive after Turn Into")

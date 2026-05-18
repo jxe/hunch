@@ -77,7 +77,7 @@ private let prefixTriggers: [(prefix: String, transform: BlockTransform)] = [
 /// Returns a result when `text` begins with a prefix trigger AND `cursor` sits exactly at
 /// the trigger's end. The trigger is consumed; any remaining text becomes the body of the
 /// new block. `cursor` is the character offset (UTF-16-equivalent for ASCII triggers).
-public func detectPrefixAutotransform(text: AttributedString, cursor: Int) -> AutotransformResult? {
+func detectPrefixAutotransform(text: AttributedString, cursor: Int) -> AutotransformResult? {
     let plain = String(text.characters)
     if cursor == 3, plain == "---" {
         return AutotransformResult(transform: .divider, remainingText: AttributedString())
@@ -97,7 +97,7 @@ public func detectPrefixAutotransform(text: AttributedString, cursor: Int) -> Au
 
 /// Detects an Enter-completed whole-row trigger. Caller must already have established that
 /// Enter is being pressed at the end of a row whose remaining-tail text is empty.
-public func detectEnterAutotransform(text: AttributedString) -> AutotransformResult? {
+func detectEnterAutotransform(text: AttributedString) -> AutotransformResult? {
     switch String(text.characters) {
     case "---":
         return AutotransformResult(transform: .divider, remainingText: AttributedString())

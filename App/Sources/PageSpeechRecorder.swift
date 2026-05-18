@@ -4,21 +4,21 @@ import Speech
 
 @MainActor
 @Observable
-public final class PageSpeechRecorder {
-    public enum State: Equatable {
+final class PageSpeechRecorder {
+    enum State: Equatable {
         case idle
         case recording
         case transcribing
     }
 
-    public internal(set) var state: State = .idle
+    private(set) var state: State = .idle
 
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
 
-    public init() {}
+    init() {}
 
-    public var isBusy: Bool {
+    var isBusy: Bool {
         state != .idle
     }
 

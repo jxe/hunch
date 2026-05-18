@@ -5,22 +5,6 @@ import Editor
 
 @Suite("FileStore")
 struct FileStoreTests {
-    @Test @MainActor func writeReadRoundTrip() throws {
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("console-test-\(UUID().uuidString).md")
-        defer { try? FileManager.default.removeItem(at: tmp) }
-
-        let store = FileStore()
-        let source = "# Title\n\nA paragraph.\n\n- one\n- two\n"
-        try store.write(source, to: tmp)
-
-        let doc = try store.loadDocument(at: tmp)
-        #expect(doc.title == "Title")
-        // Heading-fold: H1 owns the trailing paragraph + bulleted list.
-        #expect(doc.children.count == 1)
-        #expect(doc.children[0].children.count == 3)  // paragraph + 2 bullets
-    }
-
     @Test @MainActor func loadDocumentTitleUsesFirstH1WithFilenameFallback() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("console-title-\(UUID().uuidString)", isDirectory: true)

@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Translates a `Core.AttributedString` (with our custom inline marks) into a SwiftUI-renderable
 /// `AttributedString` that uses Foundation/SwiftUI attributes (font weight, italic, link, etc.).
-public enum InlineRenderer {
-    public static func swiftUIAttributed(
+enum InlineRenderer {
+    static func swiftUIAttributed(
         _ source: AttributedString,
         baseFont: Font = NotionStyle.body(),
         boldFont: Font = NotionStyle.body(weight: .semibold),

@@ -3,13 +3,13 @@ import Foundation
 /// Persists the security-scoped URL of the user's Clamshell folder. Only the
 /// URL bookmark — format-level metadata like the home page lives inside the
 /// Clamshell itself (see `.clamshell.json`).
-public enum WorkspaceBookmark {
+enum WorkspaceBookmark {
     private static let defaultsKey = "console.workspace.bookmark"
     /// Legacy key — the home page used to live in UserDefaults. Read once on
     /// Clamshell init for migration into `.clamshell.json`, then cleared.
     static let legacyHomePathDefaultsKey = "console.workspace.homeRelativePath"
 
-    public static func save(url: URL) throws {
+    static func save(url: URL) throws {
         let total = perfStart()
         #if os(macOS)
         let options: URL.BookmarkCreationOptions = [.withSecurityScope]
@@ -31,7 +31,7 @@ public enum WorkspaceBookmark {
 
     /// Resolves the persisted bookmark, if any. The returned URL has security-scoped access
     /// already started — call `stopAccessingSecurityScopedResource()` on it when finished.
-    public static func resolve() -> URL? {
+    static func resolve() -> URL? {
         guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return nil }
         var stale = false
         do {
@@ -51,7 +51,7 @@ public enum WorkspaceBookmark {
         }
     }
 
-    public static func clear() {
+    static func clear() {
         UserDefaults.standard.removeObject(forKey: defaultsKey)
         UserDefaults.standard.removeObject(forKey: legacyHomePathDefaultsKey)
     }

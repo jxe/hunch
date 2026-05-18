@@ -78,14 +78,6 @@ struct FileStore: Sendable {
         if let writeError { throw FileStoreError.writeFailed(url, underlying: writeError) }
     }
 
-    @MainActor
-    func loadDocument(at url: URL) throws -> Document {
-        let source = try read(url)
-        let blocks = BlockParser.parse(source)
-        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-        return Document(url: url, children: blocks, modificationDate: mtime)
-    }
-
     /// Read + parse + title-derive — all nonisolated. The body touches only
     /// the file system and pure value types (`Block`, `String`), so callers
     /// can hop this off MainActor when the workspace lives on iCloud and the
