@@ -41,7 +41,7 @@ user-picked workspace folder.
     append / createPage / moveToTrash / listTrashedPages / restorePage /
     listLostBlocks / listPurgedBlocks / resolveConflictVersions`,
     plus `relativePath(of:)` and `url(for:)` for path conversion.
-    Internal helpers (`writeClosedPage(_:patch:)`, `scheduleSave(_:)`,
+    Internal helpers (`writeClosedPage(_:patch:)`, `enqueueSave(_:patch:)`,
     `reconcileLive`, `classifyDiskContent`, `isQuiescent`,
     `installPresenter` / `removePresenter`) and the `log` actor drive
     the engine from inside the module and aren't part of the host
@@ -81,9 +81,9 @@ user-picked workspace folder.
     drop-on-subpage) sequence log-then-file atomically without the
     chain, since they're for documents that have no live editor
     session. **Internal in-place mutations** (reconcile auto-restore
-    splice, manual-restore splice) call `scheduleSave(_:)` to enqueue a
-    .md write onto the same per-URL chain — no log apply, since the
-    journal is already current. `moveToTrash`
+    splice, manual-restore splice) call `enqueueSave(doc, patch: .empty)`
+    to enqueue a .md write onto the same per-URL chain — no log apply,
+    since the journal is already current. `moveToTrash`
     clears `homeRelativePath` if it matched and moves the page's
     `.history/<rel>/` dir along with the `.md`. Also where the
     markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown

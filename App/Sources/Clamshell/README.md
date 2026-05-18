@@ -479,8 +479,9 @@ append" — `NSFileCoordinator` handles that.
 - [Clamshell.swift](Clamshell.swift) — the umbrella API. Orchestrates
   reads/writes, hands the engine its inputs, applies the engine's
   outputs. Also owns the per-URL save chain: `documentDidChange`
-  (commit-time atomic log + .md write), `scheduleSave` (in-place
-  .md re-save for engine paths), `flush(_:)` (await durability).
+  (commit-time atomic log + .md write) and `flush(_:)` (await
+  durability). Engine-internal in-place saves go through the same
+  `enqueueSave(doc, patch: .empty)` primitive.
 - [Clamshell+Reconcile.swift](Clamshell+Reconcile.swift) — engine
   orchestration: open-doc reconcile, live-doc reconcile for presenter
   wakeups, and `restore(_:liveDoc:)` for the Recover sheet.

@@ -109,7 +109,7 @@ extension Clamshell {
                 // restored hashes (engine read them as alive). Save the .md
                 // through the per-URL save chain so concurrent user commits
                 // stay ordered.
-                scheduleSave(doc)
+                enqueueSave(doc, patch: .empty)
                 let count = recon.restoredHashes.count
                 Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
             }
@@ -229,7 +229,7 @@ extension Clamshell {
             // the per-URL save chain and apply the follow-up patch to the
             // log separately (it carries the tombstones / fresh adds the
             // restore needed).
-            scheduleSave(doc)
+            enqueueSave(doc, patch: .empty)
             if !followUp.isEmpty {
                 do {
                     try await log.apply(followUp, to: source)

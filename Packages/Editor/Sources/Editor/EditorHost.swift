@@ -106,7 +106,7 @@ public protocol EditorHost: AnyObject {
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination?
 
     /// User pressed Cmd-[ / swipe-back / etc. — host pops its navigation stack.
-    func didNavigateBack()
+    func navigateBack()
 
     /// Document was just committed via `Document.transaction` — structural
     /// mutation via `EditorView.mutate(_:_:)`, typing commit via

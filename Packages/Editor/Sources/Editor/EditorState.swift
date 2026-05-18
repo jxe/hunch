@@ -145,11 +145,18 @@ public struct MentionMenuState: Equatable, Sendable {
     public let blockID: BlockID
     public var trigger: MentionTrigger
     public var selectedIndex: Int
+    /// Match candidates for the current `trigger.query`, capped at 8.
+    /// Filled by the editor on every trigger change so subsequent body
+    /// renders and keyboard handlers read from state instead of re-asking
+    /// the host (`EditorHost.suggestPages` walks the workspace page list
+    /// and isn't free).
+    public var matches: [MentionItem]
 
-    public init(blockID: BlockID, trigger: MentionTrigger, selectedIndex: Int) {
+    public init(blockID: BlockID, trigger: MentionTrigger, selectedIndex: Int, matches: [MentionItem] = []) {
         self.blockID = blockID
         self.trigger = trigger
         self.selectedIndex = selectedIndex
+        self.matches = matches
     }
 }
 

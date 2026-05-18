@@ -124,7 +124,7 @@ extension EditorView {
             case .escape:
                 handleEscapeKey()
             case .navigateBack:
-                host.didNavigateBack()
+                host.navigateBack()
             case .moveCursor(let delta):
                 moveCursor(by: delta)
             case .extendSelection(let delta):

@@ -1,13 +1,6 @@
 import SwiftUI
 
 extension EditorView {
-    /// Candidates for the active query, capped at 8. The host owns filtering/ranking;
-    /// the editor just renders whatever it gets back.
-    fileprivate var mentionMatches: [MentionItem] {
-        guard let menu = state.mentionMenu else { return [] }
-        return Array(host.suggestPages(menu.trigger.query).prefix(8))
-    }
-
     func handleMentionTriggerChange(_ trigger: MentionTrigger?, blockID: BlockID) {
         guard let trigger else {
             // The editor lost the @-region (cursor moved past whitespace, range cleared,
@@ -16,28 +9,28 @@ extension EditorView {
             state.closeMentionMenu(forBlockID: blockID)
             return
         }
+        // Snapshot match candidates once per trigger change. Body renders and
+        // keyboard handlers read from `menu.matches` instead of re-querying
+        // the host on every pass.
+        let matches = Array(host.suggestPages(trigger.query).prefix(8))
         if var existing = state.mentionMenu, existing.blockID == blockID {
-            // Query / range changed — keep the menu open, refresh state. Clamp
-            // selectedIndex against the new query's match count before publishing
-            // so observers fire once instead of twice.
             existing.trigger = trigger
-            let count = host.suggestPages(trigger.query).prefix(8).count
-            if count == 0 {
+            existing.matches = matches
+            if matches.isEmpty {
                 existing.selectedIndex = 0
-            } else if existing.selectedIndex >= count {
-                existing.selectedIndex = count - 1
+            } else if existing.selectedIndex >= matches.count {
+                existing.selectedIndex = matches.count - 1
             }
             state.setMentionMenu(existing)
         } else {
-            state.setMentionMenu(MentionMenuState(blockID: blockID, trigger: trigger, selectedIndex: 0))
+            state.setMentionMenu(MentionMenuState(blockID: blockID, trigger: trigger, selectedIndex: 0, matches: matches))
         }
     }
 
     func moveMentionSelection(by delta: Int) -> KeyPress.Result {
         guard var menu = state.mentionMenu else { return .ignored }
-        let matches = mentionMatches
-        guard !matches.isEmpty else { return .handled }
-        let count = matches.count
+        guard !menu.matches.isEmpty else { return .handled }
+        let count = menu.matches.count
         // Wrap around — feels right for a short list and makes ↑ on the first row a
         // shortcut to the last entry.
         menu.selectedIndex = ((menu.selectedIndex + delta) % count + count) % count
@@ -47,15 +40,14 @@ extension EditorView {
 
     func commitMentionSelection() -> KeyPress.Result {
         guard let menu = state.mentionMenu else { return .ignored }
-        let matches = mentionMatches
-        guard !matches.isEmpty else {
+        guard !menu.matches.isEmpty else {
             // No matches — Return on an empty filter just dismisses the menu without
             // splitting the block.
             state.closeMentionMenu()
             return .handled
         }
-        let safeIndex = max(0, min(menu.selectedIndex, matches.count - 1))
-        commitMention(matches[safeIndex], menu: menu)
+        let safeIndex = max(0, min(menu.selectedIndex, menu.matches.count - 1))
+        commitMention(menu.matches[safeIndex], menu: menu)
         return .handled
     }
 
@@ -112,7 +104,7 @@ extension EditorView {
 
     @ViewBuilder
     func mentionMenuContent() -> some View {
-        let matches = mentionMatches
+        let matches = state.mentionMenu?.matches ?? []
         VStack(alignment: .leading, spacing: 0) {
             // Hidden hotkey buttons — make the menu's keyboard shortcuts work even if
             // the popover happens to take focus; the editor's keyDown intercept is the

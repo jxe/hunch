@@ -45,6 +45,11 @@ public final class Clamshell {
     @ObservationIgnored nonisolated let files: FileStore
     @ObservationIgnored nonisolated let trash: TrashStore
     @ObservationIgnored nonisolated let log: RecoveryLog
+    // Composed pieces are intentionally `internal` — outside callers go
+    // through the Clamshell wrappers (`listLostBlocks`, `restorePage`,
+    // etc.) so the composition stays an implementation detail. Tests
+    // can still reach them via `@testable import Hunch` where the
+    // alternative would be uglier.
 
     /// Latest `files.scan()` result. Titles here are filename-derived
     /// fallbacks; the live title overlay lives in `titleCache`.
@@ -372,17 +377,6 @@ public final class Clamshell {
         enqueueSave(doc, patch: patch)
     }
 
-    /// Clamshell-internal "save this doc": chains a `.md` write onto the
-    /// per-URL save queue with no log apply. Used by paths that mutated
-    /// the live doc in place without going through the editor —
-    /// reconcile's auto-restore splice, the manual restore splice,
-    /// anything that already wrote its own log entries directly. Distinct
-    /// name (vs. `documentDidChange`) because no editor actually changed
-    /// anything; Clamshell did, and the journal is already current.
-    func scheduleSave(_ doc: Document) {
-        enqueueSave(doc, patch: .empty)
-    }
-
     /// Await durability of any writes already in flight for `doc`. Does
     /// not trigger a save — that's what `documentDidChange` is for. Used
     /// on navigation / blur / scenePhase / close to make sure the bytes
@@ -402,7 +396,12 @@ public final class Clamshell {
         saveChain[url] == nil
     }
 
-    private func enqueueSave(_ doc: Document, patch: Patch) {
+    /// Chain a log-apply (when non-empty) + `.md` write onto the per-URL
+    /// save queue. The editor entry point is `documentDidChange(ops:in:)`;
+    /// Clamshell-internal callers that mutated the live doc in place
+    /// without an editor commit (reconcile auto-restore, manual restore)
+    /// pass `patch: .empty` because the journal is already current.
+    func enqueueSave(_ doc: Document, patch: Patch) {
         let url = doc.url
         let rel = relativePath(of: url)
         let previous = saveChain[url]
@@ -491,8 +490,8 @@ public final class Clamshell {
     /// Post-save hygiene: refresh the document's mtime from disk, update
     /// the title cache, refresh the reconcile watermark, and rescan the
     /// workspace if the entries surface needs it. Called from every
-    /// successful save path (chain task via `documentDidChange` /
-    /// `scheduleSave`, `writeClosedPage(_:patch:)`, `append(_:toPage:)`).
+    /// successful save path (chain task via `enqueueSave`,
+    /// `writeClosedPage(_:patch:)`, `append(_:toPage:)`).
     @MainActor
     func postSaveBookkeeping(_ document: Document) {
         document.modificationDate = (try? document.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)

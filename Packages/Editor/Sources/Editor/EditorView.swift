@@ -1963,7 +1963,7 @@ public struct EditorView: View {
         case .cmdK(let preferredTitle):
             return convertBlockToSubpage(blockID: blockID, preferredTitle: preferredTitle)
         case .navigateBack:
-            host.didNavigateBack()
+            host.navigateBack()
             return .handled
         case .exitEditUp:
             transferFocus(to: .nav(cursor: state.editingBlock))

@@ -25,7 +25,6 @@ extension WorkspaceWindow: EditorHost {
 
     func createSubpage(title: String, requestedID: String?, initialContent: [Block]?) -> String? {
         workspace.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
-            ?? requestedID
     }
 
     func subpageContents(of pageID: String) -> [Block]? {
@@ -51,13 +50,20 @@ extension WorkspaceWindow: EditorHost {
     func saveImages(_ items: [PastedImage]) -> [String] {
         guard let clamshell = workspace.clamshell else { return [] }
         var paths: [String] = []
+        var failures: [String] = []
         paths.reserveCapacity(items.count)
         for item in items {
             do {
                 paths.append(try clamshell.writeImage(item))
             } catch {
-                workspace.error = "Failed to save pasted image: \(error.localizedDescription)"
+                failures.append(error.localizedDescription)
             }
+        }
+        if !failures.isEmpty {
+            let summary = failures.count == 1
+                ? "Failed to save pasted image: \(failures[0])"
+                : "Failed to save \(failures.count) pasted images: \(failures.joined(separator: "; "))"
+            workspace.error = summary
         }
         return paths
     }
@@ -161,7 +167,7 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
-    func didNavigateBack() {
+    func navigateBack() {
         goBack()
     }
 }
