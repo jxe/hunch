@@ -23,7 +23,7 @@ struct ClamshellSavingTests {
     private func attr(_ s: String) -> AttributedString { AttributedString(s) }
 
     /// User types in a paragraph block, then commits (blur / navigation / etc.).
-    /// The afterCommit hook produces a `(.remove(old), .insert(new))` op pair.
+    /// The transaction diff produces a `(.remove(old), .insert(new))` op pair.
     /// After flush, the journal must tombstone the old hash and mark the new
     /// alive — reconcile against this state must not auto-restore the prior
     /// version.
@@ -48,8 +48,8 @@ struct ClamshellSavingTests {
         let v1 = Block(id: id, kind: .paragraph(text: attr("hello world")))
         doc.replaceChildren([v1])
 
-        // afterCommit fires at the next commitLiveText (blur, focus change,
-        // navigation, scenePhase, mutate) and emits the typing diff.
+        // Editor's `commitLiveText` (blur, focus change, navigation, scenePhase,
+        // mutate) opens a transaction whose pre→post diff fires onCommit.
         clamshell.documentDidChange(
             ops: [
                 .remove(hash: v0.atomicHash),

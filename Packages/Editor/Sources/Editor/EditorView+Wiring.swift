@@ -180,38 +180,21 @@ extension EditorView {
             undoController?.flushActiveText?()
         }
 
-        // Post-commit diff: every `commitLiveText` ends by firing this hook so
-        // the recovery journal gets the typing diff. Without it, hash-changing
-        // text edits leave the prior hash `.alive` in the journal and the next
-        // reconcile resurrects the pre-edit version as a "lost block." The
-        // mutate path's own diff doesn't cover typing because typing bypasses
-        // `mutate` (it lives in `Document.transaction(coalesceKey:)`, untracked
-        // by mutate's snapshot). After emitting, the snapshot is rolled forward
-        // so a subsequent commit in the same session diffs against the just-
-        // flushed state.
-        undoController.afterCommit = {
-            guard let id = state.editingBlock,
-                  let preHash = state.editingPreHash,
-                  let block = document.find(id) else { return }
-            let nowHash = block.atomicHash
-            guard nowHash != preHash else { return }
-            let parentID = document.parent(of: id)
-            let parentHash = parentID.flatMap { document.find($0)?.atomicHash }
-            host.documentDidChange(ops: [
-                .remove(hash: preHash),
-                .insert(hash: nowHash, parent: parentHash, block: block)
-            ], on: document)
-            state.setEditingPreHash(nowHash)
+        // Single emission point for every kind of commit. Forward transactions
+        // (typing via `commitLiveText`, structural via `mutate(_:_:)`) and
+        // their nested sub-transactions all funnel through here with their
+        // pre→post diff. Capture by reference: `document`/`state`/`host` are
+        // reachable through this struct's stored bindings; reads happen at
+        // fire time so the callback sees fresh state.
+        undoController.onCommit = { ops in
+            host.documentDidChange(ops: ops, on: document)
         }
 
-        // Capture by reference: `document` and `state` are class types reachable
-        // through this struct's stored bindings; reads happen at fire time so
-        // the callback sees fresh state.
-        document.didApplyUndo = {
+        document.didApplyUndo = { invertedOps in
             var validIDs: Set<BlockID> = []
             document.walk { block, _, _ in validIDs.insert(block.id) }
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
-            host.documentDidChange(ops: [], on: document)
+            host.documentDidChange(ops: invertedOps, on: document)
         }
 
         document.didReplaceChildren = {

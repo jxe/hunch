@@ -97,10 +97,11 @@ public protocol EditorHost: AnyObject {
     /// User pressed Cmd-[ / swipe-back / etc. — host pops its navigation stack.
     func onNavigateBack()
 
-    /// Document was just committed at an edit-session boundary — structural
-    /// mutation via `EditorView.mutate(_:_:)`, typing commit
-    /// (`commitLiveText` → `DocumentUndoController.afterCommit`), autotransform,
-    /// undo, paste, move-to, etc.
+    /// Document was just committed via `Document.transaction` — structural
+    /// mutation via `EditorView.mutate(_:_:)`, typing commit via
+    /// `BlockTextEditor.Coordinator.commitLiveText`, autotransform, paste,
+    /// move-to, or undo/redo of any of the above. The editor fires this
+    /// from a single emission point (`DocumentUndoController.onCommit`).
     ///
     /// When the change came through `mutate`, `ops` carries the pre→post diff
     /// from `BlockTreeDiff.derive(pre:post:)`: `.insert(hash, parent, block)`

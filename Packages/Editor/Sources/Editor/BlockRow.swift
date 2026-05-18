@@ -446,10 +446,10 @@ public struct BlockRow: View, Equatable {
                 if String(newValue.characters) != String(block.text.characters) ||
                    !attributedStringMarksEqual(newValue, block.text) {
                     // Update the model. Persistence is driven by the live
-                    // editor's `commitLiveText` → `documentUndoController.afterCommit`
-                    // hook (set in `EditorView.installUndoApply`), which diffs
-                    // pre vs current hash for the active block and writes the
-                    // log + .md atomically.
+                    // editor's `commitLiveText`, which opens a
+                    // `controller.transaction(name:"Type", coalesceKey:)`;
+                    // the resulting diff flows through
+                    // `DocumentUndoController.onCommit` to the host.
                     onBlockChange(block.withText(newValue))
                 }
             }

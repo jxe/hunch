@@ -345,9 +345,10 @@ public final class Clamshell {
     // the same URL are chained on `saveChain[url]` — each spawned Task
     // awaits the previous before its own log + .md write, so a fast burst
     // of commits (typing → focus blur → navigation) lands in order. No
-    // debounce, no separate per-op log task: the editor's commit points
-    // (`commitLiveText` → `afterCommit` hook for typing; `mutate(_:_:)` for
-    // structural ops) are themselves the save events.
+    // debounce, no separate per-op log task: every `Document.transaction`
+    // (typing via `commitLiveText`, structural via `mutate(_:_:)`, undo,
+    // redo) emits its pre→post diff through
+    // `DocumentUndoController.onCommit` → here.
 
     /// Editor mutated `doc` and produced these `ops`. Applies the patch
     /// to the recovery log (when non-empty), then serializes the current

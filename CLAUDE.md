@@ -58,10 +58,11 @@ user-picked workspace folder.
     Concurrent calls for the same URL are chained on `saveChain[url]` —
     each spawned Task awaits the previous before its own log apply +
     file write — so the .md on disk always reflects the latest commit.
-    No debounce, no separate "log-apply Task," no `.armed` state:
-    edit-session commit points (`commitLiveText` →
-    `DocumentUndoController.afterCommit` for typing; `mutate(_:_:)` for
-    structural ops) are themselves the save events. The "log durable
+    No debounce, no separate "log-apply Task," no `.armed` state: every
+    `Document.transaction` (typing via `commitLiveText`, structural via
+    `mutate(_:_:)`, undo, redo) computes its pre→post diff and fires
+    `DocumentUndoController.onCommit`, which forwards the ops to the
+    host. That's the single save event. The "log durable
     before file durable" invariant is preserved structurally: every
     `documentDidChange` writes log before file inside a single Task.
     **Non-editor writes** (`writeClosedPage(_:patch:)` for conflict
@@ -248,30 +249,26 @@ Clamshell's `postSaveBookkeeping(_:)` — fired by every successful save
 path. No host hook is needed; Clamshell is `@Observable` and SwiftUI
 re-renders pick up new entries/title state directly.
 
-**Structural mutations route through `EditorView.mutate(name:_:)`.**
-It flushes the active editor's live text first (via
-`Document.preMutation` → `DocumentUndoController.flushActiveText`,
-which fires the post-commit hook below), snapshots
-`document.children`, runs the change closure, re-applies heading
-containment, registers the snapshot as the undo entry, derives the
-pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
-`host.documentDidChange(ops:on:)` with the `[EditorOp]` batch. Moves
-and reorders produce an empty op list by design (id stable, hash
-stable); the host still writes the `.md` for empty-ops calls so a
-reorder lands on disk.
+**Every edit funnels through `Document.transaction`.** The transaction
+snapshots `children` *before* `preMutation` fires (so the snapshot
+captures pre-typing state), runs `preMutation` (which flushes the live
+editor's text through a nested transaction), runs the change closure,
+re-enforces heading containment, snapshots `children` again, and
+derives the pre→post diff via `BlockTreeDiff.derive(_:_:)`. The diff
+is the transaction's return value and also drives the registered undo
+inverse — on undo the inverted diff fires via `didApplyUndo`, on redo
+the forward diff fires again. Same shape across forward/undo/redo, so
+the recovery journal stays symmetric. Nested transactions return `[]`
+and emit nothing — the outer's diff already covers their changes.
 
-**Typing-driven hash changes route through the post-commit hook.**
-Typing bypasses `mutate` (per-keystroke diffs would flood the log).
-Instead, `EditorState.editingPreHash` snapshots the active block's
-hash at edit-session entry (`transferFocus(.editor)`); the
-`BlockTextEditor` coordinator fires `DocumentUndoController.afterCommit`
-at the end of every `commitLiveText` (blur, navigation, explicit
-commit). The hook (wired in `EditorView.installUndoApply`) computes
-`(preHash → block.atomicHash)` and emits `[.remove(preHash),
-.insert(nowHash, …)]` to the host. Without it, hash-changing edits
-would never reach the journal — only structural-mutation diffs do —
-and the next reconcile would resurrect the pre-edit version as a
-"lost block."
+**`DocumentUndoController.onCommit` is the editor's single emission
+point.** Wired in `EditorView.installUndoApply` to call
+`host.documentDidChange(ops:on:)`. Both `EditorView.mutate(name:_:)`
+(structural) and `BlockTextEditor.Coordinator.commitLiveText` (typing)
+go through `undoController.transaction(name:coalesceKey:_:)`, which
+runs the document transaction and fires `onCommit` with the diff.
+Empty diff = pure reorder/move (id+hash stable); the host still
+persists the new tree shape from the same call.
 
 **Nav-mode keyboard goes through `EditorCommands`.**
 `handleNavKeyPress` looks the press up in `EditorView.navBindings`

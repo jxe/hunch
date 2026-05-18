@@ -510,11 +510,10 @@ struct MacBlockTextEditor: NSViewRepresentable {
             }
             lastKnownBindingPlain = newPlain
             textStorageDirty = false
-            // Post-commit hook: emits the typing diff to the host. Must fire on
-            // every commitLiveText path — blur, explicit flushActiveText,
-            // view tear-down — so the recovery journal sees the new hash and
-            // purges the old. `EditorView.installUndoApply` wires this.
-            parent.documentUndoController?.afterCommit?()
+            // No separate emit step needed: `controller.transaction(...)`
+            // above already fired `onCommit` with the typing diff (when
+            // non-nested and non-empty). Top-level commits — blur, explicit
+            // flush, view tear-down — go through the same path.
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -1236,9 +1235,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             }
             lastKnownBindingPlain = newPlain
             textStorageDirty = false
-            // Post-commit hook: emits the typing diff to the host. See the macOS
-            // twin for rationale.
-            parent.documentUndoController?.afterCommit?()
+            // No separate emit step needed — see the macOS twin.
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {

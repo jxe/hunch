@@ -54,30 +54,37 @@ public final class DocumentUndoController {
     /// during SwiftUI's update pass and doesn't reliably propagate to the
     /// read-only `Text` that takes the row's slot. Also wired into
     /// `Document.preMutation` so every transaction flushes in-flight text
-    /// before snapshotting. Firing `flushActiveText` triggers `commitLiveText`,
-    /// which in turn fires `afterCommit` at its tail (see below).
+    /// before snapshotting. `commitLiveText` itself wraps its model write
+    /// in `transaction(name:"Type", coalesceKey:)`, so the ops flow through
+    /// `onCommit` automatically.
     var flushActiveText: (() -> Void)?
 
     /// Wired by `EditorView.installUndoApply`; fired at the end of every
-    /// `commitLiveText` (i.e. after the live editor's text has reached the
-    /// document model). Computes the active block's pre→now atomic-hash diff
-    /// and emits a `(.remove, .insert)` op pair to the host so the recovery
-    /// journal tombstones the prior version. Without this hook, typing-driven
-    /// hash changes would never reach the log — only structural-mutation diffs
-    /// from `mutate(_:_:)` do — and a subsequent reconcile would resurrect the
-    /// pre-edit version as a "lost block."
-    var afterCommit: (() -> Void)?
+    /// non-nested `transaction(...)` with the pre→post diff. The editor
+    /// forwards the ops to `host.documentDidChange`. Single emission point
+    /// for every kind of commit — typing, structural mutation, autotransform
+    /// — so the journal stays in sync with the model across all paths.
+    var onCommit: (([EditorOp]) -> Void)?
 
     public init() {
         self.undoManager = UndoManager()
         self.undoManager.levelsOfUndo = 100
     }
 
-    /// Run `change` inside the document's transaction. Used by `BlockTextEditor`
-    /// for the typing path (with `coalesceKey: blockID` so consecutive keystrokes
-    /// on the same block fold into one undo entry).
-    func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: () -> Void) {
-        document?.transaction(name: name, coalesceKey: coalesceKey) { _ in change() }
+    /// Run `change` inside the document's transaction, fire `onCommit` with
+    /// the resulting diff (when non-empty), and return the diff for callers
+    /// that want it directly. Used by `BlockTextEditor` for the typing path
+    /// (with `coalesceKey: blockID` so consecutive keystrokes on the same
+    /// block fold into one undo entry) and by `EditorView.mutate(_:_:)` for
+    /// structural ops.
+    @discardableResult
+    func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: () -> Void) -> [EditorOp] {
+        guard let document else { return [] }
+        let ops = document.transaction(name: name, coalesceKey: coalesceKey) { _ in change() }
+        if !ops.isEmpty {
+            onCommit?(ops)
+        }
+        return ops
     }
 
     /// Force the next coalesce-keyed transaction to register a fresh undo entry

@@ -346,20 +346,19 @@ to add blocks to the end of a closed page. Closed-page writes don't
 go through `saveChain` (there's no live editor session to chain
 against); they write directly and await durability inline.
 
-**Editor mutations stream as ops.** Each `EditorView.mutate(_:_:)`
-transaction derives a pre→post `[EditorOp]` diff via
-`BlockTreeDiff.derive(_:_:)` and fires `host.documentDidChange(ops:on:)`.
-The host's adapter calls `Clamshell.documentDidChange(ops:in:)`, which
-projects the batch onto a `Patch` (inserts → `.add`, removes →
-`.purge`), then runs log apply + file write atomically. Typing
-bypasses `mutate` (per-keystroke diffs would flood the log); instead
-the editor's commit-time hook (`DocumentUndoController.afterCommit`,
-fired by every `commitLiveText`) computes a single-block
-`(.remove(preHash), .insert(nowHash))` pair against the
-`EditorState.editingPreHash` snapshot taken at edit-session entry and
-hands the same op batch to `documentDidChange`. No pre/post tree
-snapshot on the host side, no diff inference — the op stream is the
-log update.
+**Editor mutations stream as ops.** Every `Document.transaction`
+(forward and undo/redo) derives a pre→post `[EditorOp]` diff via
+`BlockTreeDiff.derive(_:_:)` and fires
+`DocumentUndoController.onCommit`, which the editor wires to
+`host.documentDidChange(ops:on:)`. The host's adapter calls
+`Clamshell.documentDidChange(ops:in:)`, which projects the batch onto
+a `Patch` (inserts → `.add`, removes → `.purge`) and runs log apply +
+file write atomically. Typing goes through the same path:
+`commitLiveText` opens a `transaction(name:"Type", coalesceKey:)` and
+the resulting diff flows through `onCommit`. Undo and redo also fire
+`onCommit` with the (inverted) diff so the journal stays symmetric.
+No pre/post tree snapshot on the host side, no diff inference — the
+op stream is the log update.
 
 **Deletes are explicit, not inferred.** The op diff emits a
 `.remove(hash)` for every block id present in pre but absent in post.

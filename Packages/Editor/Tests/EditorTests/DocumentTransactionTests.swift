@@ -177,7 +177,7 @@ struct DocumentTransactionTests {
         let (doc, mgr) = makeDocWithUndo()
         let id = doc.children[0].id
         var applyFires = 0
-        doc.didApplyUndo = { applyFires += 1 }
+        doc.didApplyUndo = { _ in applyFires += 1 }
 
         tx(doc, mgr, name: "Edit") { d in d.setText(id, AttributedString("xx")) }
         #expect(applyFires == 0) // Doesn't fire on direct mutation.
@@ -187,6 +187,88 @@ struct DocumentTransactionTests {
 
         mgr.redo()
         #expect(applyFires == 2)
+    }
+
+    @Test func transactionReturnsForwardDiff() {
+        // The forward transaction's return value is the pre→post diff. For a
+        // text edit that changes the block's hash, that's `(.remove(pre),
+        // .insert(post))`. Used by `EditorView.mutate` and the typing path
+        // to feed the host's `documentDidChange` — the host doesn't have to
+        // recompute the diff.
+        let doc = makeDoc()
+        let id = doc.children[0].id
+        let preHash = doc.children[0].atomicHash
+        let ops = doc.transaction(name: "Edit") { d in
+            d.setText(id, AttributedString("changed"))
+        }
+        let postHash = doc.children[0].atomicHash
+        #expect(ops.count == 2, "one remove + one insert")
+        if case .remove(let h) = ops[0] {
+            #expect(h == preHash)
+        } else {
+            Issue.record("expected .remove first, got \(ops[0])")
+        }
+        if case .insert(let h, _, _) = ops[1] {
+            #expect(h == postHash)
+        } else {
+            Issue.record("expected .insert second, got \(ops[1])")
+        }
+    }
+
+    @Test func didApplyUndoCarriesInvertedDiff() {
+        // The canonical undo-coherence test: forward transaction's
+        // `(.remove(pre), .insert(post))` becomes `(.remove(post),
+        // .insert(pre))` on undo. The editor forwards this to the host so
+        // the recovery journal symmetrically tombstones the just-undone
+        // hash and re-alives the restored one — fixing the class of bug
+        // where undo left the post-edit hash `.alive` in the journal and
+        // the next reconcile resurrected it as a duplicate.
+        let (doc, mgr) = makeDocWithUndo()
+        let id = doc.children[0].id
+        let preHash = doc.children[0].atomicHash
+        var captured: [EditorOp] = []
+        doc.didApplyUndo = { captured = $0 }
+
+        tx(doc, mgr, name: "Edit") { d in d.setText(id, AttributedString("changed")) }
+        let postHash = doc.children[0].atomicHash
+
+        mgr.undo()
+        #expect(captured.count == 2, "undo emits one remove + one insert")
+        let removes = captured.compactMap { if case .remove(let h) = $0 { return h } else { return nil } }
+        let inserts = captured.compactMap { op -> String? in
+            if case .insert(let h, _, _) = op { return h } else { return nil }
+        }
+        #expect(removes.contains(postHash), "undo should tombstone the just-undone post hash")
+        #expect(inserts.contains(preHash), "undo should re-alive the restored pre hash")
+
+        mgr.redo()
+        // Redo flips the direction.
+        let redoRemoves = captured.compactMap { if case .remove(let h) = $0 { return h } else { return nil } }
+        let redoInserts = captured.compactMap { op -> String? in
+            if case .insert(let h, _, _) = op { return h } else { return nil }
+        }
+        #expect(redoRemoves.contains(preHash), "redo should tombstone the pre hash again")
+        #expect(redoInserts.contains(postHash), "redo should re-alive the post hash")
+    }
+
+    @Test func nestedTransactionReturnsEmptyDiff() {
+        // Nested transactions (typically from `preMutation` → typing flush)
+        // absorb into the outer; their own return value is empty so callers
+        // don't double-emit. The outer's snapshot captures the inner's
+        // change as part of its single pre→post diff.
+        let doc = makeDoc()
+        let id = doc.children[0].id
+        var innerOps: [EditorOp] = []
+        doc.preMutation = {
+            innerOps = doc.transaction(name: "Inner", coalesceKey: id) { d in
+                d.setText(id, AttributedString("inner"))
+            }
+        }
+        let outerOps = doc.transaction(name: "Outer") { d in
+            d.setText(id, AttributedString("outer"))
+        }
+        #expect(innerOps.isEmpty, "nested transaction returns empty ops")
+        #expect(!outerOps.isEmpty, "outer captures the full change (typing flush + outer edit)")
     }
 
     @Test func transactionEnforcesHeadingContainment() {

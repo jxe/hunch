@@ -941,29 +941,22 @@ public struct EditorView: View {
     /// document's `undoManager`. Callers must only call `mutate` when actually
     /// changing something — the helper doesn't equality-check.
     ///
-    /// Thin wrapper over `document.transaction`: that handles flushing in-flight
-    /// text via `preMutation`, snapshotting `[Block]` for undo, enforcing
-    /// heading containment, and registering the inverse. This caller adds one
-    /// thing on top: derives the pre→post diff into `[EditorOp]` and hands it
-    /// to `host.documentDidChange(ops:on:)` so the host can apply the batch to
-    /// its recovery log and write the .md atomically. Typing-path text changes
-    /// don't go through this wrapper — they go through `commitLiveText`, whose
-    /// post-commit hook (`DocumentUndoController.afterCommit`, wired in
-    /// `installUndoApply`) computes the single-block diff and calls
-    /// `host.documentDidChange` itself.
+    /// Thin wrapper over `undoController.transaction(...)`: that handles
+    /// flushing in-flight text via `preMutation`, snapshotting `[Block]`
+    /// for undo, enforcing heading containment, computing the pre→post
+    /// diff, and firing `onCommit` (which forwards the ops to
+    /// `host.documentDidChange`). Typing goes through the same controller
+    /// transaction path from `commitLiveText`, so this is just the
+    /// structural-mutation entry point — the controller is the single
+    /// emission point for both flavours.
+    ///
+    /// The transaction's `before` snapshot is captured pre-`preMutation`,
+    /// so any typing flush triggered by the live editor on commit gets
+    /// folded into the same diff as the structural change — one emission,
+    /// one atomic undo step covering "the in-flight typing plus the
+    /// structural op the user just invoked."
     func mutate(_ name: String, _ change: () -> Void) {
-        var pre: [Block] = []
-        document.transaction(name: name) { _ in
-            // Capture pre-mutation tree inside the transaction, after
-            // `preMutation` has flushed any in-flight typing into the model.
-            // This gives the *current* shape of every block right at the
-            // moment of mutation — so a delete-while-typing reports the text
-            // the user actually had, not a stale pre-typing version.
-            pre = document.children
-            change()
-        }
-        let ops = BlockTreeDiff.derive(pre: pre, post: document.children)
-        host.documentDidChange(ops: ops, on: document)
+        undoController.transaction(name: name) { change() }
     }
 
     /// Consume a host-supplied append payload (via `EditorState.appendBlocks`).
@@ -1044,13 +1037,7 @@ public struct EditorView: View {
                 DispatchQueue.main.async { iosTransitioningEditorID = nil }
             }
             #endif
-            // Snapshot the block's atomic hash at edit-session entry. The
-            // `afterCommit` hook diffs against this on every `commitLiveText`,
-            // so typing-driven hash changes reach the recovery journal as a
-            // proper `(remove, insert)` op pair. Missing block = nil snapshot;
-            // the hook guards on it.
-            let preHash = document.find(id)?.atomicHash
-            state.enterEditMode(on: id, initialCursor: initialCursor, preHash: preHash)
+            state.enterEditMode(on: id, initialCursor: initialCursor)
 
         case .nav(let cursor):
             state.exitEditModeWithoutCursor()
