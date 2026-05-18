@@ -6,12 +6,24 @@ Open-source, improved Notion. Native iOS 26 + macOS 26. Your notes live as plain
 
 - ⚡  Native Swift, no Electron — fast cold start, fast typing, fast scroll
 - 🎙️  Voice dictation built in, with a Siri shortcut
+- 📱  native iOS gestures for delete line, pinch to open, drag to reorder
 - 📂  Plain markdown files on disk — no database, no lock-in
-- ☁️  iCloud-friendly by design — append-only writes, no merge fights
-- 🛟  Every block you've ever typed is recoverable across all devices
-- 🪜  Move a heading and its children come with it
-- 🎯  One picker for "move to" — in-page sections + other pages, fuzzy-find both
+- ☁️  iCloud-sync friendly; some hidden files enable robust recovery, version history, and conflict-free multi-device editing
+- 🛟  Every block you've ever typed, recoverable across all devices — and automatic recovery if a block goes missing
 - 🤝  Open source
+
+## Just like Notion used to be, but better
+
+- ✏️  **Block editor** — paragraph, H1/H2/H3, bullet/numbered/todo lists, toggles, quote, code, divider, image, subpage row, template button.
+- ⚡  **Markdown autotransforms** — `# `, `## `, `### `, `- `, `* `, `1. `, `[] ` / `[ ] `, `> `, ` ``` `, `---`, `" `.
+- 🎨  **Inline marks** — bold, italic, code, strike, link, with the obvious Cmd-shortcuts (Cmd-B / I / E / Shift-S, Cmd-K for link).
+- 🔽  **Toggles** — `▸ Title` collapsible blocks with nested children.
+- 📄  **Subpages** — open inside a stack, navigate back with the system back gesture.
+- @  **@-mentions** — type `@` to link to another page.
+- ↔️  **Indent / outdent / reorder** — Tab, Shift-Tab, Option+↑/↓, drag.
+- 🔎  **Search** — Cmd+P opens a fuzzy page picker; the magnifying glass on iOS does the same.
+- 🛟  **Recover** — one sheet over trash, lost blocks, and explicitly-purged blocks, scoped to the current page or workspace-wide. Cmd+Shift+\\ on macOS; long-press / context-menu on the undo button on iOS.
+- 🖼️  **Image paste** — paste an image from the clipboard, drag one in from Finder; bytes land in `Assets/` and the row becomes an image block.
 
 ---
 
@@ -25,13 +37,25 @@ Cold start, scroll, keyboard latency, and memory footprint are all measurably be
 
 Hunch's storage format ("Clamshell") is a folder of plain markdown plus a small amount of sidecar state (recovery log, trash, assets). The folder is **durable, portable, readable, iCloud-friendly**. Drop it into Obsidian, hand it to an LLM agent, grep it, version-control it, import it into a Notion vault. See [App/Sources/Clamshell/README.md](App/Sources/Clamshell/README.md).
 
+### 🖼️  Images are plain files too
+
+Paste from the clipboard, drop one in from Finder, drag a screenshot off the desktop — the bytes get persisted into `Assets/` as a regular `.png` / `.jpg` / `.heic` and the row becomes a standard markdown image reference. No proprietary blob format, no CDN, no "image broke because the host expired". Open the folder and the images are just files — diffable, backup-able, AirDrop-able, hand-able to a model.
+
 ### 🎙️  Voice dictation, with a Siri shortcut
 
-Press to speak, get text. A Siri intent (`VoiceRecordingIntents`) means you can wire dictation into the iOS Action Button or a Shortcut and capture into the current page hands-free.
+Mic button in the page toolbar on both macOS and iOS — press to speak, get text inserted at the cursor (or appended as a paragraph when nothing's focused). On iOS, a Siri intent (`VoiceRecordingIntents`) means you can wire dictation into the Action Button or a Shortcut and capture into the current page hands-free.
 
 ### 🛟  More robust restore, by design
 
 Notion has version history; Hunch has a per-device append-only recovery log. Every atomic block (paragraph, list item, heading, code block) ever saved on any device stays recoverable until you explicitly purge it, and recovery survives the live `.md` getting deleted, corrupted, or overwritten. Per-device JSONL files mean iCloud just appends.
+
+Opening the **Recover** sheet (Cmd+Shift+\\) gives you one unified view over trash (soft-deleted pages), lost blocks (orphans whose surrounding tree changed), and purged blocks (explicit deletes you can still pull back) — filterable by current page or the whole workspace.
+
+And recovery isn't only manual. If a block vanishes from the `.md` because of an external edit, a corrupted file, or a sync conflict dropping content, opening the page **automatically re-splices** the missing subtree from the journal and surfaces a banner so you know it happened.
+
+### ☁️  Multi-device editing without losing edits
+
+The data layer is built for iCloud from the floor up. The recovery log is one JSONL file **per device**, so two devices appending to the same page never write to the same file — iCloud just syncs them, no merge step required. When the `.md` itself collides (same page edited on Mac and iPad before either synced), Hunch reads iCloud's version history via `NSFileVersion`, runs a structural merge, and writes the union back instead of letting one device's edits win. Worst case is a duplicated paragraph you can delete; the common case is both edits land.
 
 ### 🪜  Move headings (and toggles) with their children
 
@@ -40,6 +64,10 @@ Slide a heading in nav mode and everything nested under it comes along. Notion m
 ### 🎯  One picker for "move to"
 
 Cmd+Shift+M opens a single picker with two grouped sections: **destinations on this page** (every heading and toggle, indented to show outline) and **other pages** in the workspace. One search field filters both. Arrow keys traverse both groups. Return commits the top match. ([MoveDestinationSheet.swift](App/Sources/Shell/MoveDestinationSheet.swift))
+
+### 🔎  Search is local and instant
+
+Cmd+P opens a fuzzy picker over every page in the workspace, indexed in memory from the workspace folder. No network round-trip, no remote ranking model, no spinner — keystroke to result is one frame. Arrow keys + Return; the magnifying-glass toolbar item does the same on iOS. (Full-text search across page bodies is on the roadmap; for now, search is title-only.)
 
 ### ⌨️  Two modes, no hover-floating-handle UI
 
@@ -60,6 +88,14 @@ Edge-swipe pops navigation. Pinch on a heading or toggle opens its nested view a
 
 Page mention, page link, subpage row, database relation — Notion has four overlapping things. Hunch has one: `[Title](pages/foo.md)`. A paragraph that contains nothing but a link of that form renders as a subpage row; the same link inline renders as text. Done.
 
+### 🪄  Smart inline links
+
+Internal `[…](pages/foo.md)` links render the **live target title**, not the file path — rename a page and links to it update on next render. Paste a bare external URL and it picks up a **favicon + page title** chip, fetched via `LinkPresentation` and cached on disk at `~/Library/Application Support/Hunch/LinkPreviews/`. No iframe, no preview card, just inline text that doesn't look like a raw URL.
+
+### 🪟  Many windows on one workspace
+
+Cmd+N opens another window onto the same workspace; each window keeps its own navigation stack. Open a subpage from one window and another window that already has it open splices its stack to match — no duplicate editors fighting over the same file.
+
 ### 🅰️  Pre-March-2026 Notion typography, on purpose
 
 We chase the typography Notion had before the 2026 redesign — the weights, sizes, and rhythm Notion users grew to like. References live under `References/typography/`; constants in `NotionStyle.swift`.
@@ -70,34 +106,44 @@ You can read the code, fork it, audit your own data layer, and ship patches. (Li
 
 ---
 
-## What it does the same as Notion
+## ⌨️  Keyboard shortcuts (macOS)
 
-- ✏️  **Block editor** — paragraph, H1/H2/H3, bullet/numbered/todo lists, toggles, quote, code, divider, image, subpage row.
-- ⚡  **Markdown autotransforms** — `# `, `## `, `### `, `- `, `* `, `1. `, `[] `, `> `, ` ``` `, `---`, `" `.
-- 🎨  **Inline marks** — bold, italic, code, strike, link, with the obvious Cmd-shortcuts (Cmd-B / I / E / Shift-S).
-- 🔽  **Toggles** — `▸ Title` collapsible blocks with nested children.
-- 📄  **Subpages** — open inside a stack, navigate back with the system back gesture.
-- @  **@-mentions** — type `@` to link to another page.
-- ↔️  **Indent / outdent / reorder** — Tab, Shift-Tab, Option+↑/↓, drag.
+**Navigation**
+
+- `Cmd+P` — search pages
+- `Cmd+[` — back
+- `Cmd+R` — reload pages
+- `Cmd+Shift+O` — switch workspace
+- `Cmd+Shift+\\` — open Recover sheet
+
+**Editing**
+
+- `Cmd+B` / `Cmd+I` / `Cmd+E` — bold / italic / inline code
+- `Cmd+Shift+S` — strikethrough
+- `Cmd+K` — link selection / promote to subpage
+- `Cmd+/` — Turn Into…
+- `Cmd+Z` / `Cmd+Shift+Z` — undo / redo
+
+**Nav mode (no edit cursor)**
+
+- `↑` / `↓` — move between blocks
+- `Shift+↑` / `Shift+↓` — extend selection
+- `Option+↑` / `Option+↓` — move selected block(s)
+- `Tab` / `Shift+Tab` — indent / outdent
+- `Return` — enter edit mode (or open the selected subpage)
+- `Delete` — remove selection
+- `Cmd+Shift+M` — move selection to another page…
+- `Esc` — leave edit mode
 
 ---
 
-## Out of scope
+# Probably never
 
-- ❌  Real-time multiplayer collaboration
-- ❌  Full databases (relations, formulas, rollups, views) — tables are parsed and rendered, not editable as a database
-- ❌  Web clipping
-
----
-
-## Coming later
-
-- 🎨  Color (text and `style`-tag backgrounds)
-- 🗂️  Category-style list rendering
-- 🔎  Full-text search across the workspace
-- 🔗  Inline link clicks while *editing* a paragraph (read-only rows already navigate)
-- 🖼️  Image paste outside edit mode
-- 🅰️  Refresh of the Notion typography constants against the latest reference shots
+- ❌ Real-time multiplayer collaboration
+- ❌ Full databases (relations, formulas, rollups, views)
+- ❌ Tables
+- ❌ Embeds besides just fancy external link mentions
+- ❌ AI features.
 
 ---
 
