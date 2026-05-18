@@ -57,14 +57,15 @@ public final class Document: @MainActor Identifiable {
     @ObservationIgnored
     public var preMutation: (() -> Void)?
 
-    /// Editor-supplied hook fired after an undo/redo apply restores a snapshot.
-    /// Carries the diff that takes the doc *from* the pre-undo state *to* the
-    /// post-undo state — same shape the editor's forward `transaction` emits
-    /// to the host, so undo's journal effects are symmetric with forward
-    /// commits. The editor uses this both to revalidate `EditorState` against
-    /// the new block set and to forward the ops to the host.
+    /// Editor-supplied hook fired after every `transaction` — forward, undo,
+    /// or redo — with the diff that takes the doc *from* the prior state *to*
+    /// the new state. Forward: the transaction's own pre→post ops. Undo: the
+    /// inverted ops. Redo: the forward ops fire again. Same hook for all
+    /// three flavours so the editor's emission to the host is symmetric
+    /// across the round-trip, and `EditorState` revalidation happens once in
+    /// one place regardless of direction.
     @ObservationIgnored
-    public var didApplyUndo: (([EditorOp]) -> Void)?
+    public var didCommitTransaction: (([EditorOp]) -> Void)?
 
     /// Editor-supplied hook fired after `replaceChildren(_:)` swaps the tree
     /// wholesale (external-edit reloads, conflict merges). Fresh parse →
@@ -112,22 +113,21 @@ public final class Document: @MainActor Identifiable {
     ///
     /// Fires `preMutation` (editor flush) before the change, then
     /// `enforceHeadingContainment` after — both inside the same atomic
-    /// boundary so the registered undo restores a valid tree. Returns the
-    /// pre→post `[EditorOp]` diff so the caller (typically
-    /// `EditorView.mutate` or the typing path's `commitLiveText`) can
-    /// forward it to `host.documentDidChange`. Nested transactions return
-    /// `[]` — the outer transaction's diff already covers their changes.
+    /// boundary so the registered undo restores a valid tree. Computes the
+    /// pre→post `[EditorOp]` diff, fires `didCommitTransaction(ops)`, and
+    /// returns the diff. Nested transactions absorb into the outer (no new
+    /// undo entry, no diff fired) so callers don't double-emit.
     @discardableResult
     public func transaction(
         name: String,
         coalesceKey: AnyHashable? = nil,
-        _ change: (Document) -> Void
+        _ change: () -> Void
     ) -> [EditorOp] {
-        // Nested call: absorb into the outer transaction. The outer's snapshot
-        // already covers everything before its `change` closure runs, and its
+        // Nested call: absorb into the outer. The outer's snapshot already
+        // covers everything before its `change` closure runs, and its
         // `preMutation` already fired. Just apply the change.
         if inTransaction {
-            change(self)
+            change()
             return []
         }
         inTransaction = true
@@ -139,25 +139,37 @@ public final class Document: @MainActor Identifiable {
             coalesceKey == lastTransactionKey &&
             (lastTransactionTime.map { now.timeIntervalSince($0) < Self.coalesceInterval } == true)
 
-        // Snapshot BEFORE preMutation, so any state mutations the hook
-        // triggers via nested transactions (e.g. the typing path's
-        // `commitLiveText` flushing in-flight NSTextView text through a
-        // nested `transaction`) are also captured in `before`. Undo then
-        // reverts the whole logical action — flush + change — as one
-        // atomic step. Coalesced transactions still snapshot for the diff,
+        // Capture `before` (the pre-mutation tree) BEFORE preMutation, so any
+        // state mutations the hook triggers via nested transactions (e.g. the
+        // typing path's `commitLiveText` flushing in-flight NSTextView text
+        // through a nested `transaction`) are also captured in `before`. Undo
+        // then reverts the whole logical action — flush + change — as one
+        // atomic step. Coalesced transactions still snapshot for the diff;
         // they just skip registering a new undo entry (the burst's first
-        // entry already captured the start).
-        let before = snapshot()
+        // entry already captured the start). `Block` is a value type, so
+        // capturing `children` is a cheap shallow Array copy with COW
+        // payloads.
+        let before = children
         preMutation?()
-        change(self)
+        change()
         enforceHeadingContainment()
-        let after = snapshot()
-        let ops = BlockTreeDiff.derive(pre: before, post: after)
-        if !shouldCoalesce {
-            registerUndo(before: before, name: name)
+        let ops = BlockTreeDiff.derive(pre: before, post: children)
+        if !shouldCoalesce, let undoManager {
+            // The inverse of any forward transaction is another transaction
+            // that resets `children` to `before`. Routing through the same
+            // entry point means undo, redo, and forward share one code path:
+            // they each snapshot, diff, register their own inverse, and fire
+            // `didCommitTransaction` with the resulting diff. UndoManager
+            // tracks the undo/redo direction and routes each newly-registered
+            // entry onto the right stack.
+            undoManager.registerUndo(withTarget: self) { doc in
+                doc.transaction(name: name) { doc.children = before }
+            }
+            undoManager.setActionName(name)
             lastTransactionKey = coalesceKey
         }
         lastTransactionTime = now
+        didCommitTransaction?(ops)
         return ops
     }
 
@@ -167,26 +179,6 @@ public final class Document: @MainActor Identifiable {
     public func breakCoalescing() {
         lastTransactionKey = nil
         lastTransactionTime = nil
-    }
-
-    private func registerUndo(before: [Block], name: String) {
-        guard let undoManager else { return }
-        undoManager.registerUndo(withTarget: self) { doc in
-            let after = doc.snapshot()
-            doc.children = before
-            doc.enforceHeadingContainment()
-            doc.lastTransactionKey = nil
-            doc.lastTransactionTime = nil
-            doc.registerUndo(before: after, name: name)
-            // The diff that takes us from the pre-undo state (`after`) to the
-            // post-undo state (`before`). The editor forwards this to the host
-            // so the journal tombstones the just-undone hashes and re-alives
-            // the restored ones — same shape as a forward commit's emission,
-            // which keeps the journal symmetric across undo/redo.
-            let invertedOps = BlockTreeDiff.derive(pre: after, post: before)
-            doc.didApplyUndo?(invertedOps)
-        }
-        undoManager.setActionName(name)
     }
 
     /// Pulls a title out of the first top-level H1, falling back to the
@@ -201,13 +193,6 @@ public final class Document: @MainActor Identifiable {
         }
         return fallback
     }
-
-    // MARK: - Snapshot for undo
-
-    /// Snapshot the current tree as `[Block]`. Cheap because Block is a value
-    /// type — only the spine of the tree (Array storage) is shallow-copied;
-    /// payloads (AttributedString, etc.) are COW.
-    public func snapshot() -> [Block] { children }
 
     /// Bulk-replace the entire children list with a new tree. Bypasses undo
     /// and the `preMutation` hook — intended for non-user operations like

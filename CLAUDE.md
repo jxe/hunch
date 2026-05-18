@@ -61,7 +61,7 @@ user-picked workspace folder.
     No debounce, no separate "log-apply Task," no `.armed` state: every
     `Document.transaction` (typing via `commitLiveText`, structural via
     `mutate(_:_:)`, undo, redo) computes its pre→post diff and fires
-    `DocumentUndoController.onCommit`, which forwards the ops to the
+    `Document.didCommitTransaction`, which the editor forwards to the
     host. That's the single save event. The "log durable
     before file durable" invariant is preserved structurally: every
     `documentDidChange` writes log before file inside a single Task.
@@ -253,22 +253,22 @@ re-renders pick up new entries/title state directly.
 snapshots `children` *before* `preMutation` fires (so the snapshot
 captures pre-typing state), runs `preMutation` (which flushes the live
 editor's text through a nested transaction), runs the change closure,
-re-enforces heading containment, snapshots `children` again, and
-derives the pre→post diff via `BlockTreeDiff.derive(_:_:)`. The diff
-is the transaction's return value and also drives the registered undo
-inverse — on undo the inverted diff fires via `didApplyUndo`, on redo
-the forward diff fires again. Same shape across forward/undo/redo, so
-the recovery journal stays symmetric. Nested transactions return `[]`
-and emit nothing — the outer's diff already covers their changes.
+re-enforces heading containment, snapshots `children` again, derives
+the pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
+`Document.didCommitTransaction` with the diff. Forward, undo, and redo
+all funnel through the same hook — undo with the *inverted* diff so
+the journal stays symmetric across the round-trip. Nested transactions
+absorb into the outer (no new undo entry, no diff fired); the outer's
+diff already covers their changes.
 
-**`DocumentUndoController.onCommit` is the editor's single emission
-point.** Wired in `EditorView.installUndoApply` to call
+**`Document.didCommitTransaction` is the editor's single emission
+point.** Wired in `EditorView.installUndoApply` to revalidate
+`EditorState` against the new block set and forward the ops to
 `host.documentDidChange(ops:on:)`. Both `EditorView.mutate(name:_:)`
 (structural) and `BlockTextEditor.Coordinator.commitLiveText` (typing)
-go through `undoController.transaction(name:coalesceKey:_:)`, which
-runs the document transaction and fires `onCommit` with the diff.
-Empty diff = pure reorder/move (id+hash stable); the host still
-persists the new tree shape from the same call.
+ultimately call `Document.transaction`, which fires the hook. Empty
+diff = pure reorder/move (id+hash stable); the host still persists
+the new tree shape from the same call.
 
 **Nav-mode keyboard goes through `EditorCommands`.**
 `handleNavKeyPress` looks the press up in `EditorView.navBindings`

@@ -349,16 +349,16 @@ against); they write directly and await durability inline.
 **Editor mutations stream as ops.** Every `Document.transaction`
 (forward and undo/redo) derives a pre→post `[EditorOp]` diff via
 `BlockTreeDiff.derive(_:_:)` and fires
-`DocumentUndoController.onCommit`, which the editor wires to
+`Document.didCommitTransaction`, which the editor wires to
 `host.documentDidChange(ops:on:)`. The host's adapter calls
 `Clamshell.documentDidChange(ops:in:)`, which projects the batch onto
 a `Patch` (inserts → `.add`, removes → `.purge`) and runs log apply +
 file write atomically. Typing goes through the same path:
 `commitLiveText` opens a `transaction(name:"Type", coalesceKey:)` and
-the resulting diff flows through `onCommit`. Undo and redo also fire
-`onCommit` with the (inverted) diff so the journal stays symmetric.
-No pre/post tree snapshot on the host side, no diff inference — the
-op stream is the log update.
+the resulting diff flows through the same hook. Undo and redo fire it
+too with the (inverted) diff so the journal stays symmetric. No
+pre/post tree snapshot on the host side, no diff inference — the op
+stream is the log update.
 
 **Deletes are explicit, not inferred.** The op diff emits a
 `.remove(hash)` for every block id present in pre but absent in post.

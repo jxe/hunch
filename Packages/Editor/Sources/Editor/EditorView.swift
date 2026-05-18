@@ -944,11 +944,11 @@ public struct EditorView: View {
     /// Thin wrapper over `undoController.transaction(...)`: that handles
     /// flushing in-flight text via `preMutation`, snapshotting `[Block]`
     /// for undo, enforcing heading containment, computing the pre→post
-    /// diff, and firing `onCommit` (which forwards the ops to
-    /// `host.documentDidChange`). Typing goes through the same controller
-    /// transaction path from `commitLiveText`, so this is just the
-    /// structural-mutation entry point — the controller is the single
-    /// emission point for both flavours.
+    /// diff, and firing `Document.didCommitTransaction` (wired in
+    /// `installUndoApply` to forward the ops to `host.documentDidChange`).
+    /// Typing goes through the same transaction path from `commitLiveText`,
+    /// so this is just the structural-mutation entry point — the document
+    /// is the single emission point for both flavours.
     ///
     /// The transaction's `before` snapshot is captured pre-`preMutation`,
     /// so any typing flush triggered by the live editor on commit gets

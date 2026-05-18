@@ -4,7 +4,7 @@ import Foundation
 
 /// Covers the unified mutation/undo entry point `Document.transaction`,
 /// including coalescing via `coalesceKey` and the `preMutation` /
-/// `didApplyUndo` hooks.
+/// `didCommitTransaction` hooks.
 @MainActor
 @Suite("Document.transaction — mutations, undo, coalescing")
 struct DocumentTransactionTests {
@@ -38,7 +38,7 @@ struct DocumentTransactionTests {
         _ mgr: UndoManager,
         name: String,
         coalesceKey: AnyHashable? = nil,
-        _ change: (Document) -> Void
+        _ change: () -> Void
     ) {
         mgr.beginUndoGrouping()
         doc.transaction(name: name, coalesceKey: coalesceKey, change)
@@ -61,8 +61,8 @@ struct DocumentTransactionTests {
         let (doc, mgr) = makeDocWithUndo()
         let id = doc.children[0].id
 
-        tx(doc, mgr, name: "Edit 1") { d in d.setText(id, AttributedString("one")) }
-        tx(doc, mgr, name: "Edit 2") { d in d.setText(id, AttributedString("two")) }
+        tx(doc, mgr, name: "Edit 1") { doc.setText(id, AttributedString("one")) }
+        tx(doc, mgr, name: "Edit 2") { doc.setText(id, AttributedString("two")) }
 
         #expect(plainText(doc.children[0]) == "two")
         mgr.undo()
@@ -79,9 +79,9 @@ struct DocumentTransactionTests {
         // UndoManager grouping — share one group so that the second/third
         // transactions can't accidentally land in their own.
         mgr.beginUndoGrouping()
-        doc.transaction(name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("a")) }
-        doc.transaction(name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("ab")) }
-        doc.transaction(name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("abc")) }
+        doc.transaction(name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("a")) }
+        doc.transaction(name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("ab")) }
+        doc.transaction(name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("abc")) }
         mgr.endUndoGrouping()
 
         #expect(plainText(doc.children[0]) == "abc")
@@ -95,9 +95,9 @@ struct DocumentTransactionTests {
         let id = doc.children[0].id
 
         mgr.beginUndoGrouping()
-        doc.transaction(name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("a")) }
-        doc.transaction(name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("ab")) }
-        doc.transaction(name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("abc")) }
+        doc.transaction(name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("a")) }
+        doc.transaction(name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("ab")) }
+        doc.transaction(name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("abc")) }
         mgr.endUndoGrouping()
 
         mgr.undo()
@@ -111,8 +111,8 @@ struct DocumentTransactionTests {
         let firstID = doc.children[0].id
         let secondID = doc.children[1].id
 
-        tx(doc, mgr, name: "Type", coalesceKey: firstID) { d in d.setText(firstID, AttributedString("aa")) }
-        tx(doc, mgr, name: "Type", coalesceKey: secondID) { d in d.setText(secondID, AttributedString("bb")) }
+        tx(doc, mgr, name: "Type", coalesceKey: firstID) { doc.setText(firstID, AttributedString("aa")) }
+        tx(doc, mgr, name: "Type", coalesceKey: secondID) { doc.setText(secondID, AttributedString("bb")) }
 
         #expect(plainText(doc.children[0]) == "aa")
         #expect(plainText(doc.children[1]) == "bb")
@@ -129,9 +129,9 @@ struct DocumentTransactionTests {
         let (doc, mgr) = makeDocWithUndo()
         let id = doc.children[0].id
 
-        tx(doc, mgr, name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("a")) }
+        tx(doc, mgr, name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("a")) }
         doc.breakCoalescing()
-        tx(doc, mgr, name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("ab")) }
+        tx(doc, mgr, name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("ab")) }
 
         mgr.undo()
         #expect(plainText(doc.children[0]) == "a")
@@ -145,13 +145,13 @@ struct DocumentTransactionTests {
 
         // Burst (one group). Two coalesce-key transactions register one entry.
         mgr.beginUndoGrouping()
-        doc.transaction(name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("a")) }
-        doc.transaction(name: "Type", coalesceKey: id) { d in d.setText(id, AttributedString("ab")) }
+        doc.transaction(name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("a")) }
+        doc.transaction(name: "Type", coalesceKey: id) { doc.setText(id, AttributedString("ab")) }
         mgr.endUndoGrouping()
 
         // Structural — own group.
-        tx(doc, mgr, name: "Insert") { d in
-            d.children.append(.paragraph(text: AttributedString("charlie")))
+        tx(doc, mgr, name: "Insert") {
+            doc.children.append(.paragraph(text: AttributedString("charlie")))
         }
 
         #expect(doc.children.count == 3)
@@ -167,26 +167,29 @@ struct DocumentTransactionTests {
         var changeFiredAt: Int? = nil
         var tick = 0
         doc.preMutation = { tick += 1; preFiredAt = tick }
-        doc.transaction(name: "x") { _ in tick += 1; changeFiredAt = tick }
+        doc.transaction(name: "x") { tick += 1; changeFiredAt = tick }
 
         #expect(preFiredAt == 1)
         #expect(changeFiredAt == 2)
     }
 
-    @Test func didApplyUndoFiresOnUndoAndRedo() {
+    @Test func didCommitTransactionFiresOnForwardUndoAndRedo() {
+        // The unified commit hook fires on every transaction direction:
+        // forward (the original mutation), undo (the inverse), redo (the
+        // re-forward). One hook, three firings for the round-trip.
         let (doc, mgr) = makeDocWithUndo()
         let id = doc.children[0].id
-        var applyFires = 0
-        doc.didApplyUndo = { _ in applyFires += 1 }
+        var fires = 0
+        doc.didCommitTransaction = { _ in fires += 1 }
 
-        tx(doc, mgr, name: "Edit") { d in d.setText(id, AttributedString("xx")) }
-        #expect(applyFires == 0) // Doesn't fire on direct mutation.
+        tx(doc, mgr, name: "Edit") { doc.setText(id, AttributedString("xx")) }
+        #expect(fires == 1, "forward fires once")
 
         mgr.undo()
-        #expect(applyFires == 1)
+        #expect(fires == 2, "undo fires again")
 
         mgr.redo()
-        #expect(applyFires == 2)
+        #expect(fires == 3, "redo fires again")
     }
 
     @Test func transactionReturnsForwardDiff() {
@@ -198,8 +201,8 @@ struct DocumentTransactionTests {
         let doc = makeDoc()
         let id = doc.children[0].id
         let preHash = doc.children[0].atomicHash
-        let ops = doc.transaction(name: "Edit") { d in
-            d.setText(id, AttributedString("changed"))
+        let ops = doc.transaction(name: "Edit") {
+            doc.setText(id, AttributedString("changed"))
         }
         let postHash = doc.children[0].atomicHash
         #expect(ops.count == 2, "one remove + one insert")
@@ -215,7 +218,7 @@ struct DocumentTransactionTests {
         }
     }
 
-    @Test func didApplyUndoCarriesInvertedDiff() {
+    @Test func undoFiresInvertedDiffThroughDidCommitTransaction() {
         // The canonical undo-coherence test: forward transaction's
         // `(.remove(pre), .insert(post))` becomes `(.remove(post),
         // .insert(pre))` on undo. The editor forwards this to the host so
@@ -227,9 +230,9 @@ struct DocumentTransactionTests {
         let id = doc.children[0].id
         let preHash = doc.children[0].atomicHash
         var captured: [EditorOp] = []
-        doc.didApplyUndo = { captured = $0 }
+        doc.didCommitTransaction = { captured = $0 }
 
-        tx(doc, mgr, name: "Edit") { d in d.setText(id, AttributedString("changed")) }
+        tx(doc, mgr, name: "Edit") { doc.setText(id, AttributedString("changed")) }
         let postHash = doc.children[0].atomicHash
 
         mgr.undo()
@@ -260,12 +263,12 @@ struct DocumentTransactionTests {
         let id = doc.children[0].id
         var innerOps: [EditorOp] = []
         doc.preMutation = {
-            innerOps = doc.transaction(name: "Inner", coalesceKey: id) { d in
-                d.setText(id, AttributedString("inner"))
+            innerOps = doc.transaction(name: "Inner", coalesceKey: id) {
+                doc.setText(id, AttributedString("inner"))
             }
         }
-        let outerOps = doc.transaction(name: "Outer") { d in
-            d.setText(id, AttributedString("outer"))
+        let outerOps = doc.transaction(name: "Outer") {
+            doc.setText(id, AttributedString("outer"))
         }
         #expect(innerOps.isEmpty, "nested transaction returns empty ops")
         #expect(!outerOps.isEmpty, "outer captures the full change (typing flush + outer edit)")
@@ -287,8 +290,8 @@ struct DocumentTransactionTests {
         let originalCount = doc.children.count
 
         // A no-op-ish edit triggers enforce again. Should not double-fold.
-        doc.transaction(name: "no-op") { d in
-            d.setText(d.children[0].id, AttributedString("Title"))
+        doc.transaction(name: "no-op") {
+            doc.setText(doc.children[0].id, AttributedString("Title"))
         }
         #expect(doc.children.count == originalCount)
     }
@@ -309,16 +312,16 @@ struct DocumentTransactionTests {
         doc.preMutation = {
             preMutationFires += 1
             // Open a nested transaction (typing path's typical shape).
-            doc.transaction(name: "Inner", coalesceKey: id) { d in
-                d.setText(id, AttributedString("inner"))
+            doc.transaction(name: "Inner", coalesceKey: id) {
+                doc.setText(id, AttributedString("inner"))
             }
         }
 
-        tx(doc, mgr, name: "Outer") { d in
+        tx(doc, mgr, name: "Outer") {
             // Outer change runs AFTER preMutation (which fired inner first).
             // Append a paragraph rather than overwrite, so we can verify both
             // changes survive into the outer's undo entry.
-            d.children.append(.paragraph(text: AttributedString("outer-added")))
+            doc.children.append(.paragraph(text: AttributedString("outer-added")))
         }
 
         // preMutation fires exactly once — only for the outer.
@@ -341,7 +344,7 @@ struct DocumentTransactionTests {
         let doc = makeDoc()
         let id = doc.children[0].id
 
-        doc.transaction(name: "Edit") { d in d.setText(id, AttributedString("zzz")) }
+        doc.transaction(name: "Edit") { doc.setText(id, AttributedString("zzz")) }
         #expect(plainText(doc.children[0]) == "zzz")
     }
 }

@@ -346,9 +346,13 @@ struct DocumentMutationTests {
         #expect(doc.children[1].id == xID)
     }
 
-    @Test func snapshotIsShallowArrayCopy() {
+    @Test func childrenIsValueTypeSnapshot() {
+        // `Document.children` is a `[Block]` value-type array, so capturing
+        // it is a shallow-copy that doesn't track subsequent mutations. The
+        // undo machinery relies on this — `let before = children` inside
+        // `transaction` is enough to roll back to.
         let doc = makeDoc()
-        let snapshot = doc.snapshot()
+        let snapshot = doc.children
         doc.children[0] = .paragraph(text: AttributedString("changed"))
         // Snapshot reflects pre-mutation state.
         if case .paragraph(let t) = snapshot[0].kind {

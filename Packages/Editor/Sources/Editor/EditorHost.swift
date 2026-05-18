@@ -101,7 +101,7 @@ public protocol EditorHost: AnyObject {
     /// mutation via `EditorView.mutate(_:_:)`, typing commit via
     /// `BlockTextEditor.Coordinator.commitLiveText`, autotransform, paste,
     /// move-to, or undo/redo of any of the above. The editor fires this
-    /// from a single emission point (`DocumentUndoController.onCommit`).
+    /// from a single emission point (`Document.didCommitTransaction`).
     ///
     /// When the change came through `mutate`, `ops` carries the pre→post diff
     /// from `BlockTreeDiff.derive(pre:post:)`: `.insert(hash, parent, block)`

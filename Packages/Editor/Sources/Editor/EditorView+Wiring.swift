@@ -11,10 +11,10 @@ import AppKit
 // that owns the shared `UndoManager`). Both are installed once on first appear.
 //
 // The hooks `installUndoApply` wires onto `Document` (preMutation,
-// didApplyUndo) capture the View struct by value, so they capture the
-// underlying `Document` and `EditorState` references. Reads happen at fire
-// time, so a captured-state closure that runs after the user has edited
-// still sees fresh model state.
+// didCommitTransaction, didReplaceChildren) capture the View struct by value,
+// so they capture the underlying `Document` and `EditorState` references.
+// Reads happen at fire time, so a captured-state closure that runs after the
+// user has edited still sees fresh model state.
 //
 // Wiring lives in this file so `EditorView.swift` doesn't carry a
 // 100-line setter assignment block in `onAppear`.
@@ -164,8 +164,9 @@ extension EditorView {
     ///     register inverses against it).
     ///   - `document.preMutation` flushes any in-flight NSTextView text before
     ///     a transaction snapshots.
-    ///   - `document.didApplyUndo` revalidates `EditorState` against the new
-    ///     tree on undo/redo and notifies the host.
+    ///   - `document.didCommitTransaction` revalidates `EditorState` against
+    ///     the new tree (after every forward, undo, or redo) and forwards the
+    ///     diff to the host.
     ///   - `document.didReplaceChildren` revalidates `EditorState` against the
     ///     new tree on bulk-replace (external-edit reload, conflict merge).
     ///     Fresh parse → fresh BlockIDs, so without this `state.cursor` /
@@ -180,21 +181,19 @@ extension EditorView {
             undoController?.flushActiveText?()
         }
 
-        // Single emission point for every kind of commit. Forward transactions
-        // (typing via `commitLiveText`, structural via `mutate(_:_:)`) and
-        // their nested sub-transactions all funnel through here with their
-        // pre→post diff. Capture by reference: `document`/`state`/`host` are
-        // reachable through this struct's stored bindings; reads happen at
-        // fire time so the callback sees fresh state.
-        undoController.onCommit = { ops in
-            host.documentDidChange(ops: ops, on: document)
-        }
-
-        document.didApplyUndo = { invertedOps in
+        // Single hook for every transaction — forward, undo, or redo —
+        // covering both halves of "edit happened": revalidate `EditorState`
+        // against the new block set (drops dangling selection/cursor refs
+        // when blocks vanish), then forward the diff to the host so its
+        // recovery journal + .md stay in sync. Capture by reference:
+        // `document`/`state`/`host` are reachable through this struct's
+        // stored bindings; reads happen at fire time so the callback sees
+        // fresh state.
+        document.didCommitTransaction = { ops in
             var validIDs: Set<BlockID> = []
             document.walk { block, _, _ in validIDs.insert(block.id) }
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
-            host.documentDidChange(ops: invertedOps, on: document)
+            host.documentDidChange(ops: ops, on: document)
         }
 
         document.didReplaceChildren = {

@@ -449,7 +449,7 @@ public struct BlockRow: View, Equatable {
                     // editor's `commitLiveText`, which opens a
                     // `controller.transaction(name:"Type", coalesceKey:)`;
                     // the resulting diff flows through
-                    // `DocumentUndoController.onCommit` to the host.
+                    // `Document.didCommitTransaction` to the host.
                     onBlockChange(block.withText(newValue))
                 }
             }

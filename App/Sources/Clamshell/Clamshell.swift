@@ -348,7 +348,7 @@ public final class Clamshell {
     // debounce, no separate per-op log task: every `Document.transaction`
     // (typing via `commitLiveText`, structural via `mutate(_:_:)`, undo,
     // redo) emits its pre→post diff through
-    // `DocumentUndoController.onCommit` → here.
+    // `Document.didCommitTransaction` → here.
 
     /// Editor mutated `doc` and produced these `ops`. Applies the patch
     /// to the recovery log (when non-empty), then serializes the current
@@ -463,8 +463,8 @@ public final class Clamshell {
     public func append(_ blocks: [Block], toPage relativePath: String) async throws -> Document {
         let url = self.url(for: relativePath)
         let doc = try loadDocument(at: url)
-        doc.transaction(name: "Append to subpage") { d in
-            d.insertSubtrees(blocks, at: DropPath(parent: nil, position: d.children.count))
+        doc.transaction(name: "Append to subpage") {
+            doc.insertSubtrees(blocks, at: DropPath(parent: nil, position: doc.children.count))
         }
         try await log.apply(Patch.adds(from: blocks), to: relativePath)
         let newText = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: { [weak self] rel in self?.title(for: rel) })

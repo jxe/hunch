@@ -511,9 +511,9 @@ struct MacBlockTextEditor: NSViewRepresentable {
             lastKnownBindingPlain = newPlain
             textStorageDirty = false
             // No separate emit step needed: `controller.transaction(...)`
-            // above already fired `onCommit` with the typing diff (when
-            // non-nested and non-empty). Top-level commits — blur, explicit
-            // flush, view tear-down — go through the same path.
+            // above already fired `Document.didCommitTransaction` with the
+            // typing diff. Top-level commits — blur, explicit flush, view
+            // tear-down — go through the same path.
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {

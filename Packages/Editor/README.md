@@ -288,9 +288,9 @@ public final class Document {
 
     // Editor-installed hooks (set on mount):
     public weak var undoManager: UndoManager?
-    public var preMutation: (() -> Void)?            // flush in-flight NSTextView text before snapshot
-    public var didApplyUndo: (() -> Void)?           // revalidate selection after undo/redo
-    public var didReplaceChildren: (() -> Void)?     // revalidate selection after replaceChildren swaps the tree wholesale
+    public var preMutation: (() -> Void)?                       // flush in-flight NSTextView text before snapshot
+    public var didCommitTransaction: (([EditorOp]) -> Void)?    // fires after every transaction (forward / undo / redo) with the diff
+    public var didReplaceChildren: (() -> Void)?                // revalidate selection after replaceChildren swaps the tree wholesale
 }
 ```
 
