@@ -140,11 +140,6 @@ extension EditorView {
     }
 
     @discardableResult
-    func convert(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
-        convert(blockIDs: menuTargetIDs(anchorID: blockID), to: target)
-    }
-
-    @discardableResult
     func convert(blockIDs: [BlockID], to target: BlockTurnInto) -> KeyPress.Result {
         let ids = blockIDs.filter { document.find($0) != nil }
         guard !ids.isEmpty else { return .ignored }

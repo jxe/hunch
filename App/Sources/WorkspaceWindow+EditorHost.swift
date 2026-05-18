@@ -157,7 +157,6 @@ extension WorkspaceWindow: EditorHost {
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? {
         await withCheckedContinuation { (continuation: CheckedContinuation<MoveDestination?, Never>) in
             moveRequest = MoveRequest(
-                blockIDs: blockIDs,
                 inDocCandidates: candidates,
                 completion: { destination in continuation.resume(returning: destination) }
             )

@@ -85,7 +85,7 @@ public final class Clamshell {
         self.root = root
         let files = FileStore()
         self.files = files
-        self.trash = TrashStore(workspaceRoot: root, store: files)
+        self.trash = TrashStore(workspaceRoot: root)
         self.log = RecoveryLog(workspaceRoot: root, store: files)
 
         let metadataURL = Clamshell.metadataURL(forRoot: root)

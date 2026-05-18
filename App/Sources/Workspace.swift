@@ -149,18 +149,6 @@ final class Workspace {
         try? clamshell.rescan()
     }
 
-    func setWorkspaceFromKeyFile(_ url: URL) {
-        let root = url.deletingLastPathComponent()
-        do {
-            try WorkspaceBookmark.save(url: root)
-            activateWorkspaceAccess(for: root)
-            mount(root: root).homeRelativePath = url.lastPathComponent
-            rescan()
-        } catch {
-            self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
-        }
-    }
-
     func setWorkspace(_ url: URL) {
         let total = perfStart()
         do {
@@ -541,7 +529,6 @@ public struct LostBlockGroup: Sendable, Hashable, Identifiable {
     public let descendantHashes: Set<String>
 
     public var id: String { root.id }
-    public var hash: String { root.hash }
     public var source: String { root.source }
     public var recordedAt: Date { root.recordedAt }
     public var markdown: String { root.markdown }
@@ -559,7 +546,6 @@ public struct PurgedBlockGroup: Sendable, Hashable, Identifiable {
     public let descendantHashes: Set<String>
 
     public var id: String { root.id }
-    public var hash: String { root.hash }
     public var source: String { root.source }
     public var purgedAt: Date { root.purgedAt }
     public var markdown: String { root.markdown }
@@ -606,11 +592,6 @@ public enum RecoverableEntry: Identifiable, Sendable, Hashable {
         case .lostBlock(let g): return RecoverableEntry.previewLine(from: g.markdown)
         case .purgedBlock(let g): return RecoverableEntry.previewLine(from: g.markdown)
         }
-    }
-
-    public var isPageEntry: Bool {
-        if case .deletedPage = self { return true }
-        return false
     }
 
     public var isPurged: Bool {

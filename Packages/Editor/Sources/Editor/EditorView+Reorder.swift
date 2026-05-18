@@ -429,7 +429,7 @@ extension EditorView {
     /// `dropPath` handles as "top of document."
     func resolveDropSlot(forY y: CGFloat, in rows: [EditorView.VisibleRow], previousIndex: Int? = nil) -> Int {
         let knownFrames: [(rowsIndex: Int, frame: ReorderDropFrame)] = rows.enumerated().compactMap { (k, row) in
-            rowFrames[row.block.id].map { (k, ReorderDropFrame(id: row.block.id, frame: $0)) }
+            rowFrames[row.block.id].map { (k, ReorderDropFrame(frame: $0)) }
         }
         guard !knownFrames.isEmpty else { return previousIndex ?? 0 }
         let prevInKnownSpace: Int? = previousIndex.map { prev in

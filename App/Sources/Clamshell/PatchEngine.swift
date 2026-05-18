@@ -40,10 +40,6 @@ enum LogRecord: Sendable, Hashable {
         return false
     }
 
-    var isPurge: Bool {
-        if case .purge = self { return true }
-        return false
-    }
 }
 
 /// One device's per-page log.
@@ -812,9 +808,6 @@ extension PatchEngine {
         let lifted: [String]
         let unrestorable: [UnrestorableEntry]
         var didChange: Bool { !restoredHashes.isEmpty }
-        var isQuiet: Bool {
-            restoredHashes.isEmpty && lifted.isEmpty && unrestorable.isEmpty
-        }
     }
 }
 

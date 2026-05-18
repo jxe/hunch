@@ -5,11 +5,9 @@ import Editor
 /// Block-level deletions are recorded in `RecoveryLog`, not here.
 actor TrashStore {
     private let workspaceRoot: URL
-    private let store: FileStore
 
-    init(workspaceRoot: URL, store: FileStore = FileStore()) {
+    init(workspaceRoot: URL) {
         self.workspaceRoot = workspaceRoot
-        self.store = store
     }
 
     // MARK: - Listing

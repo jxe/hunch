@@ -24,9 +24,9 @@ enum Diag {
     static let perf    = Logger(subsystem: "org.nxhx.Hunch", category: "perf")
 }
 
-/// Capture a start instant. Pair with `perfEnd` when start and end straddle
-/// structural boundaries (e.g. timing a function from entry to "all kickoff
-/// tasks scheduled"). For single-expression timings prefer `perfTime`.
+/// Capture a start instant. Pair with `perfEnd` to log a span that crosses
+/// structural boundaries (e.g. function entry through "all kickoff tasks
+/// scheduled").
 @inline(__always)
 func perfStart() -> DispatchTime { DispatchTime.now() }
 
@@ -38,27 +38,4 @@ func perfEnd(_ start: DispatchTime, _ label: String, _ extras: String = "") {
     } else {
         Diag.perf.log("\(label, privacy: .public) elapsed=\(ms, privacy: .public)ms \(extras, privacy: .public)")
     }
-}
-
-/// Time a synchronous expression and log `<label> elapsed=<ms>ms`. Returns
-/// the closure's value so it composes inside `let x = perfTime(...) { ... }`.
-@inline(__always)
-@discardableResult
-func perfTime<T>(_ label: String, _ body: () throws -> T) rethrows -> T {
-    let start = perfStart()
-    let result = try body()
-    perfEnd(start, label)
-    return result
-}
-
-/// Async overload of `perfTime`. Logs end-to-end wall-clock including
-/// suspension time, which is exactly what we want for "user-visible delay"
-/// timings.
-@inline(__always)
-@discardableResult
-func perfTimeAsync<T>(_ label: String, _ body: () async throws -> T) async rethrows -> T {
-    let start = perfStart()
-    let result = try await body()
-    perfEnd(start, label)
-    return result
 }

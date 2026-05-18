@@ -80,9 +80,9 @@ struct ReorderDropResolverTests {
     // slot to the next row.
     @Test func dropSlotStaysStableAcrossEntireGapRegion() {
         let frames: [ReorderDropFrame] = [
-            ReorderDropFrame(id: BlockID(), frame: CGRect(x: 0, y: 0,   width: 320, height: 30)),
-            ReorderDropFrame(id: BlockID(), frame: CGRect(x: 0, y: 72,  width: 320, height: 30)),
-            ReorderDropFrame(id: BlockID(), frame: CGRect(x: 0, y: 102, width: 320, height: 30)),
+            ReorderDropFrame(frame: CGRect(x: 0, y: 0,   width: 320, height: 30)),
+            ReorderDropFrame(frame: CGRect(x: 0, y: 72,  width: 320, height: 30)),
+            ReorderDropFrame(frame: CGRect(x: 0, y: 102, width: 320, height: 30)),
         ]
         for y: CGFloat in [31, 45, 60, 71] {
             #expect(
@@ -110,10 +110,7 @@ struct ReorderDropResolverTests {
 
     private func makeFrames(count: Int) -> [ReorderDropFrame] {
         (0..<count).map { i in
-            ReorderDropFrame(
-                id: BlockID(),
-                frame: CGRect(x: 0, y: CGFloat(i) * 60, width: 320, height: 60)
-            )
+            ReorderDropFrame(frame: CGRect(x: 0, y: CGFloat(i) * 60, width: 320, height: 60))
         }
     }
 }

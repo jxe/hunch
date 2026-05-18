@@ -33,10 +33,6 @@ extension Clamshell {
         }
     }
 
-    struct RestoreOutcome: Sendable {
-        let restoredHashes: Set<String>
-    }
-
     enum RestoreError: Error {
         /// The source page no longer exists on disk (trashed since the
         /// Recover sheet was populated). Carries the workspace-relative path.
@@ -131,8 +127,7 @@ extension Clamshell {
     /// sheet stops surfacing the row. Purged-restore appends a fresh `.add`
     /// per covered hash so the union's latest record flips back to alive.
     /// Both happen in one batched log write.
-    @discardableResult
-    func restoreBlocks(_ target: RecoveryTarget, liveDoc: Document?) async throws -> RestoreOutcome {
+    func restoreBlocks(_ target: RecoveryTarget, liveDoc: Document?) async throws {
         let source = target.source
         let pageURL = url(for: source)
         guard FileManager.default.fileExists(atPath: pageURL.path) else {
@@ -252,7 +247,6 @@ extension Clamshell {
             }
         }
 
-        return RestoreOutcome(restoredHashes: insert.coveredHashes)
     }
 
     private func resolveRestoreDoc(pageURL: URL, liveDoc: Document?) async throws -> (Document, Bool) {

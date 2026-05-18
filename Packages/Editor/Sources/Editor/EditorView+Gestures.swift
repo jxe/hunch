@@ -227,8 +227,6 @@ extension View {
 struct PagePinchValue {
     var startLocation: CGPoint
     var location: CGPoint
-    var magnification: CGFloat
-    var spread: CGFloat
     var spreadDelta: CGFloat
 }
 
@@ -629,8 +627,6 @@ struct IOSPagePinchGestureBridge: UIViewRepresentable {
             return PagePinchValue(
                 startLocation: startMidpoint,
                 location: midPage,
-                magnification: recognizer.scale,
-                spread: currentDistance,
                 spreadDelta: currentDistance - startDistance
             )
         }

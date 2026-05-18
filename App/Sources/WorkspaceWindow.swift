@@ -33,7 +33,6 @@ final class WorkspaceWindow {
 
     struct MoveRequest: Identifiable {
         let id = UUID()
-        let blockIDs: [BlockID]
         let inDocCandidates: [InDocMoveTarget]
         let completion: (MoveDestination?) -> Void
     }
@@ -48,21 +47,6 @@ final class WorkspaceWindow {
     }
 
     // MARK: - Navigation
-
-    /// Page-list selection: navigate to `entry`. If `entry` is the home page,
-    /// drain the path so the home root becomes visible; otherwise replace the
-    /// stack with a single entry pushed on top of home.
-    func open(_ entry: WorkspaceEntry) {
-        if entry.relativePath == workspace.homeRelativePath {
-            if path.isEmpty {
-                handlePathChange()
-            } else {
-                path = []
-            }
-        } else if path != [entry.url] {
-            path = [entry.url]
-        }
-    }
 
     /// Search-result activation: push the picked page onto the navstack so the
     /// back trail is preserved. If the picked page *is* home and we're already
@@ -231,7 +215,7 @@ final class WorkspaceWindow {
     private func restoreBlock(_ target: Clamshell.RecoveryTarget) async -> Bool {
         guard let clamshell = workspace.clamshell else { return false }
         do {
-            _ = try await clamshell.restoreBlocks(target, liveDoc: openDocument)
+            try await clamshell.restoreBlocks(target, liveDoc: openDocument)
             return true
         } catch Clamshell.RestoreError.pageMissing(let source) {
             workspace.error = "Original page no longer exists at \(source)."

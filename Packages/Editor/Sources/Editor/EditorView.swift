@@ -1434,7 +1434,6 @@ public struct EditorView: View {
         let block: Block
         let depth: Int
         let parentID: BlockID?
-        let preorderIndex: Int
         let slot: Int
         let prev: Block?
         let prevDepth: Int
@@ -1445,10 +1444,9 @@ public struct EditorView: View {
         rows.reserveCapacity(snapshot.count)
         var lastVisible: Block? = nil
         var lastDepth: Int = 0
-        var preorderCounter = 0
         appendVisible(in: snapshot, depth: 0, parentID: nil, hidden: hidden,
                       rows: &rows,
-                      lastVisible: &lastVisible, lastDepth: &lastDepth, preorderCounter: &preorderCounter)
+                      lastVisible: &lastVisible, lastDepth: &lastDepth)
         return rows
     }
 
@@ -1459,18 +1457,15 @@ public struct EditorView: View {
         hidden: Set<BlockID>,
         rows: inout [VisibleRow],
         lastVisible: inout Block?,
-        lastDepth: inout Int,
-        preorderCounter: inout Int
+        lastDepth: inout Int
     ) {
         for block in blocks {
-            let myIndex = preorderCounter
-            preorderCounter += 1
             // Block visibility: hidden if any ancestor is collapsed. The
             // `hidden` set is populated by `hiddenBlockIDs` which marks every
             // descendant of a closed container.
             if !hidden.contains(block.id) {
                 rows.append(VisibleRow(
-                    block: block, depth: depth, parentID: parentID, preorderIndex: myIndex,
+                    block: block, depth: depth, parentID: parentID,
                     slot: rows.count, prev: lastVisible, prevDepth: lastDepth
                 ))
                 lastVisible = block
@@ -1485,19 +1480,8 @@ public struct EditorView: View {
                 let childDepth = block.isHeading ? depth : depth + 1
                 appendVisible(in: block.children, depth: childDepth, parentID: block.id, hidden: hidden,
                               rows: &rows,
-                              lastVisible: &lastVisible, lastDepth: &lastDepth, preorderCounter: &preorderCounter)
-            } else {
-                // Still bump the preorder counter for the hidden subtree so
-                // ids and indices align with the legacy flat representation.
-                bumpPreorder(in: block.children, counter: &preorderCounter)
+                              lastVisible: &lastVisible, lastDepth: &lastDepth)
             }
-        }
-    }
-
-    private func bumpPreorder(in blocks: [Block], counter: inout Int) {
-        for block in blocks {
-            counter += 1
-            bumpPreorder(in: block.children, counter: &counter)
         }
     }
 
@@ -1783,10 +1767,6 @@ public struct EditorView: View {
             }
         }
         return firstAfter ?? lastBefore
-    }
-
-    private func indentByOne(blockID: BlockID) {
-        _ = changeIndent(blockID, by: 1)
     }
 
     /// Apply Tab / Shift-Tab indent change to the effective selection. Each

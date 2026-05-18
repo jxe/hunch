@@ -30,8 +30,9 @@ public final class EditorState {
     /// editing block. Set when transitioning into edit mode (click point, start
     /// of a split tail, merge join point) or mid-session for a structural shape
     /// change that re-mounts the editor (e.g. unbullet). Consumed-and-cleared
-    /// atomically by `takePendingInitialCursor()`; `exitEditMode()` clears any
-    /// uncomsumed value so a stale target can't leak across sessions. Nil means
+    /// atomically by `takePendingInitialCursor()`; `exitEditModeWithoutCursor()`
+    /// clears any unconsumed value so a stale target can't leak across sessions.
+    /// Nil means
     /// "seek to end".
     public internal(set) var pendingInitialCursor: InitialCursorTarget? = nil
 
@@ -323,13 +324,6 @@ extension EditorState {
         sessionState = .navigating(Selection(blocks: blocks, anchor: anchor, cursor: cursor), gesture: nil)
     }
 
-    /// Mutate the current nav-mode `Selection` in place. No-op outside nav mode.
-    /// Preserves any active gesture.
-    func updateNavSelection(_ update: (inout Selection) -> Void) {
-        guard case .navigating(var sel, let gesture) = sessionState else { return }
-        update(&sel)
-        sessionState = .navigating(sel, gesture: gesture)
-    }
 }
 
 // MARK: - Edit-mode transitions
@@ -343,14 +337,6 @@ extension EditorState {
     func enterEditMode(on id: BlockID, initialCursor: InitialCursorTarget? = nil) {
         sessionState = .editing(id, overlay: nil)
         pendingInitialCursor = initialCursor
-    }
-
-    /// Drop back to nav mode with the previously-editing block as the cursor.
-    /// No-op if not in edit mode.
-    func exitEditMode() {
-        guard case .editing(let id, _) = sessionState else { return }
-        sessionState = .navigating(Selection(blocks: [id], anchor: id, cursor: id), gesture: nil)
-        pendingInitialCursor = nil
     }
 
     /// Drop edit mode AND any selection — page is unfocused entirely.

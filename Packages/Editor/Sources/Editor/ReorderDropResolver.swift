@@ -1,7 +1,6 @@
 import CoreGraphics
 
 struct ReorderDropFrame: Equatable {
-    var id: BlockID
     var frame: CGRect
 }
 
