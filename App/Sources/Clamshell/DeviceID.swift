@@ -5,10 +5,10 @@ import Foundation
 /// sync with iCloud) so each install gets one stable ID for its lifetime; a
 /// reinstall produces a new ID and a new log file alongside the existing
 /// ones — old logs stay readable for recovery.
-public enum DeviceID {
-    public static let userDefaultsKey = "com.joeedelman.console.deviceID"
+enum DeviceID {
+    private static let userDefaultsKey = "com.joeedelman.console.deviceID"
 
-    public static let current: String = {
+    static let current: String = {
         if let existing = UserDefaults.standard.string(forKey: userDefaultsKey) {
             return existing
         }

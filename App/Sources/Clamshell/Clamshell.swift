@@ -204,14 +204,13 @@ public final class Clamshell {
     /// iCloud workspace costs ~1s/file of cold-cache materialization, and
     /// 50× of that on MainActor stalls the home page open for the better
     /// part of a minute. Titles populate lazily through `lookupPage`
-    /// cache misses as subpage rows render.
-    @discardableResult
-    public func rescan() throws -> [WorkspaceEntry] {
+    /// cache misses as subpage rows render. Result lands on the observable
+    /// `entries` property — callers should react there.
+    public func rescan() throws {
         let scanT = perfStart()
         let result = try files.scan(workspaceRoot: root)
         perfEnd(scanT, "Clamshell.rescan.scan", "count=\(result.count)")
         scanResult = result
-        return result
     }
 
     /// Existence + cached title for a `*.md` page id. `.missing` when the
@@ -555,7 +554,7 @@ public final class Clamshell {
             // Title overlay changed → entries' surface mtime is now stale.
             // A scan picks up the new mtime for this URL; subscribers
             // re-render through the entries computed.
-            _ = try? rescan()
+            try? rescan()
         }
     }
 
@@ -692,7 +691,7 @@ public final class Clamshell {
         try body.write(to: url, atomically: true, encoding: .utf8)
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
         titleCache[url] = CachedTitle(title: title, modificationDate: mtime)
-        _ = try? rescan()
+        try? rescan()
         return path
     }
 
@@ -732,7 +731,7 @@ public final class Clamshell {
         }
         forgetDiskContent(at: url)
         forgetTitle(at: url)
-        _ = try? rescan()
+        try? rescan()
         Task { [log, rel, result] in
             do {
                 try await log.move(fromPage: rel, toPage: result)
@@ -756,7 +755,7 @@ public final class Clamshell {
         } catch {
             Diag.log.error("log move (restore) failed from=\(entry.trashRelativePath, privacy: .public) to=\(restoredRel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         }
-        _ = try? rescan()
+        try? rescan()
         return restoredURL
     }
 

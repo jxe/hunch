@@ -231,7 +231,7 @@ final class WorkspaceWindow {
     private func restoreBlock(_ target: Clamshell.RecoveryTarget) async -> Bool {
         guard let clamshell = workspace.clamshell else { return false }
         do {
-            _ = try await clamshell.restore(target, liveDoc: openDocument)
+            _ = try await clamshell.restoreBlocks(target, liveDoc: openDocument)
             return true
         } catch Clamshell.RestoreError.pageMissing(let source) {
             workspace.error = "Original page no longer exists at \(source)."

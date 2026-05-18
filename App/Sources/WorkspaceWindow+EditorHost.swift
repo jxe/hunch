@@ -27,13 +27,13 @@ extension WorkspaceWindow: EditorHost {
         workspace.createSubpage(title: title, requestedPath: requestedPageID, initialContent: initialContent)
     }
 
-    func subpageContents(of pageID: String) async -> [Block]? {
+    func loadSubpageBlocks(_ pageID: String) async -> [Block]? {
         guard let clamshell = workspace.clamshell else { return nil }
         let target = clamshell.url(for: pageID)
         do {
             return try await clamshell.loadDocument(at: target, tracksDiskHistory: false).children
         } catch {
-            Diag.subpage.error("subpageContents(of:): load(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
+            Diag.subpage.error("loadSubpageBlocks(_:): load(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -113,7 +113,7 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
-    func absorbSubpage(_ pageID: String) async -> Bool {
+    func inlineAndTrashSubpage(_ pageID: String) async -> Bool {
         // The editor calls this immediately after the inline-content mutation
         // and relies on the host to durably persist the parent doc before the
         // source file is trashed. Without the flush here, the autosave is

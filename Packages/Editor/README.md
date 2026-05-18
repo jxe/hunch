@@ -77,8 +77,8 @@ Esc dismisses.
 Cmd-/ in nav mode (on a single block) opens a 3-column grid: H1/H2/H3,
 Bullet/Numbered/To-do, Text/Toggle/Page/Divider/Template. Each has a
 keyboard shortcut while the menu is open. On a subpage block, "Turn Into
-anything-but-page" inlines the child page's content (`subpageContents(of:)`) and
-trashes the source file (`absorbSubpage`).
+anything-but-page" inlines the child page's content (`loadSubpageBlocks(_:)`) and
+trashes the source file (`inlineAndTrashSubpage(_:)`).
 
 **Pinch-to-insert** (trackpad / touchscreen)
 Spread fingers between two rows to open a gap. Past threshold, releases
@@ -142,9 +142,9 @@ final class MyHost: EditorHost {
     func didActivateLink(_ target: LinkTarget) -> Bool { false }
     func lookupPage(_ pageID: String) -> PageLookup { .missing }
     func createSubpage(title: String, requestedPageID: String?, initialContent: [Block]?) -> String? { nil }
-    func subpageContents(of pageID: String) async -> [Block]? { nil }
+    func loadSubpageBlocks(_ pageID: String) async -> [Block]? { nil }
     func resolvePageID(from url: URL) -> String? { nil }
-    func absorbSubpage(_ pageID: String) async -> Bool { false }
+    func inlineAndTrashSubpage(_ pageID: String) async -> Bool { false }
     func appendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
@@ -245,7 +245,7 @@ public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
 - **`Block.subpage`'s `pageID: String`** is opaque to the editor —
   whatever identifier the host uses (relative path, UUID, database key).
   The editor echoes it back unchanged in `didActivateLink(.page(...))`,
-  `subpageContents(of:)`, `absorbSubpage(_:)`, `appendToSubpage(_:_:)`.
+  `loadSubpageBlocks(_:)`, `inlineAndTrashSubpage(_:)`, `appendToSubpage(_:_:)`.
 - **`Block.subpage`'s `title: String`** is a fallback hint. The editor
   prefers the title from `host.lookupPage(pageID)` when the host has it
   cached; falls back to this when the host returns `.present(title: nil)`.
@@ -404,8 +404,8 @@ stubbed out for early integration.
 | `resolvePageID` | `(_ url: URL) -> String?` | Classifies an inline-link URL as an internal page reference. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide subpage-creation vs link-toggling), and inside `didActivateLink` (so a single classifier governs all three). | Return the host's pageID for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
 | `didActivateLink` | `(_ target: LinkTarget) -> Bool` | User clicks/taps a subpage row (`.page(pageID)`), or clicks an inline `[text](url)` link in a read-only row (`.url(URL)`). | true = host fully handled; false lets the editor fall through to the system URL handler (`OpenURLAction.systemAction`). Subpage taps are always handled internally; for inline `.url` clicks the host typically routes via `resolvePageID` (internal nav) or returns false (external). |
 | `createSubpage` | `(title: String, requestedPageID: String?, initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |
-| `subpageContents` | `(of pageID: String) async -> [Block]?` | Expand Subpage (inline this child's content here, **keep the file**), and as the first step of Turn Into a non-page block on a subpage row. Async so the host can read off MainActor. | Host returns the child page's blocks. nil makes the action a no-op. |
-| `absorbSubpage` | `(_ pageID: String) async -> Bool` | Turn Into a non-page block on a subpage row (inline content **and trash the source file**). Always paired with `subpageContents(of:)` first. Async so the host can force-save the parent doc before deleting the source. | true = file trashed (proceed with inlining); false = abort. |
+| `loadSubpageBlocks` | `(_ pageID: String) async -> [Block]?` | First step of Turn Into a non-page block on a subpage row. Async so the host can read off MainActor. Paired with `inlineAndTrashSubpage(_:)`. | Host returns the child page's blocks. nil makes the action a no-op. |
+| `inlineAndTrashSubpage` | `(_ pageID: String) async -> Bool` | Second step of Turn Into a non-page block on a subpage row: after the editor inlined the loaded blocks into the parent, ask the host to flush+trash the source. Async so the parent's save lands before the source goes away. | true = file trashed; false = abort (editor surfaces an orphan warning). |
 | `appendToSubpage` | `(_ pageID: String, _ blocks: [Block]) async -> Bool` | User drops blocks onto a subpage row. Async so the host can sequence log-then-file durability before returning. | true = host wrote them (proceed with local removal). false = no-op. |
 | `moveDestination` | `(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination?` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, returns the user's `MoveDestination` (`.page` or `.block`) or nil to cancel. | Async — editor `await`s the picker result at the call site. |
 | `navigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |

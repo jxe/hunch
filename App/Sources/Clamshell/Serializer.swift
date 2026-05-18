@@ -20,7 +20,7 @@ public enum BlockSerializer {
     /// holds just `▸ Title`, a heading just `# Heading`, etc. Restoration
     /// reattaches the block as a child of whatever ancestor is still live;
     /// orphaned descendants are restored separately.
-    public static func serializeAtomic(_ block: Block) -> String {
+    static func serializeAtomic(_ block: Block) -> String {
         let bare = Block(id: block.id, kind: block.kind, children: [])
         return serializeBlock(bare, depth: 0, numberedIndex: 0, titleForPath: { _ in nil }, consecutiveNumbering: false)
     }

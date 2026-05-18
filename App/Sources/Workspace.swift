@@ -94,10 +94,6 @@ final class Workspace {
         return entries.first { $0.relativePath == homeRelativePath }?.url
     }
 
-    func relativePath(of url: URL) -> String {
-        clamshell?.relativePath(of: url) ?? url.lastPathComponent
-    }
-
     // MARK: - Lifecycle
 
     func tryRestore() {
@@ -150,7 +146,7 @@ final class Workspace {
         if clamshell.homeRelativePath == nil {
             clamshell.homeRelativePath = "everything.md"
         }
-        _ = try? clamshell.rescan()
+        try? clamshell.rescan()
     }
 
     func setWorkspaceFromKeyFile(_ url: URL) {
@@ -246,7 +242,7 @@ final class Workspace {
         guard let workspaceURL, let clamshell else { return }
         let total = perfStart()
         do {
-            _ = try clamshell.rescan()
+            try clamshell.rescan()
             perfEnd(total, "Workspace.rescan", "includeSweep=\(includeConflictSweep)")
             if includeConflictSweep {
                 hasRunConflictSweep = true
@@ -500,7 +496,7 @@ final class Workspace {
             Foxtrot
             """
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
-            _ = try? mount(root: root).rescan()
+            try? mount(root: root).rescan()
         } catch {
             self.error = "Failed to install UI test workspace: \(error.localizedDescription)"
         }
@@ -522,7 +518,7 @@ final class Workspace {
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
             let clamshell = mount(root: root)
             clamshell.homeRelativePath = "everything.md"
-            _ = try? clamshell.rescan()
+            try? clamshell.rescan()
         } catch {
             self.error = "Failed to install tall-doc UI test workspace: \(error.localizedDescription)"
         }

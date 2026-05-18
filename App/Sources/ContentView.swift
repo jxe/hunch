@@ -207,7 +207,7 @@ private struct EditorPage: View {
                 .accessibilityLabel("Undo")
                 .contextMenu {
                     Button {
-                        window.recoveryFilter = .page(relativePath: workspace.relativePath(of: url))
+                        window.recoveryFilter = .page(relativePath: workspace.clamshell?.relativePath(of: url) ?? url.lastPathComponent)
                     } label: {
                         Label("Recover…", systemImage: "clock.arrow.circlepath")
                     }

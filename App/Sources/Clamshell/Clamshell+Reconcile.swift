@@ -132,7 +132,7 @@ extension Clamshell {
     /// per covered hash so the union's latest record flips back to alive.
     /// Both happen in one batched log write.
     @discardableResult
-    func restore(_ target: RecoveryTarget, liveDoc: Document?) async throws -> RestoreOutcome {
+    func restoreBlocks(_ target: RecoveryTarget, liveDoc: Document?) async throws -> RestoreOutcome {
         let source = target.source
         let pageURL = url(for: source)
         guard FileManager.default.fileExists(atPath: pageURL.path) else {

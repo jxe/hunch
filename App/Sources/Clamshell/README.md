@@ -250,7 +250,7 @@ let clamshell = Clamshell(root: workspaceURL)
 // Scan to populate `entries`. `entries` and `homeRelativePath` are
 // `@Observable` properties — SwiftUI views read them directly and
 // re-render when scan / title / home changes.
-_ = try clamshell.rescan()
+try clamshell.rescan()
 
 // Open a page: load + parse the `.md`, install the file presenter,
 // return immediately. The journal fold runs in a background Task
@@ -288,7 +288,7 @@ let lost = await clamshell.listLostBlocks()
 
 // Restore one lost or purged block (host passes `openDocument` so the
 // splice mutates the live doc when the source page is open).
-_ = try await clamshell.restore(.lost(entry), liveDoc: openDocument)
+_ = try await clamshell.restoreBlocks(.lost(entry), liveDoc: openDocument)
 ```
 
 **One Clamshell per directory.** Construct with the root URL; never
@@ -441,7 +441,7 @@ are tracked alongside "lost" entries — the union remembers both the
 latest record (purge) and the latest prior `add` (carrying markdown +
 parent). `listPurgedBlocks` surfaces them so the user can bring back
 something they deleted on purpose. To restore, the host calls
-`Clamshell.restore(.purged(entry), liveDoc:)`; internally, a fresh
+`Clamshell.restoreBlocks(.purged(entry), liveDoc:)`; internally, a fresh
 `.add` for the hash gets appended to the log, and the new counter
 beats the prior purge under `(c, device-id)` lex, lifting the
 tombstone from the union.
@@ -528,7 +528,7 @@ append" — `NSFileCoordinator` handles that.
   host splits workspace-wide vs. per-window state across `Workspace`
   and `WorkspaceWindow`.
 - **No banners or recovery-sheet UI.** `Clamshell.openPage(...)` and
-  `Clamshell.restore(_:liveDoc:)` do the engine work and return
+  `Clamshell.restoreBlocks(_:liveDoc:)` do the engine work and return
   outcomes (summary + presenter events); the host (`WorkspaceWindow`)
   shows the resulting banner and routes from the Recover sheet's row
   taps.

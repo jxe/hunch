@@ -8,8 +8,8 @@ import GameController
 // The 3-column grid that opens via Cmd-/ in nav mode (macOS), drag-handle tap
 // (macOS), or leading row swipe (iOS). Houses Turn Into (block-type swap),
 // Copy, and Indent/Outdent. The conversion methods (`convert`, `convertSingle`,
-// `convertBlockToSubpage`, `convertBlockToTemplate`, `convertSubpage`,
-// `expandSubpage`) live here too — they're the actions the menu fires.
+// `convertBlockToSubpage`, `convertBlockToTemplate`, `convertSubpage`) live
+// here too — they're the actions the menu fires.
 
 enum BlockTurnInto: CaseIterable {
     // Declaration order is no longer the source of truth for menu order —
@@ -140,27 +140,6 @@ extension EditorView {
     }
 
     @discardableResult
-    func expandSubpage(blockID: BlockID) -> KeyPress.Result {
-        guard let block = document.find(blockID),
-              case .subpage(_, let path) = block.kind else { return .ignored }
-        // Load + splice in a Task so the key-handler returns immediately.
-        // Matches the `absorbSubpage` pattern in `convertSubpage` below.
-        Task { @MainActor in
-            guard let loaded = await host.subpageContents(of: path), !loaded.isEmpty else { return }
-            guard document.find(blockID) != nil else { return }
-            mutate("Expand Subpage") {
-                document.replaceSubtree(blockID, with: loaded)
-            }
-            // Defer cursor placement to the next runloop so the new rows are
-            // mounted before we try to focus into one of them.
-            if let firstID = loaded.first?.id {
-                DispatchQueue.main.async { setCursor(firstID) }
-            }
-        }
-        return .handled
-    }
-
-    @discardableResult
     func convert(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
         convert(blockIDs: menuTargetIDs(anchorID: blockID), to: target)
     }
@@ -258,8 +237,8 @@ extension EditorView {
         // duplicate (file still in workspace, bullet on disk) rather
         // than data loss (file gone, bullet never persisted).
         Task { @MainActor in
-            guard var loaded = await host.subpageContents(of: path) else {
-                Diag.subpage.error("convertSubpage: subpageContents returned nil — path=\(path, privacy: .public)")
+            guard var loaded = await host.loadSubpageBlocks(path) else {
+                Diag.subpage.error("convertSubpage: loadSubpageBlocks returned nil — path=\(path, privacy: .public)")
                 return
             }
             // The subpage may have moved out from under us during the await.
@@ -291,8 +270,8 @@ extension EditorView {
                 state.expandedToggles.remove(blockID)
                 state.expandedTemplates.remove(blockID)
             }
-            if !(await host.absorbSubpage(path)) {
-                Diag.subpage.error("convertSubpage: absorbSubpage failed after mutation — orphan file at \(path, privacy: .public)")
+            if !(await host.inlineAndTrashSubpage(path)) {
+                Diag.subpage.error("convertSubpage: inlineAndTrashSubpage failed after mutation — orphan file at \(path, privacy: .public)")
             }
         }
         return .handled

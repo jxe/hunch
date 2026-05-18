@@ -135,7 +135,7 @@ actor RecoveryLog {
     /// Slow path: reads every device file in full. Reconcile callers
     /// should prefer `reconcileAgainst(page:doc:mdMtime:)`, which uses
     /// watermarks + tail reads to skip unchanged files entirely.
-    nonisolated public func readJournal(page rel: String) -> LogJournal {
+    nonisolated func readJournal(page rel: String) -> LogJournal {
         let dir = pageDir(rel: rel)
         guard FileManager.default.fileExists(atPath: dir.path) else {
             return LogJournal.empty
@@ -709,7 +709,7 @@ extension PurgedBlock: Hashable {
 }
 
 extension PurgedBlock {
-    public static func adapt(
+    static func adapt(
         hash: String,
         parentHash: String?,
         markdown: String,
