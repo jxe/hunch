@@ -18,38 +18,30 @@ public struct WorkspaceEntry: Identifiable, Sendable, Hashable {
 }
 
 /// Shared workspace state — one per app instance, mounted as `@State` at the
-/// `App` level. Owns the open `Clamshell`, the page list, the title cache, and
-/// the disk-content history that defends in-memory edits against iCloud-Drive
-/// stomps. Per-window state (path, openDocument, save lifecycle) lives on
-/// `WorkspaceWindow`, which holds a reference to this.
+/// `App` level. Owns the open `Clamshell` and the app-level UI surface
+/// (error alert, transient banner). The page list, title cache, and
+/// disk-content history live inside `Clamshell` itself. Per-window state
+/// (path, openDocument, save lifecycle) lives on `WorkspaceWindow`.
 @MainActor
 @Observable
 final class Workspace {
     var workspaceURL: URL?
-    /// Raw scan result from `clamshell.scan()`. Titles here are
-    /// filename-derived fallbacks; the title overlay lives in `titleCache`.
-    /// Use `entries` for the user-facing list — it merges this with the cache.
-    private(set) var scanResult: [WorkspaceEntry] = []
-    /// Page list with current title overlay applied. Computed from
-    /// `scanResult` + `titleCache` so the two never drift — mutating either
-    /// invalidates Observation subscribers automatically.
+
+    /// Page list with the live title overlay applied. Sourced from the
+    /// active Clamshell, which owns the scan + title cache; nil clamshell
+    /// (no workspace selected) returns an empty list.
     var entries: [WorkspaceEntry] {
-        scanResult.map { entry in
-            let title: String
-            if let cached = titleCache[entry.url], cached.modificationDate == entry.modificationDate {
-                title = cached.title
-            } else {
-                title = entry.title
-            }
-            return WorkspaceEntry(
-                url: entry.url,
-                relativePath: entry.relativePath,
-                title: title,
-                modificationDate: entry.modificationDate
-            )
-        }
+        clamshell?.entries ?? []
     }
-    var homeRelativePath: String?
+
+    /// Path (relative to the workspace root) of the home page, or nil if
+    /// unset. Passthrough to the active Clamshell — the on-disk source of
+    /// truth is `.clamshell.json` and travels with the folder.
+    var homeRelativePath: String? {
+        get { clamshell?.homeRelativePath }
+        set { clamshell?.homeRelativePath = newValue }
+    }
+
     /// Surfaced in the alert in any open window. Last-write-wins across
     /// concurrent windows — acceptable; user dismisses the alert.
     var error: String?
@@ -67,8 +59,8 @@ final class Workspace {
 
     /// URLs currently mounted as `openDocument` in any `WorkspaceWindow`.
     /// Refcounted so two windows showing the same page don't lose tracking
-    /// when one closes. Used by `rescan()` to skip pages that have an active
-    /// file presenter (which handles their conflict resolution directly).
+    /// when one closes. Used by `resolveConflictsForClosedPages` to skip
+    /// pages with an active file presenter.
     private var openURLCounts: [URL: Int] = [:]
 
     private(set) var clamshell: Clamshell?
@@ -77,14 +69,7 @@ final class Workspace {
     /// is a per-device asset that has nothing to do with which page is open.
     let linkPreviewService = LinkPreviewService()
 
-    private var titleCache: [URL: CachedTitle] = [:]
-    private var titleRefreshTask: Task<Void, Never>?
     private var accessedWorkspaceURL: URL?
-
-    private struct CachedTitle {
-        var title: String
-        var modificationDate: Date?
-    }
 
     var homeURL: URL? {
         guard let homeRelativePath else { return nil }
@@ -164,7 +149,6 @@ final class Workspace {
             workspaceURL = url
             let clamshell = makeClamshell(root: url)
             self.clamshell = clamshell
-            homeRelativePath = clamshell.homeRelativePath
             rescan()
         }
     }
@@ -179,8 +163,7 @@ final class Workspace {
             clamshell.homeRelativePath = "everything.md"
         }
         self.clamshell = clamshell
-        homeRelativePath = clamshell.homeRelativePath
-        scanResult = (try? clamshell.scan()) ?? []
+        _ = try? clamshell.rescan()
     }
 
     func setWorkspaceFromKeyFile(_ url: URL) {
@@ -193,7 +176,6 @@ final class Workspace {
             let clamshell = makeClamshell(root: root)
             clamshell.homeRelativePath = homePath
             self.clamshell = clamshell
-            homeRelativePath = homePath
             rescan()
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
@@ -207,7 +189,6 @@ final class Workspace {
             workspaceURL = url
             let clamshell = makeClamshell(root: url)
             self.clamshell = clamshell
-            homeRelativePath = clamshell.homeRelativePath
             rescan()
             if homeRelativePath == nil {
                 autoDetectOrSeedHome(in: clamshell)
@@ -251,7 +232,6 @@ final class Workspace {
 
         if let detected {
             clamshell.homeRelativePath = detected
-            homeRelativePath = detected
             return
         }
 
@@ -271,20 +251,14 @@ final class Workspace {
         WorkspaceBookmark.clear()
         releaseWorkspaceAccess()
         workspaceURL = nil
-        homeRelativePath = nil
-        scanResult = []
-        titleCache = [:]
         openURLCounts = [:]
         clamshell = nil
-        titleRefreshTask?.cancel()
-        titleRefreshTask = nil
     }
 
     func rescan() {
         guard let workspaceURL, let clamshell else { return }
         do {
-            scanResult = try clamshell.scan()
-            refreshTitlesInBackground(for: scanResult, workspaceURL: workspaceURL)
+            _ = try clamshell.rescan()
             resolveConflictsForClosedPages(workspaceURL: workspaceURL)
         } catch {
             self.error = "Failed to scan workspace: \(error.localizedDescription)"
@@ -348,192 +322,30 @@ final class Workspace {
     }
 
     func setHome(_ entry: WorkspaceEntry) {
-        homeRelativePath = entry.relativePath
         clamshell?.homeRelativePath = entry.relativePath
     }
 
-    /// Load via Clamshell. Clamshell maintains its own per-URL disk-content
-    /// history internally, so callers don't have to seed anything here.
-    func loadDocument(at url: URL) throws -> Document {
-        guard let clamshell else {
-            throw NSError(domain: "Workspace", code: -1, userInfo: [NSLocalizedDescriptionKey: "No workspace"])
-        }
-        return try clamshell.loadDocument(at: url)
-    }
-
-    // MARK: - Read queries
-
-    func lookupPage(_ relativePath: String) -> PageLookup {
-        guard relativePath.hasSuffix(".md"), let clamshell else { return .missing }
-        let url = clamshell.url(for: relativePath)
-        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
-        let mtime = modificationDate(for: url)
-        let cachedTitle = (titleCache[url]?.modificationDate == mtime) ? titleCache[url]?.title : nil
-        return .present(title: cachedTitle)
-    }
-
-    /// Filter + rank pages for any picker surface. `excluding` typically the
-    /// currently-open document (move-to / mention / jump-to); pass nil to
-    /// include everything (sidebar / page-list sheet).
-    func pages(matching query: String, excluding: URL?) -> [MentionItem] {
-        guard let clamshell else { return [] }
-        return clamshell.searchPages(in: entries, query: query, excluding: excluding)
-    }
-
-    /// Build a configured `Clamshell` for `root`: hooks up the live subpage-
-    /// title resolver and the post-save bookkeeping callback so the
-    /// debounced save lifecycle (owned by Clamshell) can serialize and
-    /// refresh state without the host threading either through every call
-    /// site. Use this everywhere Clamshell is instantiated.
+    /// Build a `Clamshell` for `root`. After title ownership moved into
+    /// Clamshell there's no host-side wiring; this is here purely so a
+    /// single function call sites a future per-Clamshell setup hook if
+    /// one ever shows up.
     private func makeClamshell(root: URL) -> Clamshell {
-        let clamshell = Clamshell(root: root)
-        clamshell.subpageTitleResolver = { [weak self] relPath in
-            self?.entries.first { $0.relativePath == relPath }?.title
-        }
-        clamshell.didSave = { [weak self] doc in
-            guard let self else { return }
-            doc.modificationDate = self.modificationDate(for: doc.url)
-            self.refreshTitleCache(from: doc)
-            self.rescan()
-        }
-        return clamshell
+        Clamshell(root: root)
     }
 
-    func modificationDate(for url: URL) -> Date? {
-        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-    }
-
-    // MARK: - Title cache
-
+    /// Convenience for new-page creation surfaces (welcome-page seed, the
+    /// "New page" button in `EmptyWorkspaceView`): forwards to Clamshell
+    /// and routes the throw into `self.error`. Returns the created
+    /// relative path or nil on failure.
     @discardableResult
-    func refreshTitleCache(from document: Document) -> Bool {
-        let previous = titleCache[document.url]
-        let titleChanged = previous?.title != document.title
-        if titleChanged || previous?.modificationDate != document.modificationDate {
-            titleCache[document.url] = CachedTitle(title: document.title, modificationDate: document.modificationDate)
-        }
-        return titleChanged
-    }
-
-    private func refreshTitlesInBackground(for scanned: [WorkspaceEntry], workspaceURL: URL) {
-        let stale = scanned.filter { entry in
-            titleCache[entry.url]?.modificationDate != entry.modificationDate
-        }
-        guard !stale.isEmpty, let clamshell else { return }
-
-        titleRefreshTask?.cancel()
-        // `loadDocumentTitle` constructs a transient `Document` (MainActor)
-        // before deriving the title; the lookup itself stays cheap (no parse
-        // beyond the leading H1), so running it on MainActor is fine.
-        titleRefreshTask = Task { @MainActor [weak self, clamshell, stale, workspaceURL] in
-            var refreshed: [URL: CachedTitle] = [:]
-            for entry in stale {
-                guard !Task.isCancelled else { return }
-                if let title = try? clamshell.loadDocumentTitle(at: entry.url) {
-                    refreshed[entry.url] = CachedTitle(title: title, modificationDate: entry.modificationDate)
-                }
-            }
-            guard !Task.isCancelled else { return }
-            self?.applyRefreshedTitles(refreshed, workspaceURL: workspaceURL)
-        }
-    }
-
-    private func applyRefreshedTitles(_ refreshed: [URL: CachedTitle], workspaceURL: URL) {
-        guard self.workspaceURL == workspaceURL, !refreshed.isEmpty else { return }
-        let truly = refreshed.filter { url, new in
-            let prev = titleCache[url]
-            return prev?.title != new.title || prev?.modificationDate != new.modificationDate
-        }
-        guard !truly.isEmpty else { return }
-        titleCache.merge(truly) { _, new in new }
-    }
-
-    // MARK: - Page-level mutations
-
-    /// Filesystem-only: move a page to trash. Caller (`WorkspaceWindow`) is
-    /// responsible for any per-window cleanup (close openDocument, drop from
-    /// path) before calling.
-    @discardableResult
-    func moveToTrash(at url: URL) -> Bool {
-        guard let clamshell else { return false }
-        titleCache.removeValue(forKey: url)
-        do {
-            _ = try clamshell.moveToTrash(at: url)
-            homeRelativePath = clamshell.homeRelativePath
-            rescan()
-            return true
-        } catch {
-            self.error = "Failed to move \(relativePath(of: url)) to trash: \(error.localizedDescription)"
-            return false
-        }
-    }
-
     func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
         guard let clamshell else { return requestedPath }
         do {
-            let path = try clamshell.createPage(title: title, requestedPath: requestedPath, blocks: initialContent)
-            let target = clamshell.url(for: path)
-            titleCache[target] = CachedTitle(title: title, modificationDate: modificationDate(for: target))
-            rescan()
-            return path
+            return try clamshell.createPage(title: title, requestedPath: requestedPath, blocks: initialContent)
         } catch {
             self.error = "Failed to create page: \(error.localizedDescription)"
             return requestedPath
         }
-    }
-
-    func loadSubpage(relativePath: String) -> [Block]? {
-        guard let clamshell else { return nil }
-        let target = clamshell.url(for: relativePath)
-        do {
-            let doc = try loadDocument(at: target)
-            return doc.children
-        } catch {
-            Diag.subpage.error("loadSubpage: loadDocument(at: \(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
-    }
-
-    @discardableResult
-    func appendToSubpage(relativePath: String, blocks: [Block]) async -> Document? {
-        guard !blocks.isEmpty, let clamshell else { return nil }
-        do {
-            return try await clamshell.append(blocks, toPage: relativePath)
-        } catch {
-            self.error = "Failed to move blocks into \(relativePath): \(error.localizedDescription)"
-            return nil
-        }
-    }
-
-    @discardableResult
-    func moveSubpageToTrash(relativePath: String) -> Bool {
-        guard let clamshell else { return false }
-        let target = clamshell.url(for: relativePath)
-        return moveToTrash(at: target)
-    }
-
-    // MARK: - Pasted images
-
-    /// Persist a batch of pasted images, returning the relative paths the
-    /// editor will write into image-block `source` fields. Skips items that
-    /// fail to write so the editor still inserts blocks for the rest.
-    func saveImages(_ items: [PastedImage]) -> [String] {
-        guard let clamshell else { return [] }
-        var paths: [String] = []
-        paths.reserveCapacity(items.count)
-        for item in items {
-            do {
-                paths.append(try clamshell.writeImage(item))
-            } catch {
-                self.error = "Failed to save pasted image: \(error.localizedDescription)"
-            }
-        }
-        return paths
-    }
-
-    /// Resolve an image block's source string to an on-disk URL.
-    func imageURL(for source: String) -> URL? {
-        clamshell?.resolveImage(source: source)
     }
 
     // MARK: - Recovery
@@ -644,7 +456,6 @@ final class Workspace {
         guard let clamshell else { return false }
         do {
             _ = try await clamshell.restorePage(entry)
-            rescan()
             return true
         } catch {
             self.error = "Restore failed: \(error.localizedDescription)"
@@ -694,7 +505,7 @@ final class Workspace {
             workspaceURL = root
             let clamshell = makeClamshell(root: root)
             self.clamshell = clamshell
-            scanResult = (try? clamshell.scan()) ?? []
+            _ = try? clamshell.rescan()
         } catch {
             self.error = "Failed to install UI test workspace: \(error.localizedDescription)"
         }
@@ -718,8 +529,7 @@ final class Workspace {
             let clamshell = makeClamshell(root: root)
             clamshell.homeRelativePath = "everything.md"
             self.clamshell = clamshell
-            homeRelativePath = "everything.md"
-            scanResult = (try? clamshell.scan()) ?? []
+            _ = try? clamshell.rescan()
         } catch {
             self.error = "Failed to install tall-doc UI test workspace: \(error.localizedDescription)"
         }

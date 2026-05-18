@@ -2,15 +2,13 @@ import Foundation
 import Editor
 
 /// `WorkspaceWindow` is the `EditorHost` for the editor mounted in this
-/// window. The save lifecycle (debounce + per-URL coalescing) lives on
-/// `Clamshell` — see `Clamshell+Saving.swift`. These methods route the
-/// editor's integration surface — link dispatch, subpage lifecycle,
-/// mention queries, pasteboard codec, image persistence — through
-/// `Workspace` and the per-window navigation/file-presenter state, and
-/// forward mutation/blur signals straight to Clamshell.
+/// window. The save lifecycle, page list, title cache, file presenter,
+/// and image / page operations all live on `Clamshell` — these methods
+/// route the editor's integration surface straight to it, with per-window
+/// navigation and the move-to picker handled on the window itself.
 extension WorkspaceWindow: EditorHost {
     func suggestPages(_ query: String) -> [MentionItem] {
-        workspace.pages(matching: query, excluding: openDocument?.url)
+        workspace.clamshell?.pages(matching: query, excluding: openDocument?.url) ?? []
     }
 
     @discardableResult
@@ -33,15 +31,28 @@ extension WorkspaceWindow: EditorHost {
     }
 
     func lookupPage(_ pageID: String) -> PageLookup {
-        workspace.lookupPage(pageID)
+        workspace.clamshell?.lookupPage(pageID) ?? .missing
     }
 
     func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? {
-        workspace.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
+        guard let clamshell = workspace.clamshell else { return requestedID }
+        do {
+            return try clamshell.createPage(title: title, requestedPath: requestedID, blocks: initialContent)
+        } catch {
+            workspace.error = "Failed to create page: \(error.localizedDescription)"
+            return requestedID
+        }
     }
 
     func onLoadSubpage(_ pageID: String) -> [Block]? {
-        workspace.loadSubpage(relativePath: pageID)
+        guard let clamshell = workspace.clamshell else { return nil }
+        let target = clamshell.url(for: pageID)
+        do {
+            return try clamshell.loadDocument(at: target).children
+        } catch {
+            Diag.subpage.error("onLoadSubpage: load(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 
     func onAbsorbSubpage(_ pageID: String) async -> Bool {
@@ -57,15 +68,21 @@ extension WorkspaceWindow: EditorHost {
             Diag.subpage.error("onAbsorbSubpage: flush failed; skipping trash of \(pageID, privacy: .public) to avoid data loss")
             return false
         }
-        return workspace.moveSubpageToTrash(relativePath: pageID)
+        do {
+            _ = try clamshell.moveToTrash(at: target)
+            return true
+        } catch {
+            workspace.error = "Failed to move \(pageID) to trash: \(error.localizedDescription)"
+            return false
+        }
     }
 
     func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool {
         await appendToSubpage(relativePath: pageID, blocks: blocks)
     }
 
-    func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) {
-        requestMoveDestination(blockIDs: blockIDs, inDocCandidates: inDocCandidates, completion: pick)
+    func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget]) async -> MoveDestination? {
+        await requestMoveDestination(blockIDs: blockIDs, inDocCandidates: inDocCandidates)
     }
 
     func onNavigateBack() {
@@ -76,9 +93,9 @@ extension WorkspaceWindow: EditorHost {
         workspace.clamshell?.documentDidChange(ops: ops, in: post)
     }
 
-    func onBlur() async {
+    func flush() async {
         guard let clamshell = workspace.clamshell, let doc = openDocument else { return }
-        await clamshell.flush(doc)
+        _ = await clamshell.flush(doc)
     }
 
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {
@@ -91,7 +108,17 @@ extension WorkspaceWindow: EditorHost {
     }
 
     func onSaveImages(_ items: [PastedImage]) -> [String] {
-        workspace.saveImages(items)
+        guard let clamshell = workspace.clamshell else { return [] }
+        var paths: [String] = []
+        paths.reserveCapacity(items.count)
+        for item in items {
+            do {
+                paths.append(try clamshell.writeImage(item))
+            } catch {
+                workspace.error = "Failed to save pasted image: \(error.localizedDescription)"
+            }
+        }
+        return paths
     }
 
     var linkPreviewProvider: LinkPreviewProvider? {
@@ -104,7 +131,7 @@ extension WorkspaceWindow: EditorHost {
         // resolver on the main thread (image rows render in SwiftUI body), so
         // `assumeIsolated` is sound here.
         { [workspace] source in
-            MainActor.assumeIsolated { workspace.imageURL(for: source) }
+            MainActor.assumeIsolated { workspace.clamshell?.resolveImage(source: source) }
         }
     }
 }

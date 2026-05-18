@@ -217,39 +217,41 @@ operations in the log.
 import Foundation
 
 let clamshell = Clamshell(root: workspaceURL)
-clamshell.subpageTitleResolver = { path in ... }   // optional
-clamshell.didSave = { doc in ... }                 // optional
 
-let entries = try clamshell.scan()
+// Scan to populate `entries`. `entries` and `homeRelativePath` are
+// `@Observable` properties — SwiftUI views read them directly and
+// re-render when scan / title / home changes.
+_ = try clamshell.rescan()
 
-// Read
-let doc = try clamshell.loadDocument(at: entries[0].url)
+// Open a page: reconciles against the journal, auto-restores any lost
+// subtrees, installs the file presenter. `onEvent` fires on every
+// presenter wakeup for banner-worthy events (restored / merged).
+let open = try await clamshell.openPage(at: url) { event in
+    switch event {
+    case .restored(let n): // show "Restored N blocks..." banner
+    case .conflictMerged(let n): // show "Merged N blocks..." banner
+    case .externallyReloaded, .noteworthyNothing: break
+    }
+}
+if !open.summary.restoredHashes.isEmpty { /* initial banner from open() */ }
 
 // Editor-driven write — appends ops to the recovery log and arms the
-// 600ms debounced save. Empty ops means a text-only edit. The host
-// fires this on every mutation; the lifecycle is owned by Clamshell.
-clamshell.documentDidChange(ops: ops, in: doc)
+// 600ms debounced save. Empty ops means a text-only edit.
+clamshell.documentDidChange(ops: ops, in: open.document)
 
 // Force-save (blur, scenePhase background, navigation away, shutdown).
-await clamshell.flush(doc)
+await clamshell.flush(open.document)
+
+// Symmetric inverse of openPage: flush + tear down the presenter.
+await clamshell.closePage(open)
 
 // Trash a page. If it was the home page, homeRelativePath gets cleared.
 // The page's .history/<rel>/ dir is moved alongside the .md.
-try clamshell.moveToTrash(at: doc.url)
+try clamshell.moveToTrash(at: open.document.url)
 
 // Recover something
 let trashed = try await clamshell.listTrashedPages()
 let lost = await clamshell.listLostBlocks()
-
-// Open + reconcile in one step (host's open-doc path; fresh Document).
-let (doc, summary) = try await clamshell.reconcile(at: url)
-if !summary.restoredHashes.isEmpty { /* banner: "Restored N blocks..." */ }
-
-// Presenter-wakeup / re-reconcile path (mutates the live Document in
-// place to preserve editor state). Returns `.deferred` if not quiescent.
-if case .completed(let summary) = try await clamshell.reconcileLive(doc) {
-    // ...
-}
 
 // Restore one lost or purged block (host passes `openDocument` so the
 // splice mutates the live doc when the source page is open).
@@ -267,19 +269,18 @@ existing instance and build a new one.
 | Group | Methods |
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)` |
-| Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)` |
+| Read | `loadDocument(at:)` |
+| Page list (observable) | `entries`, `rescan()`, `title(for:)`, `lookupPage(_:)`, `pages(matching:excluding:)` |
 | Editor-driven persistence | `documentDidChange(ops:in:)`, `flush(_:)` |
-| Reconcile + restore | `reconcile(at:)` (open-doc fresh load), `restore(_:liveDoc:)` (the host used to orchestrate this inline; lives on Clamshell now) |
-| File presenter | `installPresenter(for:onEvent:)` → `PresenterHandle`, `removePresenter(_:)`. Internally owns the NSFilePresenter shim, the 250ms wakeup debounce, conflict-version merging, echo/stomp/external classification, and `reconcileLive` against the journal. Host reacts to a single `PresenterEvent` per wakeup (banner / rescan / title cache). |
-| Configuration | `subpageTitleResolver`, `didSave` (set once by the host) |
-| Non-editor write | `append(_:toPage:)` for appending blocks to a non-open subpage. Sequences log-then-file. Fires `didSave` after the write so callers get the same per-doc bookkeeping (mtime, title cache, page rescan) as the editor save path. |
+| Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document, summary, presenter}`), `closePage(_:)`. Single entry-point for the host's path-change flow: load + reconcile + install presenter (open), flush + tear down (close). |
+| Reconcile + restore | `reconcile(at:)` is internal to `openPage` now; `restore(_:liveDoc:)` is the Recover-sheet entry point. |
+| Non-editor write | `append(_:toPage:)` for appending blocks to a non-open subpage. Sequences log-then-file. Runs post-save bookkeeping (mtime, title cache, rescan) like the editor save path. |
 | Create | `createPage(title:requestedPath:blocks:)` |
-| Search | `searchPages(in:query:excluding:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Recovery log | `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)` |
 | iCloud merge | `resolveConflictVersions(at:againstLive:)` → `ConflictResolution` (`{ salvaged, liveDocumentMutated }`) |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
-| Metadata | `homeRelativePath` (read/write), `root` |
+| Metadata (observable) | `homeRelativePath`, `root` |
 
 `loadDocument(at:)`, debounced editor saves (via `documentDidChange` /
 `flush(_:)`), and `append(_:toPage:)` all seed the internal per-URL
@@ -352,12 +353,13 @@ host calls `documentDidChange(ops:in:)` on every mutation: non-empty
 (re)armed for the markdown save. `flush(_:)` cancels the debounce,
 force-saves, and drains the per-URL coordinator — for blur, scenePhase
 backgrounding, navigation-away, app shutdown. Post-save bookkeeping
-(mtime refresh, title cache, page rescan) fires through the `didSave`
-callback the host wires once at startup — also fired by
-`write(_:patch:)` and `append(_:toPage:)` so closed-doc paths get the
-same bookkeeping for free.
-`isQuiescent(at:)` lets the file-presenter / reconcile paths gate on
-"no debounce armed, no log apply in flight, no save in flight".
+(mtime refresh, title cache, page rescan) fires internally on every
+successful save — `write(_:patch:)` and `append(_:toPage:)` run the
+same bookkeeping so closed-doc paths get it for free. Subpage-title
+serialization uses Clamshell's own `title(for:)` lookup; no host hook
+is needed. `isQuiescent(at:)` lets the file-presenter / reconcile
+paths gate on "no debounce armed, no log apply in flight, no save in
+flight".
 
 **`write(_:patch:)` and `append(_:toPage:)` are the non-editor write
 paths.** They bypass the debounce coalescer (the caller wants the file
@@ -366,11 +368,10 @@ so the at-or-ahead invariant holds across crashes. Use `write` when
 you have a full new Document and an accompanying patch (conflict
 merge; restoring lost/purged blocks into a closed page). Use `append`
 when you only have new blocks to add to the end of a page (drop on a
-subpage row). Both fire `didSave` for the per-doc bookkeeping. The
-internal coalesced `save` path that `documentDidChange` schedules
-deduplicates concurrent writes per URL — if a write is already in
-flight, the new snapshot replaces any pending one and is written
-after the in-flight write completes.
+subpage row). The internal coalesced `save` path that
+`documentDidChange` schedules deduplicates concurrent writes per
+URL — if a write is already in flight, the new snapshot replaces any
+pending one and is written after the in-flight write completes.
 
 **Editor mutations stream as ops.** Each `EditorView.mutate(_:_:)`
 transaction derives a pre→post `[EditorOp]` diff via
@@ -476,21 +477,19 @@ append" — `NSFileCoordinator` handles that.
 
 ## What Clamshell doesn't do
 
-- **No UI.** The "Recover" sheet, the page list, the home-page button —
-  all live in [`App/Sources/Shell/`](../Shell/) and
+- **No UI.** The "Recover" sheet, the page picker, the home-page
+  button — all live in [`App/Sources/Shell/`](../Shell/) and
   [`ContentView.swift`](../ContentView.swift).
-- **No observation.** Clamshell is not `@Observable`. SwiftUI
-  re-render plumbing is the host's job — Hunch's shared `Workspace`
-  mirrors `homeRelativePath` for SwiftUI.
-- **No multi-page coordination.** "Which page is open?", "what's
-  dirty?", "the navigation stack" — all on per-window
+- **No multi-page coordination.** "What's on the nav stack?", "which
+  page is mounted in this window?" — all on per-window
   `WorkspaceWindow`. Clamshell handles one persistent format; the
   host splits workspace-wide vs. per-window state across `Workspace`
   and `WorkspaceWindow`.
-- **No banners or recovery-sheet UI.** `Clamshell.reconcile(liveDoc:)`
-  and `Clamshell.restore(_:liveDoc:)` do the engine work and return
-  outcomes; the host (`WorkspaceWindow`) shows the resulting banner
-  and routes from the Recover sheet's row taps.
+- **No banners or recovery-sheet UI.** `Clamshell.openPage(...)` and
+  `Clamshell.restore(_:liveDoc:)` do the engine work and return
+  outcomes (summary + presenter events); the host (`WorkspaceWindow`)
+  shows the resulting banner and routes from the Recover sheet's row
+  taps.
 - **No move-as-operation.** Moving a block between parents on a device
   that already logged it doesn't append a new record. The original `p`
   goes stale; restore relies on chain-climbing through still-alive

@@ -87,10 +87,12 @@ public protocol EditorHost: AnyObject {
     /// Ask the host to present its picker for a "Move to" action. The editor
     /// passes the moving block ids plus a list of in-document destinations
     /// (already filtered to legal drop targets); the host merges those with the
-    /// workspace page list, presents the picker, and calls back via `pick` with
-    /// a `MoveDestination` — `.page(...)` for cross-page, `.block(...)` for
-    /// in-doc — or `nil` if the user cancelled.
-    func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void)
+    /// workspace page list, presents the picker, and resumes with the user's
+    /// pick (`.page(...)` for cross-page, `.block(...)` for in-doc) or `nil` if
+    /// the user cancelled. Async so the editor's "Move to" call site reads as
+    /// a single linear sequence instead of a callback bounced through host
+    /// state.
+    func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget]) async -> MoveDestination?
 
     /// User pressed Cmd-[ / swipe-back / etc. — host pops its navigation stack.
     func onNavigateBack()
@@ -116,10 +118,11 @@ public protocol EditorHost: AnyObject {
     /// from the host's side.
     func documentDidChange(ops: [EditorOp], on post: Document)
 
-    /// Editor lost focus (focus left an active text editor). Host force-saves so
-    /// user input doesn't sit in memory until app suspension. Async so callers
-    /// in scene-phase / focus-loss handlers can await durability where it matters.
-    func onBlur() async
+    /// Force-save the current document. Editor calls this on focus-loss so
+    /// user input doesn't sit in memory until app suspension; the host
+    /// also calls it directly from scene-phase / navigation-away paths.
+    /// Async so callers that care about durability can await it.
+    func flush() async
 
     /// Serialize blocks into a string the editor will write to the system
     /// pasteboard on copy/cut. Host chooses the format (markdown, plain text).

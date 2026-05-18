@@ -160,7 +160,7 @@ extension Clamshell {
             let success: Bool
             do {
                 _ = try await self.save(doc)
-                self.didSave?(doc)
+                self.postSaveBookkeeping(doc)
                 success = true
             } catch {
                 Diag.log.error("save failed url=\(doc.url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")

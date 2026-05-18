@@ -17,7 +17,12 @@ final class WorkspaceWindow {
     var path: [URL] = []
     var canGoBack: Bool { !path.isEmpty }
 
-    var openDocument: Document?
+    /// Document currently rendered by `EditorPage`. Owned-by-clamshell once
+    /// it's been opened (`openPage`); `nil` between navigations and on
+    /// workspaces without a home page set.
+    var openDocument: Document? { openPage?.document }
+
+    private var openPage: Clamshell.OpenPage?
 
     var moveRequest: MoveRequest?
     /// Unified page-search sheet — replaces the old jump-to and page-list sheets.
@@ -32,8 +37,6 @@ final class WorkspaceWindow {
         let inDocCandidates: [InDocMoveTarget]
         let completion: (MoveDestination?) -> Void
     }
-
-    private var presenterHandle: Clamshell.PresenterHandle?
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -95,30 +98,19 @@ final class WorkspaceWindow {
     }
 
     /// Reconcile `openDocument` with the currently visible page. Driven by
-    /// `.onChange(of: path)` in `ContentView`. The new page's coordinator
-    /// (which owns the save session) is built lazily by `EditorPage`; this
-    /// function loads the `Document` fresh from disk via
-    /// `clamshell.reconcile(at:)` (which parses, folds the journal, and
-    /// auto-restores any lost subtrees in one step), installs the file
-    /// presenter, and surfaces a banner if anything was restored.
-    /// Back-navigation re-parses — markdown parse is cheap, and not caching
-    /// means there's only one authoritative `Document` instance per page
-    /// (the visible one) so no invalidation bookkeeping.
+    /// `.onChange(of: path)` in `ContentView`. Drains the outgoing
+    /// document's pending writes before loading the next via
+    /// `clamshell.openPage(at:)`, which folds the journal, auto-restores
+    /// any lost subtrees, and installs the file presenter. Banner-worthy
+    /// reconcile outcomes are surfaced via `postReconcileBanner`.
     func handlePathChange() {
         let topURL = path.last ?? homeURL
         if openDocument?.url == topURL { return }
-        let outgoingFlush = closeOpenDocument()
-        guard let url = topURL else {
-            openDocument = nil
-            return
-        }
-        guard let clamshell = workspace.clamshell else {
-            do {
-                let doc = try workspace.loadDocument(at: url)
-                openDocument = doc
-                workspace.refreshTitleCache(from: doc)
-            } catch {
-                workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
+        let outgoing = openPage
+        openPage = nil
+        guard let url = topURL, let clamshell = workspace.clamshell else {
+            if let outgoing, let priorClamshell = workspace.clamshell {
+                Task { await priorClamshell.closePage(outgoing) }
             }
             return
         }
@@ -126,18 +118,39 @@ final class WorkspaceWindow {
             // Drain the outgoing doc's flush before loading the next — a
             // force-quit between path change and flush completion would
             // otherwise drop the last keystroke.
-            if let outgoingFlush { await outgoingFlush.value }
+            if let outgoing {
+                await clamshell.closePage(outgoing)
+                workspace.unregisterOpenURL(outgoing.document.url)
+            }
             do {
-                let (doc, summary) = try await clamshell.reconcile(at: url)
+                let open = try await clamshell.openPage(at: url) { [weak self] event in
+                    self?.handlePresenterEvent(event, doc: nil)
+                }
                 // The user may have navigated again while we were awaiting.
-                guard path.last ?? homeURL == url else { return }
-                openDocument = doc
-                workspace.refreshTitleCache(from: doc)
-                installPresenter(for: doc)
-                postReconcileBanner(summary: summary, doc: doc, url: url)
+                guard path.last ?? homeURL == url else {
+                    await clamshell.closePage(open)
+                    return
+                }
+                openPage = open
+                workspace.registerOpenURL(url)
+                postReconcileBanner(summary: open.summary, doc: open.document, url: url)
             } catch {
                 workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
             }
+        }
+    }
+
+    private func handlePresenterEvent(_ event: Clamshell.PresenterEvent, doc _: Document?) {
+        guard let doc = openDocument else { return }
+        switch event {
+        case .conflictMerged(let salvaged) where salvaged > 0:
+            let noun = salvaged == 1 ? "block" : "blocks"
+            workspace.banner = .init(message: "Merged \(salvaged) \(noun) from another device into \(doc.title)")
+        case .restored(let count):
+            let noun = count == 1 ? "block" : "blocks"
+            workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
+        case .externallyReloaded, .conflictMerged, .noteworthyNothing:
+            break
         }
     }
 
@@ -172,37 +185,36 @@ final class WorkspaceWindow {
     /// Workspace was dropped (switchWorkspace, etc.). Clear all per-window
     /// state. Called by `ContentView` via `.onChange(of: workspace.workspaceURL)`.
     func reset() {
-        closeOpenDocument()
-        openDocument = nil
+        if let outgoing = openPage, let clamshell = workspace.clamshell {
+            Task { await clamshell.closePage(outgoing) }
+            workspace.unregisterOpenURL(outgoing.document.url)
+        }
+        openPage = nil
         path = []
     }
 
-    /// Tear down the file presenter and return a Task that flushes
-    /// `openDocument` through Clamshell. Callers that can await (e.g.
-    /// navigation handlers, which are already inside a Task) should
-    /// await the returned value before swapping the document — a force-
-    /// quit between path change and flush completion would otherwise
-    /// drop the last keystroke. Fire-and-forget callers can discard.
-    /// Returns nil when there's nothing to flush. Idempotent.
-    @discardableResult
-    func closeOpenDocument() -> Task<Void, Never>? {
-        removePresenter()
-        guard let doc = openDocument, let clamshell = workspace.clamshell else { return nil }
-        return Task { _ = await clamshell.flush(doc) }
+    /// Force-save the open document. Used by scenePhase backgrounding,
+    /// shutdown, and any other "drain now" path.
+    func flushOpenDocument() async {
+        guard let clamshell = workspace.clamshell, let doc = openDocument else { return }
+        _ = await clamshell.flush(doc)
     }
 
     // MARK: - Move-to picker
 
+    /// Editor's async move-destination call site: store a continuation,
+    /// drive the sheet via `moveRequest`, resume from `resolveMoveRequest`.
     func requestMoveDestination(
         blockIDs: [BlockID],
-        inDocCandidates: [InDocMoveTarget],
-        completion: @escaping (MoveDestination?) -> Void
-    ) {
-        moveRequest = MoveRequest(
-            blockIDs: blockIDs,
-            inDocCandidates: inDocCandidates,
-            completion: completion
-        )
+        inDocCandidates: [InDocMoveTarget]
+    ) async -> MoveDestination? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<MoveDestination?, Never>) in
+            moveRequest = MoveRequest(
+                blockIDs: blockIDs,
+                inDocCandidates: inDocCandidates,
+                completion: { destination in continuation.resume(returning: destination) }
+            )
+        }
     }
 
     func resolveMoveRequest(with destination: MoveDestination?) {
@@ -225,34 +237,43 @@ final class WorkspaceWindow {
     // The save lifecycle (600ms debounce, per-URL coalescing, post-save
     // bookkeeping) lives on `Clamshell`. The host calls
     // `clamshell.documentDidChange(ops:in:)` on every edit and
-    // `clamshell.flush(_:)` on blur / scenePhase / navigation away.
-    // Clamshell's `subpageTitleResolver` and `didSave` hooks (set in
-    // `Workspace.makeClamshell`) handle serialization and per-doc
-    // bookkeeping (mtime, title cache, rescan).
+    // `clamshell.flush(_:)` on blur / scenePhase / navigation away. Clamshell
+    // keeps the title cache + entries in sync internally; the host doesn't
+    // thread anything through it.
 
     // MARK: - Trash & restore (per-window)
 
     @discardableResult
     func moveToTrash(_ entry: WorkspaceEntry) async -> Bool {
         guard let clamshell = workspace.clamshell else { return false }
-        if let doc = openDocument, doc.url == entry.url {
-            // Drain any pending save BEFORE trashing so the in-memory state
-            // is durably on disk first, then close the open doc. Awaiting
-            // here (instead of fire-and-forget) means the trash op below
-            // never races a save against a now-trashed URL.
-            removePresenter()
-            await clamshell.flush(doc)
-            self.openDocument = nil
+        if let outgoing = openPage, outgoing.document.url == entry.url {
+            // Drain the open document BEFORE trashing so its last edits
+            // are durable, then close the page and drop the presenter so
+            // the trash op below never races a save against a now-
+            // trashed URL.
+            await clamshell.closePage(outgoing)
+            workspace.unregisterOpenURL(outgoing.document.url)
+            openPage = nil
         }
         path.removeAll { $0 == entry.url }
-        return workspace.moveToTrash(at: entry.url)
+        do {
+            _ = try clamshell.moveToTrash(at: entry.url)
+            return true
+        } catch {
+            workspace.error = "Failed to move \(clamshell.relativePath(of: entry.url)) to trash: \(error.localizedDescription)"
+            return false
+        }
     }
 
     @discardableResult
     func appendToSubpage(relativePath: String, blocks: [Block]) async -> Bool {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
         let target = clamshell.url(for: relativePath)
-        guard let doc = await workspace.appendToSubpage(relativePath: relativePath, blocks: blocks) else {
+        let doc: Document
+        do {
+            doc = try await clamshell.append(blocks, toPage: relativePath)
+        } catch {
+            workspace.error = "Failed to move blocks into \(relativePath): \(error.localizedDescription)"
             return false
         }
         // If this window has the subpage open (multi-window scenario), splice
@@ -292,46 +313,6 @@ final class WorkspaceWindow {
             workspace.error = "Restore failed: \(error.localizedDescription)"
             return false
         }
-    }
-
-    // MARK: - File presenter
-
-    /// Install Clamshell's NSFilePresenter on `doc.url`. Filesystem-level
-    /// work (conflict merge, content reload, journal reconcile) happens
-    /// inside Clamshell on every wakeup; the callback below handles only
-    /// the UI/workspace reactions (banners, rescan, title cache).
-    private func installPresenter(for doc: Document) {
-        removePresenter()
-        guard let clamshell = workspace.clamshell else { return }
-        let url = doc.url
-        presenterHandle = clamshell.installPresenter(for: doc) { [weak self] event in
-            guard let self else { return }
-            switch event {
-            case .conflictMerged(let salvaged) where salvaged > 0:
-                let noun = salvaged == 1 ? "block" : "blocks"
-                self.workspace.banner = .init(message: "Merged \(salvaged) \(noun) from another device into \(doc.title)")
-            case .restored(let count):
-                let noun = count == 1 ? "block" : "blocks"
-                self.workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
-            case .externallyReloaded:
-                self.workspace.refreshTitleCache(from: doc)
-            case .conflictMerged, .noteworthyNothing:
-                break
-            }
-            self.workspace.rescan()
-        }
-        workspace.registerOpenURL(url)
-    }
-
-    private func removePresenter() {
-        guard let handle = presenterHandle else { return }
-        if let clamshell = workspace.clamshell {
-            clamshell.removePresenter(handle)
-        }
-        if let url = openDocument?.url {
-            workspace.unregisterOpenURL(url)
-        }
-        presenterHandle = nil
     }
 }
 

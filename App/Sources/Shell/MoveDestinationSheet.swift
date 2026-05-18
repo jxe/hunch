@@ -57,7 +57,7 @@ struct MoveDestinationSheet: View {
     }
 
     private var pages: [MentionItem] {
-        workspace.pages(matching: query, excluding: excluding)
+        workspace.clamshell?.pages(matching: query, excluding: excluding) ?? []
     }
 
     /// Cursor traversal order (excludes the "Show more" disclosure row — that

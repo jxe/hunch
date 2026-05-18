@@ -37,14 +37,21 @@ user-picked workspace folder.
     `RecoveryLog` (per-device JSONL appender + cross-device read union;
     every write goes through one primitive, `apply(Patch, to:)`),
     and `TrashStore` privately and exposes a single API:
-    `scan / loadDocument / reconcile / documentDidChange / flush /
+    `entries / rescan / title(for:) / lookupPage / pages(matching:) /
+    loadDocument / openPage / closePage / documentDidChange / flush /
     append / createPage / moveToTrash / listTrashedPages / restorePage /
-    listLostBlocks / listPurgedBlocks / resolveConflictVersions /
-    installPresenter / removePresenter`, plus `relativePath(of:)` and
-    `url(for:)` for path conversion. Internal helpers
-    (`write(_:patch:)`, `reconcileLive`, `classifyDiskContent`,
-    `isQuiescent`) and the `log` actor drive the engine from inside
-    the module and aren't part of the host surface. **Editor-driven persistence** is
+    listLostBlocks / listPurgedBlocks / resolveConflictVersions`,
+    plus `relativePath(of:)` and `url(for:)` for path conversion.
+    Internal helpers (`write(_:patch:)`, `reconcile(at:)`,
+    `reconcileLive`, `classifyDiskContent`, `isQuiescent`,
+    `installPresenter` / `removePresenter`) and the `log` actor drive
+    the engine from inside the module and aren't part of the host
+    surface. **Clamshell is `@Observable`**: `entries` and
+    `homeRelativePath` are tracked properties; SwiftUI re-renders
+    automatically when scan / title cache / home changes. The title
+    cache and post-save bookkeeping (mtime refresh, title update,
+    selective rescan) all live inside Clamshell — the host doesn't
+    thread any callbacks through it. **Editor-driven persistence** is
     `documentDidChange(ops:in:)` (called on every mutation — projects
     ops to a `Patch`, spawns a tracked log-apply Task, (re)arms the
     per-URL 600ms debounce) and `flush(_:)` (await latest log task +
@@ -52,12 +59,10 @@ user-picked workspace folder.
     side (`fireScheduledSave`, `flush`) awaits the latest log task
     before writing the `.md`, establishing the invariant: **log durable
     before file durable** — crash anywhere, log is at-or-ahead of file,
-    reconcile heals on next open. The host sets `subpageTitleResolver`
-    and `didSave` once via `Workspace.makeClamshell`; everything else
-    is internal — no debounce/dirty plumbing on the host. **Non-editor
-    writes** (`write(_:patch:)` for conflict merge + restore-into-
-    closed-page; `append(_:toPage:)` for drop-on-subpage) sequence
-    log-then-file atomically, preserving the at-or-ahead invariant. `moveToTrash`
+    reconcile heals on next open. **Non-editor writes**
+    (`write(_:patch:)` for conflict merge + restore-into-closed-page;
+    `append(_:toPage:)` for drop-on-subpage) sequence log-then-file
+    atomically, preserving the at-or-ahead invariant. `moveToTrash`
     clears `homeRelativePath` if it matched and moves the page's
     `.history/<rel>/` dir along with the `.md`. Also where the
     markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown
@@ -75,19 +80,26 @@ user-picked workspace folder.
     navigation goes through the search sheet (Cmd+P / iOS toolbar
     magnifying-glass) or subpage rows.
   - `App/Sources/Workspace.swift` — `Workspace` (workspace-level model,
-    one per app instance: clamshell handle, page list, title cache,
-    security-scoped URL, conflict resolution) and `WorkspaceEntry`
-    (filesystem-flavoured page reference, host-side only — translated
-    into `MentionItem` at the editor boundary).
+    one per app instance: clamshell handle, bookmark resolution,
+    app-level UI state — `error` / `banner` — security-scoped URL,
+    closed-page conflict resolution) and `WorkspaceEntry` (filesystem-
+    flavoured page reference, host-side only — translated into
+    `MentionItem` at the editor boundary). The page list and title
+    cache live on `Clamshell`; `workspace.entries` and
+    `workspace.homeRelativePath` are passthroughs.
   - `App/Sources/WorkspaceWindow.swift` — per-window navigation and
     edit-session state, AND the `EditorHost` implementation: `path: [URL]`
-    (NavigationStack), `openDocument`, file-presenter wiring, move-to
-    request plumbing, lost-block auto-restore on open. The host methods
-    (`openLink`, `documentDidChange`, `onBlur`, …) live on the same
-    type and forward to `Clamshell` for persistence — the save
-    lifecycle (debounce, per-URL coalescing, post-save bookkeeping)
-    lives in `Clamshell+Saving.swift`, not on the window. References
-    the shared `Workspace` for filesystem ops.
+    (NavigationStack), `openDocument` (computed from a stored
+    `openPage: Clamshell.OpenPage?`), move-to request plumbing.
+    `handlePathChange` is the choreography: drain prior page via
+    `clamshell.closePage(_:)`, then `await clamshell.openPage(at:)`
+    which returns the Document + reconcile summary + presenter handle
+    in one call (folds journal, auto-restores lost subtrees, installs
+    file presenter). The host methods (`openLink`,
+    `documentDidChange`, `flush`, …) live on the same type and
+    forward to `Clamshell`. Move-to is async — the editor
+    `await`s `host.onRequestMoveDestination(...)`, the host bridges to
+    the sheet via a `CheckedContinuation`.
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
   storage + parser/serializer (formerly SPM tests under `CoreTests/`).
   The test target depends only on the `Hunch` app target — Editor's
@@ -221,8 +233,10 @@ next open). The host calls `documentDidChange` on every mutation and
 coalescing happens at two levels: the debounce coalesces back-to-back
 edits within 600ms; `DocumentSaveCoordinator` underneath coalesces
 overlapping save calls. Post-save bookkeeping (mtime, title cache,
-rescan) fires through Clamshell's `didSave` callback, set once by
-`Workspace.makeClamshell`.
+rescan-when-title-changed) runs inside Clamshell's
+`postSaveBookkeeping(_:)` — fired automatically by every successful
+save path. No host hook is needed; Clamshell is `@Observable` and
+SwiftUI re-renders pick up the new entries/title state directly.
 
 **Structural mutations route through `EditorView.mutate(name:_:)`.**
 It commits the active editor's live text first (`commitActiveEditor`),

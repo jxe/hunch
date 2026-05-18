@@ -20,8 +20,9 @@ import Editor
 /// reconfigured — when the user switches workspaces, throw away the existing
 /// instance and build a new one.
 @MainActor
+@Observable
 public final class Clamshell {
-    nonisolated public let root: URL
+    @ObservationIgnored nonisolated public let root: URL
 
     /// Path (relative to `root`) of the page designated as "home", or nil if unset.
     /// Persisted to `.clamshell.json` at the root; written atomically on every change.
@@ -41,26 +42,30 @@ public final class Clamshell {
         case page(relativePath: String)
     }
 
-    nonisolated let files: FileStore
-    nonisolated let saver: DocumentSaveCoordinator
-    nonisolated let trash: TrashStore
-    nonisolated let log: RecoveryLog
+    @ObservationIgnored nonisolated let files: FileStore
+    @ObservationIgnored nonisolated let saver: DocumentSaveCoordinator
+    @ObservationIgnored nonisolated let trash: TrashStore
+    @ObservationIgnored nonisolated let log: RecoveryLog
 
-    /// Resolves a subpage's title given its relative path. Set once by
-    /// the host so `documentDidChange` / `flush(_:)` can serialize without
-    /// the host threading a resolver through every call site. Default
-    /// returns nil (subpage rows fall back to their cached title).
-    public var subpageTitleResolver: (String) -> String? = { _ in nil }
+    /// Latest `files.scan()` result. Titles here are filename-derived
+    /// fallbacks; the live title overlay lives in `titleCache`.
+    /// Use `entries` for the user-facing list — it merges these.
+    private var scanResult: [WorkspaceEntry] = []
 
-    /// Fired on the main actor after every successful save (debounced or
-    /// via `flush(_:)`). Host wires per-doc bookkeeping here — modification
-    /// date refresh, title cache, page rescan — without owning the
-    /// debounce timer.
-    public var didSave: ((Document) -> Void)?
+    private struct CachedTitle {
+        var title: String
+        var modificationDate: Date?
+    }
+
+    /// Per-URL title overlay, keyed by mtime so a stale entry is detected
+    /// at access time (cached entry whose mtime no longer matches the file
+    /// falls back to the filename-derived title).
+    private var titleCache: [URL: CachedTitle] = [:]
+    @ObservationIgnored private var titleRefreshTask: Task<Void, Never>?
 
     /// Per-URL save state. Absent ⇒ clean. The explicit state machine
     /// (`.armed` / `.saving`) lives in `Clamshell+Saving.swift`.
-    var saveStates: [URL: SaveState] = [:]
+    @ObservationIgnored var saveStates: [URL: SaveState] = [:]
 
     public init(root: URL) {
         self.root = root
@@ -110,8 +115,96 @@ public final class Clamshell {
 
     // MARK: - Pages: read
 
-    nonisolated public func scan() throws -> [WorkspaceEntry] {
-        try files.scan(workspaceRoot: root)
+    /// Page list with the live title overlay applied. Computed from
+    /// the raw scan result and the title cache so the two never drift —
+    /// mutating either invalidates Observation subscribers automatically.
+    /// SwiftUI views observe this directly; the scan runs eagerly on
+    /// workspace open and rescans fire on page-set changes.
+    public var entries: [WorkspaceEntry] {
+        scanResult.map { entry in
+            let title: String
+            if let cached = titleCache[entry.url], cached.modificationDate == entry.modificationDate {
+                title = cached.title
+            } else {
+                title = entry.title
+            }
+            return WorkspaceEntry(
+                url: entry.url,
+                relativePath: entry.relativePath,
+                title: title,
+                modificationDate: entry.modificationDate
+            )
+        }
+    }
+
+    /// Walk the workspace folder and refresh `entries`. Kicks a background
+    /// title-refresh pass for any rows whose mtime changed since the
+    /// title cache last saw them. Idempotent — safe to call on any
+    /// page-set change (create / trash / restore / external add).
+    @discardableResult
+    public func rescan() throws -> [WorkspaceEntry] {
+        let result = try files.scan(workspaceRoot: root)
+        scanResult = result
+        refreshTitlesInBackground(for: result)
+        return result
+    }
+
+    /// Live title for `relativePath` if the cache has one matching the
+    /// page's current mtime; nil otherwise. The serializer uses this for
+    /// subpage rows so the on-disk markdown stays in sync with the title
+    /// the user sees in other windows.
+    public func title(for relativePath: String) -> String? {
+        entries.first { $0.relativePath == relativePath }?.title
+    }
+
+    /// Existence + cached title for a `*.md` page id. `.missing` when the
+    /// file isn't on disk; `.present(title: nil)` when the title cache
+    /// hasn't been warmed for the URL yet.
+    public func lookupPage(_ relativePath: String) -> PageLookup {
+        guard relativePath.hasSuffix(".md") else { return .missing }
+        let url = self.url(for: relativePath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        if let cached = titleCache[url], cached.modificationDate == mtime {
+            return .present(title: cached.title)
+        }
+        return .present(title: nil)
+    }
+
+    /// Filter + rank `entries` for any page-picker surface (search sheet,
+    /// @-mention popover, move-to, jump-to). Title-prefix beats
+    /// title-substring beats path-substring; mtime breaks ties. Empty
+    /// query returns the full pool in mtime-descending order.
+    /// `excluding` omits a specific URL — typically the currently-open
+    /// document (move-to / mention / jump-to). Pass nil to include it.
+    public func pages(matching query: String, excluding: URL? = nil) -> [MentionItem] {
+        let q = query.lowercased()
+        let pool = entries
+            .filter { $0.url != excluding }
+            .sorted { $0.modificationDate > $1.modificationDate }
+        let chosen: [WorkspaceEntry]
+        if q.isEmpty {
+            chosen = pool
+        } else {
+            let ranked = pool.compactMap { entry -> (WorkspaceEntry, Int)? in
+                let title = entry.title.lowercased()
+                if title.hasPrefix(q) { return (entry, 0) }
+                if title.contains(q) { return (entry, 1) }
+                if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
+                return nil
+            }
+            chosen = ranked.sorted { $0.1 < $1.1 }.map(\.0)
+        }
+        let home = homeRelativePath
+        return chosen.map { entry in
+            let subtitle = entry.relativePath != entry.title + ".md" ? entry.relativePath : nil
+            return MentionItem(
+                id: entry.relativePath,
+                title: entry.title,
+                subtitle: subtitle,
+                isHome: entry.relativePath == home
+            )
+        }
     }
 
     @MainActor
@@ -121,6 +214,60 @@ public final class Clamshell {
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         recordDiskContent(raw, at: url)
         return Document(url: url, children: blocks, modificationDate: mtime)
+    }
+
+    // MARK: - Title cache
+
+    /// Update the cache with this document's title + mtime. Returns true
+    /// when the cached title for the URL actually changed (so the host
+    /// can decide whether to refresh windowed title displays). Called
+    /// internally after every save; external callers don't need it.
+    @discardableResult
+    func refreshTitleCache(from document: Document) -> Bool {
+        let previous = titleCache[document.url]
+        let titleChanged = previous?.title != document.title
+        if titleChanged || previous?.modificationDate != document.modificationDate {
+            titleCache[document.url] = CachedTitle(title: document.title, modificationDate: document.modificationDate)
+        }
+        return titleChanged
+    }
+
+    private func refreshTitlesInBackground(for scanned: [WorkspaceEntry]) {
+        let stale = scanned.filter { entry in
+            titleCache[entry.url]?.modificationDate != entry.modificationDate
+        }
+        guard !stale.isEmpty else { return }
+        titleRefreshTask?.cancel()
+        // `loadDocumentTitle` constructs a transient `Document` (MainActor)
+        // before deriving the title; the lookup itself stays cheap (no parse
+        // beyond the leading H1).
+        titleRefreshTask = Task { @MainActor [weak self, stale] in
+            var refreshed: [URL: CachedTitle] = [:]
+            for entry in stale {
+                guard !Task.isCancelled else { return }
+                if let title = try? self?.files.loadDocumentTitle(at: entry.url) {
+                    refreshed[entry.url] = CachedTitle(title: title, modificationDate: entry.modificationDate)
+                }
+            }
+            guard !Task.isCancelled else { return }
+            self?.applyRefreshedTitles(refreshed)
+        }
+    }
+
+    private func applyRefreshedTitles(_ refreshed: [URL: CachedTitle]) {
+        guard !refreshed.isEmpty else { return }
+        let truly = refreshed.filter { url, new in
+            let prev = titleCache[url]
+            return prev?.title != new.title || prev?.modificationDate != new.modificationDate
+        }
+        guard !truly.isEmpty else { return }
+        titleCache.merge(truly) { _, new in new }
+    }
+
+    /// Drop title cache entry for `url`. Called on trash so a future page
+    /// at the same path starts fresh.
+    private func forgetTitle(at url: URL) {
+        titleCache.removeValue(forKey: url)
     }
 
 
@@ -134,7 +281,7 @@ public final class Clamshell {
     /// stable across launches (Swift's `String.hashValue` is per-process
     /// randomized and would misclassify on a presenter wakeup that races a
     /// reseed after relaunch).
-    private var contentHistory: [URL: [String]] = [:]
+    @ObservationIgnored private var contentHistory: [URL: [String]] = [:]
     private static let historyDepth = 5
 
     private static func stableHash(_ text: String) -> String {
@@ -190,11 +337,6 @@ public final class Clamshell {
         contentHistory.removeValue(forKey: url)
     }
 
-    @MainActor
-    public func loadDocumentTitle(at url: URL) throws -> String {
-        try files.loadDocumentTitle(at: url)
-    }
-
     // MARK: - Pages: write
 
     /// Coalesced async save (autosave path). Document is `@MainActor`-isolated,
@@ -212,7 +354,7 @@ public final class Clamshell {
     @MainActor
     @discardableResult
     func save(_ document: Document) async throws -> String {
-        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: subpageTitleResolver)
+        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: { [weak self] rel in self?.title(for: rel) })
         let url = document.url
         try await saver.save(url: url, contents: newText)
         recordDiskContent(newText, at: url)
@@ -226,9 +368,9 @@ public final class Clamshell {
     /// Editor mutations go through `documentDidChange`; the sync append-
     /// onto-subpage path goes through `append(_:toPage:)`.
     ///
-    /// Fires `didSave` after the file write so the host's mtime / title /
-    /// rescan bookkeeping flows through the same callback as the
-    /// editor-debounced save path.
+    /// Folds in the post-save bookkeeping (mtime refresh, title cache)
+    /// so closed-doc paths get the same hygiene as the editor-debounced
+    /// save path.
     @MainActor
     func write(_ document: Document, patch: Patch) async throws {
         let url = document.url
@@ -236,7 +378,7 @@ public final class Clamshell {
             try await log.apply(patch, to: relativePath(of: url))
         }
         _ = try await save(document)
-        didSave?(document)
+        postSaveBookkeeping(document)
     }
 
     /// Append `blocks` to the end of `relativePath`. Logs the appended
@@ -255,11 +397,28 @@ public final class Clamshell {
             d.insertSubtrees(blocks, at: DropPath(parent: nil, position: d.children.count))
         }
         try await log.apply(Patch.adds(from: blocks), to: relativePath)
-        let newText = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: subpageTitleResolver)
+        let newText = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: { [weak self] rel in self?.title(for: rel) })
         try files.write(newText, to: url)
         recordDiskContent(newText, at: url)
-        didSave?(doc)
+        postSaveBookkeeping(doc)
         return doc
+    }
+
+    /// Post-save hygiene: refresh the document's mtime from disk, update
+    /// the title cache, and rescan the workspace if any of those changed
+    /// the entries surface. Called from every successful save path
+    /// (`fireScheduledSave` via `driveSave`, `write(_:patch:)`,
+    /// `append(_:toPage:)`).
+    @MainActor
+    func postSaveBookkeeping(_ document: Document) {
+        document.modificationDate = (try? document.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        let titleChanged = refreshTitleCache(from: document)
+        if titleChanged {
+            // Title overlay changed → entries' surface mtime is now stale.
+            // A scan picks up the new mtime for this URL; subscribers
+            // re-render through the entries computed.
+            _ = try? rescan()
+        }
     }
 
     /// Awaits any in-flight + pending save for the URL. Internal — outside
@@ -390,9 +549,10 @@ public final class Clamshell {
     /// preserved-id mention create).
     ///
     /// No-op if the resolved file already exists. Intermediate directories
-    /// are created as needed.
+    /// are created as needed. Refreshes `entries` and seeds the title
+    /// cache so the new page shows up immediately in pickers / sidebar.
     @discardableResult
-    nonisolated public func createPage(
+    public func createPage(
         title: String,
         requestedPath: String?,
         blocks: [Block]?
@@ -409,12 +569,15 @@ public final class Clamshell {
             body = "# \(title)\n"
         }
         try body.write(to: url, atomically: true, encoding: .utf8)
+        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        titleCache[url] = CachedTitle(title: title, modificationDate: mtime)
+        _ = try? rescan()
         return path
     }
 
     /// Workspace-relative slug for a new page titled `title`, suffixed with
     /// `-2`, `-3`, etc. to avoid collision with existing files.
-    nonisolated private func availablePagePath(for title: String) -> String {
+    private func availablePagePath(for title: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         let chars = title.unicodeScalars.map { scalar -> Character in
             allowed.contains(scalar) ? Character(scalar) : "-"
@@ -433,48 +596,6 @@ public final class Clamshell {
         return candidate
     }
 
-    // MARK: - Pages: search
-
-    /// Filter + rank `entries` for any page-picker surface (sidebar,
-    /// square.stack sheet, @-mention popover, move-to, jump-to).
-    /// Title-prefix beats title-substring beats path-substring; mtime breaks ties.
-    /// Empty query returns the full pool in mtime-descending order.
-    /// `excluding` omits a specific URL — typically the currently-open document
-    /// (move-to / mention / jump-to). Pass nil to include it (sidebar / sheet).
-    public func searchPages(
-        in entries: [WorkspaceEntry],
-        query: String,
-        excluding: URL? = nil
-    ) -> [MentionItem] {
-        let q = query.lowercased()
-        let pool = entries
-            .filter { $0.url != excluding }
-            .sorted { $0.modificationDate > $1.modificationDate }
-        let chosen: [WorkspaceEntry]
-        if q.isEmpty {
-            chosen = pool
-        } else {
-            let ranked = pool.compactMap { entry -> (WorkspaceEntry, Int)? in
-                let title = entry.title.lowercased()
-                if title.hasPrefix(q) { return (entry, 0) }
-                if title.contains(q) { return (entry, 1) }
-                if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
-                return nil
-            }
-            chosen = ranked.sorted { $0.1 < $1.1 }.map(\.0)
-        }
-        let home = homeRelativePath
-        return chosen.map { entry in
-            let subtitle = entry.relativePath != entry.title + ".md" ? entry.relativePath : nil
-            return MentionItem(
-                id: entry.relativePath,
-                title: entry.title,
-                subtitle: subtitle,
-                isHome: entry.relativePath == home
-            )
-        }
-    }
-
     // MARK: - Trash (soft-deleted pages)
 
     /// Move a page to `Trash/`. If the page is the current home page, also clears
@@ -489,6 +610,8 @@ public final class Clamshell {
             homeRelativePath = nil
         }
         forgetDiskContent(at: url)
+        forgetTitle(at: url)
+        _ = try? rescan()
         Task { [log, rel, result] in
             do {
                 try await log.move(fromPage: rel, toPage: result)
@@ -512,6 +635,7 @@ public final class Clamshell {
         } catch {
             Diag.log.error("log move (restore) failed from=\(entry.trashRelativePath, privacy: .public) to=\(restoredRel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         }
+        _ = try? rescan()
         return restoredURL
     }
 

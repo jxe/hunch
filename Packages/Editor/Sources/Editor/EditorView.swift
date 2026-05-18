@@ -374,12 +374,12 @@ public struct EditorView: View {
             #if os(iOS)
             // On iOS the user can lose editor focus without touching `state.sessionState`
             // (tap outside the editor, keyboard dismiss). `editorFocused` going nil is
-            // the only real-time signal — fire onBlur so the host saves. macOS doesn't
+            // the only real-time signal — flush so the host saves. macOS doesn't
             // need this: every focus loss there flows through `transferFocus(to: .nav)`,
-            // which `handleModeChange` already wires to onBlur.
+            // which `handleModeChange` already wires to flush.
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
-                    Task { @MainActor [host] in await host.onBlur() }
+                    Task { @MainActor [host] in await host.flush() }
                 }
             }
             #endif
@@ -1052,7 +1052,7 @@ public struct EditorView: View {
     }
 
     /// Single source of truth for keeping SwiftUI focus, AppKit first responder, and
-    /// the host's `onBlur` callback in sync with `state.sessionState`. Driven from
+    /// the host's `flush()` callback in sync with `state.sessionState`. Driven from
     /// `.onChange(of: state.sessionState)` so any path that mutates state (clicks,
     /// key handlers, undo/redo, …) gets focus right automatically — no caller has
     /// to remember to flip `pageFocused`.
@@ -1081,7 +1081,7 @@ public struct EditorView: View {
             // too; re-grabbing every time would steal focus from menus and sheets.
             if wasEditing {
                 forcePageFocusGrab()
-                Task { @MainActor [host] in await host.onBlur() }
+                Task { @MainActor [host] in await host.flush() }
             }
         }
 

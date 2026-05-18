@@ -142,10 +142,10 @@ final class MyHost: EditorHost {
     func onLoadSubpage(_ pageID: String) -> [Block]? { nil }
     func onAbsorbSubpage(_ pageID: String) async -> Bool { false }
     func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
-    func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) {}
+    func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func onNavigateBack() {}
     func documentDidChange(ops: [EditorOp], on post: Document) {}
-    func onBlur() async {}
+    func flush() async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
     func onSaveImages(_ items: [PastedImage]) -> [String] { [] }
@@ -403,10 +403,10 @@ integration.
 | `onLoadSubpage` | `(_ pageID: String) -> [Block]?` | Expand Subpage (inline this child's content here, **keep the file**). | Host returns the child page's blocks. nil makes the action a no-op. |
 | `onAbsorbSubpage` | `(_ pageID: String) async -> Bool` | Turn Into a non-page block on a subpage row (inline content **and trash the source file**). Always paired with `onLoadSubpage` first. Async so the host can force-save the parent doc before deleting the source. | true = file trashed (proceed with inlining); false = abort. |
 | `onAppendToSubpage` | `(_ pageID: String, _ blocks: [Block]) async -> Bool` | User drops blocks onto a subpage row. Async so the host can sequence log-then-file durability before returning. | true = host wrote them (proceed with local removal). false = no-op. |
-| `onRequestMoveDestination` | `(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) -> Void` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, calls `pick` with a `MoveDestination` (`.page` or `.block`) or nil to cancel. | Move performed asynchronously via the `pick` continuation. |
+| `onRequestMoveDestination` | `(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget]) async -> MoveDestination?` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, returns the user's `MoveDestination` (`.page` or `.block`) or nil to cancel. | Async — editor `await`s the picker result at the call site. |
 | `onNavigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |
 | `documentDidChange` | `(_ ops: [EditorOp], _ on: Document) -> Void` | After every mutation — typing, structural transactions, autotransforms, undo, paste, move-to. Called *synchronously* on the mutation-commit thread so the host's dirty flag is readable in immediate flush-on-close paths. When the change came through `EditorView.mutate(_:_:)`, `ops` is the pre→post diff from `BlockTreeDiff.derive(_:_:)`: `.insert(hash, parent, block)` for new or content-changed blocks, `.remove(hash)` for ids that disappeared. When `ops` is empty, the change is a text-only typing edit or a pure reorder/move (same id, same hash). | Host appends non-empty `ops` to its recovery log as one ordered batch, and kicks its debounced save regardless. Fire-and-forget; default impl is a no-op. |
-| `onBlur` | `() async -> Void` | Editor loses focus (window/key/scene transitions, document switch). Async so callers can await durability where it matters. | Host should flush any pending save. |
+| `flush` | `() async -> Void` | Editor loses focus (window/key/scene transitions, document switch). Host also calls it directly from scene-phase / navigation paths. Async so callers can await durability where it matters. | Host should force-save the current document. |
 | `serializeBlocksForPasteboard` | `(_ blocks: [Block]) -> String` | User cuts or copies. | Host returns a string for the system pasteboard (markdown, RTF, plain — host's choice). Empty string cancels the copy. |
 | `parseBlocksFromPasteboard` | `(_ string: String) -> [Block]?` | User pastes. | Host returns blocks parsed from the pasteboard string. nil cancels the paste. |
 | `onSaveImages` | `(_ items: [PastedImage]) -> [String]` | User pastes one or more images (or image URLs from another app). | Host writes them to disk; returns relative paths suitable for `BlockKind.image.source`. Empty / shorter array cancels the paste. |

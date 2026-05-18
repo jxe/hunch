@@ -70,6 +70,42 @@ extension Clamshell {
         NSFileCoordinator.removeFilePresenter(handle.presenter)
     }
 
+    /// One open page — the Document the editor renders against, the
+    /// reconcile summary from the initial load (banners), and the file
+    /// presenter handle. Hand back to `closePage(_:)` to tear down.
+    public struct OpenPage {
+        public let document: Document
+        public let summary: PatchEngine.ReconcileSummary
+        public let presenter: PresenterHandle
+    }
+
+    /// Load `url`, fold its journal (auto-restoring any lost subtrees),
+    /// install the file presenter, and return everything the host needs
+    /// to render the editor. Symmetric inverse: `closePage(_:)`.
+    ///
+    /// `onEvent` fires after every presenter wakeup — host shows
+    /// restore/conflict banners and refreshes per-window UI from it.
+    /// Filesystem-level work (conflict merge, content reload, journal
+    /// reconcile) is already done by the time the callback runs.
+    @MainActor
+    public func openPage(
+        at url: URL,
+        onEvent: @escaping @MainActor (PresenterEvent) -> Void
+    ) async throws -> OpenPage {
+        let (document, summary) = try await reconcile(at: url)
+        let presenter = installPresenter(for: document, onEvent: onEvent)
+        return OpenPage(document: document, summary: summary, presenter: presenter)
+    }
+
+    /// Symmetric inverse of `openPage`: flush any pending writes for the
+    /// document and tear down its file presenter. Idempotent on repeated
+    /// calls with the same `OpenPage`.
+    @MainActor
+    public func closePage(_ open: OpenPage) async {
+        _ = await flush(open.document)
+        removePresenter(open.presenter)
+    }
+
     /// Internal wakeup handler. Runs the three filesystem-level phases —
     /// conflict-version merge, disk-content classification, reconcile
     /// against journal — and returns one event for the host. iCloud

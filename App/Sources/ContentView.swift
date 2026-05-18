@@ -82,8 +82,8 @@ struct ContentView: View {
             if new == nil { window.reset() }
         }
         .onChange(of: scenePhase) { _, new in
-            if new != .active, let clamshell = workspace.clamshell, let doc = window.openDocument {
-                Task { await clamshell.flush(doc) }
+            if new != .active {
+                Task { await window.flushOpenDocument() }
             }
         }
         .alert("Error", isPresented: errorBinding) {
@@ -386,7 +386,7 @@ private struct SearchSheet: View {
     @State private var cursor: MentionItem.ID?
 
     private var items: [MentionItem] {
-        workspace.pages(matching: query, excluding: excluding)
+        workspace.clamshell?.pages(matching: query, excluding: excluding) ?? []
     }
 
     var body: some View {

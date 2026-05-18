@@ -35,10 +35,11 @@ extension EditorView {
                 guard let id = topSelectedBlockID() else { return }
                 let targetIDs = menuTargetIDs(anchorID: id)
                 let inDoc = inDocMoveCandidates(excluding: targetIDs)
-                host.onRequestMoveDestination(targetIDs, inDoc) { destination in
+                Task { @MainActor in
+                    let destination = await host.onRequestMoveDestination(targetIDs, inDoc)
                     switch destination {
                     case .page(let pageID):
-                        Task { await moveBlocks(ids: targetIDs, intoSubpagePath: pageID) }
+                        await moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
                     case .block(let parentID):
                         moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
                     case nil:
