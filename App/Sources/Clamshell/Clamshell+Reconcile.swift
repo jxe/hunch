@@ -69,57 +69,57 @@ extension Clamshell {
     private func runReconcile(on doc: Document) async throws -> PatchEngine.ReconcileSummary {
         let url = doc.url
         let rel = relativePath(of: url)
-        let journalT = perfStart()
-        // `log.readJournal` is `nonisolated` but synchronous; called from a
-        // `@MainActor` context it would run on the main thread, and on
-        // iCloud the per-device JSONL reads stall (~1.5s each × 4 devices).
-        // Hop to a detached Task so the file reads + JSON decode happen
-        // off-main; LogJournal is Sendable.
-        let log = self.log
-        let journal = await Task.detached(priority: .userInitiated) { [log, rel] in
-            log.readJournal(page: rel)
-        }.value
-        let totalRecords = journal.devices.reduce(0) { $0 + $1.records.count }
-        perfEnd(journalT, "runReconcile.readJournal", "rel=\(rel) devices=\(journal.devices.count) records=\(totalRecords)")
-        let intentT = perfStart()
-        let intent = PatchEngine.intent(from: journal)
-        perfEnd(intentT, "runReconcile.intent")
-        let reconT = perfStart()
-        let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
-        perfEnd(reconT, "runReconcile.reconcile")
-
-        var entries: [Patch.Entry] = []
-        entries.reserveCapacity(recon.toAppend.count + recon.unrestorable.count)
-        for obs in recon.toAppend {
-            entries.append(.add(hash: obs.hash, parent: obs.parent, markdown: obs.markdown))
-        }
-        for q in recon.unrestorable {
-            entries.append(.purge(hash: q.hash))
-        }
-        Self.logUnrestorables(recon.unrestorable, url: url)
-
-        if !entries.isEmpty {
-            let applyT = perfStart()
-            try await log.apply(Patch(entries: entries), to: rel)
-            perfEnd(applyT, "runReconcile.logApply", "entries=\(entries.count)")
-        }
-
-        if recon.didChange {
-            PatchEngine.apply(recon, to: doc)
-            // Splice mutated `doc` in place; the journal already has the
-            // restored hashes (engine read them as alive). Save the .md
-            // through the per-URL save chain so concurrent user commits
-            // stay ordered.
-            scheduleSave(doc)
-            let count = recon.restoredHashes.count
-            Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
-        }
-
-        return PatchEngine.ReconcileSummary(
-            restoredHashes: recon.restoredHashes,
-            lifted: recon.toAppend.map(\.hash),
-            unrestorable: recon.unrestorable
+        let foldT = perfStart()
+        let docChildren = doc.children
+        let mdMtime = doc.modificationDate
+        let outcome = await log.reconcileAgainst(
+            page: rel,
+            doc: docChildren,
+            mdMtime: mdMtime
         )
+        switch outcome {
+        case .skipped:
+            perfEnd(foldT, "runReconcile.skipped", "rel=\(rel)")
+            return PatchEngine.ReconcileSummary(
+                restoredHashes: [],
+                lifted: [],
+                unrestorable: []
+            )
+        case .folded(let recon, let mode):
+            perfEnd(foldT, "runReconcile.folded", "rel=\(rel) mode=\(mode) inserts=\(recon.inserts.count) lift=\(recon.toAppend.count) quarantine=\(recon.unrestorable.count)")
+            var entries: [Patch.Entry] = []
+            entries.reserveCapacity(recon.toAppend.count + recon.unrestorable.count)
+            for obs in recon.toAppend {
+                entries.append(.add(hash: obs.hash, parent: obs.parent, markdown: obs.markdown))
+            }
+            for q in recon.unrestorable {
+                entries.append(.purge(hash: q.hash))
+            }
+            Self.logUnrestorables(recon.unrestorable, url: url)
+
+            if !entries.isEmpty {
+                let applyT = perfStart()
+                try await log.apply(Patch(entries: entries), to: rel)
+                perfEnd(applyT, "runReconcile.logApply", "entries=\(entries.count)")
+            }
+
+            if recon.didChange {
+                PatchEngine.apply(recon, to: doc)
+                // Splice mutated `doc` in place; the journal already has the
+                // restored hashes (engine read them as alive). Save the .md
+                // through the per-URL save chain so concurrent user commits
+                // stay ordered.
+                scheduleSave(doc)
+                let count = recon.restoredHashes.count
+                Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
+            }
+
+            return PatchEngine.ReconcileSummary(
+                restoredHashes: recon.restoredHashes,
+                lifted: recon.toAppend.map(\.hash),
+                unrestorable: recon.unrestorable
+            )
+        }
     }
 
     /// Restore a single lost or purged block into its source page. Pass

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Editor
 
 /// Per-device per-page append-only JSONL log of every atomic block content
@@ -40,6 +41,16 @@ public actor RecoveryLog {
     /// iCloud after our last mint still raise our next value.
     private var nextCounter: [String: UInt64] = [:]
 
+    /// Per-page reconcile watermarks: which device log sizes/mtimes and
+    /// which `.md` mtime we last folded against. Loaded lazily from
+    /// `UserDefaults` on first access, then kept in memory. The reconcile
+    /// fast path stats the current files against these to decide whether
+    /// any work is needed at all (skip), or only the deltas need walking
+    /// (tail), or a full fold (.md changed externally / no watermark).
+    private var pageWatermarks: [String: PageWatermark]?
+
+    nonisolated private let watermarkDefaultsKey: String
+
     public init(
         workspaceRoot: URL,
         store: FileStore = FileStore(),
@@ -48,6 +59,9 @@ public actor RecoveryLog {
         self.workspaceRoot = workspaceRoot
         self.store = store
         self.deviceID = deviceID
+        let pathHash = SHA256.hash(data: Data(workspaceRoot.standardizedFileURL.path.utf8))
+            .prefix(8).map { String(format: "%02x", $0) }.joined()
+        self.watermarkDefaultsKey = "hunch.reconcileWatermarks.\(pathHash)"
     }
 
     // MARK: - Persistence: writes
@@ -118,6 +132,9 @@ public actor RecoveryLog {
 
     /// Read every device's log for `page` and return as a `LogJournal`
     /// (engine input). No business logic — just JSONL → `LogRecord`.
+    /// Slow path: reads every device file in full. Reconcile callers
+    /// should prefer `reconcileAgainst(page:doc:mdMtime:)`, which uses
+    /// watermarks + tail reads to skip unchanged files entirely.
     nonisolated public func readJournal(page rel: String) -> LogJournal {
         let dir = pageDir(rel: rel)
         guard FileManager.default.fileExists(atPath: dir.path) else {
@@ -129,6 +146,269 @@ public actor RecoveryLog {
             return DeviceLog(deviceID: deviceID, records: records)
         }
         return LogJournal(devices: devices)
+    }
+
+    // MARK: - Reconcile fast path (watermark + tail walk)
+
+    /// Outcome of `reconcileAgainst`: either we determined nothing has
+    /// changed since the last fold (skip — empty work), or we produced a
+    /// `Reconciliation` from either a full re-fold or a delta walk over
+    /// foreign-log tails. The caller (Clamshell's `runReconcile`) splices
+    /// inserts into the live doc and persists `toAppend` + unrestorables
+    /// to the log; both are non-empty only on the full-fold branch.
+    public enum ReconcileOutcome: Sendable {
+        case skipped
+        case folded(PatchEngine.Reconciliation, mode: Mode)
+
+        public enum Mode: Sendable {
+            /// Full read of every device's log; produces inserts AND lifts
+            /// unlogged doc observations AND quarantines.
+            case full
+            /// Delta walk over just the foreign devices whose `.jsonl`
+            /// files grew since the watermark; produces inserts only. Bare-
+            /// md absorption is skipped — the `.md` mtime matched the
+            /// watermark, so the doc's blocks were already accounted for
+            /// on the prior full fold.
+            case tail
+        }
+    }
+
+    /// Fold the journal for `rel` against `doc`, using watermarks to
+    /// short-circuit when nothing has changed. The fast paths:
+    /// 1. **Skip**: foreign log stats + our log stat + `mdMtime` all match
+    ///    the watermark → no I/O beyond stat, returns `.skipped`.
+    /// 2. **Tail**: `mdMtime` matches the watermark but one or more
+    ///    foreign logs grew → tail-read the new bytes only, build splice
+    ///    candidates, return `.folded(_, .tail)`.
+    /// 3. **Full**: no watermark, or `.md` changed externally, or a log
+    ///    shrunk → read everything fresh, returns `.folded(_, .full)`.
+    /// On any non-skip branch, the watermark is refreshed.
+    public func reconcileAgainst(
+        page rel: String,
+        doc: [Block],
+        mdMtime: Date?
+    ) -> ReconcileOutcome {
+        loadWatermarksIfNeeded()
+        let dir = pageDir(rel: rel)
+        let dirExists = FileManager.default.fileExists(atPath: dir.path)
+        let watermark = pageWatermarks?[rel]
+        let mdMtimeT = mdMtime?.timeIntervalSince1970
+
+        // No journal dir AND no watermark → genuinely empty.
+        if !dirExists, watermark == nil {
+            return .skipped
+        }
+
+        let currentStats = currentDeviceStats(rel: rel)
+
+        // Skip path: everything matches the watermark.
+        if let w = watermark,
+           w.mdMtime == mdMtimeT,
+           w.devices == currentStats {
+            return .skipped
+        }
+
+        // Tail path: `.md` is unchanged and we have a prior watermark.
+        // Only foreign-log differences (grew, mtime moved forward) drive work.
+        if let w = watermark, w.mdMtime == mdMtimeT, canTailWalk(old: w.devices, new: currentStats) {
+            let recon = tailWalkFold(
+                rel: rel,
+                doc: doc,
+                oldStats: w.devices,
+                newStats: currentStats
+            )
+            pageWatermarks?[rel] = PageWatermark(mdMtime: mdMtimeT, devices: currentStats)
+            saveWatermarks()
+            return .folded(recon, mode: .tail)
+        }
+
+        // Full path: no watermark, or `.md` changed, or a foreign log
+        // shrunk / vanished (cache invalid for that device).
+        let recon = fullFold(rel: rel, doc: doc)
+        pageWatermarks?[rel] = PageWatermark(mdMtime: mdMtimeT, devices: currentStats)
+        saveWatermarks()
+        return .folded(recon, mode: .full)
+    }
+
+    /// Update the watermark for `rel` to "I just wrote this." Called by
+    /// the save path so a fresh `.md` mtime + grown own-log don't trigger
+    /// a useless refold on next open. We saved the records that grew our
+    /// log via `apply(_:to:)` and the engine has nothing else to do.
+    public func recordOwnSave(page rel: String, mdMtime: Date?) {
+        loadWatermarksIfNeeded()
+        let stats = currentDeviceStats(rel: rel)
+        pageWatermarks?[rel] = PageWatermark(
+            mdMtime: mdMtime?.timeIntervalSince1970,
+            devices: stats
+        )
+        saveWatermarks()
+    }
+
+    // MARK: - Reconcile internals
+
+    private func canTailWalk(old: [String: DeviceWatermark], new: [String: DeviceWatermark]) -> Bool {
+        // Tail-walk works only when every device that existed before
+        // either still exists with the same-or-larger size, or has its
+        // mtime unchanged (no shrink, no rewrite). Any shrink/disappear
+        // means the cached watermark is meaningless for that device →
+        // fall back to full fold.
+        for (id, oldW) in old {
+            guard let newW = new[id] else { return false }
+            if newW.size < oldW.size { return false }
+        }
+        // New devices are fine — they're handled in tailWalkFold by
+        // reading the full file (offset 0 to current size).
+        return true
+    }
+
+    /// Produce a `Reconciliation` whose `inserts` cover candidates found
+    /// in the unread tails of foreign device logs. Skips
+    /// `unloggedObservations` (the prior fold absorbed the doc; the `.md`
+    /// is unchanged so nothing new to absorb) and quarantines.
+    private func tailWalkFold(
+        rel: String,
+        doc: [Block],
+        oldStats: [String: DeviceWatermark],
+        newStats: [String: DeviceWatermark]
+    ) -> PatchEngine.Reconciliation {
+        let docHashes = Self.collectAtomicHashes(doc)
+        var addsByHash: [String: IntentState.AddSnapshot] = [:]
+        var purgedHashes: Set<String> = []
+
+        for url in deviceLogURLs(for: rel) {
+            let deviceID = url.deletingPathExtension().lastPathComponent
+            let oldSize = oldStats[deviceID]?.size ?? 0
+            let newSize = newStats[deviceID]?.size ?? 0
+            guard newSize > oldSize else { continue }
+
+            // Always offset 0 for newly-seen foreign devices; otherwise
+            // pick up where we left off. Our own log: we trust our
+            // self-driven watermark refresh in `recordOwnSave`, so a
+            // growth here means we just wrote — fold our own new records
+            // into the candidate map only if there's truly something we
+            // didn't account for. Same code, same result either way.
+            let offset = oldStats[deviceID] != nil ? oldSize : 0
+            let wires = readWires(at: url, fromOffset: offset)
+            for wire in wires {
+                guard let kind = Self.wireKind(wire) else { continue }
+                switch kind {
+                case .add:
+                    if let markdown = wire.m {
+                        addsByHash[wire.h] = IntentState.AddSnapshot(
+                            parent: wire.p,
+                            markdown: markdown,
+                            recordedAt: Date(timeIntervalSince1970: wire.t)
+                        )
+                        purgedHashes.remove(wire.h)
+                    }
+                case .purge:
+                    purgedHashes.insert(wire.h)
+                    addsByHash.removeValue(forKey: wire.h)
+                }
+            }
+        }
+
+        // Candidates: alive-in-tail, not purged-in-tail, not in doc.
+        var byHash: [String: IntentState.Status] = [:]
+        for (hash, add) in addsByHash where !purgedHashes.contains(hash) && !docHashes.contains(hash) {
+            byHash[hash] = .alive(latestAdd: add)
+        }
+        // Mark doc hashes as alive in the synthetic intent so
+        // `unloggedObservations` doesn't try to lift them. Dummy
+        // snapshots (parent: nil, empty markdown) are never read — the
+        // doc-hash entries get filtered out before reaching the lost-
+        // block forest.
+        let dummy = IntentState.AddSnapshot(parent: nil, markdown: "", recordedAt: .distantPast)
+        for hash in docHashes where byHash[hash] == nil {
+            byHash[hash] = .alive(latestAdd: dummy)
+        }
+        let intent = IntentState(byHash: byHash)
+        return PatchEngine.reconcile(intent: intent, doc: doc)
+    }
+
+    private func fullFold(rel: String, doc: [Block]) -> PatchEngine.Reconciliation {
+        let journal = readJournal(page: rel)
+        let intent = PatchEngine.intent(from: journal)
+        return PatchEngine.reconcile(intent: intent, doc: doc)
+    }
+
+    private func currentDeviceStats(rel: String) -> [String: DeviceWatermark] {
+        var out: [String: DeviceWatermark] = [:]
+        for url in deviceLogURLs(for: rel) {
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+                  let size = values.fileSize,
+                  let mtime = values.contentModificationDate else { continue }
+            let deviceID = url.deletingPathExtension().lastPathComponent
+            out[deviceID] = DeviceWatermark(
+                size: Int64(size),
+                mtime: mtime.timeIntervalSince1970
+            )
+        }
+        return out
+    }
+
+    private nonisolated static func collectAtomicHashes(_ blocks: [Block]) -> Set<String> {
+        var out: Set<String> = []
+        func walk(_ list: [Block]) {
+            for block in list {
+                out.insert(block.atomicHash)
+                walk(block.children)
+            }
+        }
+        walk(blocks)
+        return out
+    }
+
+    private nonisolated static func wireKind(_ wire: Wire) -> WireKind? {
+        switch wire.op {
+        case "add": return .add
+        case "purge": return .purge
+        default: return nil
+        }
+    }
+
+    private enum WireKind { case add, purge }
+
+    // MARK: - Watermark persistence
+
+    private func loadWatermarksIfNeeded() {
+        guard pageWatermarks == nil else { return }
+        guard let data = UserDefaults.standard.data(forKey: watermarkDefaultsKey),
+              let decoded = try? JSONDecoder().decode([String: PageWatermark].self, from: data) else {
+            pageWatermarks = [:]
+            return
+        }
+        pageWatermarks = decoded
+    }
+
+    private func saveWatermarks() {
+        guard let pageWatermarks else { return }
+        guard let data = try? JSONEncoder().encode(pageWatermarks) else { return }
+        UserDefaults.standard.set(data, forKey: watermarkDefaultsKey)
+    }
+
+    // MARK: - Tail read
+
+    private nonisolated func readWires(at url: URL, fromOffset offset: Int64) -> [Wire] {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        do {
+            if offset > 0 {
+                try handle.seek(toOffset: UInt64(offset))
+            }
+            let data = handle.readDataToEndOfFile()
+            guard !data.isEmpty else { return [] }
+            let text = String(decoding: data, as: UTF8.self)
+            var out: [Wire] = []
+            for raw in text.split(separator: "\n", omittingEmptySubsequences: true) {
+                if let record = Self.decodeWire(String(raw)) {
+                    out.append(record)
+                }
+            }
+            return out
+        } catch {
+            return []
+        }
     }
 
     // MARK: - Engine-backed enumeration
@@ -306,6 +586,22 @@ public actor RecoveryLog {
             out.insert(block.atomicHash)
             collectAtomicHashes(block.children, into: &out)
         }
+    }
+
+    // MARK: - Watermark types
+
+    /// Per-(workspace, page) reconcile watermark, persisted in
+    /// `UserDefaults` next to `DeviceID`. The journal files are the
+    /// source of truth; this is just "where we last folded up to,"
+    /// enough to recognise the no-change case via stat alone.
+    fileprivate struct PageWatermark: Codable, Sendable {
+        let mdMtime: TimeInterval?
+        let devices: [String: DeviceWatermark]
+    }
+
+    fileprivate struct DeviceWatermark: Codable, Sendable, Equatable {
+        let size: Int64
+        let mtime: TimeInterval
     }
 
     // MARK: - Internals: wire format

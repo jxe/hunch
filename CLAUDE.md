@@ -45,7 +45,14 @@ user-picked workspace folder.
     `reconcileLive`, `classifyDiskContent`, `isQuiescent`,
     `installPresenter` / `removePresenter`) and the `log` actor drive
     the engine from inside the module and aren't part of the host
-    surface. **Clamshell is `@Observable`**: `entries` and
+    surface. The journal fold uses a watermark fast path
+    (`RecoveryLog.reconcileAgainst`) — per-page `(deviceLog stats, .md
+    mtime)` cached in `UserDefaults` lets the steady-state open skip
+    every journal read; foreign-log growth triggers a tail read from
+    the watermark offset rather than a full re-fold; only an external
+    `.md` edit or a shrinking log forces a full read. Saves refresh
+    the watermark via `RecoveryLog.recordOwnSave` so our own writes
+    don't trigger spurious refolds. **Clamshell is `@Observable`**: `entries` and
     `homeRelativePath` are tracked properties; SwiftUI re-renders
     automatically when scan / title cache / home changes. The title
     cache populates lazily through `lookupPage` cache misses

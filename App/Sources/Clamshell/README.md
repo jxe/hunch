@@ -163,16 +163,52 @@ Hosts don't call reconcile directly. `openPage(at:onEvent:)` returns
 as soon as the `.md` is loaded + parsed; the journal fold runs in a
 background Task and fires `onEvent(.restored(count:))` if anything
 was spliced. Deferring the fold keeps the home-page critical path
-clear of the per-device JSONL iCloud reads (~1s/device cold-cache),
-and the common case has nothing to restore. Presenter-wakeup
-reconcile fires from the internal file presenter on every wakeup and
-mutates the live `Document` in place to preserve editor selection /
-cursor state. Both paths go through `reconcileLive(_:)`, which gates
-on `isQuiescent(at:)` — if the page isn't settled (a save chain
-entry is still pending), it returns nil and the next wakeup retries
-after the save lands. Log apply is awaited strictly before the file
-save fires either way — the at-or-ahead invariant holds across
-crashes.
+clear of the per-device JSONL iCloud reads, and the common case has
+nothing to restore. Presenter-wakeup reconcile fires from the
+internal file presenter on every wakeup and mutates the live
+`Document` in place to preserve editor selection / cursor state.
+Both paths go through `reconcileLive(_:)`, which gates on
+`isQuiescent(at:)` — if the page isn't settled (a save chain entry
+is still pending), it returns nil and the next wakeup retries after
+the save lands. Log apply is awaited strictly before the file save
+fires either way — the at-or-ahead invariant holds across crashes.
+
+**Watermark fast path.** `RecoveryLog.reconcileAgainst(page:doc:mdMtime:)`
+short-circuits the fold using per-page watermarks stored in
+`UserDefaults` next to `DeviceID`. The watermark records, per device:
+the log file's `(size, mtime)` at the time of our last fold, plus the
+`.md` mtime then. On entry, stat each device log + the `.md`. Three
+branches:
+
+1. **Skip** — every device watermark and `.md` mtime match → no I/O
+   beyond stat, the fold returns empty. Steady-state opens (nothing
+   has changed since last time) cost a few milliseconds total.
+2. **Tail** — `.md` mtime matches but one or more foreign logs grew →
+   tail-read each grown file from its watermarked size to EOF, parse
+   only the delta, build splice candidates with the records we just
+   read in hand (their `m` carries the markdown). Bare-md absorption
+   is skipped on this branch — the `.md` is unchanged, so the prior
+   full fold already covered everything in the doc.
+3. **Full** — no watermark, or `.md` changed externally, or a foreign
+   log shrunk / disappeared (cache invalid for that device). The
+   classic `readJournal` + `PatchEngine.intent` + `PatchEngine.reconcile`
+   path, with full bare-md absorption and quarantine.
+
+After every non-skip branch the watermark is refreshed. Our own
+saves call `RecoveryLog.recordOwnSave(page:mdMtime:)` from
+`postSaveBookkeeping` so the new `.md` mtime + grown own-log size
+are captured immediately — the next open sees a match and skips
+without ever opening a journal file.
+
+**What the tail branch deliberately doesn't reconstruct.** Auto-
+restore and the Recover sheet only care about "alive in journal,
+missing from doc." We don't need a Lamport-correct `IntentState`
+across the entire history — only across the records we observe in
+the unread tails. Edge cases where ordering matters (delete-then-re-
+add on different devices, observed in non-Lamport order via two
+syncs) self-heal as more records arrive: on the next fold, the
+later record dominates and the candidate flips. Auto-restore at
+open time isn't sensitive to that transient inconsistency.
 
 ### Conflict merge (iCloud sibling alternates)
 

@@ -493,14 +493,23 @@ public final class Clamshell {
     }
 
     /// Post-save hygiene: refresh the document's mtime from disk, update
-    /// the title cache, and rescan the workspace if any of those changed
-    /// the entries surface. Called from every successful save path (chain
-    /// task via `documentDidChange` / `scheduleSave`,
-    /// `writeClosedPage(_:patch:)`, `append(_:toPage:)`).
+    /// the title cache, refresh the reconcile watermark, and rescan the
+    /// workspace if the entries surface needs it. Called from every
+    /// successful save path (chain task via `documentDidChange` /
+    /// `scheduleSave`, `writeClosedPage(_:patch:)`, `append(_:toPage:)`).
     @MainActor
     func postSaveBookkeeping(_ document: Document) {
         document.modificationDate = (try? document.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
         let titleChanged = refreshTitleCache(from: document)
+        // Refresh the reconcile watermark so this save (new `.md` mtime,
+        // grown own-log) doesn't trigger a useless refold on next open.
+        // We logged the records via `apply(_:to:)` and just wrote the
+        // `.md` — the journal and the doc are consistent by construction.
+        let rel = relativePath(of: document.url)
+        let mtime = document.modificationDate
+        Task { [log, rel, mtime] in
+            await log.recordOwnSave(page: rel, mdMtime: mtime)
+        }
         if titleChanged {
             // Title overlay changed → entries' surface mtime is now stale.
             // A scan picks up the new mtime for this URL; subscribers
