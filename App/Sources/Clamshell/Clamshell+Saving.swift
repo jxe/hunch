@@ -101,7 +101,7 @@ extension Clamshell {
     /// True when no work is pending for `url`. The engine's reconcile and
     /// presenter paths gate on this — they assume
     /// `doc.children == parsed(.md)`, which is only true on a settled page.
-    public func isQuiescent(at url: URL) -> Bool {
+    func isQuiescent(at url: URL) -> Bool {
         saveStates[url] == nil
     }
 

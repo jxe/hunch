@@ -124,12 +124,6 @@ public final class Clamshell {
     }
 
 
-    /// Read the raw bytes on disk without parsing — used by the file
-    /// presenter to compare against the open document's snapshot.
-    nonisolated public func readRawText(at url: URL) throws -> String {
-        try files.read(url)
-    }
-
     // MARK: - Disk-content classification (iCloud-stomp / echo defense)
 
     /// Ring buffer of recent on-disk content hashes per URL. Seeded by every
@@ -157,7 +151,7 @@ public final class Clamshell {
         contentHistory[url] = history
     }
 
-    public enum DiskClassification: Equatable, Sendable {
+    enum DiskClassification: Equatable, Sendable {
         /// mtime matches the open document's snapshot — nothing happened.
         case unchanged
         /// Disk content matches the most-recent hash we wrote/loaded —
@@ -177,7 +171,7 @@ public final class Clamshell {
     /// check; pass the open document's `modificationDate` to short-circuit
     /// when the file's mtime hasn't moved since we last touched it.
     @MainActor
-    public func classifyDiskContent(at url: URL, expectingModificationDate: Date? = nil) -> DiskClassification {
+    func classifyDiskContent(at url: URL, expectingModificationDate: Date? = nil) -> DiskClassification {
         if let expected = expectingModificationDate {
             let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
             if mtime == expected { return .unchanged }
@@ -236,7 +230,7 @@ public final class Clamshell {
     /// rescan bookkeeping flows through the same callback as the
     /// editor-debounced save path.
     @MainActor
-    public func write(_ document: Document, patch: Patch) async throws {
+    func write(_ document: Document, patch: Patch) async throws {
         let url = document.url
         if !patch.isEmpty {
             try await log.apply(patch, to: relativePath(of: url))
@@ -542,7 +536,7 @@ public final class Clamshell {
     /// `PatchEngine` use this to get a snapshot of the journal in one I/O
     /// pass, then derive intent / classify lost / classify purged without
     /// re-hitting disk.
-    nonisolated public func readJournal(forPage page: String) -> LogJournal {
+    nonisolated func readJournal(forPage page: String) -> LogJournal {
         log.readJournal(page: page)
     }
 
@@ -550,7 +544,7 @@ public final class Clamshell {
     /// used by reconcile (lift unlogged observations + quarantine
     /// unrestorable hashes in one batched write) and by manual restore
     /// (sweep covered hashes as purges, or fresh adds for unpurge).
-    public func applyPatch(_ patch: Patch, forPage page: String) async throws {
+    func applyPatch(_ patch: Patch, forPage page: String) async throws {
         guard !patch.isEmpty else { return }
         try await log.apply(patch, to: page)
     }

@@ -37,13 +37,14 @@ user-picked workspace folder.
     `RecoveryLog` (per-device JSONL appender + cross-device read union;
     every write goes through one primitive, `apply(Patch, to:)`),
     and `TrashStore` privately and exposes a single API:
-    `scan / loadDocument / reconcile / reconcileLive /
-    documentDidChange / flush / write / append / applyPatch /
-    createPage / moveToTrash / listTrashedPages / restorePage /
+    `scan / loadDocument / reconcile / documentDidChange / flush /
+    append / createPage / moveToTrash / listTrashedPages / restorePage /
     listLostBlocks / listPurgedBlocks / resolveConflictVersions /
-    classifyDiskContent / isQuiescent / installPresenter /
-    removePresenter`, plus `relativePath(of:)` and `url(for:)` for
-    path conversion. **Editor-driven persistence** is
+    installPresenter / removePresenter`, plus `relativePath(of:)` and
+    `url(for:)` for path conversion. Internal helpers (`readJournal`,
+    `applyPatch`, `write(_:patch:)`, `reconcileLive`,
+    `classifyDiskContent`, `isQuiescent`) drive the engine from inside
+    the module and aren't part of the host surface. **Editor-driven persistence** is
     `documentDidChange(ops:in:)` (called on every mutation — projects
     ops to a `Patch`, spawns a tracked log-apply Task, (re)arms the
     per-URL 600ms debounce) and `flush(_:)` (await latest log task +

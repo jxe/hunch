@@ -267,31 +267,31 @@ existing instance and build a new one.
 | Group | Methods |
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)` |
-| Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
-| Editor-driven persistence | `documentDidChange(ops:in:)`, `flush(_:)`, `isQuiescent(at:)` |
-| Reconcile + restore | `reconcile(at:)`, `reconcileLive(_:)`, `restore(_:liveDoc:)` (the host used to orchestrate this inline; lives on Clamshell now) |
+| Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)` |
+| Editor-driven persistence | `documentDidChange(ops:in:)`, `flush(_:)` |
+| Reconcile + restore | `reconcile(at:)` (open-doc fresh load), `restore(_:liveDoc:)` (the host used to orchestrate this inline; lives on Clamshell now) |
+| File presenter | `installPresenter(for:onEvent:)` → `PresenterHandle`, `removePresenter(_:)`. Internally owns the NSFilePresenter shim, the 250ms wakeup debounce, conflict-version merging, echo/stomp/external classification, and `reconcileLive` against the journal. Host reacts to a single `PresenterEvent` per wakeup (banner / rescan / title cache). |
 | Configuration | `subpageTitleResolver`, `didSave` (set once by the host) |
-| External write | `write(_:patch:)` for callers that didn't flow through `documentDidChange` (conflict merge, restoring into a closed page). Awaits log-then-file atomically. `append(_:toPage:)` for appending blocks to a non-open subpage. Both fire `didSave` after the write so callers get the same per-doc bookkeeping (mtime, title cache, page rescan) as the editor save path. |
-| Disk classification | `classifyDiskContent(at:expectingModificationDate:)` → `DiskClassification` (`.unchanged / .echo / .stomp / .external / .unreadable`) |
+| Non-editor write | `append(_:toPage:)` for appending blocks to a non-open subpage. Sequences log-then-file. Fires `didSave` after the write so callers get the same per-doc bookkeeping (mtime, title cache, page rescan) as the editor save path. |
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Search | `searchPages(in:query:excluding:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
-| Recovery log | `readJournal(forPage:)`, `applyPatch(_:forPage:)`, `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)` |
+| Recovery log | `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)` |
 | iCloud merge | `resolveConflictVersions(at:againstLive:)` → `ConflictResolution` (`{ salvaged, liveDocumentMutated }`) |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
 | Metadata | `homeRelativePath` (read/write), `root` |
 
 `loadDocument(at:)`, debounced editor saves (via `documentDidChange` /
-`flush(_:)`), `write(_:patch:)`, and `append(_:toPage:)` all seed the internal per-URL
-content-hash ring buffer that `classifyDiskContent` reads — so the
-file presenter can tell our own writes echoing back (`.echo`) from an
-iCloud rollback to an earlier state (`.stomp`) from a genuine external
-edit (`.external`). Callers don't have to seed anything; the ring
-buffer is cleared automatically on `moveToTrash`.
+`flush(_:)`), and `append(_:toPage:)` all seed the internal per-URL
+content-hash ring buffer that the file presenter classifies against —
+echo (our write came back) vs stomp (iCloud rolled us back to a prior
+state) vs external (a different editor wrote). Callers don't have to
+seed anything; the ring buffer is cleared automatically on `moveToTrash`.
 
-The engine itself is at the same layer as Clamshell. Callers reaching
-into engine territory use `clamshell.readJournal` → `PatchEngine.intent`
-→ `PatchEngine.reconcile` directly.
+The engine itself is at the same layer as Clamshell — internal helpers
+on `Clamshell` (`readJournal`, `applyPatch`, `write(_:patch:)`,
+`reconcileLive`) drive `PatchEngine` from inside the module and aren't
+part of the host-facing surface.
 
 ---
 

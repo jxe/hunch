@@ -50,7 +50,7 @@ extension Clamshell {
     /// the "page wasn't quiescent" case visible at the type level —
     /// callers can decide to retry after a `flush(_:)` instead of
     /// silently consuming an empty summary.
-    public enum LiveReconcileOutcome: Sendable {
+    enum LiveReconcileOutcome: Sendable {
         case completed(PatchEngine.ReconcileSummary)
         /// Page wasn't quiescent (debounce armed, log apply in flight,
         /// or save in flight). Reconcile did nothing; caller may retry
@@ -82,7 +82,7 @@ extension Clamshell {
     /// the gate fires, returns `.deferred` so the caller can choose to
     /// retry after `flush(_:)` instead of consuming an empty result.
     @discardableResult
-    public func reconcileLive(_ doc: Document) async throws -> LiveReconcileOutcome {
+    func reconcileLive(_ doc: Document) async throws -> LiveReconcileOutcome {
         guard isQuiescent(at: doc.url) else {
             Diag.merge.log("reconcileLive deferred url=\(doc.url.lastPathComponent, privacy: .public)")
             return .deferred
