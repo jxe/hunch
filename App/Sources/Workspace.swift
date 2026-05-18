@@ -35,11 +35,11 @@ final class Workspace {
     }
 
     /// Path (relative to the workspace root) of the home page, or nil if
-    /// unset. Passthrough to the active Clamshell — the on-disk source of
-    /// truth is `.clamshell.json` and travels with the folder.
+    /// unset. Read-only passthrough to the active Clamshell — mutate via
+    /// `clamshell?.setHome(relativePath:)`. The on-disk source of truth is
+    /// `.clamshell.json` and travels with the folder.
     var homeRelativePath: String? {
-        get { clamshell?.homeRelativePath }
-        set { clamshell?.homeRelativePath = newValue }
+        clamshell?.homeRelativePath
     }
 
     /// Surfaced in the alert in any open window. Last-write-wins across
@@ -90,8 +90,7 @@ final class Workspace {
     private var hasRunConflictSweep = false
 
     var homeURL: URL? {
-        guard let homeRelativePath else { return nil }
-        return entries.first { $0.relativePath == homeRelativePath }?.url
+        clamshell?.homeURL
     }
 
     // MARK: - Lifecycle
@@ -144,7 +143,7 @@ final class Workspace {
         // Fixture clamshells contain a single `everything.md` — open it
         // directly so snap-diff sees content immediately on launch.
         if clamshell.homeRelativePath == nil {
-            clamshell.homeRelativePath = "everything.md"
+            clamshell.setHome(relativePath: "everything.md")
         }
         try? clamshell.rescan()
     }
@@ -198,7 +197,7 @@ final class Workspace {
         }()
 
         if let detected {
-            clamshell.homeRelativePath = detected
+            clamshell.setHome(relativePath: detected)
             return
         }
 
@@ -208,7 +207,7 @@ final class Workspace {
             requestedPath: nil,
             initialContent: welcomeContentBlocks()
         ) else { return }
-        homeRelativePath = path
+        clamshell.setHome(relativePath: path)
     }
 
     /// Drop the currently bookmarked workspace. Open windows observe
@@ -321,7 +320,7 @@ final class Workspace {
     func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
         guard let clamshell else { return nil }
         do {
-            return try clamshell.createPage(title: title, requestedPath: requestedPath, blocks: initialContent)
+            return try clamshell.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
         } catch {
             self.error = "Failed to create page: \(error.localizedDescription)"
             return nil
@@ -505,7 +504,7 @@ final class Workspace {
             let source = lines.joined(separator: "\n\n")
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
             let clamshell = mount(root: root)
-            clamshell.homeRelativePath = "everything.md"
+            clamshell.setHome(relativePath: "everything.md")
             try? clamshell.rescan()
         } catch {
             self.error = "Failed to install tall-doc UI test workspace: \(error.localizedDescription)"

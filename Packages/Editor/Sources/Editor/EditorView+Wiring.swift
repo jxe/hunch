@@ -193,7 +193,7 @@ extension EditorView {
             var validIDs: Set<BlockID> = []
             document.walk { block, _, _ in validIDs.insert(block.id) }
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
-            host.documentDidChange(ops: ops, in: document)
+            host.persistCommit(ops: ops, in: document)
         }
 
         document.didReplaceChildren = {

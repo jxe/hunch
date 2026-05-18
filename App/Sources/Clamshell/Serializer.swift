@@ -10,7 +10,7 @@ enum BlockSerializer {
     /// same depth (heading containment is purely a parser concern).
     static func serialize(_ blocks: [Block], resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }, consecutiveNumbering: Bool = false) -> String {
         var out = ""
-        serializeChildren(blocks, depth: 0, into: &out, titleForPath: titleForPath, isTopLevel: true, consecutiveNumbering: consecutiveNumbering)
+        serializeChildren(blocks, depth: 0, into: &out, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
         if !out.hasSuffix("\n") { out += "\n" }
         return out
     }
@@ -25,7 +25,7 @@ enum BlockSerializer {
         return serializeBlock(bare, depth: 0, numberedIndex: 0, titleForPath: { _ in nil }, consecutiveNumbering: false)
     }
 
-    private static func serializeChildren(_ blocks: [Block], depth: Int, into out: inout String, titleForPath: (String) -> String?, isTopLevel: Bool, consecutiveNumbering: Bool) {
+    private static func serializeChildren(_ blocks: [Block], depth: Int, into out: inout String, titleForPath: (String) -> String?, consecutiveNumbering: Bool) {
         var numberedIndex = 0
         for (i, block) in blocks.enumerated() {
             if case .numbered = block.kind {
@@ -150,7 +150,7 @@ enum BlockSerializer {
     /// separation. Used by every container kind that has a body.
     private static func serializeContainerBody(_ blocks: [Block], depth: Int, titleForPath: (String) -> String?, consecutiveNumbering: Bool) -> String {
         var out = ""
-        serializeChildren(blocks, depth: depth, into: &out, titleForPath: titleForPath, isTopLevel: false, consecutiveNumbering: consecutiveNumbering)
+        serializeChildren(blocks, depth: depth, into: &out, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
         return out
     }
 

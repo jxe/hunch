@@ -224,7 +224,9 @@ struct BlockRow: View, Equatable {
     /// to the host's cache.
     let linkPreviews: [URL: LinkPreview]
     let onLinkPreviewLoaded: (URL, LinkPreview) -> Void
-    let linkPreviewProvider: LinkPreviewProvider?
+    /// The host. The row's `.task` calls `host.linkPreview(for:)` for any
+    /// uncached external URL in this block's text.
+    let host: EditorHost
 
     let onTapOutsideText: () -> Void
     let onMacReorderChanged: (DragGesture.Value) -> Void
@@ -267,7 +269,7 @@ struct BlockRow: View, Equatable {
         pageLookups: [String: PageLookup],
         linkPreviews: [URL: LinkPreview],
         onLinkPreviewLoaded: @escaping (URL, LinkPreview) -> Void,
-        linkPreviewProvider: LinkPreviewProvider?,
+        host: EditorHost,
         onTapOutsideText: @escaping () -> Void,
         onMacReorderChanged: @escaping (DragGesture.Value) -> Void,
         onMacReorderEnded: @escaping (DragGesture.Value) -> Void,
@@ -308,7 +310,7 @@ struct BlockRow: View, Equatable {
         self.pageLookups = pageLookups
         self.linkPreviews = linkPreviews
         self.onLinkPreviewLoaded = onLinkPreviewLoaded
-        self.linkPreviewProvider = linkPreviewProvider
+        self.host = host
         self.onTapOutsideText = onTapOutsideText
         self.onMacReorderChanged = onMacReorderChanged
         self.onMacReorderEnded = onMacReorderEnded
@@ -347,9 +349,8 @@ struct BlockRow: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isSelected && !isEditing ? NotionStyle.selectionBackground : Color.clear)
             .task(id: externalURLs) {
-                guard let provider = linkPreviewProvider else { return }
                 for url in externalURLs where linkPreviews[url] == nil {
-                    if let preview = await provider(url) {
+                    if let preview = await host.linkPreview(for: url) {
                         if Task.isCancelled { return }
                         onLinkPreviewLoaded(url, preview)
                     }

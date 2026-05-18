@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// Existence + title resolution for an opaque host-defined page id.
 /// Returned by `EditorHost.lookupPage(_:)`. The three states a page can be in:
@@ -74,9 +75,12 @@ public protocol EditorHost: AnyObject {
 
     /// Persist a new subpage. `initialContent` is the body the editor wants the
     /// new page to start with (descendants of the source block); the host
-    /// serializes it and prepends a title heading. Returns the host-assigned
-    /// page id, or nil if creation failed.
-    func createSubpage(title: String, requestedPageID: String?, initialContent: [Block]?) -> String?
+    /// serializes it and prepends a title heading. `requestedPath` is honored
+    /// as-is when non-nil (used by the editor for deterministic-id cases like
+    /// redo / preserved-id mention create); pass nil to let the host derive a
+    /// slug from `title`. Returns the host-assigned page id, or nil if
+    /// creation failed.
+    func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String?
 
     /// Load the page at `pageID` and return its blocks. Nil → couldn't load,
     /// the calling action becomes a no-op. Async because the host reads off
@@ -137,16 +141,16 @@ public protocol EditorHost: AnyObject {
     /// "type-then-navigate" sequence relies on this to not drop the last
     /// keystroke. Persistence (log append, disk write) is fire-and-forget
     /// from the host's side.
-    func documentDidChange(ops: [EditorOp], in document: Document)
+    func persistCommit(ops: [EditorOp], in document: Document)
 
     /// Await durability of any writes already in flight for `document`. With
-    /// the commit-time atomic save model, every `documentDidChange` schedules
+    /// the commit-time atomic save model, every `persistCommit` schedules
     /// its own log + .md write — `flush` doesn't *trigger* a save, it blocks
     /// until pending ones complete. Editor calls this on focus-loss (so the
     /// commit that just fired is durable before the row unmounts) and the
     /// host calls it directly from scene-phase / navigation-away / close
     /// paths. The doc is passed explicitly (symmetric with
-    /// `documentDidChange(ops:in:)`) so the host doesn't have to infer
+    /// `persistCommit(ops:in:)`) so the host doesn't have to infer
     /// "current doc" from its own state.
     func flush(_ document: Document) async
 
@@ -163,12 +167,29 @@ public protocol EditorHost: AnyObject {
     /// returned array cancels the paste.
     func saveImages(_ items: [PastedImage]) -> [String]
 
-    /// Async fetcher for external-URL preview metadata (favicon + page title).
-    /// Editor calls this for every external `http`/`https` link in a rendered
-    /// (read-only) row. Nil → no fetching, links render undecorated.
-    var linkPreviewProvider: LinkPreviewProvider? { get }
+    /// Fetch external-URL preview metadata (favicon + page title) for an
+    /// inline link. Editor calls this for every external `http`/`https` link
+    /// in a rendered (read-only) row. Returns nil when fetch failed, was
+    /// cancelled, or the URL is in a known-failed state.
+    func linkPreview(for url: URL) async -> LinkPreview?
 
-    /// Resolve an image block's `source` to a file URL the renderer can load.
-    /// Nil → renderer shows a missing-image placeholder.
-    var imageURLResolver: ImageURLResolver? { get }
+    /// Resolve an image block's `source` (a markdown path like
+    /// `Assets/foo.png`) to a file URL the renderer can load. Nil →
+    /// renderer shows a missing-image placeholder.
+    func imageURL(for source: String) -> URL?
+}
+
+private struct EditorHostKey: @preconcurrency EnvironmentKey {
+    @MainActor static let defaultValue: EditorHost? = nil
+}
+
+extension EnvironmentValues {
+    /// The active `EditorHost` for the current `EditorView`. Set once by
+    /// `EditorView` at the top of its body so deep renderers (image rows,
+    /// link-preview tasks) can reach the host without threading it through
+    /// every init.
+    public var editorHost: EditorHost? {
+        get { self[EditorHostKey.self] }
+        set { self[EditorHostKey.self] = newValue }
+    }
 }

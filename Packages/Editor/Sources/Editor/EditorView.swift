@@ -302,8 +302,7 @@ public struct EditorView: View {
             // Hand the controller down through the environment. BlockTextEditor reads it
             // to register a typing-session snapshot when an editor loses focus.
             .environment(\.documentUndoController, undoController)
-            .environment(\.linkPreviewProvider, host.linkPreviewProvider)
-            .environment(\.imageURLResolver, host.imageURLResolver)
+            .environment(\.editorHost, host)
             #if os(macOS)
             .environment(\.macActiveTextView, macActiveTextView)
             #endif
@@ -572,7 +571,7 @@ public struct EditorView: View {
             pageLookups: resolvePageLookups(for: block, host: host),
             linkPreviews: relevantLinkPreviews,
             onLinkPreviewLoaded: { url, preview in linkPreviews[url] = preview },
-            linkPreviewProvider: host.linkPreviewProvider,
+            host: host,
             onTapOutsideText: {
                 if case .subpage = block.kind {
                     _ = navigateIntoSubpage(block.id)
@@ -945,7 +944,7 @@ public struct EditorView: View {
     /// flushing in-flight text via `preMutation`, snapshotting `[Block]`
     /// for undo, enforcing heading containment, computing the pre→post
     /// diff, and firing `Document.didCommitTransaction` (wired in
-    /// `installUndoApply` to forward the ops to `host.documentDidChange`).
+    /// `installUndoApply` to forward the ops to `host.persistCommit`).
     /// Typing goes through the same transaction path from `commitLiveText`,
     /// so this is just the structural-mutation entry point — the document
     /// is the single emission point for both flavours.

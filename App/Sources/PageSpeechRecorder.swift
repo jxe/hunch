@@ -18,10 +18,6 @@ final class PageSpeechRecorder {
 
     init() {}
 
-    var isBusy: Bool {
-        state != .idle
-    }
-
     func start() async throws {
         guard state == .idle else { return }
         try await requestPermissions()

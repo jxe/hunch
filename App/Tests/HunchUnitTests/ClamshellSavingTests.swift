@@ -3,7 +3,7 @@ import Foundation
 @testable import Hunch
 import Editor
 
-/// Commit-time save model: every `documentDidChange(ops:in:)` applies the
+/// Commit-time save model: every `persistCommit(ops:in:)` applies the
 /// patch to the log (when non-empty) and writes the .md atomically per call.
 /// Calls for the same URL chain so concurrent commits land in order, and
 /// `flush(_:)` drains pending work before returning. These tests pin the
@@ -38,7 +38,7 @@ struct ClamshellSavingTests {
 
         // Initial insert (e.g. user created the block). This drives a save +
         // log apply.
-        clamshell.documentDidChange(
+        clamshell.persistCommit(
             ops: [.insert(hash: v0.atomicHash, parent: nil, block: v0)],
             in: doc
         )
@@ -50,7 +50,7 @@ struct ClamshellSavingTests {
 
         // Editor's `commitLiveText` (blur, focus change, navigation, scenePhase,
         // mutate) opens a transaction whose pre→post diff fires onCommit.
-        clamshell.documentDidChange(
+        clamshell.persistCommit(
             ops: [
                 .remove(hash: v0.atomicHash),
                 .insert(hash: v1.atomicHash, parent: nil, block: v1)
@@ -94,7 +94,7 @@ struct ClamshellSavingTests {
         let block = Block.paragraph(text: attr("body"))
         let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
 
-        clamshell.documentDidChange(ops: [], in: doc)
+        clamshell.persistCommit(ops: [], in: doc)
         _ = await clamshell.flush(doc)
 
         #expect(FileManager.default.fileExists(atPath: doc.url.path), "empty ops should still save the .md")
@@ -117,18 +117,18 @@ struct ClamshellSavingTests {
         let v2 = Block(id: id, kind: .paragraph(text: attr("abc")))
         let doc = Document(url: clamshell.url(for: "p.md"), children: [v0])
 
-        clamshell.documentDidChange(
+        clamshell.persistCommit(
             ops: [.insert(hash: v0.atomicHash, parent: nil, block: v0)],
             in: doc
         )
         doc.replaceChildren([v1])
-        clamshell.documentDidChange(
+        clamshell.persistCommit(
             ops: [.remove(hash: v0.atomicHash),
                   .insert(hash: v1.atomicHash, parent: nil, block: v1)],
             in: doc
         )
         doc.replaceChildren([v2])
-        clamshell.documentDidChange(
+        clamshell.persistCommit(
             ops: [.remove(hash: v1.atomicHash),
                   .insert(hash: v2.atomicHash, parent: nil, block: v2)],
             in: doc
@@ -153,7 +153,7 @@ struct ClamshellSavingTests {
 
     /// Flush on a quiescent URL is a no-op: nothing pending → nothing to
     /// drain. The model is "every commit writes" — if you want bytes on
-    /// disk, call `documentDidChange` (or open the page, which loads from
+    /// disk, call `persistCommit` (or open the page, which loads from
     /// disk in the first place). Flush is only for *awaiting* in-flight
     /// writes, not for triggering a save.
     @Test func flushOnQuiescentURLIsNoop() async throws {

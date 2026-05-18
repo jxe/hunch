@@ -15,7 +15,7 @@ final class WorkspaceWindow {
     /// Stack of pages pushed *on top* of the home root, root → top. Empty =
     /// home page is visible. Bound to `NavigationStack(path:)`.
     var path: [URL] = []
-    var canGoBack: Bool { !path.isEmpty }
+    var canNavigateBack: Bool { !path.isEmpty }
 
     /// Document currently rendered by `EditorPage`. Owned-by-clamshell once
     /// it's been opened (`openPage`); `nil` between navigations and on
@@ -53,7 +53,7 @@ final class WorkspaceWindow {
     /// at the root, do nothing; if it's home from a deeper page, drain the
     /// path back to root rather than pushing home on top of itself.
     func navigateFromSearch(relativePath: String) {
-        if relativePath == workspace.homeRelativePath {
+        if workspace.clamshell?.isHome(relativePath: relativePath) == true {
             if !path.isEmpty {
                 path = []
             }
@@ -70,7 +70,7 @@ final class WorkspaceWindow {
         path.append(target)
     }
 
-    func goBack() {
+    func navigateBack() {
         guard !path.isEmpty else { return }
         path.removeLast()
     }
@@ -171,7 +171,7 @@ final class WorkspaceWindow {
 
     // The save lifecycle (commit-time atomic save, per-URL Task chain,
     // post-save bookkeeping) lives on `Clamshell`. The host calls
-    // `clamshell.documentDidChange(ops:in:)` at every edit-session commit
+    // `clamshell.persistCommit(ops:in:)` at every edit-session commit
     // point and `clamshell.flush(_:)` on blur / scenePhase / navigation
     // away. Clamshell keeps the title cache + entries in sync internally;
     // the host doesn't thread anything through it.

@@ -69,7 +69,7 @@ kinds, distinguished by `op`:
 - **`purge`** is a tombstone, appended at the moment of structural
   removal. The editor's `mutate(_:_:)` derives a pre→post `[EditorOp]`
   diff via `BlockTreeDiff.derive(_:_:)` and fires
-  `host.documentDidChange(ops:on:)`; the host projects the batch onto
+  `host.persistCommit(ops:in:)`; the host projects the batch onto
   a `Patch` (inserts → `.add`, removes → `.purge`) and routes it to
   `RecoveryLog.apply(_:to:)` for one ordered append with sequential
   counters. Removes also appear in the patches assembled by reconcile
@@ -267,7 +267,7 @@ let open = try await clamshell.openPage(at: url) { event in
 // Calls for the same URL chain so concurrent commits land in order.
 // Empty ops still saves the .md (used by reconcile/restore paths after
 // they splice into a live doc).
-clamshell.documentDidChange(ops: ops, in: open.document)
+clamshell.persistCommit(ops: ops, in: open.document)
 
 // Force-save (blur, scenePhase background, navigation away, shutdown).
 await clamshell.flush(open.document)
@@ -299,18 +299,19 @@ existing instance and build a new one.
 | Group | Methods |
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)`, `pageID(for:relativeTo:)` |
-| Read | `loadDocument(at:tracksDiskHistory:)` — async. Pass `tracksDiskHistory: false` for one-off reads that won't open a session (e.g. fetching subpage contents for inline-expand); the default seeds the iCloud disk-content ring buffer for the live-page path. |
-| Page list (observable) | `entries`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:)` |
+| Read | `loadDocument(at:)` — async; seeds the iCloud disk-content ring buffer for the live-page path. `readBlocks(at:)` — async; one-off read that doesn't seed history (used by inline-expand). |
+| Page list (observable) | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:)` |
 | Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. Load + parse + install presenter on open (journal fold runs deferred in a background Task, fires `onEvent(.restored)` if anything was auto-spliced); flush + tear down on close. |
-| Editor-driven persistence | `documentDidChange(ops:in:)` (every commit; applies op batch to log and writes `.md` atomically per call, chained per URL), `flush(_:)` (await chain head + drain; for blur / scenePhase / navigate-away). |
-| Non-editor write | `append(_:toPage:)` for appending blocks to a non-open subpage. Sequences log-then-file. |
+| Editor-driven persistence | `persistCommit(ops:in:)` (every commit; applies op batch to log and writes `.md` atomically per call, chained per URL), `flush(_:)` (await chain head + drain; for blur / scenePhase / navigate-away). |
+| Non-editor write | `append(_:toPage:)` for appending blocks to a non-open subpage. Sequences log-then-file. `inlineAndTrash(pageID:parent:)` flushes the parent and trashes the named page in one durable sequence — used by inline-expand. |
 | Restore | `restoreBlocks(_:liveDoc:)` — the Recover-sheet entry point for both lost and purged blocks. (Paired with `restorePage(_:)` in the Trash group below, which restores a whole trashed page.) |
-| Create | `createPage(title:requestedPath:blocks:)` |
+| Create | `createPage(title:requestedPath:initialContent:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Recovery log | `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)` |
 | iCloud merge | `resolveConflictVersions(at:againstLive:)` → `ConflictResolution` (`{ salvaged, liveDocumentMutated }`) |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
-| Metadata (observable) | `homeRelativePath`, `root` |
+| Home page | `homeURL`, `homeRelativePath` (read-only), `isHome(relativePath:)`, `setHome(relativePath:)` |
+| Misc | `root` |
 
 Every read/write path internally seeds a per-URL content-hash ring
 buffer that the file presenter classifies against — echo (our write
@@ -353,10 +354,10 @@ like `writeClosedPage(_:patch:)` after a conflict merge). Intent is unchanged �
 duplicate `add`s for the same hash resolve to the same alive intent at
 read time, so chattier logs are correctness-equivalent.
 
-**Log durable before file durable.** Every `documentDidChange` runs
+**Log durable before file durable.** Every `persistCommit` runs
 log apply + file write inside a single Task, log first. At any point
 a crash can happen, the log is at-or-ahead of the file → reconcile
-heals on next open. The editor's `documentDidChange` entry stays
+heals on next open. The editor's `persistCommit` entry stays
 synchronous (it spawns the Task and returns); only the chained Task
 pays the I/O.
 
@@ -388,8 +389,8 @@ again automatically without any log mutation.
 `.history/<rel>/` directory moves alongside the `.md`, so trash +
 restore is a page-bundle operation.
 
-**Editor-driven persistence is `documentDidChange` + `flush`.** The
-host calls `documentDidChange(ops:in:)` at every commit point: non-
+**Editor-driven persistence is `persistCommit` + `flush`.** The
+host calls `persistCommit(ops:in:)` at every commit point: non-
 empty `ops` are applied to the recovery log, then the `.md` is
 serialized and written, in one awaited sequence per call. Calls for
 the same URL chain so a fast burst (typing commit → focus blur →
@@ -410,8 +411,8 @@ against); they write directly and await durability inline.
 (forward and undo/redo) derives a pre→post `[EditorOp]` diff via
 `BlockTreeDiff.derive(_:_:)` and fires
 `Document.didCommitTransaction`, which the editor wires to
-`host.documentDidChange(ops:on:)`. The host's adapter calls
-`Clamshell.documentDidChange(ops:in:)`, which projects the batch onto
+`host.persistCommit(ops:in:)`. The host's adapter calls
+`Clamshell.persistCommit(ops:in:)`, which projects the batch onto
 a `Patch` (inserts → `.add`, removes → `.purge`) and runs log apply +
 file write atomically. Typing goes through the same path:
 `commitLiveText` opens a `transaction(name:"Type", coalesceKey:)` and
@@ -475,7 +476,7 @@ append" — `NSFileCoordinator` handles that.
 
 - [Clamshell.swift](Clamshell.swift) — the umbrella API. Orchestrates
   reads/writes, hands the engine its inputs, applies the engine's
-  outputs. Also owns the per-URL save chain: `documentDidChange`
+  outputs. Also owns the per-URL save chain: `persistCommit`
   (commit-time atomic log + .md write) and `flush(_:)` (await
   durability). Engine-internal in-place saves go through the same
   `enqueueSave(doc, patch: .empty)` primitive.

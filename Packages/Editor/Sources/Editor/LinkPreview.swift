@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 
 /// Metadata the host returns for an external URL so the editor can decorate
 /// inline links with a favicon + page title. The editor doesn't know how the
@@ -16,22 +15,6 @@ public struct LinkPreview: Sendable, Equatable {
         self.url = url
         self.title = title
         self.iconPNG = iconPNG
-    }
-}
-
-/// Host-provided async callback. Returns nil when fetch failed, was cancelled,
-/// or the URL is in a known-failed state. Same shape as `suggestPages` for
-/// `@`-mentions: editor calls, host owns the I/O.
-public typealias LinkPreviewProvider = @Sendable (URL) async -> LinkPreview?
-
-private struct LinkPreviewProviderKey: EnvironmentKey {
-    static let defaultValue: LinkPreviewProvider? = nil
-}
-
-extension EnvironmentValues {
-    public var linkPreviewProvider: LinkPreviewProvider? {
-        get { self[LinkPreviewProviderKey.self] }
-        set { self[LinkPreviewProviderKey.self] = newValue }
     }
 }
 

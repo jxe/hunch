@@ -5,8 +5,8 @@ import Editor
 //
 // Most methods forward to `workspace.clamshell` or to stateless helpers.
 // The ones that genuinely need per-window state — navigation, the move-to
-// picker, durability sequencing for absorb / append — read `openDocument`
-// and the per-window navigation primitives directly.
+// picker, the multi-window splice for `appendToSubpage` — read
+// `openDocument` and the per-window navigation primitives directly.
 
 extension WorkspaceWindow: EditorHost {
     // — Workspace-scoped forwarders —
@@ -23,23 +23,29 @@ extension WorkspaceWindow: EditorHost {
         workspace.clamshell?.pageID(for: url, relativeTo: openDocument?.url)
     }
 
-    func createSubpage(title: String, requestedPageID: String?, initialContent: [Block]?) -> String? {
-        workspace.createSubpage(title: title, requestedPath: requestedPageID, initialContent: initialContent)
+    func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
+        guard let clamshell = workspace.clamshell else { return nil }
+        do {
+            return try clamshell.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
+        } catch {
+            workspace.error = "Failed to create page: \(error.localizedDescription)"
+            return nil
+        }
     }
 
     func loadSubpageBlocks(_ pageID: String) async -> [Block]? {
         guard let clamshell = workspace.clamshell else { return nil }
         let target = clamshell.url(for: pageID)
         do {
-            return try await clamshell.loadDocument(at: target, tracksDiskHistory: false).children
+            return try await clamshell.readBlocks(at: target)
         } catch {
-            Diag.subpage.error("loadSubpageBlocks(_:): load(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
+            Diag.subpage.error("loadSubpageBlocks(_:): read(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
 
-    func documentDidChange(ops: [EditorOp], in document: Document) {
-        workspace.clamshell?.documentDidChange(ops: ops, in: document)
+    func persistCommit(ops: [EditorOp], in document: Document) {
+        workspace.clamshell?.persistCommit(ops: ops, in: document)
     }
 
     func flush(_ document: Document) async {
@@ -68,6 +74,14 @@ extension WorkspaceWindow: EditorHost {
         return paths
     }
 
+    func linkPreview(for url: URL) async -> LinkPreview? {
+        await workspace.linkPreviewService.preview(for: url)
+    }
+
+    func imageURL(for source: String) -> URL? {
+        workspace.clamshell?.resolveImage(source: source)
+    }
+
     // — Stateless app conventions —
 
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {
@@ -77,20 +91,6 @@ extension WorkspaceWindow: EditorHost {
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? {
         let blocks = BlockParser.parse(string)
         return blocks.isEmpty ? nil : blocks
-    }
-
-    var linkPreviewProvider: LinkPreviewProvider? {
-        workspace.linkPreviewService.provider()
-    }
-
-    var imageURLResolver: ImageURLResolver? {
-        // ImageURLResolver is `@Sendable`, so the closure can't directly call
-        // a MainActor method on `workspace`. The renderer always invokes the
-        // resolver on the main thread (image rows render in SwiftUI body), so
-        // `assumeIsolated` is sound here.
-        { [workspace] source in
-            MainActor.assumeIsolated { workspace.clamshell?.resolveImage(source: source) }
-        }
     }
 
     // — Per-window navigation & durability —
@@ -114,17 +114,9 @@ extension WorkspaceWindow: EditorHost {
     }
 
     func inlineAndTrashSubpage(_ pageID: String) async -> Bool {
-        // The editor calls this immediately after the inline-content mutation
-        // and relies on the host to durably persist the parent doc before the
-        // source file is trashed. Without the flush here, the autosave is
-        // still debounced — and a crash in that window would leave the source
-        // gone and the inlined content unpersisted.
         guard let clamshell = workspace.clamshell, let parent = openDocument else { return false }
-        let target = clamshell.url(for: pageID)
-        guard FileManager.default.fileExists(atPath: target.path) else { return false }
-        await clamshell.flush(parent)
         do {
-            _ = try clamshell.moveToTrash(at: target)
+            try await clamshell.inlineAndTrash(pageID: pageID, parent: parent)
             return true
         } catch {
             workspace.error = "Failed to move \(pageID) to trash: \(error.localizedDescription)"
@@ -161,9 +153,5 @@ extension WorkspaceWindow: EditorHost {
                 completion: { destination in continuation.resume(returning: destination) }
             )
         }
-    }
-
-    func navigateBack() {
-        goBack()
     }
 }

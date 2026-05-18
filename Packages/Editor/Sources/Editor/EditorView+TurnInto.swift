@@ -118,14 +118,14 @@ extension EditorView {
             ?? existingLink?.title
             ?? cleanedTitle(String(block.text.characters))
             ?? "Untitled"
-        let requestedPageID = existingLink?.pageID
+        let requestedPath = existingLink?.pageID
 
         // The block's children (the subtree under it) become the body of the
         // new subpage. The host prepends a title heading + serializes; the
         // editor just hands over the body blocks (or nil when empty).
         let initialContent: [Block]? = block.children.isEmpty ? nil : block.children
 
-        guard let pageID = host.createSubpage(title: title, requestedPageID: requestedPageID, initialContent: initialContent)
+        guard let pageID = host.createSubpage(title: title, requestedPath: requestedPath, initialContent: initialContent)
         else { return .ignored }
 
         mutate("Create Subpage") {

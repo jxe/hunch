@@ -9,9 +9,6 @@ struct ContentView: View {
     @Bindable var workspace: Workspace
     @State private var window: WorkspaceWindow
     @Environment(\.scenePhase) private var scenePhase
-    #if os(iOS)
-    @State private var showingSwitchPicker = false
-    #endif
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -134,13 +131,13 @@ struct ContentView: View {
     }
 
     private func setHome(_ item: MentionItem) {
-        if let entry = workspace.entries.first(where: { $0.relativePath == item.id }) {
-            workspace.homeRelativePath = entry.relativePath
+        if let entry = workspace.clamshell?.entry(at: item.id) {
+            workspace.clamshell?.setHome(relativePath: entry.relativePath)
         }
     }
 
     private func moveToTrash(_ item: MentionItem) {
-        if let entry = workspace.entries.first(where: { $0.relativePath == item.id }) {
+        if let entry = workspace.clamshell?.entry(at: item.id) {
             Task { await window.moveToTrash(entry) }
         }
     }
@@ -454,7 +451,7 @@ private struct EmptyWorkspaceView: View {
                 .buttonStyle(.bordered)
                 Button {
                     guard let path = workspace.createSubpage(title: "Untitled", requestedPath: nil, initialContent: nil) else { return }
-                    workspace.homeRelativePath = path
+                    workspace.clamshell?.setHome(relativePath: path)
                 } label: {
                     Label("New page", systemImage: "plus")
                 }

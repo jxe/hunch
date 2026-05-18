@@ -36,14 +36,15 @@ user-picked workspace folder.
     `RecoveryLog` (per-device JSONL appender + cross-device read union;
     every write goes through one primitive, `apply(Patch, to:)`),
     and `TrashStore` privately and exposes a single API:
-    `entries / rescan / lookupPage / pages(matching:) /
-    loadDocument(at:tracksDiskHistory:) / openPage / closePage /
-    documentDidChange / flush / append / createPage / moveToTrash /
-    listTrashedPages / restorePage / listLostBlocks / listPurgedBlocks /
-    resolveConflictVersions`, plus `relativePath(of:)`, `url(for:)`, and
-    `pageID(for:relativeTo:)` for path conversion (the inline-link URL
-    classifier lives next to the other URL ↔ pageID helpers so they share
-    one home).
+    `entries / entry(at:) / rescan / lookupPage / pages(matching:) /
+    loadDocument(at:) / readBlocks(at:) / openPage / closePage /
+    persistCommit / flush / append / inlineAndTrash / createPage /
+    moveToTrash / listTrashedPages / restorePage / listLostBlocks /
+    listPurgedBlocks / resolveConflictVersions / homeURL /
+    homeRelativePath / isHome / setHome`, plus `relativePath(of:)`,
+    `url(for:)`, and `pageID(for:relativeTo:)` for path conversion
+    (the inline-link URL classifier lives next to the other URL ↔
+    pageID helpers so they share one home).
     Internal helpers (`writeClosedPage(_:patch:)`, `enqueueSave(_:patch:)`,
     `reconcileLive`, `classifyDiskContent`, `isQuiescent`,
     `installPresenter` / `removePresenter`) and the `log` actor drive
@@ -65,7 +66,7 @@ user-picked workspace folder.
     save bookkeeping (mtime refresh, title update from the live
     `Document`, selective rescan) all live inside Clamshell — the host
     doesn't thread any callbacks through it. **Editor-driven persistence** is
-    `documentDidChange(ops:in:)` (the unified commit primitive — applies
+    `persistCommit(ops:in:)` (the unified commit primitive — applies
     the op batch to the recovery log when non-empty, then serializes and
     writes the `.md`, in one awaited sequence) and `flush(_:)` (await
     any pending chain entry; used for blur/scenePhase/navigation).
@@ -78,7 +79,7 @@ user-picked workspace folder.
     `Document.didCommitTransaction`, which the editor forwards to the
     host. That's the single save event. The "log durable
     before file durable" invariant is preserved structurally: every
-    `documentDidChange` writes log before file inside a single Task.
+    `persistCommit` writes log before file inside a single Task.
     **Non-editor writes** (`writeClosedPage(_:patch:)` for conflict
     merge + restore-into-closed-page; `append(_:toPage:)` for
     drop-on-subpage) sequence log-then-file atomically without the
@@ -126,7 +127,7 @@ user-picked workspace folder.
     fold (auto-restore of lost subtrees) is deferred — `openPage`
     spawns a background reconcile Task and surfaces any restores via
     `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
-    The host methods (`didActivateLink`, `documentDidChange`, `flush`, …)
+    The host methods (`didActivateLink`, `persistCommit`, `flush`, …)
     live on the same type and forward to `Clamshell`. Move-to is
     async — the editor `await`s `host.moveDestination(for:candidates:)`,
     the host bridges to the sheet via a `CheckedContinuation`.
@@ -256,7 +257,7 @@ non-text parts (markers, paddings) fall through to the row's
 so wrapped paragraphs still allow intra-block arrow nav in the middle.
 
 **Save is commit-time atomic on `Clamshell`** ([`Clamshell.swift`](App/Sources/Clamshell/Clamshell.swift)):
-`documentDidChange(ops:in:)` is the single primitive — applies the op
+`persistCommit(ops:in:)` is the single primitive — applies the op
 batch to the recovery log when non-empty, then serializes and writes
 the `.md`, in one awaited sequence per call. Concurrent calls for the
 same URL chain on `saveChain[url]` so a rapid burst (typing commit →
@@ -288,7 +289,7 @@ diff already covers their changes.
 **`Document.didCommitTransaction` is the editor's single emission
 point.** Wired in `EditorView.installUndoApply` to revalidate
 `EditorState` against the new block set and forward the ops to
-`host.documentDidChange(ops:on:)`. Both `EditorView.mutate(name:_:)`
+`host.persistCommit(ops:on:)`. Both `EditorView.mutate(name:_:)`
 (structural) and `BlockTextEditor.Coordinator.commitLiveText` (typing)
 ultimately call `Document.transaction`, which fires the hook. Empty
 diff = pure reorder/move (id+hash stable); the host still persists

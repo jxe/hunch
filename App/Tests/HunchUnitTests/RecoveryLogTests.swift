@@ -105,7 +105,7 @@ struct RecoveryLogTests {
         // Editor deletes `lose` — splice, derive ops, fire the canonical
         // editor save path so the purge is logged and the .md saved.
         doc.replaceChildren([keep])
-        clamshell.documentDidChange(ops: [.remove(hash: lose.atomicHash)], in: doc)
+        clamshell.persistCommit(ops: [.remove(hash: lose.atomicHash)], in: doc)
         _ = await clamshell.flush(doc)
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
@@ -159,7 +159,7 @@ struct RecoveryLogTests {
 
         // Editor deletes the ghost: empty children + purge op.
         doc.replaceChildren([])
-        clamshell.documentDidChange(ops: [.remove(hash: ghost.atomicHash)], in: doc)
+        clamshell.persistCommit(ops: [.remove(hash: ghost.atomicHash)], in: doc)
         _ = await clamshell.flush(doc)
 
         // Intermediate: explicitly purged, so nothing is "lost".
@@ -171,7 +171,7 @@ struct RecoveryLogTests {
         try await Task.sleep(for: .milliseconds(20))
         let revived = Block.paragraph(text: attr("ghost"))
         doc.replaceChildren([revived])
-        clamshell.documentDidChange(
+        clamshell.persistCommit(
             ops: [.insert(hash: revived.atomicHash, parent: nil, block: revived)],
             in: doc
         )
@@ -373,7 +373,7 @@ struct RecoveryLogTests {
         try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         doc.replaceChildren([keep])
-        clamshell.documentDidChange(ops: [.remove(hash: lose.atomicHash)], in: doc)
+        clamshell.persistCommit(ops: [.remove(hash: lose.atomicHash)], in: doc)
         _ = await clamshell.flush(doc)
 
         let purged = await clamshell.listPurgedBlocks(
@@ -439,7 +439,7 @@ struct RecoveryLogTests {
         try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         doc.replaceChildren([])
-        clamshell.documentDidChange(ops: [.remove(hash: block.atomicHash)], in: doc)
+        clamshell.persistCommit(ops: [.remove(hash: block.atomicHash)], in: doc)
         _ = await clamshell.flush(doc)
 
         // External writer brings the hash back into the log via a foreign
@@ -476,7 +476,7 @@ struct RecoveryLogTests {
         try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         doc.replaceChildren([])
-        clamshell.documentDidChange(ops: [.remove(hash: doomed.atomicHash)], in: doc)
+        clamshell.persistCommit(ops: [.remove(hash: doomed.atomicHash)], in: doc)
         _ = await clamshell.flush(doc)
 
         // It's now purged.
@@ -557,7 +557,7 @@ struct RecoveryLogTests {
         try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         doc.replaceChildren([])
-        clamshell.documentDidChange(ops: [.remove(hash: block.atomicHash)], in: doc)
+        clamshell.persistCommit(ops: [.remove(hash: block.atomicHash)], in: doc)
         _ = await clamshell.flush(doc)
 
         // Foreign device: counter 9999 but wall-clock 100s in the *past*.

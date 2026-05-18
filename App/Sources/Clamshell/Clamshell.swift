@@ -26,12 +26,30 @@ final class Clamshell {
 
     /// Path (relative to `root`) of the page designated as "home", or nil if unset.
     /// Persisted to `.clamshell.json` at the root; written atomically on every change.
-    /// Cleared automatically when the home page is moved to trash.
-    var homeRelativePath: String? {
+    /// Cleared automatically when the home page is moved to trash. Read-only
+    /// to outside callers; mutate via `setHome(relativePath:)`.
+    private(set) var homeRelativePath: String? {
         didSet {
             guard oldValue != homeRelativePath else { return }
             persistMetadata()
         }
+    }
+
+    /// File URL of the home page, or nil if unset or not present on disk.
+    var homeURL: URL? {
+        guard let homeRelativePath else { return nil }
+        return entry(at: homeRelativePath)?.url
+    }
+
+    /// True when `relativePath` is the workspace's current home page.
+    func isHome(relativePath: String) -> Bool {
+        homeRelativePath == relativePath
+    }
+
+    /// Set the home page to `relativePath`, or clear it with `nil`. Idempotent
+    /// on the same value; the new value is persisted to `.clamshell.json`.
+    func setHome(relativePath: String?) {
+        homeRelativePath = relativePath
     }
 
     /// Scope for `listLostBlocks(filter:)`.
@@ -74,7 +92,7 @@ final class Clamshell {
     /// would fire another fetch.
     @ObservationIgnored private var pendingTitleWarms: Set<URL> = []
 
-    /// Per-URL save chain head. Each `documentDidChange` spawns a Task that
+    /// Per-URL save chain head. Each `persistCommit` spawns a Task that
     /// awaits the previous chain entry for that URL before running its own
     /// log apply + .md write, so concurrent commits land in order. Absent ⇒
     /// no work pending (i.e. `isQuiescent(at:)`).
@@ -213,6 +231,12 @@ final class Clamshell {
         scanResult = result
     }
 
+    /// Look up the `WorkspaceEntry` for a workspace-relative path, with the
+    /// live title overlay applied. Returns nil when no scanned page matches.
+    func entry(at relativePath: String) -> WorkspaceEntry? {
+        entries.first { $0.relativePath == relativePath }
+    }
+
     /// Existence + cached title for a `*.md` page id. `.missing` when the
     /// file isn't on disk; `.present(title: nil)` when the title cache
     /// hasn't been warmed for the URL yet — that case kicks an off-main
@@ -266,23 +290,36 @@ final class Clamshell {
         }
     }
 
-    /// Read + parse the `.md` at `url`. With `tracksDiskHistory: true`
-    /// (default), seeds the iCloud disk-content ring buffer so subsequent
-    /// presenter wakeups can classify the file against what we last read or
-    /// wrote. Pass `false` for one-off reads that won't open a session
-    /// (e.g. fetching subpage contents for inline-expand) — a stale read
-    /// seeded into history can otherwise later misclassify a wakeup as
-    /// `.echo`. Disk read + parse run off-MainActor; hops back only to
-    /// touch the ring buffer and build the `Document`.
-    func loadDocument(at url: URL, tracksDiskHistory: Bool = true) async throws -> Document {
+    /// Read + parse the `.md` at `url` and return a live `Document` ready to
+    /// host an editor session. Seeds the iCloud disk-content ring buffer so
+    /// subsequent presenter wakeups can classify the file against what we last
+    /// read or wrote. Use `readBlocks(at:)` for one-off reads that won't open
+    /// a session — those must not seed history or a future wakeup may
+    /// misclassify as `.echo`. Disk read + parse run off-MainActor; hops back
+    /// only to touch the ring buffer and build the `Document`.
+    func loadDocument(at url: URL) async throws -> Document {
         let files = self.files
         let raw: String = try await Task.detached(priority: .userInitiated) {
             try files.read(url)
         }.value
         let blocks = BlockParser.parse(raw)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        if tracksDiskHistory { recordDiskContent(raw, at: url) }
+        recordDiskContent(raw, at: url)
         return Document(url: url, children: blocks, modificationDate: mtime)
+    }
+
+    /// One-shot read of `url`'s blocks for callers that won't open an editor
+    /// session against the file (e.g. the inline-expand flow that reads a
+    /// subpage's body, splices it into the parent, then trashes the source).
+    /// Does **not** seed the disk-content ring buffer — seeding from a stale
+    /// non-session read can later misclassify a presenter wakeup as `.echo`.
+    /// Disk read + parse run off-MainActor.
+    func readBlocks(at url: URL) async throws -> [Block] {
+        let files = self.files
+        let raw: String = try await Task.detached(priority: .userInitiated) {
+            try files.read(url)
+        }.value
+        return BlockParser.parse(raw)
     }
 
     // MARK: - Title cache
@@ -401,7 +438,7 @@ final class Clamshell {
 
     // MARK: - Pages: write
     //
-    // Save model is commit-time atomic: every `documentDidChange(ops:in:)`
+    // Save model is commit-time atomic: every `persistCommit(ops:in:)`
     // applies its op batch to the recovery log and writes the .md file as
     // one awaited sequence, log strictly before file. Concurrent calls for
     // the same URL are chained on `saveChain[url]` — each spawned Task
@@ -412,22 +449,22 @@ final class Clamshell {
     // redo) emits its pre→post diff through
     // `Document.didCommitTransaction` → here.
 
-    /// Editor mutated `doc` and produced these `ops`. Applies the patch
-    /// to the recovery log (when non-empty), then serializes the current
-    /// `.md` and writes it. Calls for the same URL are chained — the
-    /// spawned Task awaits any pending chain head for that URL before its
-    /// own work, so rapid-fire commits land in order. Sync entry so the
-    /// editor can call it from the mutation-commit thread without
-    /// ceremony.
-    func documentDidChange(ops: [EditorOp], in doc: Document) {
+    /// Editor mutated `doc` and produced these `ops` — persist the commit.
+    /// Applies the patch to the recovery log (when non-empty), then
+    /// serializes the current `.md` and writes it. Calls for the same URL
+    /// are chained: the spawned Task awaits any pending chain head for that
+    /// URL before its own work, so rapid-fire commits land in order. Sync
+    /// entry so the editor can call it from the mutation-commit thread
+    /// without ceremony.
+    func persistCommit(ops: [EditorOp], in doc: Document) {
         let patch: Patch = ops.isEmpty ? .empty : Patch.from(ops: ops)
         enqueueSave(doc, patch: patch)
     }
 
     /// Await durability of any writes already in flight for `doc`. Does
-    /// not trigger a save — that's what `documentDidChange` is for. Used
-    /// on navigation / blur / scenePhase / close to make sure the bytes
-    /// for the just-fired commit are on disk before the editor unmounts.
+    /// not trigger a save — that's what `persistCommit` is for. Used on
+    /// navigation / blur / scenePhase / close to make sure the bytes for
+    /// the just-fired commit are on disk before the editor unmounts.
     func flush(_ doc: Document) async {
         guard let pending = saveChain[doc.url] else { return }
         await pending.value
@@ -442,7 +479,7 @@ final class Clamshell {
     }
 
     /// Chain a log-apply (when non-empty) + `.md` write onto the per-URL
-    /// save queue. The editor entry point is `documentDidChange(ops:in:)`;
+    /// save queue. The editor entry point is `persistCommit(ops:in:)`;
     /// Clamshell-internal callers that mutated the live doc in place
     /// without an editor commit (reconcile auto-restore, manual restore)
     /// pass `patch: .empty` because the journal is already current.
@@ -476,7 +513,7 @@ final class Clamshell {
     @discardableResult
     private func save(_ document: Document) throws -> String {
         let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: { [weak self] rel in
-            self?.entries.first { $0.relativePath == rel }?.title
+            self?.entry(at: rel)?.title
         })
         let url = document.url
         try files.write(newText, to: url)
@@ -487,12 +524,12 @@ final class Clamshell {
     /// Apply `patch` to the recovery log, then persist `document` to disk.
     /// Awaited end-to-end so log lands strictly before file — a crash
     /// anywhere leaves the log at-or-ahead of disk and the next reconcile
-    /// heals. The closed-page sibling of `documentDidChange`: used when
-    /// there's no live editor session (no `saveChain` entry to enqueue
-    /// against), so the caller can await durability directly. Used by
-    /// conflict merge and closed-page manual restore. Editor mutations go
-    /// through `documentDidChange`; the sync append-onto-subpage path goes
-    /// through `append(_:toPage:)`.
+    /// heals. The closed-page sibling of `persistCommit`: used when there's
+    /// no live editor session (no `saveChain` entry to enqueue against),
+    /// so the caller can await durability directly. Used by conflict merge
+    /// and closed-page manual restore. Editor mutations go through
+    /// `persistCommit`; the sync append-onto-subpage path goes through
+    /// `append(_:toPage:)`.
     ///
     /// Folds in the post-save bookkeeping (mtime refresh, title cache)
     /// so closed-doc paths get the same hygiene as the editor-driven
@@ -524,7 +561,7 @@ final class Clamshell {
         }
         try await log.apply(Patch.adds(from: blocks), to: relativePath)
         let newText = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: { [weak self] rel in
-            self?.entries.first { $0.relativePath == rel }?.title
+            self?.entry(at: rel)?.title
         })
         try files.write(newText, to: url)
         recordDiskContent(newText, at: url)
@@ -659,9 +696,9 @@ final class Clamshell {
 
     // MARK: - Pages: create
 
-    /// Creates a new page with `# title` followed by the serialized blocks
-    /// (or just the title if `blocks` is nil). Returns the workspace-relative
-    /// path of the created page.
+    /// Creates a new page with `# title` followed by the serialized
+    /// `initialContent` (or just the title if `initialContent` is nil).
+    /// Returns the workspace-relative path of the created page.
     ///
     /// `requestedPath: nil` derives a slug from `title` and disambiguates with
     /// `-2`, `-3`, etc. against existing files. A non-nil `requestedPath` is
@@ -675,7 +712,7 @@ final class Clamshell {
     func createPage(
         title: String,
         requestedPath: String?,
-        blocks: [Block]?
+        initialContent: [Block]?
     ) throws -> String {
         let path = requestedPath ?? availablePagePath(for: title)
         let url = self.url(for: path)
@@ -683,8 +720,8 @@ final class Clamshell {
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         guard !FileManager.default.fileExists(atPath: url.path) else { return path }
         let body: String
-        if let blocks {
-            body = "# \(title)\n\n" + BlockSerializer.serialize(blocks)
+        if let initialContent {
+            body = "# \(title)\n\n" + BlockSerializer.serialize(initialContent)
         } else {
             body = "# \(title)\n"
         }
@@ -717,6 +754,20 @@ final class Clamshell {
     }
 
     // MARK: - Trash (soft-deleted pages)
+
+    /// Drain `parent`'s pending writes, then move the page at `pageID` to
+    /// Trash. Used by the editor's inline-expand flow: the editor has just
+    /// spliced the subpage's blocks into the parent, and the source file
+    /// must only go away once that splice is durable — a crash between
+    /// flush and trash would otherwise leave the source gone and the
+    /// inlined copy unpersisted. No-op when the source file is already
+    /// missing.
+    func inlineAndTrash(pageID: String, parent: Document) async throws {
+        let target = url(for: pageID)
+        guard FileManager.default.fileExists(atPath: target.path) else { return }
+        await flush(parent)
+        _ = try moveToTrash(at: target)
+    }
 
     /// Move a page to `Trash/`. If the page is the current home page, also clears
     /// `homeRelativePath` (the home pointer can't reference a trashed page).

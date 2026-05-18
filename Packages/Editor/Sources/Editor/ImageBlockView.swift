@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Renders a `Block.image` row. Resolves `source` (a markdown path like
-/// `Assets/foo.png`) via the host-provided `imageURLResolver` Environment
-/// value; renders a missing-image placeholder when resolution fails.
+/// `Assets/foo.png`) via the host (`EditorHost.imageURL(for:)`); renders a
+/// missing-image placeholder when resolution fails.
 ///
 /// Sync `NSImage(contentsOf:)` / `UIImage(contentsOfFile:)` is fine for local
 /// files of typical size. If page render cost becomes noticeable on
@@ -10,13 +10,13 @@ import SwiftUI
 struct ImageBlockView: View {
     let source: String
     let alt: String
-    @Environment(\.imageURLResolver) private var resolver: ImageURLResolver?
+    @Environment(\.editorHost) private var host: EditorHost?
     #if !os(macOS)
     @State private var presentingFullSize = false
     #endif
 
     var body: some View {
-        let url = resolver?(source)
+        let url = host?.imageURL(for: source)
         Group {
             if let url, let image = loadImage(at: url) {
                 image

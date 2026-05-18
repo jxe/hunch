@@ -211,9 +211,9 @@ private struct BackMenuButton: View {
 
     var body: some View {
         Button("Back") {
-            window?.goBack()
+            window?.navigateBack()
         }
-        .disabled(window?.canGoBack != true)
+        .disabled(window?.canNavigateBack != true)
     }
 }
 #endif

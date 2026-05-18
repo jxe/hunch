@@ -20,8 +20,8 @@ actor LinkPreviewService {
         self.cache = cache
     }
 
-    /// Public entry point. Safe to call from any task; the editor passes a
-    /// `@Sendable` reference into the environment via `provider(for:)`.
+    /// Public entry point. Safe to call from any task. The host's
+    /// `EditorHost.linkPreview(for:)` forwards to this method.
     func preview(for url: URL) async -> LinkPreview? {
         // 1. Disk cache hit (and still within TTL) → return immediately.
         if let cached = cache.read(for: url), !cached.isStale {
@@ -43,14 +43,5 @@ actor LinkPreviewService {
         let result = await task.value
         inFlight[url] = nil
         return result
-    }
-
-    /// Adapter exposing the actor's method as a `@Sendable` async closure
-    /// matching the editor's `LinkPreviewProvider` typealias.
-    nonisolated func provider() -> LinkPreviewProvider {
-        { [weak self] url in
-            guard let self else { return nil }
-            return await self.preview(for: url)
-        }
     }
 }

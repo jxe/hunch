@@ -141,20 +141,20 @@ final class MyHost: EditorHost {
     func suggestPages(_ query: String) -> [MentionItem] { [] }
     func didActivateLink(_ target: LinkTarget) -> Bool { false }
     func lookupPage(_ pageID: String) -> PageLookup { .missing }
-    func createSubpage(title: String, requestedPageID: String?, initialContent: [Block]?) -> String? { nil }
+    func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? { nil }
     func loadSubpageBlocks(_ pageID: String) async -> [Block]? { nil }
     func resolvePageID(from url: URL) -> String? { nil }
     func inlineAndTrashSubpage(_ pageID: String) async -> Bool { false }
     func appendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
-    func documentDidChange(ops: [EditorOp], in document: Document) {}
+    func persistCommit(ops: [EditorOp], in document: Document) {}
     func flush(_ document: Document) async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
     func saveImages(_ items: [PastedImage]) -> [String] { [] }
-    var linkPreviewProvider: LinkPreviewProvider? { nil }
-    var imageURLResolver: ImageURLResolver? { nil }
+    func linkPreview(for url: URL) async -> LinkPreview? { nil }
+    func imageURL(for source: String) -> URL? { nil }
 }
 
 struct ContentView: View {
@@ -171,7 +171,7 @@ struct ContentView: View {
 }
 ```
 
-All methods are required. `documentDidChange` is how the editor reports
+All methods are required. `persistCommit` is how the editor reports
 edits — silently dropping it would leave a host with no persistence,
 which is rarely what you want; if you really don't care, give it an
 empty body.
@@ -312,7 +312,7 @@ public final class Document {
   `title` (sidebar, window title). Structural mutation goes through the
   editor's `EditorView.mutate(_:_:)`, which wraps `document.transaction`,
   derives the pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
-  `host.documentDidChange(ops:on:)` afterward.
+  `host.persistCommit(ops:on:)` afterward.
 
 ---
 
@@ -403,19 +403,19 @@ stubbed out for early integration.
 | `lookupPage` | `(_ pageID: String) -> PageLookup` | Whenever a subpage row needs to know if its target exists and what to display (rendering a `.subpage` block, an inline page link, an @-mention popover row). | `.missing` renders broken-link style and disables tap-to-navigate; `.present(title: nil)` falls back to the cached `title` on the Block / MentionItem; `.present(title: "…")` shows the resolved title. |
 | `resolvePageID` | `(_ url: URL) -> String?` | Classifies an inline-link URL as an internal page reference. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide subpage-creation vs link-toggling), and inside `didActivateLink` (so a single classifier governs all three). | Return the host's pageID for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
 | `didActivateLink` | `(_ target: LinkTarget) -> Bool` | User clicks/taps a subpage row (`.page(pageID)`), or clicks an inline `[text](url)` link in a read-only row (`.url(URL)`). | true = host fully handled; false lets the editor fall through to the system URL handler (`OpenURLAction.systemAction`). Subpage taps are always handled internally; for inline `.url` clicks the host typically routes via `resolvePageID` (internal nav) or returns false (external). |
-| `createSubpage` | `(title: String, requestedPageID: String?, initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |
+| `createSubpage` | `(title: String, requestedPath: String?, initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |
 | `loadSubpageBlocks` | `(_ pageID: String) async -> [Block]?` | First step of Turn Into a non-page block on a subpage row. Async so the host can read off MainActor. Paired with `inlineAndTrashSubpage(_:)`. | Host returns the child page's blocks. nil makes the action a no-op. |
 | `inlineAndTrashSubpage` | `(_ pageID: String) async -> Bool` | Second step of Turn Into a non-page block on a subpage row: after the editor inlined the loaded blocks into the parent, ask the host to flush+trash the source. Async so the parent's save lands before the source goes away. | true = file trashed; false = abort (editor surfaces an orphan warning). |
 | `appendToSubpage` | `(_ pageID: String, _ blocks: [Block]) async -> Bool` | User drops blocks onto a subpage row. Async so the host can sequence log-then-file durability before returning. | true = host wrote them (proceed with local removal). false = no-op. |
 | `moveDestination` | `(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination?` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, returns the user's `MoveDestination` (`.page` or `.block`) or nil to cancel. | Async — editor `await`s the picker result at the call site. |
 | `navigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |
-| `documentDidChange` | `(ops: [EditorOp], in: Document) -> Void` | Once per `Document.transaction` (the unified mutation entry point): structural ops via `EditorView.mutate(_:_:)`, typing commits via `BlockTextEditor.Coordinator.commitLiveText`, autotransforms, paste, move-to, and undo/redo all funnel through it. Called *synchronously* on the mutation-commit thread so the host's dirty flag is readable in immediate flush-on-close paths. `ops` is the pre→post diff from `BlockTreeDiff.derive(_:_:)`: `.insert(hash, parent, block)` for new or content-changed blocks, `.remove(hash)` for hashes that are no longer the live hash of any post id. On undo the diff is inverted (`(.remove(pre), .insert(post))` becomes `(.remove(post), .insert(pre))`) so the journal symmetrically tombstones the just-undone hashes. Empty `ops` means a pure reorder/move (same id, same hash) — the host should still persist the new tree shape. | Host should treat the call as the unit of save: apply non-empty `ops` to its recovery log, then write the rendered document, in that order. Fire-and-forget. |
+| `persistCommit` | `(ops: [EditorOp], in: Document) -> Void` | Once per `Document.transaction` (the unified mutation entry point): structural ops via `EditorView.mutate(_:_:)`, typing commits via `BlockTextEditor.Coordinator.commitLiveText`, autotransforms, paste, move-to, and undo/redo all funnel through it. Called *synchronously* on the mutation-commit thread so the host's dirty flag is readable in immediate flush-on-close paths. `ops` is the pre→post diff from `BlockTreeDiff.derive(_:_:)`: `.insert(hash, parent, block)` for new or content-changed blocks, `.remove(hash)` for hashes that are no longer the live hash of any post id. On undo the diff is inverted (`(.remove(pre), .insert(post))` becomes `(.remove(post), .insert(pre))`) so the journal symmetrically tombstones the just-undone hashes. Empty `ops` means a pure reorder/move (same id, same hash) — the host should still persist the new tree shape. | Host should treat the call as the unit of save: apply non-empty `ops` to its recovery log, then write the rendered document, in that order. Fire-and-forget. |
 | `flush` | `(_ document: Document) async -> Void` | Editor loses focus (window/key/scene transitions, document switch). Host also calls it directly from scene-phase / navigation paths. Async so callers can await durability where it matters. | Host should force-save the current document. |
 | `serializeBlocksForPasteboard` | `(_ blocks: [Block]) -> String` | User cuts or copies. | Host returns a string for the system pasteboard (markdown, RTF, plain — host's choice). Empty string cancels the copy. |
 | `parseBlocksFromPasteboard` | `(_ string: String) -> [Block]?` | User pastes. | Host returns blocks parsed from the pasteboard string. nil cancels the paste. |
 | `saveImages` | `(_ items: [PastedImage]) -> [String]` | User pastes one or more images (or image URLs from another app). | Host writes them to disk; returns relative paths suitable for `BlockKind.image.source`. Empty / shorter array cancels the paste. |
-| `linkPreviewProvider` | `var: LinkPreviewProvider?` (`@Sendable (URL) async -> LinkPreview?`) | Editor calls this once per external `http`/`https` link in a rendered (read-only) row to fetch favicon + page title. | nil → links render undecorated, no fetching. |
-| `imageURLResolver` | `var: ImageURLResolver?` | Resolve an image block's `source` to a file URL the renderer can load. | nil → renderer shows a missing-image placeholder. |
+| `linkPreview` | `(for url: URL) async -> LinkPreview?` | Editor calls this once per external `http`/`https` link in a rendered (read-only) row to fetch favicon + page title. Async; nil → no preview rendered. | Host returns metadata for the URL, or nil on fetch failure / known-failed state. |
+| `imageURL` | `(for source: String) -> URL?` | Resolve an image block's `source` (markdown path like `Assets/foo.png`) to a file URL the renderer can load. | nil → renderer shows a missing-image placeholder. |
 
 ---
 
