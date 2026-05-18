@@ -113,21 +113,21 @@ extension EditorView {
         guard let block = document.find(blockID) else { return .ignored }
         guard !isStructuralBlock(block) else { return .ignored }
 
-        let existingLink = wholeBlockMarkdownLink(in: block.text)
+        let existingLink = wholeBlockWorkspaceLink(in: block.text)
         let title = cleanedTitle(preferredTitle)
             ?? existingLink?.title
             ?? cleanedTitle(String(block.text.characters))
             ?? "Untitled"
-        let requestedPath = existingLink?.path
+        let requestedPageID = existingLink?.pageID
 
         // The block's children (the subtree under it) become the body of the
         // new subpage. The host prepends a title heading + serializes; the
         // editor just hands over the body blocks (or nil when empty).
         let initialContent: [Block]? = block.children.isEmpty ? nil : block.children
 
-        let pageID = host.onCreateSubpage(title, requestedPath, initialContent)
-            ?? requestedPath
-            ?? defaultSubpagePath(for: title)
+        guard let pageID = host.onCreateSubpage(title, requestedPageID, initialContent)
+            ?? requestedPageID
+        else { return .ignored }
 
         mutate("Create Subpage") {
             document.replaceSubtree(blockID, with: [
@@ -607,42 +607,35 @@ extension EditorView {
         return title.isEmpty ? nil : title
     }
 
-    func wholeBlockMarkdownLink(in text: AttributedString) -> (title: String, path: String)? {
+    /// If `text` is a single inline link pointing at a workspace page (and
+    /// nothing else but whitespace), return its `(linkText, pageID)`. The
+    /// host classifies the URL via `resolveWorkspacePageID`; the editor
+    /// doesn't bake in a storage convention. Used by Cmd-K-on-link to turn
+    /// a `[Hello](some-page.md)` paragraph into a subpage block pointing
+    /// at `some-page.md`.
+    func wholeBlockWorkspaceLink(in text: AttributedString) -> (title: String, pageID: String)? {
         var linkTitle = ""
-        var linkPath: String?
+        var linkPageID: String?
         var hasNonLinkText = false
 
         for run in text.runs {
             let segment = String(text[run.range].characters)
             if let link = run.link {
-                let destination = link.absoluteString
-                guard destination.hasSuffix(".md") else { return nil }
-                if let existingPath = linkPath, existingPath != destination {
+                guard let pageID = host.resolveWorkspacePageID(from: link) else { return nil }
+                if let existing = linkPageID, existing != pageID {
                     return nil
                 }
-                linkPath = destination
+                linkPageID = pageID
                 linkTitle += segment
             } else if !segment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 hasNonLinkText = true
             }
         }
 
-        guard !hasNonLinkText, let linkPath, let title = cleanedTitle(linkTitle) else {
+        guard !hasNonLinkText, let linkPageID, let title = cleanedTitle(linkTitle) else {
             return nil
         }
-        return (title, linkPath)
-    }
-
-    fileprivate func defaultSubpagePath(for title: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let chars = title.unicodeScalars.map { scalar -> Character in
-            allowed.contains(scalar) ? Character(scalar) : "-"
-        }
-        let collapsed = String(chars)
-            .split(separator: "-", omittingEmptySubsequences: true)
-            .joined(separator: "-")
-        let stem = collapsed.isEmpty ? "Untitled" : collapsed
-        return stem + ".md"
+        return (title, linkPageID)
     }
 }
 

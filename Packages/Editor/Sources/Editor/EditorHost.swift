@@ -1,11 +1,11 @@
 import Foundation
 
-/// Existence + title resolution for a `*.md` page id. Returned by
-/// `EditorHost.lookupPage(_:)`. The three states a page can be in:
-///   - `.missing` — file not on disk (trashed, renamed, or never created).
+/// Existence + title resolution for an opaque host-defined page id.
+/// Returned by `EditorHost.lookupPage(_:)`. The three states a page can be in:
+///   - `.missing` — page not on disk (trashed, renamed, or never created).
 ///     Subpage rows render distinctly and don't navigate on tap.
-///   - `.present(title: "…")` — file exists and the host has its title cached.
-///   - `.present(title: nil)` — file exists but the host hasn't resolved the
+///   - `.present(title: "…")` — page exists and the host has its title cached.
+///   - `.present(title: nil)` — page exists but the host hasn't resolved the
 ///     title yet (cache miss). Render normally; call sites fall back to the
 ///     block-stored title.
 public enum PageLookup: Equatable, Hashable, Sendable {
@@ -16,8 +16,8 @@ public enum PageLookup: Equatable, Hashable, Sendable {
 /// Destination of an inline-link / subpage-row click in the editor. Subpage
 /// rows arrive as `.workspacePage(pageID)` (the editor already knows the
 /// id). Inline `[text](url)` clicks arrive as `.url(URL)` — the host
-/// classifies them (workspace-relative `.md`, external `http`/`https`, mail
-/// link, etc.) and routes accordingly.
+/// classifies them (workspace page, external `http`/`https`, mail link,
+/// etc.) and routes accordingly.
 public enum LinkTarget: Equatable, Hashable, Sendable {
     case workspacePage(pageID: String)
     case url(URL)
@@ -56,10 +56,21 @@ public protocol EditorHost: AnyObject {
     @discardableResult
     func openLink(_ target: LinkTarget) -> Bool
 
-    /// Resolve a `*.md` page id to its existence + title. Used by inline-link
+    /// Resolve an opaque page id to its existence + title. Used by inline-link
     /// and subpage rows for display, and by the editor to gate navigation
     /// into broken subpage rows.
     func lookupPage(_ pageID: String) -> PageLookup
+
+    /// Classify a URL from an inline `[text](url)` link as a workspace page
+    /// reference. Returns the host's pageID for that URL, or nil for
+    /// external URLs (and for any URL the host doesn't consider an internal
+    /// page reference). The host owns the storage convention — file paths,
+    /// UUIDs, database keys — so this is the single hook the editor uses
+    /// at render time (inline-link decoration) and at Cmd-K-on-link time
+    /// (subpage creation from an existing link) to decide whether a URL
+    /// names a workspace page. Resolves relative URLs against whichever
+    /// page is currently mounted in this host.
+    func resolveWorkspacePageID(from url: URL) -> String?
 
     /// Persist a new subpage. `initialContent` is the body the editor wants the
     /// new page to start with (descendants of the source block); the host

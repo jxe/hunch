@@ -2,17 +2,21 @@
 
 ## Status
 
-**Read-only path: done.** Inline `[text](page.md)` link taps inside
+**Read-only path: done.** Inline `[text](url)` link taps inside
 read-only rows now push the target onto the navigation stack. The
 `OpenURLAction` interceptor lives *inside* `EditorView` (so the editor
 owns its link routing) and dispatches via
 [EditorHost.openLink(_ target: LinkTarget) -> Bool](../Packages/Editor/Sources/Editor/EditorHost.swift).
 The host (`WorkspaceWindow`) classifies the URL via
+[EditorHost.resolveWorkspacePageID(from:)](../Packages/Editor/Sources/Editor/EditorHost.swift)
+— the same hook the editor uses at render time for inline-link
+decoration and at Cmd-K-on-link time for subpage creation. The Hunch
+impl wraps
 [Workspace.workspaceRelativeMarkdownPath](../App/Sources/Workspace.swift)
 (covered by
-[WorkspaceRelativeLinkTests](../App/Tests/HunchUnitTests/WorkspaceRelativeLinkTests.swift)),
-routes workspace-relative `.md` paths through `openSubpage`, and returns
-`false` for external `http`/`https` to fall through to the system handler.
+[WorkspaceRelativeLinkTests](../App/Tests/HunchUnitTests/WorkspaceRelativeLinkTests.swift));
+non-nil pageIDs route through `openSubpage`, nil falls through to the
+system handler.
 
 **Editor-mode path: not done.** When a link is inside the active
 TextEditor, NSTextView (macOS) and UITextView (iOS) own the click. The
@@ -20,7 +24,7 @@ remainder of this note tracks that piece.
 
 ## Goal
 
-Tapping an inline `[text](path.md)` link from inside an active
+Tapping an inline `[text](url)` link from inside an active
 `BlockTextEditor` should also route through `host.openLink(.url(...))`
 instead of (a) doing nothing, or (b) opening the link in the system
 browser via `\.openURL`.
@@ -47,5 +51,5 @@ and let the host decide.
 ## Test loop
 
 `./scripts/run.sh`, open a doc, enter edit mode on a paragraph that
-contains an inline `[link](other.md)` mid-text, click the link, verify
-the stack pushed and edge-swipe (iOS) / Cmd+[ (macOS) pops back.
+contains an inline `[link](other-page.md)` mid-text, click the link,
+verify the stack pushed and edge-swipe (iOS) / Cmd+[ (macOS) pops back.

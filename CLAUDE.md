@@ -198,16 +198,20 @@ entry on top of home (or drains to root when the picked page *is*
 home). `window.goBack()` pops; on iOS this is also driven by
 edge-swipe-from-left, on macOS by the Cmd+[ menu and the system back
 chevron. Subpage rows are the existing render path: a paragraph that
-is a single `.md` link is detected in `BlockParser` and rendered via
-`subpageRow` in `BlockRow.swift`. **Inline `[text](path.md)` clicks
-inside read-only body text** route through an `OpenURLAction`
-interceptor *inside* `EditorView` (so the editor owns its link
-routing) → `host.openLink(.url(url))`. The host classifies the URL
-(`Workspace.workspaceRelativeMarkdownPath` → `window.openSubpage` for
-workspace-relative `.md`; return `false` to fall through to the system
-handler for external `http`/`https`). Inline link taps *inside* an
-active TextEditor are not yet intercepted (NSTextView / UITextView own
-those gestures).
+is a single `.md` link is detected in `BlockParser` (Clamshell owns
+the `.md` convention) and rendered via `subpageRow` in `BlockRow.swift`.
+**Inline `[text](url)` clicks inside read-only body text** route
+through an `OpenURLAction` interceptor *inside* `EditorView` (so the
+editor owns its link routing) → `host.openLink(.url(url))`. The host
+classifies the URL via `host.resolveWorkspacePageID(from:)` — the
+*same* hook the editor uses at render time (to decorate internal-vs-
+external inline links) and at Cmd-K-on-link time (to decide subpage-
+creation). One classifier, one source of truth; the editor is
+storage-agnostic about what counts as a workspace page. The Hunch
+impl wraps `Workspace.workspaceRelativeMarkdownPath`; external URLs
+return `nil`, the editor falls through to the system handler. Inline
+link taps *inside* an active TextEditor are not yet intercepted
+(NSTextView / UITextView own those gestures).
 
 **Nav mode is multi-select.** `SessionState.navigating(Selection, gesture:)`
 carries `blocks: Set<BlockID>`, `cursor` (moving end), `anchor` (fixed end).

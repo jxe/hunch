@@ -97,12 +97,15 @@ needed. Cross-app drag falls through to the pasteboard codecs.
 **Subpage navigation and management**
 - Tap a subpage row → host receives `openLink(.workspacePage(pageID))` and
   pushes the child page on its navigation stack.
-- Inline `[text](path.md)` clicks in read-only rows go through the editor's
+- Inline `[text](url)` clicks in read-only rows go through the editor's
   `OpenURLAction` interceptor and dispatch to the same `host.openLink` —
-  the host distinguishes workspace-relative paths from external URLs and
-  returns `false` for the latter to fall through to the system handler.
-- Cmd-K on a paragraph that is a single markdown link, or @-mention commit,
-  creates a subpage block via `onCreateSubpage`.
+  the host calls `resolveWorkspacePageID(from:)` (its own classifier) to
+  distinguish internal page references from external URLs and returns
+  `false` for the latter to fall through to the system handler.
+- Cmd-K on a paragraph that is a single workspace-page link, or @-mention
+  commit, creates a subpage block via `onCreateSubpage`. The editor consults
+  `host.resolveWorkspacePageID` to decide whether the link's URL names a
+  workspace page; it never inspects the URL itself.
 - Drop blocks onto a subpage row → editor calls `onAppendToSubpage` to move
   them into the child page.
 
@@ -140,6 +143,7 @@ final class MyHost: EditorHost {
     func lookupPage(_ pageID: String) -> PageLookup { .missing }
     func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? { nil }
     func onLoadSubpage(_ pageID: String) -> [Block]? { nil }
+    func resolveWorkspacePageID(from url: URL) -> String? { nil }
     func onAbsorbSubpage(_ pageID: String) async -> Bool { false }
     func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
     func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
@@ -396,8 +400,9 @@ stubbed out for early integration.
 | Method | Signature | When it fires | Return semantics |
 |--------|-----------|---------------|------------------|
 | `suggestPages` | `(_ query: String) -> [MentionItem]` | While the @-mention popover is visible, on every render. The query is whatever the user has typed after `@`. | Up to 8 items shown; host owns ranking/filtering. Empty array shows "No matching pages". |
-| `lookupPage` | `(_ pageID: String) -> PageLookup` | Whenever a subpage row needs to know if its target exists and what to display (rendering a `.subpage` block, an inline `[text](path.md)` link, an @-mention popover row). | `.missing` renders broken-link style and disables tap-to-navigate; `.present(title: nil)` falls back to the cached `title` on the Block / MentionItem; `.present(title: "…")` shows the resolved title. |
-| `openLink` | `(_ target: LinkTarget) -> Bool` | User clicks/taps a subpage row (`.workspacePage(pageID)`), or clicks an inline `[text](url)` link in a read-only row (`.url(URL)`). | true = host fully handled; false lets the editor fall through to the system URL handler (`OpenURLAction.systemAction`). Subpage taps are always handled internally; inline `.url` clicks let the host classify (workspace-relative `.md` → internal nav; external `http`/`https` → return false). |
+| `lookupPage` | `(_ pageID: String) -> PageLookup` | Whenever a subpage row needs to know if its target exists and what to display (rendering a `.subpage` block, an inline page link, an @-mention popover row). | `.missing` renders broken-link style and disables tap-to-navigate; `.present(title: nil)` falls back to the cached `title` on the Block / MentionItem; `.present(title: "…")` shows the resolved title. |
+| `resolveWorkspacePageID` | `(_ url: URL) -> String?` | Classifies an inline-link URL as a workspace page reference. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide subpage-creation vs link-toggling), and inside `openLink` (so a single classifier governs all three). | Return the host's pageID for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
+| `openLink` | `(_ target: LinkTarget) -> Bool` | User clicks/taps a subpage row (`.workspacePage(pageID)`), or clicks an inline `[text](url)` link in a read-only row (`.url(URL)`). | true = host fully handled; false lets the editor fall through to the system URL handler (`OpenURLAction.systemAction`). Subpage taps are always handled internally; for inline `.url` clicks the host typically routes via `resolveWorkspacePageID` (internal nav) or returns false (external). |
 | `onCreateSubpage` | `(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id. nil falls back to `requestedID` or a default. |
 | `onLoadSubpage` | `(_ pageID: String) -> [Block]?` | Expand Subpage (inline this child's content here, **keep the file**). | Host returns the child page's blocks. nil makes the action a no-op. |
 | `onAbsorbSubpage` | `(_ pageID: String) async -> Bool` | Turn Into a non-page block on a subpage row (inline content **and trash the source file**). Always paired with `onLoadSubpage` first. Async so the host can force-save the parent doc before deleting the source. | true = file trashed (proceed with inlining); false = abort. |

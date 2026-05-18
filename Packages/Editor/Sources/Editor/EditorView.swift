@@ -569,7 +569,7 @@ public struct EditorView: View {
             onTemplateButtonPress: {
                 instantiateTemplateButton(blockID: block.id)
             },
-            pageLookups: resolvePageLookups(for: block, resolver: host.lookupPage),
+            pageLookups: resolvePageLookups(for: block, host: host),
             linkPreviews: relevantLinkPreviews,
             onLinkPreviewLoaded: { url, preview in linkPreviews[url] = preview },
             linkPreviewProvider: host.linkPreviewProvider,

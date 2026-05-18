@@ -13,11 +13,12 @@ public enum InlineRenderer {
         for run in source.runs {
             let segment = source[run.range]
             let link = run.link
-            let display = link.flatMap { url -> String? in
-                let destination = url.absoluteString
-                guard destination.hasSuffix(".md") else { return nil }
-                return pageTitle(destination)
-            } ?? String(segment.characters)
+            // pageTitle returns nil for any URL the caller doesn't consider
+            // a workspace-page reference (the BlockRow caller pre-filters via
+            // `resolvePageLookups`, which consults the host's classifier);
+            // a non-nil result is the resolved title to display in place of
+            // the raw link text.
+            let display = link.flatMap { pageTitle($0.absoluteString) } ?? String(segment.characters)
             var attributed = AttributedString(display)
 
             let bold = run[InlineAttributes.BoldAttribute.self] == true

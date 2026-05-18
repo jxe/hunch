@@ -207,14 +207,14 @@ public struct BlockRow: View, Equatable {
     /// Called when the toggle's chevron is tapped. No-op for non-toggle blocks.
     let onToggleExpansion: () -> Void
     let onTemplateButtonPress: () -> Void
-    /// Resolved existence + titles for every `.md` page reference this row
-    /// needs to render — the subpage path for `.subpage` blocks, plus inline
-    /// page links inside `block.text`. Pre-resolved at the call site so page
-    /// renames / deletes invalidate the row's `Equatable` `==` (the parent
-    /// `lookupPage` closure isn't itself comparable). Map from the link's
-    /// `path.md` (matching what `block.kind` stores for subpages and what
-    /// `.link` URLs' `absoluteString` carries for inline page links) to the
-    /// page's lookup result.
+    /// Resolved existence + titles for every workspace-page reference this
+    /// row needs to render — the subpage's pageID for `.subpage` blocks,
+    /// plus every inline page-link URL inside `block.text` (classified by
+    /// the host's `resolveWorkspacePageID`). Pre-resolved at the call site
+    /// so page renames / deletes invalidate the row's `Equatable` `==` (the
+    /// parent `lookupPage` closure isn't itself comparable). Inline-link
+    /// entries are keyed by `URL.absoluteString`; subpage entries by the
+    /// block's stored pageID.
     let pageLookups: [String: PageLookup]
 
     /// Subset of the host's link-preview cache relevant to this row. Filtered
@@ -762,23 +762,31 @@ public struct BlockRow: View, Equatable {
     }
 }
 
-/// Pre-resolve every `.md` page reference this row needs to render: the
-/// subpage path for `.subpage` blocks plus every inline page-link URL inside
-/// the block's text. The result is the value `BlockRow` stores as
-/// `pageLookups` and compares in `==`, so a rename or delete of any
-/// referenced page changes the map for the rows that mention it (and only
-/// those rows) — letting `.equatable()` short-circuit the rest while keeping
-/// link titles correct and broken-subpage indicators in sync.
-func resolvePageLookups(for block: Block, resolver: (String) -> PageLookup) -> [String: PageLookup] {
+/// Pre-resolve every workspace-page reference this row needs to render: the
+/// subpage pageID for `.subpage` blocks plus every inline workspace-page link
+/// URL inside the block's text. Inline-link URLs are classified by the host
+/// (`resolveWorkspacePageID`); the editor doesn't bake in a storage
+/// convention. The result is the value `BlockRow` stores as `pageLookups`
+/// and compares in `==`, so a rename or delete of any referenced page
+/// changes the map for the rows that mention it (and only those rows) —
+/// letting `.equatable()` short-circuit the rest while keeping link titles
+/// correct and broken-subpage indicators in sync.
+///
+/// Inline-link entries are keyed by `URL.absoluteString` (what the renderer
+/// matches against `run.link.absoluteString`); subpage entries are keyed by
+/// the block's stored pageID.
+@MainActor
+func resolvePageLookups(for block: Block, host: EditorHost) -> [String: PageLookup] {
     var result: [String: PageLookup] = [:]
-    if case .subpage(_, let path) = block.kind {
-        result[path] = resolver(path)
+    if case .subpage(_, let pageID) = block.kind {
+        result[pageID] = host.lookupPage(pageID)
     }
     for run in block.text.runs {
-        guard let url = run.link, !isExternalLinkURL(url), url.absoluteString.hasSuffix(".md") else { continue }
+        guard let url = run.link, !isExternalLinkURL(url) else { continue }
+        guard let pageID = host.resolveWorkspacePageID(from: url) else { continue }
         let key = url.absoluteString
         if result[key] == nil {
-            result[key] = resolver(key)
+            result[key] = host.lookupPage(pageID)
         }
     }
     return result
@@ -823,8 +831,7 @@ private func decoratedText(
 
         var displayText = runText
         if let url = link {
-            if !isExternalLinkURL(url), url.absoluteString.hasSuffix(".md"),
-               let resolved = pageLookups[url.absoluteString]?.title {
+            if let resolved = pageLookups[url.absoluteString]?.title {
                 displayText = resolved
             } else if isExternalLinkURL(url),
                       let preview = previews[url],

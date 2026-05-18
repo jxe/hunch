@@ -30,6 +30,10 @@ extension HunchEditorHost {
         workspace.clamshell?.lookupPage(pageID) ?? .missing
     }
 
+    func resolveWorkspacePageID(from url: URL) -> String? {
+        workspace.workspaceRelativeMarkdownPath(for: url, currentDocURL: openDocument?.url)
+    }
+
     func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? {
         workspace.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
             ?? requestedID
@@ -105,12 +109,11 @@ extension WorkspaceWindow: HunchEditorHost {
             openSubpage(relativePath: pageID)
             return true
         case .url(let url):
-            // Workspace-relative `*.md` links resolve against the open doc's
-            // URL (or home if we're at the root) and navigate internally.
-            // Everything else falls through to the system handler.
-            let currentDocURL = path.last ?? workspace.homeURL
-            if let rel = workspace.workspaceRelativeMarkdownPath(for: url, currentDocURL: currentDocURL) {
-                openSubpage(relativePath: rel)
+            // Workspace-internal links resolve via the host classifier
+            // (same hook used for inline-link decoration at render time);
+            // everything else falls through to the system handler.
+            if let pageID = resolveWorkspacePageID(from: url) {
+                openSubpage(relativePath: pageID)
                 return true
             }
             return false
