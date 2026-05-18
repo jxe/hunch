@@ -82,8 +82,8 @@ struct ContentView: View {
             if new == nil { window.reset() }
         }
         .onChange(of: scenePhase) { _, new in
-            if new != .active {
-                Task { await window.flush() }
+            if new != .active, let doc = window.openDocument {
+                Task { await window.flush(doc) }
             }
         }
         .alert("Error", isPresented: errorBinding) {
@@ -135,7 +135,7 @@ struct ContentView: View {
 
     private func setHome(_ item: MentionItem) {
         if let entry = workspace.entries.first(where: { $0.relativePath == item.id }) {
-            workspace.setHome(entry)
+            workspace.homeRelativePath = entry.relativePath
         }
     }
 
@@ -453,9 +453,8 @@ private struct EmptyWorkspaceView: View {
                 }
                 .buttonStyle(.bordered)
                 Button {
-                    guard let path = workspace.createSubpage(title: "Untitled", requestedPath: nil, initialContent: nil),
-                          let entry = workspace.entries.first(where: { $0.relativePath == path }) else { return }
-                    workspace.setHome(entry)
+                    guard let path = workspace.createSubpage(title: "Untitled", requestedPath: nil, initialContent: nil) else { return }
+                    workspace.homeRelativePath = path
                 } label: {
                     Label("New page", systemImage: "plus")
                 }

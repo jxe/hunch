@@ -118,11 +118,13 @@ public protocol EditorHost: AnyObject {
     /// from the host's side.
     func documentDidChange(ops: [EditorOp], on post: Document)
 
-    /// Force-save the current document. Editor calls this on focus-loss so
-    /// user input doesn't sit in memory until app suspension; the host
-    /// also calls it directly from scene-phase / navigation-away paths.
+    /// Force-save `document`. Editor calls this on focus-loss so user input
+    /// doesn't sit in memory until app suspension; the host also calls it
+    /// directly from scene-phase / navigation-away paths. The doc is passed
+    /// explicitly (symmetric with `documentDidChange(ops:on:)`) so the host
+    /// doesn't have to infer "current doc" from its own state.
     /// Async so callers that care about durability can await it.
-    func flush() async
+    func flush(_ document: Document) async
 
     /// Serialize blocks into a string the editor will write to the system
     /// pasteboard on copy/cut. Host chooses the format (markdown, plain text).

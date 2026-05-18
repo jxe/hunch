@@ -376,7 +376,7 @@ public struct EditorView: View {
             // which `handleModeChange` already wires to flush.
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
-                    Task { @MainActor [host] in await host.flush() }
+                    Task { @MainActor [host, document] in await host.flush(document) }
                 }
             }
             #endif
@@ -1078,7 +1078,7 @@ public struct EditorView: View {
             // too; re-grabbing every time would steal focus from menus and sheets.
             if wasEditing {
                 forcePageFocusGrab()
-                Task { @MainActor [host] in await host.flush() }
+                Task { @MainActor [host, document] in await host.flush(document) }
             }
         }
 

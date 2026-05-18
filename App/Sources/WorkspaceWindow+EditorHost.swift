@@ -1,16 +1,103 @@
 import Foundation
 import Editor
 
-/// `WorkspaceWindow` is the `EditorHost` for the editor mounted in this
-/// window. The save lifecycle, page list, title cache, file presenter,
-/// and image / page operations all live on `Clamshell` — these methods
-/// route the editor's integration surface straight to it, with per-window
-/// navigation and the move-to picker handled on the window itself.
-extension WorkspaceWindow: EditorHost {
+// MARK: - HunchEditorHost (protocol + forwarding defaults)
+
+/// An `EditorHost` with access to `Workspace` and the currently-open
+/// `Document`. The default implementations below cover every method that
+/// doesn't need per-window state — page lookups, subpage create / load,
+/// pasteboard serialization, image storage, link previews — by forwarding
+/// to the workspace's `Clamshell` or to stateless helpers.
+///
+/// `WorkspaceWindow` conforms below and only has to implement the methods
+/// that genuinely depend on the window: navigation, the move-to picker
+/// sheet, and durability sequencing for absorb / append (which need to
+/// reach the parent doc mounted in *this* window).
+@MainActor
+protocol HunchEditorHost: EditorHost {
+    var workspace: Workspace { get }
+    var openDocument: Document? { get }
+}
+
+extension HunchEditorHost {
+    // — Workspace-scoped forwarders —
+
     func suggestPages(_ query: String) -> [MentionItem] {
         workspace.clamshell?.pages(matching: query, excluding: openDocument?.url) ?? []
     }
 
+    func lookupPage(_ pageID: String) -> PageLookup {
+        workspace.clamshell?.lookupPage(pageID) ?? .missing
+    }
+
+    func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? {
+        workspace.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
+            ?? requestedID
+    }
+
+    func onLoadSubpage(_ pageID: String) -> [Block]? {
+        guard let clamshell = workspace.clamshell else { return nil }
+        let target = clamshell.url(for: pageID)
+        do {
+            return try clamshell.loadDocument(at: target).children
+        } catch {
+            Diag.subpage.error("onLoadSubpage: load(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    func documentDidChange(ops: [EditorOp], on post: Document) {
+        workspace.clamshell?.documentDidChange(ops: ops, in: post)
+    }
+
+    func flush(_ document: Document) async {
+        guard let clamshell = workspace.clamshell else { return }
+        _ = await clamshell.flush(document)
+    }
+
+    func onSaveImages(_ items: [PastedImage]) -> [String] {
+        guard let clamshell = workspace.clamshell else { return [] }
+        var paths: [String] = []
+        paths.reserveCapacity(items.count)
+        for item in items {
+            do {
+                paths.append(try clamshell.writeImage(item))
+            } catch {
+                workspace.error = "Failed to save pasted image: \(error.localizedDescription)"
+            }
+        }
+        return paths
+    }
+
+    // — Stateless app conventions —
+
+    func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {
+        BlockSerializer.serialize(blocks, consecutiveNumbering: true)
+    }
+
+    func parseBlocksFromPasteboard(_ string: String) -> [Block]? {
+        let blocks = BlockParser.parse(string)
+        return blocks.isEmpty ? nil : blocks
+    }
+
+    var linkPreviewProvider: LinkPreviewProvider? {
+        workspace.linkPreviewService.provider()
+    }
+
+    var imageURLResolver: ImageURLResolver? {
+        // ImageURLResolver is `@Sendable`, so the closure can't directly call
+        // a MainActor method on `workspace`. The renderer always invokes the
+        // resolver on the main thread (image rows render in SwiftUI body), so
+        // `assumeIsolated` is sound here.
+        { [workspace] source in
+            MainActor.assumeIsolated { workspace.clamshell?.resolveImage(source: source) }
+        }
+    }
+}
+
+// MARK: - WorkspaceWindow: per-window methods only
+
+extension WorkspaceWindow: HunchEditorHost {
     @discardableResult
     func openLink(_ target: LinkTarget) -> Bool {
         switch target {
@@ -27,31 +114,6 @@ extension WorkspaceWindow: EditorHost {
                 return true
             }
             return false
-        }
-    }
-
-    func lookupPage(_ pageID: String) -> PageLookup {
-        workspace.clamshell?.lookupPage(pageID) ?? .missing
-    }
-
-    func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? {
-        guard let clamshell = workspace.clamshell else { return requestedID }
-        do {
-            return try clamshell.createPage(title: title, requestedPath: requestedID, blocks: initialContent)
-        } catch {
-            workspace.error = "Failed to create page: \(error.localizedDescription)"
-            return requestedID
-        }
-    }
-
-    func onLoadSubpage(_ pageID: String) -> [Block]? {
-        guard let clamshell = workspace.clamshell else { return nil }
-        let target = clamshell.url(for: pageID)
-        do {
-            return try clamshell.loadDocument(at: target).children
-        } catch {
-            Diag.subpage.error("onLoadSubpage: load(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
-            return nil
         }
     }
 
@@ -111,51 +173,5 @@ extension WorkspaceWindow: EditorHost {
 
     func onNavigateBack() {
         goBack()
-    }
-
-    func documentDidChange(ops: [EditorOp], on post: Document) {
-        workspace.clamshell?.documentDidChange(ops: ops, in: post)
-    }
-
-    func flush() async {
-        guard let clamshell = workspace.clamshell, let doc = openDocument else { return }
-        _ = await clamshell.flush(doc)
-    }
-
-    func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {
-        BlockSerializer.serialize(blocks, consecutiveNumbering: true)
-    }
-
-    func parseBlocksFromPasteboard(_ string: String) -> [Block]? {
-        let blocks = BlockParser.parse(string)
-        return blocks.isEmpty ? nil : blocks
-    }
-
-    func onSaveImages(_ items: [PastedImage]) -> [String] {
-        guard let clamshell = workspace.clamshell else { return [] }
-        var paths: [String] = []
-        paths.reserveCapacity(items.count)
-        for item in items {
-            do {
-                paths.append(try clamshell.writeImage(item))
-            } catch {
-                workspace.error = "Failed to save pasted image: \(error.localizedDescription)"
-            }
-        }
-        return paths
-    }
-
-    var linkPreviewProvider: LinkPreviewProvider? {
-        workspace.linkPreviewService.provider()
-    }
-
-    var imageURLResolver: ImageURLResolver? {
-        // ImageURLResolver is `@Sendable`, so the closure can't directly call
-        // a MainActor method on `workspace`. The renderer always invokes the
-        // resolver on the main thread (image rows render in SwiftUI body), so
-        // `assumeIsolated` is sound here.
-        { [workspace] source in
-            MainActor.assumeIsolated { workspace.clamshell?.resolveImage(source: source) }
-        }
     }
 }

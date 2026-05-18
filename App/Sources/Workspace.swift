@@ -146,36 +146,40 @@ final class Workspace {
         }
         if let url = WorkspaceBookmark.resolve() {
             accessedWorkspaceURL = url
-            workspaceURL = url
-            let clamshell = Clamshell(root: url)
-            self.clamshell = clamshell
+            mount(root: url)
             rescan()
         }
     }
 
-    private func installLaunchArgWorkspace(path: String) {
-        let root = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+    /// Install a fresh `Clamshell` rooted at `root` and publish it on
+    /// `workspaceURL`. Callers handle bookmark / security-scope / home-page
+    /// setup and choose the rescan flavor (workspace-level `rescan()` triggers
+    /// closed-page conflict resolution; `clamshell.rescan()` skips it).
+    @discardableResult
+    private func mount(root: URL) -> Clamshell {
         workspaceURL = root
         let clamshell = Clamshell(root: root)
+        self.clamshell = clamshell
+        return clamshell
+    }
+
+    private func installLaunchArgWorkspace(path: String) {
+        let root = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        let clamshell = mount(root: root)
         // Fixture clamshells contain a single `everything.md` — open it
         // directly so snap-diff sees content immediately on launch.
         if clamshell.homeRelativePath == nil {
             clamshell.homeRelativePath = "everything.md"
         }
-        self.clamshell = clamshell
         _ = try? clamshell.rescan()
     }
 
     func setWorkspaceFromKeyFile(_ url: URL) {
         let root = url.deletingLastPathComponent()
-        let homePath = url.lastPathComponent
         do {
             try WorkspaceBookmark.save(url: root)
             activateWorkspaceAccess(for: root)
-            workspaceURL = root
-            let clamshell = Clamshell(root: root)
-            clamshell.homeRelativePath = homePath
-            self.clamshell = clamshell
+            mount(root: root).homeRelativePath = url.lastPathComponent
             rescan()
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
@@ -186,9 +190,7 @@ final class Workspace {
         do {
             try WorkspaceBookmark.save(url: url)
             activateWorkspaceAccess(for: url)
-            workspaceURL = url
-            let clamshell = Clamshell(root: url)
-            self.clamshell = clamshell
+            let clamshell = mount(root: url)
             rescan()
             if homeRelativePath == nil {
                 autoDetectOrSeedHome(in: clamshell)
@@ -240,8 +242,8 @@ final class Workspace {
             title: "Welcome to Hunch",
             requestedPath: nil,
             initialContent: welcomeContentBlocks()
-        ), let entry = entries.first(where: { $0.relativePath == path }) else { return }
-        setHome(entry)
+        ) else { return }
+        homeRelativePath = path
     }
 
     /// Drop the currently bookmarked workspace. Open windows observe
@@ -319,10 +321,6 @@ final class Workspace {
                 self.rescan()
             }
         }
-    }
-
-    func setHome(_ entry: WorkspaceEntry) {
-        clamshell?.homeRelativePath = entry.relativePath
     }
 
     /// Convenience for new-page creation surfaces (welcome-page seed, the
@@ -494,10 +492,7 @@ final class Workspace {
             Foxtrot
             """
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
-            workspaceURL = root
-            let clamshell = Clamshell(root: root)
-            self.clamshell = clamshell
-            _ = try? clamshell.rescan()
+            _ = try? mount(root: root).rescan()
         } catch {
             self.error = "Failed to install UI test workspace: \(error.localizedDescription)"
         }
@@ -517,10 +512,8 @@ final class Workspace {
             }
             let source = lines.joined(separator: "\n\n")
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
-            workspaceURL = root
-            let clamshell = Clamshell(root: root)
+            let clamshell = mount(root: root)
             clamshell.homeRelativePath = "everything.md"
-            self.clamshell = clamshell
             _ = try? clamshell.rescan()
         } catch {
             self.error = "Failed to install tall-doc UI test workspace: \(error.localizedDescription)"
