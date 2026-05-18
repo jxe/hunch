@@ -495,10 +495,10 @@ final class Workspace {
     }
 
     @discardableResult
-    func appendToSubpage(relativePath: String, blocks: [Block]) -> Document? {
+    func appendToSubpage(relativePath: String, blocks: [Block]) async -> Document? {
         guard !blocks.isEmpty, let clamshell else { return nil }
         do {
-            return try clamshell.append(blocks, toPage: relativePath)
+            return try await clamshell.append(blocks, toPage: relativePath)
         } catch {
             self.error = "Failed to move blocks into \(relativePath): \(error.localizedDescription)"
             return nil

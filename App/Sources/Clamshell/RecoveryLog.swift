@@ -63,7 +63,7 @@ public actor RecoveryLog {
     /// computed as a latest-`(counter, deviceID)`-wins fold, so the union
     /// collapses to the same intent regardless of duplicate count. The log
     /// just gets a little chattier for callers that hand in
-    /// already-recorded hashes (e.g. `writeExternal` after a conflict merge).
+    /// already-recorded hashes (e.g. `write(_:patch:)` after a conflict merge).
     ///
     /// Counters within a patch are sequential, so the batch reads as a
     /// coherent transaction on tail and observers see one ordered group.

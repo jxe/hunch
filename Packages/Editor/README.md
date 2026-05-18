@@ -141,7 +141,7 @@ final class MyHost: EditorHost {
     func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? { nil }
     func onLoadSubpage(_ pageID: String) -> [Block]? { nil }
     func onAbsorbSubpage(_ pageID: String) async -> Bool { false }
-    func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) -> Bool { false }
+    func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
     func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) {}
     func onNavigateBack() {}
     func documentDidChange(ops: [EditorOp], on post: Document) {}
@@ -402,7 +402,7 @@ integration.
 | `onCreateSubpage` | `(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id. nil falls back to `requestedID` or a default. |
 | `onLoadSubpage` | `(_ pageID: String) -> [Block]?` | Expand Subpage (inline this child's content here, **keep the file**). | Host returns the child page's blocks. nil makes the action a no-op. |
 | `onAbsorbSubpage` | `(_ pageID: String) async -> Bool` | Turn Into a non-page block on a subpage row (inline content **and trash the source file**). Always paired with `onLoadSubpage` first. Async so the host can force-save the parent doc before deleting the source. | true = file trashed (proceed with inlining); false = abort. |
-| `onAppendToSubpage` | `(_ pageID: String, _ blocks: [Block]) -> Bool` | User drops blocks onto a subpage row. | true = host wrote them to the child file. false = no-op. |
+| `onAppendToSubpage` | `(_ pageID: String, _ blocks: [Block]) async -> Bool` | User drops blocks onto a subpage row. Async so the host can sequence log-then-file durability before returning. | true = host wrote them (proceed with local removal). false = no-op. |
 | `onRequestMoveDestination` | `(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) -> Void` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, calls `pick` with a `MoveDestination` (`.page` or `.block`) or nil to cancel. | Move performed asynchronously via the `pick` continuation. |
 | `onNavigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |
 | `documentDidChange` | `(_ ops: [EditorOp], _ on: Document) -> Void` | After every mutation — typing, structural transactions, autotransforms, undo, paste, move-to. Called *synchronously* on the mutation-commit thread so the host's dirty flag is readable in immediate flush-on-close paths. When the change came through `EditorView.mutate(_:_:)`, `ops` is the pre→post diff from `BlockTreeDiff.derive(_:_:)`: `.insert(hash, parent, block)` for new or content-changed blocks, `.remove(hash)` for ids that disappeared. When `ops` is empty, the change is a text-only typing edit or a pure reorder/move (same id, same hash). | Host appends non-empty `ops` to its recovery log as one ordered batch, and kicks its debounced save regardless. Fire-and-forget; default impl is a no-op. |

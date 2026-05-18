@@ -33,7 +33,7 @@ final class WorkspaceWindow {
         let completion: (MoveDestination?) -> Void
     }
 
-    private var filePresenter: DocumentFilePresenter?
+    private var presenterHandle: Clamshell.PresenterHandle?
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -107,7 +107,7 @@ final class WorkspaceWindow {
     func handlePathChange() {
         let topURL = path.last ?? homeURL
         if openDocument?.url == topURL { return }
-        closeOpenDocument()
+        let outgoingFlush = closeOpenDocument()
         guard let url = topURL else {
             openDocument = nil
             return
@@ -123,13 +123,17 @@ final class WorkspaceWindow {
             return
         }
         Task { @MainActor in
+            // Drain the outgoing doc's flush before loading the next — a
+            // force-quit between path change and flush completion would
+            // otherwise drop the last keystroke.
+            if let outgoingFlush { await outgoingFlush.value }
             do {
                 let (doc, summary) = try await clamshell.reconcile(at: url)
                 // The user may have navigated again while we were awaiting.
                 guard path.last ?? homeURL == url else { return }
                 openDocument = doc
                 workspace.refreshTitleCache(from: doc)
-                installFilePresenter(for: url)
+                installPresenter(for: doc)
                 postReconcileBanner(summary: summary, doc: doc, url: url)
             } catch {
                 workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
@@ -173,14 +177,18 @@ final class WorkspaceWindow {
         path = []
     }
 
-    /// Tear down the file presenter and queue a final flush of `openDocument`
-    /// through Clamshell. The flush survives this caller returning — the
-    /// per-URL coordinator inside Clamshell serializes writes, so a rapid
-    /// page switch doesn't drop the latest snapshot. Idempotent.
-    func closeOpenDocument() {
-        removeFilePresenter()
-        guard let doc = openDocument, let clamshell = workspace.clamshell else { return }
-        Task { await clamshell.flush(doc) }
+    /// Tear down the file presenter and return a Task that flushes
+    /// `openDocument` through Clamshell. Callers that can await (e.g.
+    /// navigation handlers, which are already inside a Task) should
+    /// await the returned value before swapping the document — a force-
+    /// quit between path change and flush completion would otherwise
+    /// drop the last keystroke. Fire-and-forget callers can discard.
+    /// Returns nil when there's nothing to flush. Idempotent.
+    @discardableResult
+    func closeOpenDocument() -> Task<Void, Never>? {
+        removePresenter()
+        guard let doc = openDocument, let clamshell = workspace.clamshell else { return nil }
+        return Task { _ = await clamshell.flush(doc) }
     }
 
     // MARK: - Move-to picker
@@ -232,7 +240,7 @@ final class WorkspaceWindow {
             // is durably on disk first, then close the open doc. Awaiting
             // here (instead of fire-and-forget) means the trash op below
             // never races a save against a now-trashed URL.
-            removeFilePresenter()
+            removePresenter()
             await clamshell.flush(doc)
             self.openDocument = nil
         }
@@ -241,10 +249,10 @@ final class WorkspaceWindow {
     }
 
     @discardableResult
-    func appendToSubpage(relativePath: String, blocks: [Block]) -> Bool {
+    func appendToSubpage(relativePath: String, blocks: [Block]) async -> Bool {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
         let target = clamshell.url(for: relativePath)
-        guard let doc = workspace.appendToSubpage(relativePath: relativePath, blocks: blocks) else {
+        guard let doc = await workspace.appendToSubpage(relativePath: relativePath, blocks: blocks) else {
             return false
         }
         // If this window has the subpage open (multi-window scenario), splice
@@ -286,148 +294,44 @@ final class WorkspaceWindow {
         }
     }
 
-    /// Reconcile the open document against the page's recovery-log journal.
-    /// Thin wrapper around `Clamshell.reconcile(at:liveDoc:)` — the engine
-    /// plumbing (read journal, derive intent, splice, append observations,
-    /// quarantine unrestorables) lives there. Held off while the doc is
-    /// dirty or a save is in flight (gated inside Clamshell).
-    private func reconcileOpenDocumentAgainstLog(_ doc: Document) {
-        guard let clamshell = workspace.clamshell else { return }
-        Task { @MainActor [weak self] in
-            guard let self, self.openDocument === doc else { return }
-            do {
-                let (_, summary) = try await clamshell.reconcile(at: doc.url, liveDoc: doc)
-                guard self.openDocument === doc, summary.didChange else { return }
-                let count = summary.restoredHashes.count
-                let noun = count == 1 ? "block" : "blocks"
-                self.workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
-            } catch {
-                Diag.merge.error("reconcile failed url=\(doc.url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
-        }
-    }
-
     // MARK: - File presenter
 
-    private func installFilePresenter(for url: URL) {
-        removeFilePresenter()
-        let presenter = DocumentFilePresenter(url: url) { [weak self] in
-            Task { @MainActor in
-                await self?.handlePresentedFileChange()
+    /// Install Clamshell's NSFilePresenter on `doc.url`. Filesystem-level
+    /// work (conflict merge, content reload, journal reconcile) happens
+    /// inside Clamshell on every wakeup; the callback below handles only
+    /// the UI/workspace reactions (banners, rescan, title cache).
+    private func installPresenter(for doc: Document) {
+        removePresenter()
+        guard let clamshell = workspace.clamshell else { return }
+        let url = doc.url
+        presenterHandle = clamshell.installPresenter(for: doc) { [weak self] event in
+            guard let self else { return }
+            switch event {
+            case .conflictMerged(let salvaged) where salvaged > 0:
+                let noun = salvaged == 1 ? "block" : "blocks"
+                self.workspace.banner = .init(message: "Merged \(salvaged) \(noun) from another device into \(doc.title)")
+            case .restored(let count):
+                let noun = count == 1 ? "block" : "blocks"
+                self.workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
+            case .externallyReloaded:
+                self.workspace.refreshTitleCache(from: doc)
+            case .conflictMerged, .noteworthyNothing:
+                break
             }
+            self.workspace.rescan()
         }
-        NSFileCoordinator.addFilePresenter(presenter)
-        filePresenter = presenter
         workspace.registerOpenURL(url)
     }
 
-    private func removeFilePresenter() {
-        if let filePresenter {
-            NSFileCoordinator.removeFilePresenter(filePresenter)
-            if let url = filePresenter.presentedItemURL {
-                workspace.unregisterOpenURL(url)
-            }
-        }
-        filePresenter = nil
-    }
-
-    private func handlePresentedFileChange() async {
-        guard let doc = openDocument else { workspace.rescan(); return }
-        try? await Task.sleep(for: .milliseconds(250))
-        guard !Task.isCancelled, openDocument === doc else { return }
-
-        let url = doc.url
-        // iCloud often delivers the `.md` and a sibling
-        // `.history/<rel>/<other-device>.jsonl` in the same burst — by the
-        // time the presenter wakes, we may have new log entries to act on
-        // even if the `.md` hash hasn't changed. Re-run reconcile on every
-        // wakeup; the engine is idempotent (already-live hashes produce no
-        // inserts; already-logged hashes produce no observations) so back-
-        // to-back calls cost just a journal read.
-        defer { reconcileOpenDocumentAgainstLog(doc) }
-
-        // Auto-merge any unresolved iCloud conflict versions before falling
-        // back to the echo/stomp/external-edit branching. When the resolver
-        // mutated the live `doc` in place, reseed per-doc state (mtime,
-        // title cache) and surface the banner. Clamshell records the merged
-        // bytes in its disk-content history internally.
+    private func removePresenter() {
+        guard let handle = presenterHandle else { return }
         if let clamshell = workspace.clamshell {
-            do {
-                let resolution = try await clamshell.resolveConflictVersions(
-                    at: url,
-                    againstLive: doc
-                )
-                if resolution.liveDocumentMutated {
-                    // Mtime / title cache / rescan flow through `didSave`,
-                    // which `write(_:patch:)` (inside `resolveConflictVersions`)
-                    // fires after the file write lands.
-                    let noun = resolution.salvaged == 1 ? "block" : "blocks"
-                    workspace.banner = .init(message: "Merged \(resolution.salvaged) \(noun) from another device into \(doc.title)")
-                    return
-                }
-            } catch {
-                Diag.merge.error("presenter resolve failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
+            clamshell.removePresenter(handle)
         }
-
-        guard let clamshell = workspace.clamshell else { workspace.rescan(); return }
-        switch clamshell.classifyDiskContent(at: url, expectingModificationDate: doc.modificationDate) {
-        case .unchanged:
-            workspace.rescan()
-        case .echo:
-            openDocument?.modificationDate = workspace.modificationDate(for: url)
-            workspace.rescan()
-        case .stomp:
-            // Reverted to a prior state we've seen on disk → likely an iCloud
-            // Drive stomp. Re-save our in-memory authoritative copy, unless a
-            // save is in flight or fresh dirty edits are pending (the
-            // upcoming debounce save will overwrite anyway).
-            if clamshell.isQuiescent(at: url), let doc = openDocument {
-                Task { await clamshell.flush(doc) }
-            }
-            workspace.rescan()
-        case .external:
-            // Genuinely new content from outside Hunch. Reload only if no
-            // unsaved in-memory edits would be lost. Swap the tree in place
-            // via `replaceChildren` so the editor's `EditorState` keeps its
-            // reference to the same Document instance — `didReplaceChildren`
-            // fires inside, revalidating `state.cursor` / `state.selection`
-            // against the freshly-parsed BlockIDs.
-            guard clamshell.isQuiescent(at: url), let doc = openDocument else { workspace.rescan(); return }
-            do {
-                let reloaded = try workspace.loadDocument(at: url)
-                doc.replaceChildren(reloaded.children)
-                doc.modificationDate = reloaded.modificationDate
-                workspace.refreshTitleCache(from: doc)
-                workspace.rescan()
-            } catch {
-                workspace.error = "Failed to reload external changes: \(error.localizedDescription)"
-            }
-        case .unreadable:
-            workspace.rescan()
+        if let url = openDocument?.url {
+            workspace.unregisterOpenURL(url)
         }
-    }
-}
-
-// MARK: - File presenter shim
-
-final class DocumentFilePresenter: NSObject, NSFilePresenter {
-    let presentedItemURL: URL?
-    let presentedItemOperationQueue = OperationQueue.main
-    private let onChange: @Sendable () -> Void
-
-    init(url: URL, onChange: @escaping @Sendable () -> Void) {
-        self.presentedItemURL = url
-        self.onChange = onChange
-        super.init()
-    }
-
-    func presentedItemDidChange() {
-        onChange()
-    }
-
-    func presentedItemDidMove(to newURL: URL) {
-        onChange()
+        presenterHandle = nil
     }
 }
 

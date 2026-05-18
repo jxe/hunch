@@ -60,8 +60,8 @@ extension WorkspaceWindow: EditorHost {
         return workspace.moveSubpageToTrash(relativePath: pageID)
     }
 
-    func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) -> Bool {
-        appendToSubpage(relativePath: pageID, blocks: blocks)
+    func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool {
+        await appendToSubpage(relativePath: pageID, blocks: blocks)
     }
 
     func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget], _ pick: @escaping (MoveDestination?) -> Void) {

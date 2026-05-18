@@ -67,8 +67,10 @@ extension Clamshell {
     /// `doc` was mutated structurally by something other than the editor's
     /// op pipeline (reconcile splice, manual restore) and the journal is
     /// already correct — only the `.md` is stale. Arm a debounced save
-    /// without logging.
-    public func markDirty(_ doc: Document) {
+    /// without logging. Internal: outside callers go through
+    /// `documentDidChange(ops:in:)` (with empty ops for the "no new log
+    /// info" case).
+    func markDirty(_ doc: Document) {
         scheduleDebouncedSave(for: doc, logTask: nil)
     }
 

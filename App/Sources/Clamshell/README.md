@@ -96,7 +96,7 @@ A `Patch` is a batch of `add` / `purge` entries (see
 the three callers' natural shapes onto the unified type:
 
 - `Patch.adds(from blocks: [Block])` — full-doc walks (used by
-  `writeExternal`).
+  `write(_:patch:)` and `append(_:toPage:)`).
 - `Patch.adds(from observations: [PatchEngine.Observation])` — engine
   lifts from reconcile.
 - `Patch.from(ops: [EditorOp])` — editor structural diffs.
@@ -107,7 +107,8 @@ in one batched write. No write-time dedup: every entry emits a record.
 Duplicate `add`s for the same hash are harmless — intent is a
 latest-`(counter, deviceID)`-wins fold, so the union collapses them to
 the same intent at read time. The log just gets a little chattier on
-the rare `writeExternal`-style full-doc-walk callers.
+the rare full-doc-walk callers (`write(_:patch:)` after a conflict
+merge, `append(_:toPage:)` for subpage drops).
 
 ### Journal
 
@@ -176,19 +177,15 @@ throwaway Document, and returns:
 - **`summary`** — restored hashes / lifted hashes / unrestorable
   entries for banners and diagnostics.
 
-`Clamshell.loadAndReconcile(at:)` composes this with file I/O, log
-apply (awaited), and a debounced save (if anything was spliced). One
-function for the host's open-doc path; no `isClean` gate inside, no
-live-doc mutation. The output Document is fresh, identity is the
-host's to assign.
-
-The presenter-wakeup path is different: it must update the live
-`Document` in place to preserve the editor's selection/cursor state,
-so the host calls `Clamshell.reconcile(liveDoc:)` (see
-[Clamshell+Reconcile.swift](Clamshell+Reconcile.swift)), which
-internally gates on `isQuiescent(at:)` and calls
-`PatchEngine.apply(_:to:)` on the live doc. The engine assumes
-`doc.children == parsed(.md)`, only true when nothing is pending.
+Two methods on `Clamshell` cover the two paths. `reconcile(at:)` is
+the host's open-doc path — loads from disk, parses, reconciles,
+returns a fresh Document; the "page was quiescent" precondition holds
+by construction (we just loaded). `reconcileLive(_:)` is the
+presenter-wakeup / periodic path — mutates the live `Document` in
+place to preserve the editor's selection/cursor state, gates on
+`isQuiescent(at:)`, and returns `.deferred` (rather than an empty
+summary) when the gate fires so the caller can retry after `flush(_:)`.
+Either way, log apply is awaited strictly before the markDirty fires.
 
 ### Conflict merge (iCloud sibling alternates)
 
@@ -245,12 +242,14 @@ let trashed = try await clamshell.listTrashedPages()
 let lost = await clamshell.listLostBlocks()
 
 // Open + reconcile in one step (host's open-doc path; fresh Document).
-let (doc, summary) = try await clamshell.loadAndReconcile(at: url)
-if summary.didChange { /* banner: "Restored N blocks..." */ }
+let (doc, summary) = try await clamshell.reconcile(at: url)
+if !summary.restoredHashes.isEmpty { /* banner: "Restored N blocks..." */ }
 
 // Presenter-wakeup / re-reconcile path (mutates the live Document in
-// place to preserve editor state). Gated internally on `isQuiescent`.
-let summary = await clamshell.reconcile(liveDoc: doc)
+// place to preserve editor state). Returns `.deferred` if not quiescent.
+if case .completed(let summary) = try await clamshell.reconcileLive(doc) {
+    // ...
+}
 
 // Restore one lost or purged block (host passes `openDocument` so the
 // splice mutates the live doc when the source page is open).
@@ -268,11 +267,11 @@ existing instance and build a new one.
 | Group | Methods |
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)` |
-| Read | `scan()`, `loadDocument(at:)`, `loadAndReconcile(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
+| Read | `scan()`, `loadDocument(at:)`, `loadDocumentTitle(at:)`, `readRawText(at:)` |
 | Editor-driven persistence | `documentDidChange(ops:in:)`, `flush(_:)`, `isQuiescent(at:)` |
-| Reconcile + restore | `reconcile(liveDoc:)`, `restore(_:liveDoc:)` (the host used to orchestrate this inline; lives on Clamshell now) |
+| Reconcile + restore | `reconcile(at:)`, `reconcileLive(_:)`, `restore(_:liveDoc:)` (the host used to orchestrate this inline; lives on Clamshell now) |
 | Configuration | `subpageTitleResolver`, `didSave` (set once by the host) |
-| External write | `writeExternal(_:)` for callers that didn't flow through `documentDidChange` (conflict merge, appending to a non-open subpage). Fires `didSave` after the write so callers get the same per-doc bookkeeping (mtime, title cache, page rescan) as the editor save path. |
+| External write | `write(_:patch:)` for callers that didn't flow through `documentDidChange` (conflict merge, restoring into a closed page). Awaits log-then-file atomically. `append(_:toPage:)` for appending blocks to a non-open subpage. Both fire `didSave` after the write so callers get the same per-doc bookkeeping (mtime, title cache, page rescan) as the editor save path. |
 | Disk classification | `classifyDiskContent(at:expectingModificationDate:)` → `DiskClassification` (`.unchanged / .echo / .stomp / .external / .unreadable`) |
 | Create | `createPage(title:requestedPath:blocks:)` |
 | Search | `searchPages(in:query:excluding:)` |
@@ -283,7 +282,7 @@ existing instance and build a new one.
 | Metadata | `homeRelativePath` (read/write), `root` |
 
 `loadDocument(at:)`, debounced editor saves (via `documentDidChange` /
-`flush(_:)`), and `writeExternal(_:)` all seed the internal per-URL
+`flush(_:)`), `write(_:patch:)`, and `append(_:toPage:)` all seed the internal per-URL
 content-hash ring buffer that `classifyDiskContent` reads — so the
 file presenter can tell our own writes echoing back (`.echo`) from an
 iCloud rollback to an earlier state (`.stomp`) from a genuine external
@@ -306,7 +305,7 @@ device-hash cache short-circuiting duplicates: callers either filter
 upstream (the editor's `BlockTreeDiff` only emits ops for structural
 changes; reconcile's `unloggedObservations` filters against journal
 intent) or accept a small amount of log bloat (full-doc-walk callers
-like `writeExternal` after a conflict merge). Intent is unchanged —
+like `write(_:patch:)` after a conflict merge). Intent is unchanged —
 duplicate `add`s for the same hash resolve to the same alive intent at
 read time, so chattier logs are correctness-equivalent.
 
@@ -331,9 +330,9 @@ beat that add in the union.
 
 **Bare-md and external edits are absorbed.** `reconcile()` emits an
 `Observation` for any block present in `doc` but absent from the
-journal. The open-doc path (`loadAndReconcile`) folds these into the
-same Patch that carries unrestorable quarantines, applied as one log
-write. A `.md` opened with no `.history/` dir gets fully logged on
+journal. `Clamshell.reconcile(at:)` / `reconcileLive(_:)` folds these
+into the same Patch that carries unrestorable quarantines, applied as
+one log write. A `.md` opened with no `.history/` dir gets fully logged on
 first reconcile; a block an external editor wrote gets logged on the
 next file-presenter wakeup.
 
@@ -355,21 +354,23 @@ force-saves, and drains the per-URL coordinator — for blur, scenePhase
 backgrounding, navigation-away, app shutdown. Post-save bookkeeping
 (mtime refresh, title cache, page rescan) fires through the `didSave`
 callback the host wires once at startup — also fired by
-`writeExternal` so closed-doc paths get the same bookkeeping for free.
+`write(_:patch:)` and `append(_:toPage:)` so closed-doc paths get the
+same bookkeeping for free.
 `isQuiescent(at:)` lets the file-presenter / reconcile paths gate on
 "no debounce armed, no log apply in flight, no save in flight".
 
-**`writeExternal(_:)` is the escape hatch.** It bypasses the
-coalescer AND writes a fire-and-forget recovery-log catch-up, then
-fires `didSave` so caller-side bookkeeping (mtime, title cache, page
-rescan) happens automatically; use it when the next operation depends
-on the file being on disk now AND the caller didn't flow through the
-editor op stream — conflict merge, restoring a lost block into a
-closed page (via `Clamshell.restore`), appending blocks to a non-open
-subpage. The internal coalesced `save` path that
-`documentDidChange` schedules deduplicates concurrent writes per URL —
-if a write is already in flight, the new snapshot replaces any pending
-one and is written after the in-flight write completes.
+**`write(_:patch:)` and `append(_:toPage:)` are the non-editor write
+paths.** They bypass the debounce coalescer (the caller wants the file
+on disk now) and sequence the log apply strictly before the file write
+so the at-or-ahead invariant holds across crashes. Use `write` when
+you have a full new Document and an accompanying patch (conflict
+merge; restoring lost/purged blocks into a closed page). Use `append`
+when you only have new blocks to add to the end of a page (drop on a
+subpage row). Both fire `didSave` for the per-doc bookkeeping. The
+internal coalesced `save` path that `documentDidChange` schedules
+deduplicates concurrent writes per URL — if a write is already in
+flight, the new snapshot replaces any pending one and is written
+after the in-flight write completes.
 
 **Editor mutations stream as ops.** Each `EditorView.mutate(_:_:)`
 transaction derives a pre→post `[EditorOp]` diff via

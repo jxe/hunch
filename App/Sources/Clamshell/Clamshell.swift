@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Editor
 
 /// Hunch's persistent markdown format and its API.
@@ -135,13 +136,21 @@ public final class Clamshell {
     /// load/save/write that goes through Clamshell; consulted by
     /// `classifyDiskContent` so the presenter callback can distinguish
     /// "our own write echoed back" / "iCloud rolled us back" / "an external
-    /// editor changed the file".
-    private var contentHistory: [URL: [Int]] = [:]
+    /// editor changed the file". Hash is a SHA-256 prefix of UTF-8 bytes —
+    /// stable across launches (Swift's `String.hashValue` is per-process
+    /// randomized and would misclassify on a presenter wakeup that races a
+    /// reseed after relaunch).
+    private var contentHistory: [URL: [String]] = [:]
     private static let historyDepth = 5
+
+    private static func stableHash(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).prefix(8)
+            .map { String(format: "%02x", $0) }.joined()
+    }
 
     func recordDiskContent(_ text: String, at url: URL) {
         var history = contentHistory[url] ?? []
-        let hash = text.hashValue
+        let hash = Self.stableHash(text)
         if history.first == hash { return }
         history.insert(hash, at: 0)
         if history.count > Self.historyDepth { history.removeLast(history.count - Self.historyDepth) }
@@ -174,7 +183,7 @@ public final class Clamshell {
             if mtime == expected { return .unchanged }
         }
         guard let text = try? files.read(url) else { return .unreadable }
-        let hash = text.hashValue
+        let hash = Self.stableHash(text)
         let history = contentHistory[url] ?? []
         if history.first == hash { return .echo }
         if history.contains(hash) { return .stomp }
@@ -236,35 +245,25 @@ public final class Clamshell {
         didSave?(document)
     }
 
-    /// Append `blocks` to the end of `relativePath`. The file is written
-    /// synchronously (caller gets durability on return) and the new
-    /// blocks are logged in the background. Carved out as a named
-    /// operation because it's the one path called from a synchronous
-    /// editor-host protocol method (`onAppendToSubpage`) and can't
-    /// await — the file-before-log gap here is brief and recovered by
-    /// the observation lifter on next reconcile.
+    /// Append `blocks` to the end of `relativePath`. Logs the appended
+    /// blocks, then writes the file — the at-or-ahead invariant holds
+    /// across crashes. Used by the editor's drop-on-subpage path via the
+    /// async `EditorHost.onAppendToSubpage`.
     ///
     /// Returns the loaded-and-mutated `Document` so callers can splice
     /// the appended content into any open window of the same URL.
     @MainActor
     @discardableResult
-    public func append(_ blocks: [Block], toPage relativePath: String) throws -> Document {
+    public func append(_ blocks: [Block], toPage relativePath: String) async throws -> Document {
         let url = self.url(for: relativePath)
         let doc = try loadDocument(at: url)
         doc.transaction(name: "Append to subpage") { d in
             d.insertSubtrees(blocks, at: DropPath(parent: nil, position: d.children.count))
         }
+        try await log.apply(Patch.adds(from: blocks), to: relativePath)
         let newText = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: subpageTitleResolver)
         try files.write(newText, to: url)
         recordDiskContent(newText, at: url)
-        let patch = Patch.adds(from: blocks)
-        Task { [log, relativePath] in
-            do {
-                try await log.apply(patch, to: relativePath)
-            } catch {
-                Diag.log.error("append log apply failed page=\(relativePath, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
-        }
         didSave?(doc)
         return doc
     }

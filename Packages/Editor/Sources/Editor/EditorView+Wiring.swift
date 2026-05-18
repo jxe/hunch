@@ -38,7 +38,7 @@ extension EditorView {
                 host.onRequestMoveDestination(targetIDs, inDoc) { destination in
                     switch destination {
                     case .page(let pageID):
-                        moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
+                        Task { await moveBlocks(ids: targetIDs, intoSubpagePath: pageID) }
                     case .block(let parentID):
                         moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
                     case nil:

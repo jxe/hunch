@@ -46,40 +46,56 @@ extension Clamshell {
         case unparseable
     }
 
-    /// Reconcile `url`'s on-disk state against its journal in one step.
-    ///
-    /// - Pass `liveDoc: nil` for the open-doc path. Loads from disk,
-    ///   parses, reconciles, returns a fresh Document. Throws on read
-    ///   failure.
-    /// - Pass `liveDoc: doc` for the presenter-wakeup / periodic path.
-    ///   Gated on `isQuiescent(at:)` — the engine assumes
-    ///   `doc.children == parsed(.md)`, only true on a settled page —
-    ///   then mutates `doc` in place and returns it.
-    ///
-    /// Either way: any auto-restore subtrees are spliced into the doc,
-    /// bare-md / external observations are lifted as `.add` records, and
-    /// hashes the engine can't restore are quarantined. The catch-up
-    /// patch lands atomically before return (log strictly before .md), so
-    /// a markDirty fires only after the log is durable.
-    @discardableResult
-    public func reconcile(
-        at url: URL,
-        liveDoc: Document? = nil
-    ) async throws -> (Document, PatchEngine.ReconcileSummary) {
-        let doc: Document
-        if let liveDoc {
-            guard isQuiescent(at: url) else {
-                let empty = PatchEngine.ReconcileSummary(restoredHashes: [], lifted: [], unrestorable: [])
-                return (liveDoc, empty)
-            }
-            doc = liveDoc
-        } else {
-            let raw = try files.read(url)
-            let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            recordDiskContent(raw, at: url)
-            doc = Document(url: url, children: BlockParser.parse(raw), modificationDate: mtime)
-        }
+    /// Outcome of `reconcileLive(_:)`. Splitting out `.deferred` makes
+    /// the "page wasn't quiescent" case visible at the type level —
+    /// callers can decide to retry after a `flush(_:)` instead of
+    /// silently consuming an empty summary.
+    public enum LiveReconcileOutcome: Sendable {
+        case completed(PatchEngine.ReconcileSummary)
+        /// Page wasn't quiescent (debounce armed, log apply in flight,
+        /// or save in flight). Reconcile did nothing; caller may retry
+        /// after `flush(_:)`.
+        case deferred
+    }
 
+    /// Open-doc reconcile path: load `url` from disk, parse, reconcile
+    /// against the journal, and return a fresh `Document`. Any
+    /// auto-restore subtrees are spliced into the doc, bare-md /
+    /// external observations are lifted as `.add` records, and hashes
+    /// the engine can't restore are quarantined. The catch-up patch
+    /// lands atomically before return (log strictly before .md), so a
+    /// markDirty fires only after the log is durable. Throws on read
+    /// failure.
+    @discardableResult
+    public func reconcile(at url: URL) async throws -> (Document, PatchEngine.ReconcileSummary) {
+        let raw = try files.read(url)
+        let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        recordDiskContent(raw, at: url)
+        let doc = Document(url: url, children: BlockParser.parse(raw), modificationDate: mtime)
+        let summary = try await runReconcile(on: doc)
+        return (doc, summary)
+    }
+
+    /// Presenter-wakeup / periodic reconcile path: mutate `doc` in
+    /// place. Gated on `isQuiescent(at:)` — the engine assumes
+    /// `doc.children == parsed(.md)`, only true on a settled page. When
+    /// the gate fires, returns `.deferred` so the caller can choose to
+    /// retry after `flush(_:)` instead of consuming an empty result.
+    @discardableResult
+    public func reconcileLive(_ doc: Document) async throws -> LiveReconcileOutcome {
+        guard isQuiescent(at: doc.url) else {
+            Diag.merge.log("reconcileLive deferred url=\(doc.url.lastPathComponent, privacy: .public)")
+            return .deferred
+        }
+        let summary = try await runReconcile(on: doc)
+        return .completed(summary)
+    }
+
+    /// Shared body: run the pure reconciliation, apply the catch-up
+    /// patch, splice inserts, mark the file dirty. Caller has already
+    /// decided which Document to operate on.
+    private func runReconcile(on doc: Document) async throws -> PatchEngine.ReconcileSummary {
+        let url = doc.url
         let rel = relativePath(of: url)
         let journal = log.readJournal(page: rel)
         let intent = PatchEngine.intent(from: journal)
@@ -106,12 +122,11 @@ extension Clamshell {
             Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
         }
 
-        let summary = PatchEngine.ReconcileSummary(
+        return PatchEngine.ReconcileSummary(
             restoredHashes: recon.restoredHashes,
             lifted: recon.toAppend.map(\.hash),
             unrestorable: recon.unrestorable
         )
-        return (doc, summary)
     }
 
     /// Restore a single lost or purged block into its source page. Pass
@@ -231,7 +246,7 @@ extension Clamshell {
             // Closed page: log the follow-up (purges-for-lost or
             // adds-for-purged) and the doc-blocks observation in one
             // batched apply, then write the merged .md. The doc-blocks
-            // catch-up matches the prior `writeExternal` behavior so
+            // catch-up matches the `write(_:patch:)` full-doc-walk shape so
             // any bare-md absorbed at load time reaches the journal.
             let combined = Patch(entries: Patch.adds(from: doc.children).entries + followUp.entries)
             do {

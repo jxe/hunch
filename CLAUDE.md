@@ -37,12 +37,13 @@ user-picked workspace folder.
     `RecoveryLog` (per-device JSONL appender + cross-device read union;
     every write goes through one primitive, `apply(Patch, to:)`),
     and `TrashStore` privately and exposes a single API:
-    `scan / loadDocument / loadAndReconcile / documentDidChange /
-    flush / save / writeExternal / applyPatch / createPage /
-    moveToTrash / listTrashedPages / restorePage / listLostBlocks /
-    listPurgedBlocks / resolveConflictVersions / classifyDiskContent /
-    isClean`, plus `relativePath(of:)` and `url(for:)` for path
-    conversion. **Editor-driven persistence** is
+    `scan / loadDocument / reconcile / reconcileLive /
+    documentDidChange / flush / write / append / applyPatch /
+    createPage / moveToTrash / listTrashedPages / restorePage /
+    listLostBlocks / listPurgedBlocks / resolveConflictVersions /
+    classifyDiskContent / isQuiescent / installPresenter /
+    removePresenter`, plus `relativePath(of:)` and `url(for:)` for
+    path conversion. **Editor-driven persistence** is
     `documentDidChange(ops:in:)` (called on every mutation — projects
     ops to a `Patch`, spawns a tracked log-apply Task, (re)arms the
     per-URL 600ms debounce) and `flush(_:)` (await latest log task +
@@ -53,10 +54,9 @@ user-picked workspace folder.
     reconcile heals on next open. The host sets `subpageTitleResolver`
     and `didSave` once via `Workspace.makeClamshell`; everything else
     is internal — no debounce/dirty plumbing on the host. **Non-editor
-    writes** (`writeExternal`) fire a fire-and-forget log catch-up via
-    `apply(Patch.adds(from: blocks))` for callers that didn't flow
-    through the editor op stream (conflict merge,
-    restore-into-closed-page, etc.). `moveToTrash`
+    writes** (`write(_:patch:)` for conflict merge + restore-into-
+    closed-page; `append(_:toPage:)` for drop-on-subpage) sequence
+    log-then-file atomically, preserving the at-or-ahead invariant. `moveToTrash`
     clears `homeRelativePath` if it matched and moves the page's
     `.history/<rel>/` dir along with the `.md`. Also where the
     markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown

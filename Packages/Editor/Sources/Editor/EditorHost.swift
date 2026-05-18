@@ -80,7 +80,9 @@ public protocol EditorHost: AnyObject {
 
     /// Append blocks to the end of the page at `pageID`. Returns `true` on
     /// success. Used by drop-on-subpage to move dragged blocks into a child page.
-    func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) -> Bool
+    /// Async so the host can sequence log-then-file durability before returning —
+    /// the editor's local-block-removal only fires on success.
+    func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool
 
     /// Ask the host to present its picker for a "Move to" action. The editor
     /// passes the moving block ids plus a list of in-document destinations

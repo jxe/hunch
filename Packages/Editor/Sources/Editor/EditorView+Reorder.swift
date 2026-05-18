@@ -241,7 +241,7 @@ extension EditorView {
             case .intoSubpage(_, let path):
                 // Cross-document copy is out of scope for now — Option drop
                 // onto a subpage falls through to a move.
-                moveBlocks(ids: ids, intoSubpagePath: path)
+                Task { await moveBlocks(ids: ids, intoSubpagePath: path) }
             }
         }
     }
@@ -529,7 +529,7 @@ extension EditorView {
         case .asLastChildOf(let parentID):
             moveBlocks(ids: payload.ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
         case .intoSubpage(_, let path):
-            moveBlocks(ids: payload.ids, intoSubpagePath: path)
+            Task { await moveBlocks(ids: payload.ids, intoSubpagePath: path) }
         }
     }
 
@@ -696,14 +696,14 @@ extension EditorView {
     /// destination page (cross-document write via `onAppendToSubpage`) and
     /// remove them from this document. Tree shape and relative nesting are
     /// preserved verbatim — the destination receives the subtrees as-is.
-    func moveBlocks(ids: [BlockID], intoSubpagePath path: String) {
+    func moveBlocks(ids: [BlockID], intoSubpagePath path: String) async {
         let ordered = ids.sorted { (a, b) in
             (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
         }
         let movingBlocks = ordered.compactMap { document.find($0) }
         guard !movingBlocks.isEmpty else { return }
 
-        guard host.onAppendToSubpage(path, movingBlocks) else { return }
+        guard await host.onAppendToSubpage(path, movingBlocks) else { return }
 
         // Capture a cursor target near the source BEFORE removing the blocks,
         // so the nav cursor stays where the user moved from rather than
