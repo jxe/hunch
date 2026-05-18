@@ -274,8 +274,8 @@ editor wrote). Callers don't have to seed anything.
 
 Engine orchestration (`reconcile`, `reconcileLive`, conflict-merge
 wakeups, save chain) is internal to the module — see the Swift
-docstrings in `Clamshell.swift`, `Clamshell+Saving.swift`,
-`Clamshell+Reconcile.swift`, and `Clamshell+Presenter.swift`.
+docstrings in `Clamshell.swift`, `Clamshell+Reconcile.swift`, and
+`Clamshell+Presenter.swift`.
 
 ---
 
@@ -416,11 +416,9 @@ append" — `NSFileCoordinator` handles that.
 
 - [Clamshell.swift](Clamshell.swift) — the umbrella API. Orchestrates
   reads/writes, hands the engine its inputs, applies the engine's
-  outputs.
-- [Clamshell+Saving.swift](Clamshell+Saving.swift) — editor-driven
-  save lifecycle: commit-time atomic primitive `documentDidChange`
-  (log apply + .md write inside one Task), per-URL Task chain so
-  concurrent commits land in order, `flush(_:)` drain.
+  outputs. Also owns the per-URL save chain: `documentDidChange`
+  (commit-time atomic log + .md write), `scheduleSave` (in-place
+  .md re-save for engine paths), `flush(_:)` (await durability).
 - [Clamshell+Reconcile.swift](Clamshell+Reconcile.swift) — engine
   orchestration: open-doc reconcile, live-doc reconcile for presenter
   wakeups, and `restore(_:liveDoc:)` for the Recover sheet.

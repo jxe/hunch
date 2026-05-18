@@ -121,12 +121,15 @@ public protocol EditorHost: AnyObject {
     /// from the host's side.
     func documentDidChange(ops: [EditorOp], on post: Document)
 
-    /// Force-save `document`. Editor calls this on focus-loss so user input
-    /// doesn't sit in memory until app suspension; the host also calls it
-    /// directly from scene-phase / navigation-away paths. The doc is passed
-    /// explicitly (symmetric with `documentDidChange(ops:on:)`) so the host
-    /// doesn't have to infer "current doc" from its own state.
-    /// Async so callers that care about durability can await it.
+    /// Await durability of any writes already in flight for `document`. With
+    /// the commit-time atomic save model, every `documentDidChange` schedules
+    /// its own log + .md write — `flush` doesn't *trigger* a save, it blocks
+    /// until pending ones complete. Editor calls this on focus-loss (so the
+    /// commit that just fired is durable before the row unmounts) and the
+    /// host calls it directly from scene-phase / navigation-away / close
+    /// paths. The doc is passed explicitly (symmetric with
+    /// `documentDidChange(ops:on:)`) so the host doesn't have to infer
+    /// "current doc" from its own state.
     func flush(_ document: Document) async
 
     /// Serialize blocks into a string the editor will write to the system
@@ -150,10 +153,4 @@ public protocol EditorHost: AnyObject {
     /// Resolve an image block's `source` to a file URL the renderer can load.
     /// Nil → renderer shows a missing-image placeholder.
     var imageURLResolver: ImageURLResolver? { get }
-}
-
-extension EditorHost {
-    /// Default for hosts that don't care about persistence — keeps test
-    /// fakes and other minimal embedders source-compatible.
-    public func documentDidChange(ops: [EditorOp], on post: Document) {}
 }

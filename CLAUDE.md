@@ -230,7 +230,7 @@ non-text parts (markers, paddings) fall through to the row's
 `cursorIsOnFirstLine()` / `cursorIsOnLastLine()` consult NSLayoutManager
 so wrapped paragraphs still allow intra-block arrow nav in the middle.
 
-**Save is commit-time atomic on `Clamshell`** ([`Clamshell+Saving.swift`](App/Sources/Clamshell/Clamshell+Saving.swift)):
+**Save is commit-time atomic on `Clamshell`** ([`Clamshell.swift`](App/Sources/Clamshell/Clamshell.swift)):
 `documentDidChange(ops:in:)` is the single primitive — applies the op
 batch to the recovery log when non-empty, then serializes and writes
 the `.md`, in one awaited sequence per call. Concurrent calls for the

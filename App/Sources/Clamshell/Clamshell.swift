@@ -65,8 +65,8 @@ public final class Clamshell {
     /// Per-URL save chain head. Each `documentDidChange` spawns a Task that
     /// awaits the previous chain entry for that URL before running its own
     /// log apply + .md write, so concurrent commits land in order. Absent ⇒
-    /// no work pending (i.e. `isQuiescent(at:)`). See `Clamshell+Saving.swift`.
-    @ObservationIgnored var saveChain: [URL: Task<Void, Never>] = [:]
+    /// no work pending (i.e. `isQuiescent(at:)`).
+    @ObservationIgnored private var saveChain: [URL: Task<Void, Never>] = [:]
 
     public init(root: URL) {
         self.root = root
@@ -338,22 +338,88 @@ public final class Clamshell {
     }
 
     // MARK: - Pages: write
+    //
+    // Save model is commit-time atomic: every `documentDidChange(ops:in:)`
+    // applies its op batch to the recovery log and writes the .md file as
+    // one awaited sequence, log strictly before file. Concurrent calls for
+    // the same URL are chained on `saveChain[url]` — each spawned Task
+    // awaits the previous before its own log + .md write, so a fast burst
+    // of commits (typing → focus blur → navigation) lands in order. No
+    // debounce, no separate per-op log task: the editor's commit points
+    // (`commitLiveText` → `afterCommit` hook for typing; `mutate(_:_:)` for
+    // structural ops) are themselves the save events.
 
-    /// Coalesced async save (autosave path). Document is `@MainActor`-isolated,
-    /// so we serialize on the calling actor (MainActor) before handing the
-    /// String + URL across to the save coordinator. Called internally by
-    /// `Clamshell+Saving.swift` — callers from outside use
-    /// `documentDidChange` or `flush(_:)`.
-    ///
-    /// Does NOT touch the recovery log. Editor-driven structural changes
-    /// already flowed through `EditorView.mutate(_:_:)` →
-    /// `EditorHost.documentDidChange` → log append, so the journal is
-    /// current by the time the debounce fires. Bare-md and external-editor
-    /// cases are absorbed at reconcile time (`PatchEngine.unloggedObservations`
-    /// → `appendObservations`).
+    /// Editor mutated `doc` and produced these `ops`. Applies the patch
+    /// to the recovery log (when non-empty), then serializes the current
+    /// `.md` and writes it. Calls for the same URL are chained — the
+    /// spawned Task awaits any pending chain head for that URL before its
+    /// own work, so rapid-fire commits land in order. Sync entry so the
+    /// editor can call it from the mutation-commit thread without
+    /// ceremony.
+    public func documentDidChange(ops: [EditorOp], in doc: Document) {
+        let patch: Patch = ops.isEmpty ? .empty : Patch.from(ops: ops)
+        enqueueSave(doc, patch: patch)
+    }
+
+    /// Clamshell-internal "save this doc": chains a `.md` write onto the
+    /// per-URL save queue with no log apply. Used by paths that mutated
+    /// the live doc in place without going through the editor —
+    /// reconcile's auto-restore splice, the manual restore splice,
+    /// anything that already wrote its own log entries directly. Distinct
+    /// name (vs. `documentDidChange`) because no editor actually changed
+    /// anything; Clamshell did, and the journal is already current.
+    func scheduleSave(_ doc: Document) {
+        enqueueSave(doc, patch: .empty)
+    }
+
+    /// Await durability of any writes already in flight for `doc`. Does
+    /// not trigger a save — that's what `documentDidChange` is for. Used
+    /// on navigation / blur / scenePhase / close to make sure the bytes
+    /// for the just-fired commit are on disk before the editor unmounts.
+    @discardableResult
+    public func flush(_ doc: Document) async -> Bool {
+        guard let pending = saveChain[doc.url] else { return true }
+        await pending.value
+        saveChain.removeValue(forKey: doc.url)
+        return true
+    }
+
+    /// True when no work is pending for `url`. The engine's reconcile and
+    /// presenter paths gate on this — they assume
+    /// `doc.children == parsed(.md)`, which is only true on a settled page.
+    func isQuiescent(at url: URL) -> Bool {
+        saveChain[url] == nil
+    }
+
+    private func enqueueSave(_ doc: Document, patch: Patch) {
+        let url = doc.url
+        let rel = relativePath(of: url)
+        let previous = saveChain[url]
+        let task = Task<Void, Never> { @MainActor [weak self] in
+            await previous?.value
+            guard let self else { return }
+            do {
+                if !patch.isEmpty {
+                    try await self.log.apply(patch, to: rel)
+                }
+                _ = try self.save(doc)
+                self.postSaveBookkeeping(doc)
+            } catch {
+                Diag.log.error("save failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
+        }
+        saveChain[url] = task
+    }
+
+    /// The actual on-disk write. Serializes `document.children` and writes
+    /// the bytes through `FileStore` (which wraps `NSFileCoordinator` to
+    /// avoid racing with iCloud sync). Does NOT touch the recovery log —
+    /// callers that own the log durability invariant (chain tasks,
+    /// `writeClosedPage`, `append(_:toPage:)`) apply log records first,
+    /// then call this.
     @MainActor
     @discardableResult
-    func save(_ document: Document) throws -> String {
+    private func save(_ document: Document) throws -> String {
         let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: { [weak self] rel in self?.title(for: rel) })
         let url = document.url
         try files.write(newText, to: url)
@@ -409,10 +475,9 @@ public final class Clamshell {
 
     /// Post-save hygiene: refresh the document's mtime from disk, update
     /// the title cache, and rescan the workspace if any of those changed
-    /// the entries surface. Called from every successful save path
-    /// (`documentDidChange` and `flush(_:)` via the per-URL chain in
-    /// `Clamshell+Saving.swift`, `writeClosedPage(_:patch:)`,
-    /// `append(_:toPage:)`).
+    /// the entries surface. Called from every successful save path (chain
+    /// task via `documentDidChange` / `scheduleSave`,
+    /// `writeClosedPage(_:patch:)`, `append(_:toPage:)`).
     @MainActor
     func postSaveBookkeeping(_ document: Document) {
         document.modificationDate = (try? document.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)

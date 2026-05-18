@@ -145,7 +145,7 @@ final class MyHost: EditorHost {
     func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func onNavigateBack() {}
     func documentDidChange(ops: [EditorOp], on post: Document) {}
-    func flush() async {}
+    func flush(_ document: Document) async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
     func onSaveImages(_ items: [PastedImage]) -> [String] { [] }
@@ -167,9 +167,10 @@ struct ContentView: View {
 }
 ```
 
-`documentDidChange` has a default no-op extension, so a minimal embedder
-can omit it (persistence only matters for hosts that have one). The
-other methods are required.
+All methods are required. `documentDidChange` is how the editor reports
+edits — silently dropping it would leave a host with no persistence,
+which is rarely what you want; if you really don't care, give it an
+empty body.
 
 That's a working editor. Most methods can be no-ops in early integration
 — the editor degrades gracefully (paste is single-paragraph-only, @-mention
@@ -388,11 +389,9 @@ where the host wants to append new content while honoring undo.
 ## Host protocol
 
 Hosts conform to `EditorHost` (class-bound, `@MainActor`). Each method
-is one extension point. Only `documentDidChange` has a default no-op
-(it's purely for persistence integration); the others must be
-implemented, which keeps it obvious from the host class which
-extension points are wired and which are stubbed out for early
-integration.
+is one extension point. All methods are required — keeps it obvious
+from the host class which extension points are wired and which are
+stubbed out for early integration.
 
 | Method | Signature | When it fires | Return semantics |
 |--------|-----------|---------------|------------------|
