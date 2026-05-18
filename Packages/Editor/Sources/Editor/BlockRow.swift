@@ -210,7 +210,7 @@ public struct BlockRow: View, Equatable {
     /// Resolved existence + titles for every workspace-page reference this
     /// row needs to render — the subpage's pageID for `.subpage` blocks,
     /// plus every inline page-link URL inside `block.text` (classified by
-    /// the host's `resolveWorkspacePageID`). Pre-resolved at the call site
+    /// the host's `resolvePageID`). Pre-resolved at the call site
     /// so page renames / deletes invalidate the row's `Equatable` `==` (the
     /// parent `lookupPage` closure isn't itself comparable). Inline-link
     /// entries are keyed by `URL.absoluteString`; subpage entries by the
@@ -765,7 +765,7 @@ public struct BlockRow: View, Equatable {
 /// Pre-resolve every workspace-page reference this row needs to render: the
 /// subpage pageID for `.subpage` blocks plus every inline workspace-page link
 /// URL inside the block's text. Inline-link URLs are classified by the host
-/// (`resolveWorkspacePageID`); the editor doesn't bake in a storage
+/// (`resolvePageID`); the editor doesn't bake in a storage
 /// convention. The result is the value `BlockRow` stores as `pageLookups`
 /// and compares in `==`, so a rename or delete of any referenced page
 /// changes the map for the rows that mention it (and only those rows) —
@@ -783,7 +783,7 @@ func resolvePageLookups(for block: Block, host: EditorHost) -> [String: PageLook
     }
     for run in block.text.runs {
         guard let url = run.link, !isExternalLinkURL(url) else { continue }
-        guard let pageID = host.resolveWorkspacePageID(from: url) else { continue }
+        guard let pageID = host.resolvePageID(from: url) else { continue }
         let key = url.absoluteString
         if result[key] == nil {
             result[key] = host.lookupPage(pageID)

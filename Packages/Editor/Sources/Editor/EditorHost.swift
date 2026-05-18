@@ -14,12 +14,12 @@ public enum PageLookup: Equatable, Hashable, Sendable {
 }
 
 /// Destination of an inline-link / subpage-row click in the editor. Subpage
-/// rows arrive as `.workspacePage(pageID)` (the editor already knows the
-/// id). Inline `[text](url)` clicks arrive as `.url(URL)` — the host
-/// classifies them (workspace page, external `http`/`https`, mail link,
-/// etc.) and routes accordingly.
+/// rows arrive as `.page(pageID)` (the editor already knows the id).
+/// Inline `[text](url)` clicks arrive as `.url(URL)` — the host classifies
+/// them (internal page, external `http`/`https`, mail link, etc.) and
+/// routes accordingly.
 public enum LinkTarget: Equatable, Hashable, Sendable {
-    case workspacePage(pageID: String)
+    case page(pageID: String)
     case url(URL)
 }
 
@@ -61,26 +61,28 @@ public protocol EditorHost: AnyObject {
     /// into broken subpage rows.
     func lookupPage(_ pageID: String) -> PageLookup
 
-    /// Classify a URL from an inline `[text](url)` link as a workspace page
+    /// Classify a URL from an inline `[text](url)` link as an internal page
     /// reference. Returns the host's pageID for that URL, or nil for
     /// external URLs (and for any URL the host doesn't consider an internal
     /// page reference). The host owns the storage convention — file paths,
     /// UUIDs, database keys — so this is the single hook the editor uses
     /// at render time (inline-link decoration) and at Cmd-K-on-link time
     /// (subpage creation from an existing link) to decide whether a URL
-    /// names a workspace page. Resolves relative URLs against whichever
+    /// names an internal page. Resolves relative URLs against whichever
     /// page is currently mounted in this host.
-    func resolveWorkspacePageID(from url: URL) -> String?
+    func resolvePageID(from url: URL) -> String?
 
     /// Persist a new subpage. `initialContent` is the body the editor wants the
     /// new page to start with (descendants of the source block); the host
     /// serializes it and prepends a title heading. Returns the host-assigned
     /// page id, or nil if creation failed.
-    func createSubpage(title: String, requestedID: String?, initialContent: [Block]?) -> String?
+    func createSubpage(title: String, requestedPageID: String?, initialContent: [Block]?) -> String?
 
     /// Read the page at `pageID` and return its blocks. Nil → couldn't load,
-    /// the calling action becomes a no-op.
-    func subpageContents(of pageID: String) -> [Block]?
+    /// the calling action becomes a no-op. Async because the host reads off
+    /// disk; the editor awaits inside a Task spawned from the key-handler
+    /// (matching the `absorbSubpage` pattern).
+    func subpageContents(of pageID: String) async -> [Block]?
 
     /// Absorb a subpage's content into its parent (Turn Into a non-page block):
     /// the editor inlines the loaded blocks at the subpage row's position and

@@ -3,18 +3,18 @@ import Editor
 
 /// Records and restores whole-page deletions inside `<workspace>/Trash/`.
 /// Block-level deletions are recorded in `RecoveryLog`, not here.
-public actor TrashStore {
+actor TrashStore {
     private let workspaceRoot: URL
     private let store: FileStore
 
-    public init(workspaceRoot: URL, store: FileStore = FileStore()) {
+    init(workspaceRoot: URL, store: FileStore = FileStore()) {
         self.workspaceRoot = workspaceRoot
         self.store = store
     }
 
     // MARK: - Listing
 
-    public func listEntries() throws -> [TrashEntry] {
+    func listEntries() throws -> [TrashEntry] {
         let trashDir = workspaceRoot.appendingPathComponent(FileStore.trashDirectoryName, isDirectory: true)
         guard FileManager.default.fileExists(atPath: trashDir.path) else { return [] }
         let resourceKeys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
@@ -50,7 +50,7 @@ public actor TrashStore {
     /// Move a page out of `.Trash/` back to its original relative path. Returns the
     /// restored URL on success.
     @discardableResult
-    public func restorePage(_ entry: TrashEntry) throws -> URL {
+    func restorePage(_ entry: TrashEntry) throws -> URL {
         let source = workspaceRoot.appendingPathComponent(entry.trashRelativePath)
         let originalRel = TrashStore.sourcePathFromTrashRelative(entry.trashRelativePath)
         let destination = TrashStore.uniqueDestination(

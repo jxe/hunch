@@ -10,48 +10,48 @@ import Editor
 /// A single record in a per-(device, page) log. Mirrors the on-disk JSONL
 /// `Wire` struct in `RecoveryLog`, but as a `Sendable` enum the engine and
 /// tests can construct directly without going through the file format.
-public enum LogRecord: Sendable, Hashable {
+enum LogRecord: Sendable, Hashable {
     case add(counter: UInt64?, hash: String, parent: String?, markdown: String, t: TimeInterval)
     case purge(counter: UInt64?, hash: String, t: TimeInterval)
 
-    public var hash: String {
+    var hash: String {
         switch self {
         case .add(_, let h, _, _, _): return h
         case .purge(_, let h, _): return h
         }
     }
 
-    public var counter: UInt64? {
+    var counter: UInt64? {
         switch self {
         case .add(let c, _, _, _, _): return c
         case .purge(let c, _, _): return c
         }
     }
 
-    public var t: TimeInterval {
+    var t: TimeInterval {
         switch self {
         case .add(_, _, _, _, let t): return t
         case .purge(_, _, let t): return t
         }
     }
 
-    public var isAdd: Bool {
+    var isAdd: Bool {
         if case .add = self { return true }
         return false
     }
 
-    public var isPurge: Bool {
+    var isPurge: Bool {
         if case .purge = self { return true }
         return false
     }
 }
 
 /// One device's per-page log.
-public struct DeviceLog: Sendable {
-    public let deviceID: String
-    public let records: [LogRecord]
+struct DeviceLog: Sendable {
+    let deviceID: String
+    let records: [LogRecord]
 
-    public init(deviceID: String, records: [LogRecord]) {
+    init(deviceID: String, records: [LogRecord]) {
         self.deviceID = deviceID
         self.records = records
     }
@@ -59,14 +59,14 @@ public struct DeviceLog: Sendable {
 
 /// Every device's per-page log, side-by-side. The engine takes a journal in,
 /// derives the intent state, and reconciles against the current doc.
-public struct LogJournal: Sendable {
-    public let devices: [DeviceLog]
+struct LogJournal: Sendable {
+    let devices: [DeviceLog]
 
-    public init(devices: [DeviceLog]) {
+    init(devices: [DeviceLog]) {
         self.devices = devices
     }
 
-    public static let empty = LogJournal(devices: [])
+    static let empty = LogJournal(devices: [])
 }
 
 // MARK: - Patch
@@ -82,55 +82,55 @@ public struct LogJournal: Sendable {
 // no device-id. Those are persistence-layer concerns minted at append time.
 
 /// A batch of `add` / `purge` entries to be applied to one page's log.
-public struct Patch: Sendable {
-    public enum Op: Sendable, Hashable { case add, purge }
+struct Patch: Sendable {
+    enum Op: Sendable, Hashable { case add, purge }
 
-    public struct Entry: Sendable, Hashable {
-        public let op: Op
-        public let hash: String
+    struct Entry: Sendable, Hashable {
+        let op: Op
+        let hash: String
         /// Parent hash at the moment this entry was authored. Meaningful
         /// for `.add` only.
-        public let parent: String?
+        let parent: String?
         /// Atomic-markdown serialization of the block. Meaningful for
         /// `.add` only.
-        public let markdown: String?
+        let markdown: String?
 
-        public init(op: Op, hash: String, parent: String? = nil, markdown: String? = nil) {
+        init(op: Op, hash: String, parent: String? = nil, markdown: String? = nil) {
             self.op = op
             self.hash = hash
             self.parent = parent
             self.markdown = markdown
         }
 
-        public static func add(hash: String, parent: String?, markdown: String) -> Entry {
+        static func add(hash: String, parent: String?, markdown: String) -> Entry {
             Entry(op: .add, hash: hash, parent: parent, markdown: markdown)
         }
 
-        public static func purge(hash: String) -> Entry {
+        static func purge(hash: String) -> Entry {
             Entry(op: .purge, hash: hash)
         }
     }
 
-    public let entries: [Entry]
-    public var isEmpty: Bool { entries.isEmpty }
+    let entries: [Entry]
+    var isEmpty: Bool { entries.isEmpty }
 
-    public init(entries: [Entry]) {
+    init(entries: [Entry]) {
         self.entries = entries
     }
 
-    public static let empty = Patch(entries: [])
+    static let empty = Patch(entries: [])
 
     /// Walk a block tree preorder and emit one `.add` entry per block.
     /// A parent's entry precedes its children, so if appended sequentially
     /// each child's recorded `parent` already exists in the log.
-    public static func adds(from blocks: [Block]) -> Patch {
+    static func adds(from blocks: [Block]) -> Patch {
         var out: [Entry] = []
         walk(blocks, parent: nil, into: &out)
         return Patch(entries: out)
     }
 
     /// Lift engine-supplied observations into a Patch of `.add` entries.
-    public static func adds(from observations: [PatchEngine.Observation]) -> Patch {
+    static func adds(from observations: [PatchEngine.Observation]) -> Patch {
         Patch(entries: observations.map {
             .add(hash: $0.hash, parent: $0.parent, markdown: $0.markdown)
         })
@@ -139,7 +139,7 @@ public struct Patch: Sendable {
     /// Project a batch of editor structural ops onto a Patch: inserts
     /// become `.add` entries, removes become `.purge` entries, order
     /// preserved.
-    public static func from(ops: [EditorOp]) -> Patch {
+    static func from(ops: [EditorOp]) -> Patch {
         Patch(entries: ops.map { op in
             switch op {
             case .insert(let h, let p, let block):
@@ -164,14 +164,14 @@ public struct Patch: Sendable {
 /// Pure derivation of "what does the union of every device's log say about
 /// each hash right now?" Computed once per reconciliation pass, then queried
 /// many times.
-public struct IntentState: Sendable {
-    public struct AddSnapshot: Sendable {
-        public let parent: String?
-        public let markdown: String
-        public let recordedAt: Date
+struct IntentState: Sendable {
+    struct AddSnapshot: Sendable {
+        let parent: String?
+        let markdown: String
+        let recordedAt: Date
     }
 
-    public enum Status: Sendable {
+    enum Status: Sendable {
         /// Latest record overall is an `add`. Carries the latest add's metadata.
         case alive(latestAdd: AddSnapshot)
         /// Latest record overall is a `purge`. May still carry a prior `add`'s
@@ -179,17 +179,17 @@ public struct IntentState: Sendable {
         case tombstoned(latestAdd: AddSnapshot?, purgedAt: Date)
     }
 
-    public let byHash: [String: Status]
+    let byHash: [String: Status]
 
-    public init(byHash: [String: Status]) {
+    init(byHash: [String: Status]) {
         self.byHash = byHash
     }
 
-    public func status(of hash: String) -> Status? { byHash[hash] }
+    func status(of hash: String) -> Status? { byHash[hash] }
 
     /// Latest `add`'s recorded parent for `hash`. Latest-add survives a later
     /// `purge` so this works on tombstoned hashes too.
-    public func parent(of hash: String) -> String? {
+    func parent(of hash: String) -> String? {
         switch byHash[hash] {
         case .alive(let add): return add.parent
         case .tombstoned(let latestAdd, _): return latestAdd?.parent
@@ -199,7 +199,7 @@ public struct IntentState: Sendable {
 
     /// Hashes currently tombstoned in the union (latest record is a purge).
     /// Used by ConflictMerger to skip blocks the user explicitly dismissed.
-    public func tombstones() -> Set<String> {
+    func tombstones() -> Set<String> {
         var out: Set<String> = []
         for (hash, status) in byHash {
             if case .tombstoned = status { out.insert(hash) }
@@ -209,7 +209,7 @@ public struct IntentState: Sendable {
 
     /// Hash → recorded-parent map for every hash whose latest add has a parent.
     /// Backwards-compat for `ConflictMerger`'s `parentHashLookup` callback.
-    public func recordedParents() -> [String: String] {
+    func recordedParents() -> [String: String] {
         var out: [String: String] = [:]
         for (hash, status) in byHash {
             switch status {
@@ -224,7 +224,7 @@ public struct IntentState: Sendable {
 
     /// Walk the recorded-parent chain starting from `hash`'s parent, returning
     /// each ancestor in order. Cycle-safe and bounded at 64 hops.
-    public func parentChain(from hash: String) -> [String] {
+    func parentChain(from hash: String) -> [String] {
         var out: [String] = []
         var seen: Set<String> = []
         var current = parent(of: hash)
@@ -253,7 +253,7 @@ public struct IntentState: Sendable {
 /// The engine never reads files, never mutates state, and is fully Sendable
 /// at every boundary. All I/O (file reads, log appends, document mutation)
 /// happens in the caller.
-public enum PatchEngine {
+enum PatchEngine {
     /// Derive the intent state from a per-page journal. Pure: `intent(j) ==
     /// intent(j)` for any `j`.
     ///
@@ -262,7 +262,7 @@ public enum PatchEngine {
     /// legacy records written before counters were added. Modern records
     /// (with counter) strictly succeed legacy ones in the order — legacy
     /// records pre-date the upgrade in any realistic scenario.
-    public static func intent(from journal: LogJournal) -> IntentState {
+    static func intent(from journal: LogJournal) -> IntentState {
         var latestByHash: [String: (record: LogRecord, deviceID: String)] = [:]
         var latestAddByHash: [String: (record: LogRecord, deviceID: String)] = [:]
         for device in journal.devices {
@@ -311,7 +311,7 @@ public enum PatchEngine {
     /// recorded-parent chain to the closest live ancestor's `BlockID`, and
     /// emits one `Insert` per root. Returns empty inserts when `doc`
     /// already covers everything intent considers alive.
-    public static func reconcile(intent: IntentState, doc: [Block]) -> Reconciliation {
+    static func reconcile(intent: IntentState, doc: [Block]) -> Reconciliation {
         let liveByHash = liveHashes(doc)
         let toAppend = unloggedObservations(doc: doc, intent: intent)
 
@@ -443,16 +443,16 @@ public enum PatchEngine {
         return out
     }
 
-    public struct Reconciliation: Sendable {
+    struct Reconciliation: Sendable {
         /// Subtrees to splice into `doc` to bring it in line with intent.
-        public let inserts: [Insert]
+        let inserts: [Insert]
         /// Hashes the inserts covered (root + descendants). For UI / banner.
-        public let restoredHashes: [String]
+        let restoredHashes: [String]
         /// Observations the engine made about blocks present in `doc` but
         /// not in the journal — synthesized `add` records the caller should
         /// append to *this device's* log to lift the doc's current content
         /// into the journal.
-        public let toAppend: [Observation]
+        let toAppend: [Observation]
         /// Hashes the journal classifies as `.alive` but the engine can't
         /// turn into a valid `Insert`: the recorded `m` won't parse, or it
         /// parses to a block whose `atomicHash` doesn't match the recorded
@@ -460,11 +460,11 @@ public enum PatchEngine {
         /// the user loses the recovery option for the specific hash but
         /// the loop stops. Each entry carries enough context (markdown,
         /// reason, parsed kind on mismatch) to debug what's drifting.
-        public let unrestorable: [UnrestorableEntry]
+        let unrestorable: [UnrestorableEntry]
 
-        public var didChange: Bool { !inserts.isEmpty }
+        var didChange: Bool { !inserts.isEmpty }
 
-        public init(
+        init(
             inserts: [Insert],
             restoredHashes: [String],
             toAppend: [Observation] = [],
@@ -477,18 +477,18 @@ public enum PatchEngine {
         }
     }
 
-    public struct Insert: Sendable {
+    struct Insert: Sendable {
         /// Subtree to splice in. IDs are already fresh (`withFreshIDs()`
         /// applied) — caller can hand it straight to `Document.insertSubtrees`.
-        public let subtree: Block
+        let subtree: Block
         /// `BlockID` of the live ancestor under which the subtree should be
         /// inserted (end of children). `nil` means top-level.
-        public let parent: BlockID?
+        let parent: BlockID?
         /// Atomic hashes covered by this subtree, root included. Used by the
         /// manual-restore path to purge the whole subtree post-insert.
-        public let coveredHashes: Set<String>
+        let coveredHashes: Set<String>
 
-        public init(subtree: Block, parent: BlockID?, coveredHashes: Set<String>) {
+        init(subtree: Block, parent: BlockID?, coveredHashes: Set<String>) {
             self.subtree = subtree
             self.parent = parent
             self.coveredHashes = coveredHashes
@@ -499,8 +499,8 @@ public enum PatchEngine {
     /// context to debug *why* the recorded entry can't be restored and what
     /// blocks the loop. The orchestrator logs these and purges the hash so
     /// it stops firing reconcile.
-    public struct UnrestorableEntry: Sendable {
-        public enum Reason: Sendable {
+    struct UnrestorableEntry: Sendable {
+        enum Reason: Sendable {
             /// `BlockParser.parse(recordedMarkdown)` returned no blocks.
             case parseFailure
             /// `parse(recordedMarkdown).first.atomicHash != recordedHash`.
@@ -516,13 +516,13 @@ public enum PatchEngine {
             case descendantOfUnrestorableRoot(rootHash: String)
         }
 
-        public let hash: String
-        public let recordedMarkdown: String
-        public let recordedParent: String?
-        public let recordedAt: Date
-        public let reason: Reason
+        let hash: String
+        let recordedMarkdown: String
+        let recordedParent: String?
+        let recordedAt: Date
+        let reason: Reason
 
-        public init(
+        init(
             hash: String,
             recordedMarkdown: String,
             recordedParent: String?,
@@ -540,12 +540,12 @@ public enum PatchEngine {
     /// A "this content exists" observation the engine wants the persistence
     /// layer to append as a fresh `add` record. The engine omits the counter
     /// + timestamp — they're persistence-layer concerns minted at append time.
-    public struct Observation: Sendable {
-        public let hash: String
-        public let parent: String?
-        public let markdown: String
+    struct Observation: Sendable {
+        let hash: String
+        let parent: String?
+        let markdown: String
 
-        public init(hash: String, parent: String?, markdown: String) {
+        init(hash: String, parent: String?, markdown: String) {
             self.hash = hash
             self.parent = parent
             self.markdown = markdown
@@ -558,7 +558,7 @@ public enum PatchEngine {
     /// the subtree and resolves the live ancestor. Returns `nil` when the
     /// hash can't be assembled (markdown unparseable or absent from
     /// candidates).
-    public static func insertion(
+    static func insertion(
         rootHash: String,
         candidates: [LostBlock],
         intent: IntentState,
@@ -582,9 +582,9 @@ public enum PatchEngine {
 
     // MARK: - Conflict merge
 
-    public struct ConflictMergeResult: Sendable {
-        public let merged: [Block]
-        public let salvagedHashes: [String]
+    struct ConflictMergeResult: Sendable {
+        let merged: [Block]
+        let salvagedHashes: [String]
     }
 
     /// Merge alternate-version block trees into a survivor, splicing any
@@ -599,7 +599,7 @@ public enum PatchEngine {
     /// sibling-file conflicts (`<page> 2.md`) — independent edits on
     /// two devices end up additive instead of clobbering each other.
     @MainActor
-    public static func mergeConflict(
+    static func mergeConflict(
         survivor: [Block],
         alternates: [[Block]],
         intent: IntentState
@@ -780,7 +780,7 @@ public enum PatchEngine {
 // MARK: - Apply (MainActor convenience)
 
 @MainActor
-public extension PatchEngine {
+extension PatchEngine {
     /// Apply `recon` to a live `Document`. Inserts every subtree under its
     /// resolved parent (end-of-children) and re-runs heading containment.
     /// Returns true if any insertion happened.
@@ -801,18 +801,18 @@ public extension PatchEngine {
 
 // MARK: - ReconcileSummary
 
-public extension PatchEngine {
+extension PatchEngine {
     /// Side-effect-free description of what changed during a reconcile
     /// pass: hashes the engine spliced in (auto-restore), hashes it
     /// lifted as observations (bare-md / external absorption), and
     /// hashes it quarantined (parse failures / hash mismatches). Used
     /// for banners and diagnostics.
     struct ReconcileSummary: Sendable {
-        public let restoredHashes: [String]
-        public let lifted: [String]
-        public let unrestorable: [UnrestorableEntry]
-        public var didChange: Bool { !restoredHashes.isEmpty }
-        public var isQuiet: Bool {
+        let restoredHashes: [String]
+        let lifted: [String]
+        let unrestorable: [UnrestorableEntry]
+        var didChange: Bool { !restoredHashes.isEmpty }
+        var isQuiet: Bool {
             restoredHashes.isEmpty && lifted.isEmpty && unrestorable.isEmpty
         }
     }
@@ -827,21 +827,21 @@ public extension PatchEngine {
 /// points to another lost block becomes a child of that parent in the
 /// assembled tree, so a parent + its descendants restore as one nested
 /// subtree instead of N flat siblings. Cycle-safe.
-public struct LostBlockForest {
-    public struct Root: Sendable {
+struct LostBlockForest {
+    struct Root: Sendable {
         /// Originating record for the root (used by callers to look up the
         /// recorded `parentHash` for live-ancestor resolution).
-        public let lost: LostBlock
+        let lost: LostBlock
         /// Assembled tree with children attached. IDs are still the parser's;
         /// callers should `withFreshIDs()` once before inserting.
-        public let block: Block
+        let block: Block
         /// Atomic hashes covered by this root (including the root itself).
         /// Used by the manual-restore path to purge the whole subtree post-
         /// insert and by the Recover sheet to badge "+N more" affordances.
-        public let hashes: Set<String>
+        let hashes: Set<String>
     }
 
-    public static func assemble(_ entries: [LostBlock]) -> [Root] {
+    static func assemble(_ entries: [LostBlock]) -> [Root] {
         let (parsed, byHash) = buildIndex(entries)
         guard !byHash.isEmpty else { return [] }
         let childrenByParent = buildChildrenByParent(byHash: byHash)
@@ -866,7 +866,7 @@ public struct LostBlockForest {
     /// Single-root overload: assemble only the subtree rooted at `rootedAt`
     /// from the entries (descendants pulled in by parentHash linkage).
     /// Returns nil if `rootedAt` isn't in the entries.
-    public static func assemble(_ entries: [LostBlock], rootedAt: String) -> Root? {
+    static func assemble(_ entries: [LostBlock], rootedAt: String) -> Root? {
         let (parsed, byHash) = buildIndex(entries)
         guard byHash[rootedAt] != nil else { return nil }
         let childrenByParent = buildChildrenByParent(byHash: byHash)
@@ -958,7 +958,7 @@ public struct LostBlockForest {
 
 // MARK: - IntentState query helpers
 
-public extension IntentState {
+extension IntentState {
     /// `LostBlock` entries for the Recover sheet: hashes whose latest record
     /// is an `add` and aren't currently alive in the page's `.md`. Sorted by
     /// `recordedAt` descending.

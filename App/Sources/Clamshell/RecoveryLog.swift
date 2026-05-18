@@ -27,8 +27,8 @@ import Editor
 /// — Lamport ordering, intent state, lost / purged classification, parent
 /// chain climbs, conflict-merge context — lives in `PatchEngine`, which
 /// is pure and takes a `LogJournal` produced by this actor.
-public actor RecoveryLog {
-    public static let directoryName = ".history"
+actor RecoveryLog {
+    static let directoryName = ".history"
     private static let logExtension = "jsonl"
 
     nonisolated private let workspaceRoot: URL
@@ -51,7 +51,7 @@ public actor RecoveryLog {
 
     nonisolated private let watermarkDefaultsKey: String
 
-    public init(
+    init(
         workspaceRoot: URL,
         store: FileStore = FileStore(),
         deviceID: String = DeviceID.current
@@ -81,7 +81,7 @@ public actor RecoveryLog {
     ///
     /// Counters within a patch are sequential, so the batch reads as a
     /// coherent transaction on tail and observers see one ordered group.
-    public func apply(_ patch: Patch, to rel: String) throws {
+    func apply(_ patch: Patch, to rel: String) throws {
         guard !patch.isEmpty else { return }
         var counter = try ensureCounterLoaded(for: rel)
         let now = Date().timeIntervalSince1970
@@ -117,7 +117,7 @@ public actor RecoveryLog {
 
     /// Move a page's history dir. Used by trash / rename / restore so the
     /// per-device logs travel with their page.
-    public func move(fromPage src: String, toPage dst: String) throws {
+    func move(fromPage src: String, toPage dst: String) throws {
         let from = pageDir(rel: src)
         let to = pageDir(rel: dst)
         guard FileManager.default.fileExists(atPath: from.path) else { return }
@@ -156,11 +156,11 @@ public actor RecoveryLog {
     /// foreign-log tails. The caller (Clamshell's `runReconcile`) splices
     /// inserts into the live doc and persists `toAppend` + unrestorables
     /// to the log; both are non-empty only on the full-fold branch.
-    public enum ReconcileOutcome: Sendable {
+    enum ReconcileOutcome: Sendable {
         case skipped
         case folded(PatchEngine.Reconciliation, mode: Mode)
 
-        public enum Mode: Sendable {
+        enum Mode: Sendable {
             /// Full read of every device's log; produces inserts AND lifts
             /// unlogged doc observations AND quarantines.
             case full
@@ -183,7 +183,7 @@ public actor RecoveryLog {
     /// 3. **Full**: no watermark, or `.md` changed externally, or a log
     ///    shrunk → read everything fresh, returns `.folded(_, .full)`.
     /// On any non-skip branch, the watermark is refreshed.
-    public func reconcileAgainst(
+    func reconcileAgainst(
         page rel: String,
         doc: [Block],
         mdMtime: Date?
@@ -234,7 +234,7 @@ public actor RecoveryLog {
     /// the save path so a fresh `.md` mtime + grown own-log don't trigger
     /// a useless refold on next open. We saved the records that grew our
     /// log via `apply(_:to:)` and the engine has nothing else to do.
-    public func recordOwnSave(page rel: String, mdMtime: Date?) {
+    func recordOwnSave(page rel: String, mdMtime: Date?) {
         loadWatermarksIfNeeded()
         let stats = currentDeviceStats(rel: rel)
         pageWatermarks?[rel] = PageWatermark(
@@ -416,7 +416,7 @@ public actor RecoveryLog {
     /// Lost-block entries for one page: hashes whose latest record is an
     /// `add` and aren't currently alive in the page's `.md`. Sorted by
     /// `recordedAt` descending.
-    public func enumerate(page rel: String) -> [LostBlock] {
+    func enumerate(page rel: String) -> [LostBlock] {
         let journal = readJournal(page: rel)
         let intent = PatchEngine.intent(from: journal)
         let live = liveAtomicHashes(forPage: rel)
@@ -424,7 +424,7 @@ public actor RecoveryLog {
     }
 
     /// Lost blocks for every page that has ever produced log activity.
-    public func enumerateAll() -> [LostBlock] {
+    func enumerateAll() -> [LostBlock] {
         let historyRoot = historyRootURL()
         guard FileManager.default.fileExists(atPath: historyRoot.path) else { return [] }
         var out: [LostBlock] = []
@@ -437,7 +437,7 @@ public actor RecoveryLog {
     /// Blocks deleted via the editor's op stream or a manual Recover-sheet
     /// dismiss: the latest record for the hash is a `purge`, but a prior
     /// `add` for the same hash still carries the markdown + parent metadata.
-    public func enumeratePurged(page rel: String, since: Date? = nil) -> [PurgedBlock] {
+    func enumeratePurged(page rel: String, since: Date? = nil) -> [PurgedBlock] {
         let journal = readJournal(page: rel)
         let intent = PatchEngine.intent(from: journal)
         let live = liveAtomicHashes(forPage: rel)
@@ -445,7 +445,7 @@ public actor RecoveryLog {
     }
 
     /// Purged blocks for every page that has ever produced log activity.
-    public func enumerateAllPurged(since: Date? = nil) -> [PurgedBlock] {
+    func enumerateAllPurged(since: Date? = nil) -> [PurgedBlock] {
         let historyRoot = historyRootURL()
         guard FileManager.default.fileExists(atPath: historyRoot.path) else { return [] }
         var out: [PurgedBlock] = []

@@ -125,8 +125,7 @@ extension EditorView {
         // editor just hands over the body blocks (or nil when empty).
         let initialContent: [Block]? = block.children.isEmpty ? nil : block.children
 
-        guard let pageID = host.createSubpage(title: title, requestedID: requestedPageID, initialContent: initialContent)
-            ?? requestedPageID
+        guard let pageID = host.createSubpage(title: title, requestedPageID: requestedPageID, initialContent: initialContent)
         else { return .ignored }
 
         mutate("Create Subpage") {
@@ -144,16 +143,18 @@ extension EditorView {
     func expandSubpage(blockID: BlockID) -> KeyPress.Result {
         guard let block = document.find(blockID),
               case .subpage(_, let path) = block.kind else { return .ignored }
-        guard let loaded = host.subpageContents(of: path), !loaded.isEmpty else { return .ignored }
-
-        // Loaded subtrees inline at the subpage's tree position — no indent
-        // math needed; the tree itself encodes depth.
-        mutate("Expand Subpage") {
-            document.replaceSubtree(blockID, with: loaded)
-        }
-        DispatchQueue.main.async {
-            if let first = loaded.first {
-                setCursor(first.id)
+        // Load + splice in a Task so the key-handler returns immediately.
+        // Matches the `absorbSubpage` pattern in `convertSubpage` below.
+        Task { @MainActor in
+            guard let loaded = await host.subpageContents(of: path), !loaded.isEmpty else { return }
+            guard document.find(blockID) != nil else { return }
+            mutate("Expand Subpage") {
+                document.replaceSubtree(blockID, with: loaded)
+            }
+            // Defer cursor placement to the next runloop so the new rows are
+            // mounted before we try to focus into one of them.
+            if let firstID = loaded.first?.id {
+                DispatchQueue.main.async { setCursor(firstID) }
             }
         }
         return .handled
@@ -250,48 +251,49 @@ extension EditorView {
         guard target != .page else { return .ignored }
         guard let block = document.find(blockID),
               case .subpage(let title, let path) = block.kind else { return .ignored }
-        guard var loaded = host.subpageContents(of: path) else {
-            Diag.subpage.error("convertSubpage: subpageContents returned nil — path=\(path, privacy: .public)")
-            return .ignored
-        }
-        // Heading containment means the page's body lives as children of the
-        // title H1, not as siblings. Replace the title heading with its
-        // children so the subpage's body survives the inline.
-        if let first = loaded.first,
-           case .heading(.h1, let leadingText) = first.kind,
-           String(leadingText.characters).trimmingCharacters(in: .whitespacesAndNewlines) == title {
-            loaded.replaceSubrange(0...0, with: first.children)
-        }
-
-        // The subpage's loaded blocks become the children of the new container
-        // (toggle / templateButton / list item etc.). For non-container kinds
-        // they're inlined as siblings after the converted block.
-        let replacement = blockForTurnInto(target, id: blockID, text: AttributedString(title))
-        mutate("Turn Into") {
-            if replacement.isContainer {
-                document.replaceSubtree(blockID, with: [replacement.withChildren(loaded)])
-            } else {
-                document.replaceSubtree(blockID, with: [replacement] + loaded)
+        // Load + splice + trash in a Task so the key-handler returns
+        // immediately. Order inside the Task: load → mutate → state-flags
+        // → trash. The host force-saves the parent doc before trashing,
+        // so a crash between mutate and trash leaves only a recoverable
+        // duplicate (file still in workspace, bullet on disk) rather
+        // than data loss (file gone, bullet never persisted).
+        Task { @MainActor in
+            guard var loaded = await host.subpageContents(of: path) else {
+                Diag.subpage.error("convertSubpage: subpageContents returned nil — path=\(path, privacy: .public)")
+                return
             }
-        }
-        // Trash the source AFTER the mutation. The host force-saves the parent
-        // doc before trashing, so a crash here leaves only a recoverable
-        // duplicate (file still in workspace, bullet on disk) rather than data
-        // loss (file gone, bullet never persisted). Spawn a Task so the sync
-        // key-handler returns immediately — the host genuinely awaits the save
-        // now, so the error log fires only on real failure.
-        Task { @MainActor [host] in
+            // The subpage may have moved out from under us during the await.
+            guard document.find(blockID) != nil else { return }
+            // Heading containment means the page's body lives as children of the
+            // title H1, not as siblings. Replace the title heading with its
+            // children so the subpage's body survives the inline.
+            if let first = loaded.first,
+               case .heading(.h1, let leadingText) = first.kind,
+               String(leadingText.characters).trimmingCharacters(in: .whitespacesAndNewlines) == title {
+                loaded.replaceSubrange(0...0, with: first.children)
+            }
+            // The subpage's loaded blocks become the children of the new container
+            // (toggle / templateButton / list item etc.). For non-container kinds
+            // they're inlined as siblings after the converted block.
+            let replacement = blockForTurnInto(target, id: blockID, text: AttributedString(title))
+            mutate("Turn Into") {
+                if replacement.isContainer {
+                    document.replaceSubtree(blockID, with: [replacement.withChildren(loaded)])
+                } else {
+                    document.replaceSubtree(blockID, with: [replacement] + loaded)
+                }
+            }
+            if target == .toggle {
+                state.expandedToggles.insert(blockID)
+            } else if target == .template {
+                state.expandedTemplates.insert(blockID)
+            } else {
+                state.expandedToggles.remove(blockID)
+                state.expandedTemplates.remove(blockID)
+            }
             if !(await host.absorbSubpage(path)) {
                 Diag.subpage.error("convertSubpage: absorbSubpage failed after mutation — orphan file at \(path, privacy: .public)")
             }
-        }
-        if target == .toggle {
-            state.expandedToggles.insert(blockID)
-        } else if target == .template {
-            state.expandedTemplates.insert(blockID)
-        } else {
-            state.expandedToggles.remove(blockID)
-            state.expandedTemplates.remove(blockID)
         }
         return .handled
     }
@@ -609,7 +611,7 @@ extension EditorView {
 
     /// If `text` is a single inline link pointing at a workspace page (and
     /// nothing else but whitespace), return its `(linkText, pageID)`. The
-    /// host classifies the URL via `resolveWorkspacePageID`; the editor
+    /// host classifies the URL via `resolvePageID`; the editor
     /// doesn't bake in a storage convention. Used by Cmd-K-on-link to turn
     /// a `[Hello](some-page.md)` paragraph into a subpage block pointing
     /// at `some-page.md`.
@@ -621,7 +623,7 @@ extension EditorView {
         for run in text.runs {
             let segment = String(text[run.range].characters)
             if let link = run.link {
-                guard let pageID = host.resolveWorkspacePageID(from: link) else { return nil }
+                guard let pageID = host.resolvePageID(from: link) else { return nil }
                 if let existing = linkPageID, existing != pageID {
                     return nil
                 }

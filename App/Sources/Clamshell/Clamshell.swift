@@ -133,6 +133,44 @@ public final class Clamshell {
         root.appendingPathComponent(relativePath).standardizedFileURL
     }
 
+    /// Classify a URL from an inline `[text](url)` link as an internal-page
+    /// reference. Returns the workspace-relative pageID (path) when the URL
+    /// names a `.md` file inside this Clamshell; nil for external schemes,
+    /// non-`.md` targets, and anything resolving outside the root. Resolves
+    /// relative URLs against `currentDocURL?.deletingLastPathComponent()`
+    /// when provided, otherwise against the workspace root.
+    nonisolated public func pageID(for url: URL, relativeTo currentDocURL: URL? = nil) -> String? {
+        Self.resolvePageID(for: url, currentDocURL: currentDocURL, workspaceRoot: root)
+    }
+
+    /// Pure function form of `pageID(for:relativeTo:)` — no Clamshell instance
+    /// required. Used by tests; the instance method just plugs in `self.root`.
+    nonisolated static func resolvePageID(
+        for url: URL,
+        currentDocURL: URL?,
+        workspaceRoot: URL
+    ) -> String? {
+        if let scheme = url.scheme?.lowercased(), scheme != "file" { return nil }
+
+        let resolvedURL: URL
+        if url.scheme == "file" {
+            resolvedURL = url.standardizedFileURL
+        } else {
+            let baseDir = currentDocURL?.deletingLastPathComponent() ?? workspaceRoot
+            guard let resolved = URL(string: url.relativeString, relativeTo: baseDir) else {
+                return nil
+            }
+            resolvedURL = resolved.absoluteURL.standardizedFileURL
+        }
+
+        guard resolvedURL.pathExtension.lowercased() == "md" else { return nil }
+
+        let root = workspaceRoot.standardizedFileURL.path
+        let resolvedPath = resolvedURL.path
+        guard resolvedPath.hasPrefix(root + "/") else { return nil }
+        return String(resolvedPath.dropFirst(root.count + 1))
+    }
+
     // MARK: - Pages: read
 
     /// Page list with the live title overlay applied. Computed from
@@ -229,12 +267,22 @@ public final class Clamshell {
         }
     }
 
-    @MainActor
-    public func loadDocument(at url: URL) throws -> Document {
-        let raw = try files.read(url)
+    /// Read + parse the `.md` at `url`. With `tracksDiskHistory: true`
+    /// (default), seeds the iCloud disk-content ring buffer so subsequent
+    /// presenter wakeups can classify the file against what we last read or
+    /// wrote. Pass `false` for one-off reads that won't open a session
+    /// (e.g. fetching subpage contents for inline-expand) — a stale read
+    /// seeded into history can otherwise later misclassify a wakeup as
+    /// `.echo`. Disk read + parse run off-MainActor; hops back only to
+    /// touch the ring buffer and build the `Document`.
+    public func loadDocument(at url: URL, tracksDiskHistory: Bool = true) async throws -> Document {
+        let files = self.files
+        let raw: String = try await Task.detached(priority: .userInitiated) {
+            try files.read(url)
+        }.value
         let blocks = BlockParser.parse(raw)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        recordDiskContent(raw, at: url)
+        if tracksDiskHistory { recordDiskContent(raw, at: url) }
         return Document(url: url, children: blocks, modificationDate: mtime)
     }
 
@@ -381,12 +429,10 @@ public final class Clamshell {
     /// not trigger a save — that's what `documentDidChange` is for. Used
     /// on navigation / blur / scenePhase / close to make sure the bytes
     /// for the just-fired commit are on disk before the editor unmounts.
-    @discardableResult
-    public func flush(_ doc: Document) async -> Bool {
-        guard let pending = saveChain[doc.url] else { return true }
+    public func flush(_ doc: Document) async {
+        guard let pending = saveChain[doc.url] else { return }
         await pending.value
         saveChain.removeValue(forKey: doc.url)
-        return true
     }
 
     /// True when no work is pending for `url`. The engine's reconcile and
@@ -473,7 +519,7 @@ public final class Clamshell {
     @discardableResult
     public func append(_ blocks: [Block], toPage relativePath: String) async throws -> Document {
         let url = self.url(for: relativePath)
-        let doc = try loadDocument(at: url)
+        let doc = try await loadDocument(at: url)
         doc.transaction(name: "Append to subpage") {
             doc.insertSubtrees(blocks, at: DropPath(parent: nil, position: doc.children.count))
         }
@@ -513,19 +559,6 @@ public final class Clamshell {
         }
     }
 
-
-    static func atomicHashes(of blocks: [Block]) -> Set<String> {
-        var out: Set<String> = []
-        collect(blocks, into: &out)
-        return out
-    }
-
-    private static func collect(_ blocks: [Block], into out: inout Set<String>) {
-        for block in blocks {
-            out.insert(block.atomicHash)
-            collect(block.children, into: &out)
-        }
-    }
 
     // MARK: - iCloud conflict resolution
 

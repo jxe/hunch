@@ -98,48 +98,6 @@ final class Workspace {
         clamshell?.relativePath(of: url) ?? url.lastPathComponent
     }
 
-    /// Resolve an inline-link URL against a document's directory and return
-    /// its workspace-relative path if it points at a markdown file inside
-    /// the workspace. Returns nil for external schemes, non-`.md` targets,
-    /// and anything resolving outside the workspace. Used by the
-    /// `OpenURLAction` interceptor in `ContentView` to route `[text](page.md)`
-    /// clicks through `WorkspaceWindow.openSubpage` instead of the system
-    /// `openURL` handler.
-    func workspaceRelativeMarkdownPath(for url: URL, currentDocURL: URL?) -> String? {
-        guard let workspaceURL else { return nil }
-        return Self.resolveWorkspaceRelativeMarkdownPath(
-            for: url,
-            currentDocURL: currentDocURL,
-            workspaceURL: workspaceURL
-        )
-    }
-
-    nonisolated static func resolveWorkspaceRelativeMarkdownPath(
-        for url: URL,
-        currentDocURL: URL?,
-        workspaceURL: URL
-    ) -> String? {
-        if let scheme = url.scheme?.lowercased(), scheme != "file" { return nil }
-
-        let resolvedURL: URL
-        if url.scheme == "file" {
-            resolvedURL = url.standardizedFileURL
-        } else {
-            let baseDir = currentDocURL?.deletingLastPathComponent() ?? workspaceURL
-            guard let resolved = URL(string: url.relativeString, relativeTo: baseDir) else {
-                return nil
-            }
-            resolvedURL = resolved.absoluteURL.standardizedFileURL
-        }
-
-        guard resolvedURL.pathExtension.lowercased() == "md" else { return nil }
-
-        let workspaceRoot = workspaceURL.standardizedFileURL.path
-        let resolvedPath = resolvedURL.path
-        guard resolvedPath.hasPrefix(workspaceRoot + "/") else { return nil }
-        return String(resolvedPath.dropFirst(workspaceRoot.count + 1))
-    }
-
     // MARK: - Lifecycle
 
     func tryRestore() {
@@ -377,12 +335,12 @@ final class Workspace {
     /// relative path or nil on failure.
     @discardableResult
     func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
-        guard let clamshell else { return requestedPath }
+        guard let clamshell else { return nil }
         do {
             return try clamshell.createPage(title: title, requestedPath: requestedPath, blocks: initialContent)
         } catch {
             self.error = "Failed to create page: \(error.localizedDescription)"
-            return requestedPath
+            return nil
         }
     }
 

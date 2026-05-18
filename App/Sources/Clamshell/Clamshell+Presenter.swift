@@ -197,7 +197,7 @@ extension Clamshell {
             case .external:
                 if isQuiescent(at: url) {
                     do {
-                        let reloaded = try loadDocument(at: url)
+                        let reloaded = try await loadDocument(at: url)
                         doc.replaceChildren(reloaded.children)
                         doc.modificationDate = reloaded.modificationDate
                         externallyReloaded = true

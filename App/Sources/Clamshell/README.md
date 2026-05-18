@@ -86,8 +86,8 @@ kinds, distinguished by `op`:
 Every write to the log goes through one primitive:
 
 ```swift
-public actor RecoveryLog {
-    public func apply(_ patch: Patch, to rel: String) throws
+actor RecoveryLog {
+    func apply(_ patch: Patch, to rel: String) throws
 }
 ```
 
@@ -301,8 +301,8 @@ existing instance and build a new one.
 
 | Group | Methods |
 |-------|---------|
-| Path conversion | `relativePath(of:)`, `url(for:)` |
-| Read | `loadDocument(at:)` |
+| Path conversion | `relativePath(of:)`, `url(for:)`, `pageID(for:relativeTo:)` |
+| Read | `loadDocument(at:tracksDiskHistory:)` — async. Pass `tracksDiskHistory: false` for one-off reads that won't open a session (e.g. fetching subpage contents for inline-expand); the default seeds the iCloud disk-content ring buffer for the live-page path. |
 | Page list (observable) | `entries`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:)` |
 | Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. Load + parse + install presenter on open (journal fold runs deferred in a background Task, fires `onEvent(.restored)` if anything was auto-spliced); flush + tear down on close. |
 | Editor-driven persistence | `documentDidChange(ops:in:)` (every commit; applies op batch to log and writes `.md` atomically per call, chained per URL), `flush(_:)` (await chain head + drain; for blur / scenePhase / navigate-away). |

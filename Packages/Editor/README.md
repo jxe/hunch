@@ -95,17 +95,17 @@ In-app block drag uses a custom `BlockDragPayload` UTType — no host wiring
 needed. Cross-app drag falls through to the pasteboard codecs.
 
 **Subpage navigation and management**
-- Tap a subpage row → host receives `didActivateLink(.workspacePage(pageID))`
+- Tap a subpage row → host receives `didActivateLink(.page(pageID))`
   and pushes the child page on its navigation stack.
 - Inline `[text](url)` clicks in read-only rows go through the editor's
   `OpenURLAction` interceptor and dispatch to the same `host.didActivateLink` —
-  the host calls `resolveWorkspacePageID(from:)` (its own classifier) to
+  the host calls `resolvePageID(from:)` (its own classifier) to
   distinguish internal page references from external URLs and returns
   `false` for the latter to fall through to the system handler.
-- Cmd-K on a paragraph that is a single workspace-page link, or @-mention
+- Cmd-K on a paragraph that is a single internal-page link, or @-mention
   commit, creates a subpage block via `createSubpage`. The editor consults
-  `host.resolveWorkspacePageID` to decide whether the link's URL names a
-  workspace page; it never inspects the URL itself.
+  `host.resolvePageID` to decide whether the link's URL names an internal
+  page; it never inspects the URL itself.
 - Drop blocks onto a subpage row → editor calls `appendToSubpage` to move
   them into the child page.
 
@@ -141,9 +141,9 @@ final class MyHost: EditorHost {
     func suggestPages(_ query: String) -> [MentionItem] { [] }
     func didActivateLink(_ target: LinkTarget) -> Bool { false }
     func lookupPage(_ pageID: String) -> PageLookup { .missing }
-    func createSubpage(title: String, requestedID: String?, initialContent: [Block]?) -> String? { nil }
-    func subpageContents(of pageID: String) -> [Block]? { nil }
-    func resolveWorkspacePageID(from url: URL) -> String? { nil }
+    func createSubpage(title: String, requestedPageID: String?, initialContent: [Block]?) -> String? { nil }
+    func subpageContents(of pageID: String) async -> [Block]? { nil }
+    func resolvePageID(from url: URL) -> String? { nil }
     func absorbSubpage(_ pageID: String) async -> Bool { false }
     func appendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
@@ -244,7 +244,7 @@ public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
   surface syntax (markdown `**bold**`, HTML `<b>`, etc.).
 - **`Block.subpage`'s `pageID: String`** is opaque to the editor —
   whatever identifier the host uses (relative path, UUID, database key).
-  The editor echoes it back unchanged in `didActivateLink(.workspacePage(...))`,
+  The editor echoes it back unchanged in `didActivateLink(.page(...))`,
   `subpageContents(of:)`, `absorbSubpage(_:)`, `appendToSubpage(_:_:)`.
 - **`Block.subpage`'s `title: String`** is a fallback hint. The editor
   prefers the title from `host.lookupPage(pageID)` when the host has it
@@ -401,10 +401,10 @@ stubbed out for early integration.
 |--------|-----------|---------------|------------------|
 | `suggestPages` | `(_ query: String) -> [MentionItem]` | While the @-mention popover is visible, on every render. The query is whatever the user has typed after `@`. | Up to 8 items shown; host owns ranking/filtering. Empty array shows "No matching pages". |
 | `lookupPage` | `(_ pageID: String) -> PageLookup` | Whenever a subpage row needs to know if its target exists and what to display (rendering a `.subpage` block, an inline page link, an @-mention popover row). | `.missing` renders broken-link style and disables tap-to-navigate; `.present(title: nil)` falls back to the cached `title` on the Block / MentionItem; `.present(title: "…")` shows the resolved title. |
-| `resolveWorkspacePageID` | `(_ url: URL) -> String?` | Classifies an inline-link URL as a workspace page reference. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide subpage-creation vs link-toggling), and inside `didActivateLink` (so a single classifier governs all three). | Return the host's pageID for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
-| `didActivateLink` | `(_ target: LinkTarget) -> Bool` | User clicks/taps a subpage row (`.workspacePage(pageID)`), or clicks an inline `[text](url)` link in a read-only row (`.url(URL)`). | true = host fully handled; false lets the editor fall through to the system URL handler (`OpenURLAction.systemAction`). Subpage taps are always handled internally; for inline `.url` clicks the host typically routes via `resolveWorkspacePageID` (internal nav) or returns false (external). |
-| `createSubpage` | `(title: String, requestedID: String?, initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |
-| `subpageContents` | `(of pageID: String) -> [Block]?` | Expand Subpage (inline this child's content here, **keep the file**). | Host returns the child page's blocks. nil makes the action a no-op. |
+| `resolvePageID` | `(_ url: URL) -> String?` | Classifies an inline-link URL as an internal page reference. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide subpage-creation vs link-toggling), and inside `didActivateLink` (so a single classifier governs all three). | Return the host's pageID for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
+| `didActivateLink` | `(_ target: LinkTarget) -> Bool` | User clicks/taps a subpage row (`.page(pageID)`), or clicks an inline `[text](url)` link in a read-only row (`.url(URL)`). | true = host fully handled; false lets the editor fall through to the system URL handler (`OpenURLAction.systemAction`). Subpage taps are always handled internally; for inline `.url` clicks the host typically routes via `resolvePageID` (internal nav) or returns false (external). |
+| `createSubpage` | `(title: String, requestedPageID: String?, initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |
+| `subpageContents` | `(of pageID: String) async -> [Block]?` | Expand Subpage (inline this child's content here, **keep the file**), and as the first step of Turn Into a non-page block on a subpage row. Async so the host can read off MainActor. | Host returns the child page's blocks. nil makes the action a no-op. |
 | `absorbSubpage` | `(_ pageID: String) async -> Bool` | Turn Into a non-page block on a subpage row (inline content **and trash the source file**). Always paired with `subpageContents(of:)` first. Async so the host can force-save the parent doc before deleting the source. | true = file trashed (proceed with inlining); false = abort. |
 | `appendToSubpage` | `(_ pageID: String, _ blocks: [Block]) async -> Bool` | User drops blocks onto a subpage row. Async so the host can sequence log-then-file durability before returning. | true = host wrote them (proceed with local removal). false = no-op. |
 | `moveDestination` | `(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination?` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, returns the user's `MoveDestination` (`.page` or `.block`) or nil to cancel. | Async — editor `await`s the picker result at the call site. |
@@ -449,7 +449,7 @@ stubbed out for early integration.
   `TrashStore` for soft-delete and the recoverable-blocks log.
 - **No multi-page navigation.** The editor is single-page; the host
   manages the navigation stack and pushes/pops in response to
-  `didActivateLink(.workspacePage(...))` / `navigateBack()`. Hunch uses
+  `didActivateLink(.page(...))` / `navigateBack()`. Hunch uses
   `NavigationStack(path: [URL])` in
   [`App/Sources/ContentView.swift`](../../App/Sources/ContentView.swift).
 - **No sidebar, no @-mention list source, no history UI, no trash UI.**

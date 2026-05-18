@@ -9,8 +9,8 @@ struct WorkspaceRelativeLinkTests {
     private func resolve(_ link: String, from doc: String?) -> String? {
         let url = URL(string: link)!
         let docURL = doc.map { workspaceURL.appendingPathComponent($0).standardizedFileURL }
-        return Workspace.resolveWorkspaceRelativeMarkdownPath(
-            for: url, currentDocURL: docURL, workspaceURL: workspaceURL
+        return Clamshell.resolvePageID(
+            for: url, currentDocURL: docURL, workspaceRoot: workspaceURL
         )
     }
 
@@ -55,16 +55,16 @@ struct WorkspaceRelativeLinkTests {
 
     @Test func acceptsFileSchemeInsideWorkspace() {
         let url = workspaceURL.appendingPathComponent("nested/Page.md")
-        let result = Workspace.resolveWorkspaceRelativeMarkdownPath(
-            for: url, currentDocURL: nil, workspaceURL: workspaceURL
+        let result = Clamshell.resolvePageID(
+            for: url, currentDocURL: nil, workspaceRoot: workspaceURL
         )
         #expect(result == "nested/Page.md")
     }
 
     @Test func rejectsFileSchemeOutsideWorkspace() {
         let url = URL(fileURLWithPath: "/tmp/elsewhere/Page.md")
-        let result = Workspace.resolveWorkspaceRelativeMarkdownPath(
-            for: url, currentDocURL: nil, workspaceURL: workspaceURL
+        let result = Clamshell.resolvePageID(
+            for: url, currentDocURL: nil, workspaceRoot: workspaceURL
         )
         #expect(result == nil)
     }

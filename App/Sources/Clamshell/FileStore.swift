@@ -1,22 +1,22 @@
 import Foundation
 import Editor
 
-public enum FileStoreError: Error {
+enum FileStoreError: Error {
     case readFailed(URL, underlying: Error)
     case writeFailed(URL, underlying: Error)
     case scanFailed(URL, underlying: Error)
     case moveFailed(URL, underlying: Error)
 }
 
-public struct FileStore: Sendable {
-    public static let trashDirectoryName = "Trash"
-    public static let historyDirectoryName = ".history"
-    public static let assetsDirectoryName = "Assets"
+struct FileStore: Sendable {
+    static let trashDirectoryName = "Trash"
+    static let historyDirectoryName = ".history"
+    static let assetsDirectoryName = "Assets"
 
-    public init() {}
+    init() {}
 
     /// Recursive scan of `root` for `*.md` files, returning entries sorted by modification date desc.
-    public func scan(workspaceRoot root: URL) throws -> [WorkspaceEntry] {
+    func scan(workspaceRoot root: URL) throws -> [WorkspaceEntry] {
         let fm = FileManager.default
         let resourceKeys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey, .nameKey]
         guard let enumerator = fm.enumerator(
@@ -49,7 +49,7 @@ public struct FileStore: Sendable {
         return entries
     }
 
-    public func read(_ url: URL) throws -> String {
+    func read(_ url: URL) throws -> String {
         // NSFileCoordinator on the main thread deadlocks for "very long" with
         // iCloud Drive workspaces — Foundation's access-claim machinery waits
         // on file-provider/presenter callbacks that ultimately need the main
@@ -63,7 +63,7 @@ public struct FileStore: Sendable {
         }
     }
 
-    public func write(_ contents: String, to url: URL) throws {
+    func write(_ contents: String, to url: URL) throws {
         let coordinator = NSFileCoordinator()
         var coordError: NSError?
         var writeError: Error?
@@ -79,7 +79,7 @@ public struct FileStore: Sendable {
     }
 
     @MainActor
-    public func loadDocument(at url: URL) throws -> Document {
+    func loadDocument(at url: URL) throws -> Document {
         let source = try read(url)
         let blocks = BlockParser.parse(source)
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
@@ -90,7 +90,7 @@ public struct FileStore: Sendable {
     /// the file system and pure value types (`Block`, `String`), so callers
     /// can hop this off MainActor when the workspace lives on iCloud and the
     /// cold-cache read would otherwise stall the main thread for ~1s/file.
-    public func loadDocumentTitle(at url: URL) throws -> String {
+    func loadDocumentTitle(at url: URL) throws -> String {
         let source = try read(url)
         let blocks = BlockParser.parse(source)
         let fallbackTitle = url.deletingPathExtension().lastPathComponent
@@ -98,7 +98,7 @@ public struct FileStore: Sendable {
     }
 
     @discardableResult
-    public func moveToTrash(relativePath: String, workspaceRoot root: URL) throws -> String {
+    func moveToTrash(relativePath: String, workspaceRoot root: URL) throws -> String {
         let source = root.appendingPathComponent(relativePath)
         let destinationPath = uniqueTrashPath(for: relativePath, workspaceRoot: root)
         let destination = root.appendingPathComponent(destinationPath)

@@ -37,10 +37,13 @@ user-picked workspace folder.
     every write goes through one primitive, `apply(Patch, to:)`),
     and `TrashStore` privately and exposes a single API:
     `entries / rescan / lookupPage / pages(matching:) /
-    loadDocument / openPage / closePage / documentDidChange / flush /
-    append / createPage / moveToTrash / listTrashedPages / restorePage /
-    listLostBlocks / listPurgedBlocks / resolveConflictVersions`,
-    plus `relativePath(of:)` and `url(for:)` for path conversion.
+    loadDocument(at:tracksDiskHistory:) / openPage / closePage /
+    documentDidChange / flush / append / createPage / moveToTrash /
+    listTrashedPages / restorePage / listLostBlocks / listPurgedBlocks /
+    resolveConflictVersions`, plus `relativePath(of:)`, `url(for:)`, and
+    `pageID(for:relativeTo:)` for path conversion (the inline-link URL
+    classifier lives next to the other URL ↔ pageID helpers so they share
+    one home).
     Internal helpers (`writeClosedPage(_:patch:)`, `enqueueSave(_:patch:)`,
     `reconcileLive`, `classifyDiskContent`, `isQuiescent`,
     `installPresenter` / `removePresenter`) and the `log` actor drive
@@ -191,7 +194,7 @@ assumes both inputs are stable.
 is the source of truth for what's open: `path == []` shows the home page,
 `path.last` is the visible doc, and a `.onChange(of: path)` calls
 `handlePathChange()` to flush the outgoing doc and load the new top.
-Subpage taps fire `host.didActivateLink(.workspacePage(pageID))` →
+Subpage taps fire `host.didActivateLink(.page(pageID))` →
 `window.openSubpage` and append to `path`, pushing deeper.
 Search-sheet activation (`window.navigateFromSearch`) pushes a single
 entry on top of home (or drains to root when the picked page *is*
@@ -203,12 +206,12 @@ the `.md` convention) and rendered via `subpageRow` in `BlockRow.swift`.
 **Inline `[text](url)` clicks inside read-only body text** route
 through an `OpenURLAction` interceptor *inside* `EditorView` (so the
 editor owns its link routing) → `host.didActivateLink(.url(url))`. The host
-classifies the URL via `host.resolveWorkspacePageID(from:)` — the
+classifies the URL via `host.resolvePageID(from:)` — the
 *same* hook the editor uses at render time (to decorate internal-vs-
 external inline links) and at Cmd-K-on-link time (to decide subpage-
 creation). One classifier, one source of truth; the editor is
-storage-agnostic about what counts as a workspace page. The Hunch
-impl wraps `Workspace.workspaceRelativeMarkdownPath`; external URLs
+storage-agnostic about what counts as an internal page. The Hunch
+impl forwards to `Clamshell.pageID(for:relativeTo:)`; external URLs
 return `nil`, the editor falls through to the system handler. Inline
 link taps *inside* an active TextEditor are not yet intercepted
 (NSTextView / UITextView own those gestures).

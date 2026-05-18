@@ -19,19 +19,19 @@ extension WorkspaceWindow: EditorHost {
         workspace.clamshell?.lookupPage(pageID) ?? .missing
     }
 
-    func resolveWorkspacePageID(from url: URL) -> String? {
-        workspace.workspaceRelativeMarkdownPath(for: url, currentDocURL: openDocument?.url)
+    func resolvePageID(from url: URL) -> String? {
+        workspace.clamshell?.pageID(for: url, relativeTo: openDocument?.url)
     }
 
-    func createSubpage(title: String, requestedID: String?, initialContent: [Block]?) -> String? {
-        workspace.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
+    func createSubpage(title: String, requestedPageID: String?, initialContent: [Block]?) -> String? {
+        workspace.createSubpage(title: title, requestedPath: requestedPageID, initialContent: initialContent)
     }
 
-    func subpageContents(of pageID: String) -> [Block]? {
+    func subpageContents(of pageID: String) async -> [Block]? {
         guard let clamshell = workspace.clamshell else { return nil }
         let target = clamshell.url(for: pageID)
         do {
-            return try clamshell.loadDocument(at: target).children
+            return try await clamshell.loadDocument(at: target, tracksDiskHistory: false).children
         } catch {
             Diag.subpage.error("subpageContents(of:): load(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -44,7 +44,7 @@ extension WorkspaceWindow: EditorHost {
 
     func flush(_ document: Document) async {
         guard let clamshell = workspace.clamshell else { return }
-        _ = await clamshell.flush(document)
+        await clamshell.flush(document)
     }
 
     func saveImages(_ items: [PastedImage]) -> [String] {
@@ -98,14 +98,14 @@ extension WorkspaceWindow: EditorHost {
     @discardableResult
     func didActivateLink(_ target: LinkTarget) -> Bool {
         switch target {
-        case .workspacePage(let pageID):
+        case .page(let pageID):
             openSubpage(relativePath: pageID)
             return true
         case .url(let url):
             // Workspace-internal links resolve via the host classifier
             // (same hook used for inline-link decoration at render time);
             // everything else falls through to the system handler.
-            if let pageID = resolveWorkspacePageID(from: url) {
+            if let pageID = resolvePageID(from: url) {
                 openSubpage(relativePath: pageID)
                 return true
             }
@@ -122,10 +122,7 @@ extension WorkspaceWindow: EditorHost {
         guard let clamshell = workspace.clamshell, let parent = openDocument else { return false }
         let target = clamshell.url(for: pageID)
         guard FileManager.default.fileExists(atPath: target.path) else { return false }
-        guard await clamshell.flush(parent) else {
-            Diag.subpage.error("absorbSubpage: flush failed; skipping trash of \(pageID, privacy: .public) to avoid data loss")
-            return false
-        }
+        await clamshell.flush(parent)
         do {
             _ = try clamshell.moveToTrash(at: target)
             return true

@@ -2149,7 +2149,7 @@ public struct EditorView: View {
         // nav stack on a load that's going to fail.
         guard !host.lookupPage(path).isMissing else { return true }
         transferFocus(to: .nav(cursor: blockID))
-        host.didActivateLink(.workspacePage(pageID: path))
+        host.didActivateLink(.page(pageID: path))
         return true
     }
 

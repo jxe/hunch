@@ -6,13 +6,13 @@
 read-only rows now push the target onto the navigation stack. The
 `OpenURLAction` interceptor lives *inside* `EditorView` (so the editor
 owns its link routing) and dispatches via
-[EditorHost.openLink(_ target: LinkTarget) -> Bool](../Packages/Editor/Sources/Editor/EditorHost.swift).
+[EditorHost.didActivateLink(_ target: LinkTarget) -> Bool](../Packages/Editor/Sources/Editor/EditorHost.swift).
 The host (`WorkspaceWindow`) classifies the URL via
-[EditorHost.resolveWorkspacePageID(from:)](../Packages/Editor/Sources/Editor/EditorHost.swift)
+[EditorHost.resolvePageID(from:)](../Packages/Editor/Sources/Editor/EditorHost.swift)
 — the same hook the editor uses at render time for inline-link
 decoration and at Cmd-K-on-link time for subpage creation. The Hunch
-impl wraps
-[Workspace.workspaceRelativeMarkdownPath](../App/Sources/Workspace.swift)
+impl forwards to
+[Clamshell.pageID(for:relativeTo:)](../App/Sources/Clamshell/Clamshell.swift)
 (covered by
 [WorkspaceRelativeLinkTests](../App/Tests/HunchUnitTests/WorkspaceRelativeLinkTests.swift));
 non-nil pageIDs route through `openSubpage`, nil falls through to the

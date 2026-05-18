@@ -14,7 +14,7 @@ extension Clamshell {
     /// What to bring back. `.lost` = latest record is an `add` but the hash
     /// isn't in the page's `.md`; `.purged` = latest record is a `purge`
     /// but a prior `add` still carries markdown + parent.
-    public enum RecoveryTarget: Sendable {
+    enum RecoveryTarget: Sendable {
         case lost(LostBlock)
         case purged(PurgedBlock)
 
@@ -33,11 +33,11 @@ extension Clamshell {
         }
     }
 
-    public struct RestoreOutcome: Sendable {
-        public let restoredHashes: Set<String>
+    struct RestoreOutcome: Sendable {
+        let restoredHashes: Set<String>
     }
 
-    public enum RestoreError: Error {
+    enum RestoreError: Error {
         /// The source page no longer exists on disk (trashed since the
         /// Recover sheet was populated). Carries the workspace-relative path.
         case pageMissing(String)
@@ -132,14 +132,14 @@ extension Clamshell {
     /// per covered hash so the union's latest record flips back to alive.
     /// Both happen in one batched log write.
     @discardableResult
-    public func restore(_ target: RecoveryTarget, liveDoc: Document?) async throws -> RestoreOutcome {
+    func restore(_ target: RecoveryTarget, liveDoc: Document?) async throws -> RestoreOutcome {
         let source = target.source
         let pageURL = url(for: source)
         guard FileManager.default.fileExists(atPath: pageURL.path) else {
             throw RestoreError.pageMissing(source)
         }
 
-        let (doc, isLive) = try resolveRestoreDoc(pageURL: pageURL, liveDoc: liveDoc)
+        let (doc, isLive) = try await resolveRestoreDoc(pageURL: pageURL, liveDoc: liveDoc)
 
         let journal = log.readJournal(page: source)
         let intent = PatchEngine.intent(from: journal)
@@ -255,11 +255,11 @@ extension Clamshell {
         return RestoreOutcome(restoredHashes: insert.coveredHashes)
     }
 
-    private func resolveRestoreDoc(pageURL: URL, liveDoc: Document?) throws -> (Document, Bool) {
+    private func resolveRestoreDoc(pageURL: URL, liveDoc: Document?) async throws -> (Document, Bool) {
         if let liveDoc, liveDoc.url == pageURL {
             return (liveDoc, true)
         }
-        let doc = try loadDocument(at: pageURL)
+        let doc = try await loadDocument(at: pageURL)
         return (doc, false)
     }
 
