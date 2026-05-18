@@ -55,7 +55,7 @@ extension Clamshell {
     /// markDirty fires only after the log is durable. Throws on read
     /// failure.
     @discardableResult
-    public func reconcile(at url: URL) async throws -> (Document, PatchEngine.ReconcileSummary) {
+    func reconcile(at url: URL) async throws -> (Document, PatchEngine.ReconcileSummary) {
         let raw = try files.read(url)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         recordDiskContent(raw, at: url)

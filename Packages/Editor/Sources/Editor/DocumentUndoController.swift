@@ -1,23 +1,11 @@
 import Foundation
 import SwiftUI
 
-private struct DocumentUndoManagerKey: EnvironmentKey {
-    static let defaultValue: UndoManager? = nil
-}
-
 private struct DocumentUndoControllerKey: EnvironmentKey {
     static let defaultValue: DocumentUndoController? = nil
 }
 
 extension EnvironmentValues {
-    /// The shared document-level `UndoManager` for the current `EditorView`. Distinct from
-    /// SwiftUI's built-in `\.undoManager` (which is read-only and tied to the responder
-    /// chain) — this one we control and inject explicitly.
-    public var documentUndoManager: UndoManager? {
-        get { self[DocumentUndoManagerKey.self] }
-        set { self[DocumentUndoManagerKey.self] = newValue }
-    }
-
     /// The `DocumentUndoController` for the current `EditorView`. Editor views read this to
     /// register typing transactions and to break coalescing at edit-session boundaries.
     var documentUndoController: DocumentUndoController? {
@@ -69,11 +57,6 @@ public final class DocumentUndoController {
     public init() {
         self.undoManager = UndoManager()
         self.undoManager.levelsOfUndo = 100
-    }
-
-    public func reset() {
-        undoManager.removeAllActions()
-        document?.breakCoalescing()
     }
 
     /// Run `change` inside the document's transaction. Used by `BlockTextEditor`

@@ -147,7 +147,7 @@ final class Workspace {
         if let url = WorkspaceBookmark.resolve() {
             accessedWorkspaceURL = url
             workspaceURL = url
-            let clamshell = makeClamshell(root: url)
+            let clamshell = Clamshell(root: url)
             self.clamshell = clamshell
             rescan()
         }
@@ -156,7 +156,7 @@ final class Workspace {
     private func installLaunchArgWorkspace(path: String) {
         let root = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
         workspaceURL = root
-        let clamshell = makeClamshell(root: root)
+        let clamshell = Clamshell(root: root)
         // Fixture clamshells contain a single `everything.md` — open it
         // directly so snap-diff sees content immediately on launch.
         if clamshell.homeRelativePath == nil {
@@ -173,7 +173,7 @@ final class Workspace {
             try WorkspaceBookmark.save(url: root)
             activateWorkspaceAccess(for: root)
             workspaceURL = root
-            let clamshell = makeClamshell(root: root)
+            let clamshell = Clamshell(root: root)
             clamshell.homeRelativePath = homePath
             self.clamshell = clamshell
             rescan()
@@ -187,7 +187,7 @@ final class Workspace {
             try WorkspaceBookmark.save(url: url)
             activateWorkspaceAccess(for: url)
             workspaceURL = url
-            let clamshell = makeClamshell(root: url)
+            let clamshell = Clamshell(root: url)
             self.clamshell = clamshell
             rescan()
             if homeRelativePath == nil {
@@ -323,14 +323,6 @@ final class Workspace {
 
     func setHome(_ entry: WorkspaceEntry) {
         clamshell?.homeRelativePath = entry.relativePath
-    }
-
-    /// Build a `Clamshell` for `root`. After title ownership moved into
-    /// Clamshell there's no host-side wiring; this is here purely so a
-    /// single function call sites a future per-Clamshell setup hook if
-    /// one ever shows up.
-    private func makeClamshell(root: URL) -> Clamshell {
-        Clamshell(root: root)
     }
 
     /// Convenience for new-page creation surfaces (welcome-page seed, the
@@ -503,7 +495,7 @@ final class Workspace {
             """
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
             workspaceURL = root
-            let clamshell = makeClamshell(root: root)
+            let clamshell = Clamshell(root: root)
             self.clamshell = clamshell
             _ = try? clamshell.rescan()
         } catch {
@@ -526,7 +518,7 @@ final class Workspace {
             let source = lines.joined(separator: "\n\n")
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
             workspaceURL = root
-            let clamshell = makeClamshell(root: root)
+            let clamshell = Clamshell(root: root)
             clamshell.homeRelativePath = "everything.md"
             self.clamshell = clamshell
             _ = try? clamshell.rescan()

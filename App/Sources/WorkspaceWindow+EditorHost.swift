@@ -78,11 +78,35 @@ extension WorkspaceWindow: EditorHost {
     }
 
     func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool {
-        await appendToSubpage(relativePath: pageID, blocks: blocks)
+        guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
+        let target = clamshell.url(for: pageID)
+        let doc: Document
+        do {
+            doc = try await clamshell.append(blocks, toPage: pageID)
+        } catch {
+            workspace.error = "Failed to move blocks into \(pageID): \(error.localizedDescription)"
+            return false
+        }
+        // If this window has the subpage open (multi-window scenario), splice
+        // the appended content into the live instance rather than swapping —
+        // keeps the editor's state references stable.
+        if let live = openDocument, live.url == target, live !== doc {
+            live.replaceChildren(doc.children)
+            live.modificationDate = doc.modificationDate
+        }
+        return true
     }
 
+    /// Editor's async move-destination call site: store a continuation,
+    /// drive the sheet via `moveRequest`, resume from `resolveMoveRequest`.
     func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget]) async -> MoveDestination? {
-        await requestMoveDestination(blockIDs: blockIDs, inDocCandidates: inDocCandidates)
+        await withCheckedContinuation { (continuation: CheckedContinuation<MoveDestination?, Never>) in
+            moveRequest = MoveRequest(
+                blockIDs: blockIDs,
+                inDocCandidates: inDocCandidates,
+                completion: { destination in continuation.resume(returning: destination) }
+            )
+        }
     }
 
     func onNavigateBack() {

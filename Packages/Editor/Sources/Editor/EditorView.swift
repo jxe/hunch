@@ -299,11 +299,8 @@ public struct EditorView: View {
                     .padding(.bottom, 18)
                 }
             }
-            // Hand the shared UndoManager + controller down through the environment.
-            // BlockTextEditor reads the controller to register a typing-session snapshot
-            // when an editor loses focus; the manager is used to route Cmd-Z through the
-            // shared timeline.
-            .environment(\.documentUndoManager, undoController.undoManager)
+            // Hand the controller down through the environment. BlockTextEditor reads it
+            // to register a typing-session snapshot when an editor loses focus.
             .environment(\.documentUndoController, undoController)
             .environment(\.linkPreviewProvider, host.linkPreviewProvider)
             .environment(\.imageURLResolver, host.imageURLResolver)

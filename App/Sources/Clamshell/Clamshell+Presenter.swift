@@ -4,10 +4,10 @@ import Editor
 /// File-presenter watch over a Document's URL. Owns the NSFilePresenter
 /// lifecycle, the wakeup debounce, conflict-version merging, disk-content
 /// classification (echo / stomp / external), and reconcile-against-log.
-/// The host registers via `installPresenter(for:onEvent:)`, holds the
-/// returned `PresenterHandle`, and reacts to a single `PresenterEvent` per
-/// wakeup for UI bookkeeping (banners, workspace rescan, title cache
-/// refresh).
+/// The host calls `openPage(at:onEvent:)`/`closePage(_:)`; the presenter
+/// is installed/removed internally as part of that lifecycle. Host reacts
+/// to one `PresenterEvent` per wakeup for UI bookkeeping (banners,
+/// workspace rescan, title cache refresh).
 @MainActor
 extension Clamshell {
     /// What happened to the page during a presenter wakeup. Always
@@ -35,10 +35,9 @@ extension Clamshell {
         case restored(count: Int)
     }
 
-    /// Opaque handle to a registered presenter. Pass to
-    /// `removePresenter(_:)` to tear down. The host holds at most one
-    /// handle per open document.
-    public final class PresenterHandle {
+    /// Opaque handle to a registered presenter. Internal — the host only
+    /// sees it via `OpenPage` and passes the whole thing back to `closePage`.
+    final class PresenterHandle {
         fileprivate let presenter: DocumentFilePresenter
         fileprivate init(_ presenter: DocumentFilePresenter) {
             self.presenter = presenter
@@ -50,7 +49,7 @@ extension Clamshell {
     /// filesystem-level response in place (conflict merge, content
     /// reload, journal reconcile). The host reacts only with
     /// UI/workspace bookkeeping.
-    public func installPresenter(
+    func installPresenter(
         for doc: Document,
         onEvent: @escaping @MainActor (PresenterEvent) -> Void
     ) -> PresenterHandle {
@@ -66,7 +65,7 @@ extension Clamshell {
     }
 
     /// Tear down a previously-installed presenter. Idempotent.
-    public func removePresenter(_ handle: PresenterHandle) {
+    func removePresenter(_ handle: PresenterHandle) {
         NSFileCoordinator.removeFilePresenter(handle.presenter)
     }
 
@@ -76,7 +75,7 @@ extension Clamshell {
     public struct OpenPage {
         public let document: Document
         public let summary: PatchEngine.ReconcileSummary
-        public let presenter: PresenterHandle
+        let presenter: PresenterHandle
     }
 
     /// Load `url`, fold its journal (auto-restoring any lost subtrees),
@@ -190,8 +189,8 @@ extension Clamshell {
 
 /// NSFilePresenter shim. `presentedItemURL` is immutable across the
 /// presenter's lifetime; the wakeup dispatches to a `@Sendable` closure
-/// the registrar provides. Internal to the Clamshell module — hosts hold
-/// the opaque `PresenterHandle` returned by `installPresenter`.
+/// the registrar provides. Internal to the Clamshell module — the host
+/// never names this type or its `PresenterHandle` wrapper directly.
 final class DocumentFilePresenter: NSObject, NSFilePresenter {
     let presentedItemURL: URL?
     let presentedItemOperationQueue = OperationQueue.main

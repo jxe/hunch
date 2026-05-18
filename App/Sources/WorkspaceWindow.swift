@@ -42,8 +42,6 @@ final class WorkspaceWindow {
         self.workspace = workspace
     }
 
-    var homeURL: URL? { workspace.homeURL }
-
     var currentPageRelativePath: String? {
         guard let url = openDocument?.url else { return nil }
         return workspace.clamshell?.relativePath(of: url)
@@ -93,10 +91,6 @@ final class WorkspaceWindow {
         path.removeLast()
     }
 
-    func closeDocument() {
-        path = []
-    }
-
     /// Reconcile `openDocument` with the currently visible page. Driven by
     /// `.onChange(of: path)` in `ContentView`. Drains the outgoing
     /// document's pending writes before loading the next via
@@ -104,7 +98,7 @@ final class WorkspaceWindow {
     /// any lost subtrees, and installs the file presenter. Banner-worthy
     /// reconcile outcomes are surfaced via `postReconcileBanner`.
     func handlePathChange() {
-        let topURL = path.last ?? homeURL
+        let topURL = path.last ?? workspace.homeURL
         if openDocument?.url == topURL { return }
         let outgoing = openPage
         openPage = nil
@@ -127,7 +121,7 @@ final class WorkspaceWindow {
                     self?.handlePresenterEvent(event, doc: nil)
                 }
                 // The user may have navigated again while we were awaiting.
-                guard path.last ?? homeURL == url else {
+                guard path.last ?? workspace.homeURL == url else {
                     await clamshell.closePage(open)
                     return
                 }
@@ -193,29 +187,7 @@ final class WorkspaceWindow {
         path = []
     }
 
-    /// Force-save the open document. Used by scenePhase backgrounding,
-    /// shutdown, and any other "drain now" path.
-    func flushOpenDocument() async {
-        guard let clamshell = workspace.clamshell, let doc = openDocument else { return }
-        _ = await clamshell.flush(doc)
-    }
-
     // MARK: - Move-to picker
-
-    /// Editor's async move-destination call site: store a continuation,
-    /// drive the sheet via `moveRequest`, resume from `resolveMoveRequest`.
-    func requestMoveDestination(
-        blockIDs: [BlockID],
-        inDocCandidates: [InDocMoveTarget]
-    ) async -> MoveDestination? {
-        await withCheckedContinuation { (continuation: CheckedContinuation<MoveDestination?, Never>) in
-            moveRequest = MoveRequest(
-                blockIDs: blockIDs,
-                inDocCandidates: inDocCandidates,
-                completion: { destination in continuation.resume(returning: destination) }
-            )
-        }
-    }
 
     func resolveMoveRequest(with destination: MoveDestination?) {
         guard let req = moveRequest else { return }
@@ -263,27 +235,6 @@ final class WorkspaceWindow {
             workspace.error = "Failed to move \(clamshell.relativePath(of: entry.url)) to trash: \(error.localizedDescription)"
             return false
         }
-    }
-
-    @discardableResult
-    func appendToSubpage(relativePath: String, blocks: [Block]) async -> Bool {
-        guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
-        let target = clamshell.url(for: relativePath)
-        let doc: Document
-        do {
-            doc = try await clamshell.append(blocks, toPage: relativePath)
-        } catch {
-            workspace.error = "Failed to move blocks into \(relativePath): \(error.localizedDescription)"
-            return false
-        }
-        // If this window has the subpage open (multi-window scenario), splice
-        // the appended content into the live instance rather than swapping —
-        // keeps the editor's state references stable.
-        if let live = openDocument, live.url == target, live !== doc {
-            live.replaceChildren(doc.children)
-            live.modificationDate = doc.modificationDate
-        }
-        return true
     }
 
     @discardableResult
