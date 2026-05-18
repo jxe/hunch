@@ -200,7 +200,7 @@ struct RecoveryLogTests {
 
         let toggleHash = toggle.atomicHash
         let bodyHash = body.atomicHash
-        let intent = PatchEngine.intent(from: clamshell.readJournal(forPage: "p.md"))
+        let intent = PatchEngine.intent(from: clamshell.log.readJournal(page: "p.md"))
         #expect(intent.parent(of: bodyHash) == toggleHash)
     }
 
@@ -236,7 +236,7 @@ struct RecoveryLogTests {
 
         var lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.contains(where: { $0.hash == h }))
-        try await clamshell.applyPatch(Patch(entries: [.purge(hash: h)]), forPage: "p.md")
+        try await clamshell.log.apply(Patch(entries: [.purge(hash: h)]), to: "p.md")
         lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty, "purge tombstone should suppress entry")
     }
@@ -491,13 +491,13 @@ struct RecoveryLogTests {
         // purge (the counter would suffice either way; t is for display).
         try await Task.sleep(for: .milliseconds(20))
         let block = Block.paragraph(text: attr("doomed"))
-        try await clamshell.applyPatch(
+        try await clamshell.log.apply(
             Patch(entries: [.add(
                 hash: block.atomicHash,
                 parent: entry.parentHash,
                 markdown: BlockSerializer.serializeAtomic(block)
             )]),
-            forPage: "p.md"
+            to: "p.md"
         )
 
         let purgedAfter = await clamshell.listPurgedBlocks(
@@ -663,9 +663,9 @@ struct RecoveryLogTests {
 
         // Our device purges H. The purge counter must exceed 500 so the
         // union picks the purge as latest and H is tombstoned, not alive.
-        try await clamshell.applyPatch(Patch(entries: [.purge(hash: h)]), forPage: "p.md")
+        try await clamshell.log.apply(Patch(entries: [.purge(hash: h)]), to: "p.md")
 
-        let intent = PatchEngine.intent(from: clamshell.readJournal(forPage: "p.md"))
+        let intent = PatchEngine.intent(from: clamshell.log.readJournal(page: "p.md"))
         switch intent.status(of: h) {
         case .tombstoned: break
         case .alive: Issue.record("expected tombstoned, got alive — purge lost the union race")
@@ -706,7 +706,7 @@ struct RecoveryLogTests {
         try legacyAdd.write(to: legacyURL, atomically: true, encoding: .utf8)
 
         // Now our device purges. The purge record carries `c`.
-        try await clamshell.applyPatch(Patch(entries: [.purge(hash: h)]), forPage: "p.md")
+        try await clamshell.log.apply(Patch(entries: [.purge(hash: h)]), to: "p.md")
         try await Task.sleep(for: .milliseconds(40))
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))

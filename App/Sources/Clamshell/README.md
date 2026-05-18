@@ -113,7 +113,7 @@ merge, `append(_:toPage:)` for subpage drops).
 ### Journal
 
 A page's **journal** is the union of every device's per-page log.
-`Clamshell.readJournal(forPage:)` returns it as a `LogJournal` value —
+`RecoveryLog.readJournal(page:)` returns it as a `LogJournal` value —
 the engine's input.
 
 ### Intent state
@@ -289,9 +289,9 @@ state) vs external (a different editor wrote). Callers don't have to
 seed anything; the ring buffer is cleared automatically on `moveToTrash`.
 
 The engine itself is at the same layer as Clamshell — internal helpers
-on `Clamshell` (`readJournal`, `applyPatch`, `write(_:patch:)`,
-`reconcileLive`) drive `PatchEngine` from inside the module and aren't
-part of the host-facing surface.
+(`write(_:patch:)`, `reconcileLive`, `classifyDiskContent`,
+`isQuiescent`) and the `log` actor drive `PatchEngine` from inside the
+module and aren't part of the host-facing surface.
 
 ---
 
@@ -400,10 +400,11 @@ tombstones from comparing prior state to current state. Consequences:
 are tracked alongside "lost" entries — the union remembers both the
 latest record (purge) and the latest prior `add` (carrying markdown +
 parent). `listPurgedBlocks` surfaces them so the user can bring back
-something they deleted on purpose. To restore, the host builds a
-`Patch` with a fresh `.add` for the hash and calls
-`Clamshell.applyPatch`; the new counter beats the prior purge under
-`(c, device-id)` lex, lifting the tombstone from the union.
+something they deleted on purpose. To restore, the host calls
+`Clamshell.restore(.purged(entry), liveDoc:)`; internally, a fresh
+`.add` for the hash gets appended to the log, and the new counter
+beats the prior purge under `(c, device-id)` lex, lifting the
+tombstone from the union.
 `listPurgedBlocks` defaults to a 30-day window for surface area; pass
 `since: nil` to see everything.
 

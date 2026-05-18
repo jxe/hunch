@@ -41,9 +41,9 @@ user-picked workspace folder.
     append / createPage / moveToTrash / listTrashedPages / restorePage /
     listLostBlocks / listPurgedBlocks / resolveConflictVersions /
     installPresenter / removePresenter`, plus `relativePath(of:)` and
-    `url(for:)` for path conversion. Internal helpers (`readJournal`,
-    `applyPatch`, `write(_:patch:)`, `reconcileLive`,
-    `classifyDiskContent`, `isQuiescent`) drive the engine from inside
+    `url(for:)` for path conversion. Internal helpers
+    (`write(_:patch:)`, `reconcileLive`, `classifyDiskContent`,
+    `isQuiescent`) and the `log` actor drive the engine from inside
     the module and aren't part of the host surface. **Editor-driven persistence** is
     `documentDidChange(ops:in:)` (called on every mutation — projects
     ops to a `Patch`, spawns a tracked log-apply Task, (re)arms the

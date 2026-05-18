@@ -46,18 +46,6 @@ extension Clamshell {
         case unparseable
     }
 
-    /// Outcome of `reconcileLive(_:)`. Splitting out `.deferred` makes
-    /// the "page wasn't quiescent" case visible at the type level —
-    /// callers can decide to retry after a `flush(_:)` instead of
-    /// silently consuming an empty summary.
-    enum LiveReconcileOutcome: Sendable {
-        case completed(PatchEngine.ReconcileSummary)
-        /// Page wasn't quiescent (debounce armed, log apply in flight,
-        /// or save in flight). Reconcile did nothing; caller may retry
-        /// after `flush(_:)`.
-        case deferred
-    }
-
     /// Open-doc reconcile path: load `url` from disk, parse, reconcile
     /// against the journal, and return a fresh `Document`. Any
     /// auto-restore subtrees are spliced into the doc, bare-md /
@@ -78,17 +66,16 @@ extension Clamshell {
 
     /// Presenter-wakeup / periodic reconcile path: mutate `doc` in
     /// place. Gated on `isQuiescent(at:)` — the engine assumes
-    /// `doc.children == parsed(.md)`, only true on a settled page. When
-    /// the gate fires, returns `.deferred` so the caller can choose to
-    /// retry after `flush(_:)` instead of consuming an empty result.
+    /// `doc.children == parsed(.md)`, only true on a settled page.
+    /// Returns nil when the gate fires, so the caller can distinguish
+    /// "deferred, retry after flush" from "ran and found nothing."
     @discardableResult
-    func reconcileLive(_ doc: Document) async throws -> LiveReconcileOutcome {
+    func reconcileLive(_ doc: Document) async throws -> PatchEngine.ReconcileSummary? {
         guard isQuiescent(at: doc.url) else {
             Diag.merge.log("reconcileLive deferred url=\(doc.url.lastPathComponent, privacy: .public)")
-            return .deferred
+            return nil
         }
-        let summary = try await runReconcile(on: doc)
-        return .completed(summary)
+        return try await runReconcile(on: doc)
     }
 
     /// Shared body: run the pure reconciliation, apply the catch-up

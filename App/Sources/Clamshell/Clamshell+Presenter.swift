@@ -128,11 +128,11 @@ extension Clamshell {
 
         // 3. Reconcile against the journal. Idempotent: already-live
         //    hashes produce no inserts; already-logged hashes produce no
-        //    observations. Returns `.deferred` when the page isn't
-        //    quiescent — the next wakeup retries.
+        //    observations. Returns nil when the page isn't quiescent —
+        //    the next wakeup retries.
         var restoredCount = 0
         do {
-            if case .completed(let summary) = try await reconcileLive(doc), summary.didChange {
+            if let summary = try await reconcileLive(doc), summary.didChange {
                 restoredCount = summary.restoredHashes.count
             }
         } catch {

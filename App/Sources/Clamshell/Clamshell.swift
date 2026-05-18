@@ -531,24 +531,6 @@ public final class Clamshell {
     }
 
 
-    /// Read every device's per-page log and return as a `LogJournal` (engine
-    /// input). Callers that drive auto-restore or the Recover sheet via
-    /// `PatchEngine` use this to get a snapshot of the journal in one I/O
-    /// pass, then derive intent / classify lost / classify purged without
-    /// re-hitting disk.
-    nonisolated func readJournal(forPage page: String) -> LogJournal {
-        log.readJournal(page: page)
-    }
-
-    /// Apply an arbitrary patch to a page's recovery log. The unified path
-    /// used by reconcile (lift unlogged observations + quarantine
-    /// unrestorable hashes in one batched write) and by manual restore
-    /// (sweep covered hashes as purges, or fresh adds for unpurge).
-    func applyPatch(_ patch: Patch, forPage page: String) async throws {
-        guard !patch.isEmpty else { return }
-        try await log.apply(patch, to: page)
-    }
-
     /// Blocks deleted via the editor's op stream or a manual Recover-sheet
     /// dismiss: the log union's latest record is a `purge`, but a prior
     /// `add` carries the markdown + parent metadata so we can reconstruct
