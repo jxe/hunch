@@ -25,7 +25,7 @@ struct HunchApp: App {
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Reload Pages") {
-                    workspace.rescan()
+                    workspace.rescan(includeConflictSweep: true)
                 }
                 .keyboardShortcut("r", modifiers: [.command])
 

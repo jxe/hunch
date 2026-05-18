@@ -71,6 +71,12 @@ final class Workspace {
 
     private var accessedWorkspaceURL: URL?
 
+    /// Once-per-mount latch: the closed-page conflict sweep runs at most once
+    /// per `Clamshell` instance, kicked by the first successful `openPage`
+    /// (see `scheduleConflictSweepIfNeeded`). Reset whenever the clamshell is
+    /// replaced (mount / switchWorkspace).
+    private var hasRunConflictSweep = false
+
     var homeURL: URL? {
         guard let homeRelativePath else { return nil }
         return entries.first { $0.relativePath == homeRelativePath }?.url
@@ -145,9 +151,11 @@ final class Workspace {
             return
         }
         if let url = WorkspaceBookmark.resolve() {
+            let total = perfStart()
             accessedWorkspaceURL = url
             mount(root: url)
             rescan()
+            perfEnd(total, "Workspace.tryRestore")
         }
     }
 
@@ -160,6 +168,7 @@ final class Workspace {
         workspaceURL = root
         let clamshell = Clamshell(root: root)
         self.clamshell = clamshell
+        hasRunConflictSweep = false
         return clamshell
     }
 
@@ -187,6 +196,7 @@ final class Workspace {
     }
 
     func setWorkspace(_ url: URL) {
+        let total = perfStart()
         do {
             try WorkspaceBookmark.save(url: url)
             activateWorkspaceAccess(for: url)
@@ -195,6 +205,7 @@ final class Workspace {
             if homeRelativePath == nil {
                 autoDetectOrSeedHome(in: clamshell)
             }
+            perfEnd(total, "Workspace.setWorkspace")
         } catch {
             self.error = "Failed to save workspace bookmark: \(error.localizedDescription)"
         }
@@ -257,14 +268,34 @@ final class Workspace {
         clamshell = nil
     }
 
-    func rescan() {
+    /// Reread the workspace from disk. `includeConflictSweep: false` (default)
+    /// is the on-mount path — sweep is deferred to `scheduleConflictSweepIfNeeded`
+    /// so it can't compete with the home-page open for MainActor. Pass `true`
+    /// for user-driven reloads (Cmd-R) where surfacing alternates is the point.
+    func rescan(includeConflictSweep: Bool = false) {
         guard let workspaceURL, let clamshell else { return }
+        let total = perfStart()
         do {
             _ = try clamshell.rescan()
-            resolveConflictsForClosedPages(workspaceURL: workspaceURL)
+            perfEnd(total, "Workspace.rescan", "includeSweep=\(includeConflictSweep)")
+            if includeConflictSweep {
+                hasRunConflictSweep = true
+                resolveConflictsForClosedPages(workspaceURL: workspaceURL)
+            }
         } catch {
             self.error = "Failed to scan workspace: \(error.localizedDescription)"
         }
+    }
+
+    /// Fire the closed-page conflict sweep exactly once per `Clamshell`
+    /// instance. Called from `WorkspaceWindow.handlePathChange` after the
+    /// first successful `openPage` so the sweep runs after the home page
+    /// is visible, not racing it for MainActor. No-op on repeat calls.
+    func scheduleConflictSweepIfNeeded() {
+        guard let workspaceURL else { return }
+        guard !hasRunConflictSweep else { return }
+        hasRunConflictSweep = true
+        resolveConflictsForClosedPages(workspaceURL: workspaceURL)
     }
 
     // MARK: - Open-URL registry
@@ -295,20 +326,25 @@ final class Workspace {
             .filter { openURLCounts[$0] == nil }
         guard !candidates.isEmpty else { return }
         let titleByURL = Dictionary(uniqueKeysWithValues: entries.map { ($0.url, $0.title) })
+        Diag.perf.log("sweep start candidates=\(candidates.count, privacy: .public)")
 
         Task { @MainActor [weak self, clamshell, candidates, workspaceURL, titleByURL] in
+            let sweepTotal = perfStart()
             var anyMerged = false
             for url in candidates {
                 guard let self else { return }
                 guard self.workspaceURL == workspaceURL else { return }
                 let resolution: Clamshell.ConflictResolution
+                let iter = perfStart()
                 do {
                     resolution = try await clamshell.resolveConflictVersions(at: url, againstLive: nil)
                 } catch {
                     Diag.merge.error("scan-time resolve failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    perfEnd(iter, "sweep.iter", "url=\(url.lastPathComponent) error=1")
                     await Task.yield()
                     continue
                 }
+                perfEnd(iter, "sweep.iter", "url=\(url.lastPathComponent) salvaged=\(resolution.salvaged)")
                 if resolution.salvaged > 0 {
                     anyMerged = true
                     let title = titleByURL[url] ?? url.deletingPathExtension().lastPathComponent
@@ -317,6 +353,7 @@ final class Workspace {
                 }
                 await Task.yield()
             }
+            perfEnd(sweepTotal, "sweep.total", "merged=\(anyMerged)")
             if anyMerged, let self, self.workspaceURL == workspaceURL {
                 self.rescan()
             }
@@ -457,7 +494,9 @@ final class Workspace {
 
     private func activateWorkspaceAccess(for url: URL) {
         releaseWorkspaceAccess()
+        let t = perfStart()
         _ = url.startAccessingSecurityScopedResource()
+        perfEnd(t, "Workspace.activateWorkspaceAccess")
         accessedWorkspaceURL = url
     }
 

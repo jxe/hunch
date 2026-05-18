@@ -159,15 +159,20 @@ The contract is four rules:
 
 ### Reconciliation paths
 
-Hosts don't call reconcile directly. Open-doc reconcile fires from
-inside `openPage(at:onEvent:)` (the `.md` is loaded fresh, so the
-page is quiescent by construction). Presenter-wakeup reconcile fires
-from the internal file presenter and mutates the live `Document` in
-place to preserve editor selection/cursor state; if the page isn't
-quiescent (a save chain entry is still pending) the wakeup defers and
-retries after the next `flush(_:)`. Either way, log apply is awaited
-strictly before the file save fires — the at-or-ahead invariant
-holds across crashes.
+Hosts don't call reconcile directly. `openPage(at:onEvent:)` returns
+as soon as the `.md` is loaded + parsed; the journal fold runs in a
+background Task and fires `onEvent(.restored(count:))` if anything
+was spliced. Deferring the fold keeps the home-page critical path
+clear of the per-device JSONL iCloud reads (~1s/device cold-cache),
+and the common case has nothing to restore. Presenter-wakeup
+reconcile fires from the internal file presenter on every wakeup and
+mutates the live `Document` in place to preserve editor selection /
+cursor state. Both paths go through `reconcileLive(_:)`, which gates
+on `isQuiescent(at:)` — if the page isn't settled (a save chain
+entry is still pending), it returns nil and the next wakeup retries
+after the save lands. Log apply is awaited strictly before the file
+save fires either way — the at-or-ahead invariant holds across
+crashes.
 
 ### Conflict merge (iCloud sibling alternates)
 
@@ -176,9 +181,15 @@ When iCloud Drive lands a sibling-file conflict (`<page> 2.md`,
 alternates: intent:)` splices any block present in an alternate but
 absent from the survivor and not tombstoned in intent, under the
 closest live ancestor in the merged tree. Driven by
-`Clamshell.resolveConflictVersions`; called from `Workspace` at scan
-time for closed pages and from Clamshell's internal file-presenter
-wakeup (`Clamshell+Presenter.swift`) for the open page.
+`Clamshell.resolveConflictVersions`; called from Clamshell's internal
+file-presenter wakeup (`Clamshell+Presenter.swift`) for the open page
+and from `Workspace.resolveConflictsForClosedPages` for closed pages.
+The closed-page sweep is **deferred until after the first successful
+`openPage`** (kicked by `Workspace.scheduleConflictSweepIfNeeded()` from
+`WorkspaceWindow.handlePathChange`), so the 49× `NSFileVersion`
+query never competes with the home-page open for MainActor. Cmd-R's
+`Workspace.rescan(includeConflictSweep: true)` forces the sweep
+synchronously for user-driven reloads.
 
 ### Known weakness: stale parent metadata
 
@@ -205,9 +216,11 @@ let clamshell = Clamshell(root: workspaceURL)
 // re-render when scan / title / home changes.
 _ = try clamshell.rescan()
 
-// Open a page: reconciles against the journal, auto-restores any lost
-// subtrees, installs the file presenter. `onEvent` fires on every
-// presenter wakeup for banner-worthy events (restored / merged).
+// Open a page: load + parse the `.md`, install the file presenter,
+// return immediately. The journal fold runs in a background Task
+// after openPage returns — `.restored` fires later if anything was
+// auto-spliced. `.conflictMerged` fires from presenter wakeups when
+// iCloud delivers a sibling-version conflict.
 let open = try await clamshell.openPage(at: url) { event in
     switch event {
     case .restored(let n): // show "Restored N blocks..." banner
@@ -215,7 +228,6 @@ let open = try await clamshell.openPage(at: url) { event in
     case .externallyReloaded, .noteworthyNothing: break
     }
 }
-if !open.summary.restoredHashes.isEmpty { /* initial banner from open() */ }
 
 // Editor-driven write — commit-time atomic save. Non-empty ops are
 // applied to the recovery log; then the .md is serialized and written.
@@ -256,7 +268,7 @@ existing instance and build a new one.
 | Path conversion | `relativePath(of:)`, `url(for:)` |
 | Read | `loadDocument(at:)` |
 | Page list (observable) | `entries`, `rescan()`, `title(for:)`, `lookupPage(_:)`, `pages(matching:excluding:)` |
-| Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document, summary}`), `closePage(_:)`. Load + reconcile + install presenter on open; flush + tear down on close. |
+| Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. Load + parse + install presenter on open (journal fold runs deferred in a background Task, fires `onEvent(.restored)` if anything was auto-spliced); flush + tear down on close. |
 | Editor-driven persistence | `documentDidChange(ops:in:)` (every commit; applies op batch to log and writes `.md` atomically per call, chained per URL), `flush(_:)` (await chain head + drain; for blur / scenePhase / navigate-away). |
 | Non-editor write | `append(_:toPage:)` for appending blocks to a non-open subpage. Sequences log-then-file. |
 | Restore | `restore(_:liveDoc:)` — the Recover-sheet entry point for both lost and purged blocks. |
@@ -280,6 +292,21 @@ docstrings in `Clamshell.swift`, `Clamshell+Reconcile.swift`, and
 ---
 
 ## Behaviors worth knowing
+
+**Title cache populates lazily.** `entries` carries a per-URL
+title overlay on top of the raw scan result — cached titles win,
+filename-derived fallback otherwise. The cache is **not** warmed at
+scan time. Instead, `lookupPage(_:)` cache misses spawn a single-URL
+off-MainActor warm (`requestTitleWarm`, deduped on
+`pendingTitleWarms`); when the read + parse lands, the cache write
+triggers an `@Observable` re-render and the next `lookupPage` returns
+the resolved title. The eager-sweep alternative (read every `.md` on
+rescan) costs ~1s/file on iCloud and dominated the workspace-open
+critical path. On-demand warm trades that for a per-subpage-row
+warm-up on first render — search-sheet rows for un-warmed pages
+display the filename until clicked or rendered. Save-time
+`postSaveBookkeeping` (`refreshTitleCache(from:)`) updates the cache
+from the live `Document` directly — no disk read.
 
 **Recovery log is per-device, append-only, no write-time dedup.**
 Editor mutations are projected to a `Patch` and applied as one batched

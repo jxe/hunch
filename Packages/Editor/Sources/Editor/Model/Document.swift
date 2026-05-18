@@ -184,7 +184,9 @@ public final class Document: @MainActor Identifiable {
     /// Pulls a title out of the first top-level H1, falling back to the
     /// caller-provided default. Does not recurse into containers — a heading
     /// inside a toggle is body content, not the page title.
-    public static func deriveTitle(from rootChildren: [Block], fallback: String) -> String {
+    /// `nonisolated` so the host can derive titles off MainActor (the body
+    /// is pure: walks a `[Block]` and reads `Block.kind`).
+    nonisolated public static func deriveTitle(from rootChildren: [Block], fallback: String) -> String {
         for block in rootChildren {
             if case .heading(.h1, let text) = block.kind {
                 let s = String(text.characters)

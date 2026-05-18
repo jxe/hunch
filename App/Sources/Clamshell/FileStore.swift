@@ -86,7 +86,10 @@ public struct FileStore: Sendable {
         return Document(url: url, children: blocks, modificationDate: mtime)
     }
 
-    @MainActor
+    /// Read + parse + title-derive — all nonisolated. The body touches only
+    /// the file system and pure value types (`Block`, `String`), so callers
+    /// can hop this off MainActor when the workspace lives on iCloud and the
+    /// cold-cache read would otherwise stall the main thread for ~1s/file.
     public func loadDocumentTitle(at url: URL) throws -> String {
         let source = try read(url)
         let blocks = BlockParser.parse(source)

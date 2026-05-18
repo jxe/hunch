@@ -10,6 +10,7 @@ public enum WorkspaceBookmark {
     static let legacyHomePathDefaultsKey = "console.workspace.homeRelativePath"
 
     public static func save(url: URL) throws {
+        let total = perfStart()
         #if os(macOS)
         let options: URL.BookmarkCreationOptions = [.withSecurityScope]
         #else
@@ -21,8 +22,11 @@ public enum WorkspaceBookmark {
                 url.stopAccessingSecurityScopedResource()
             }
         }
+        let bookmarkStart = perfStart()
         let data = try url.bookmarkData(options: options, includingResourceValuesForKeys: nil, relativeTo: nil)
+        perfEnd(bookmarkStart, "WorkspaceBookmark.bookmarkData")
         UserDefaults.standard.set(data, forKey: defaultsKey)
+        perfEnd(total, "WorkspaceBookmark.save")
     }
 
     /// Resolves the persisted bookmark, if any. The returned URL has security-scoped access

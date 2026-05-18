@@ -42,15 +42,19 @@ user-picked workspace folder.
     listLostBlocks / listPurgedBlocks / resolveConflictVersions`,
     plus `relativePath(of:)` and `url(for:)` for path conversion.
     Internal helpers (`writeClosedPage(_:patch:)`, `scheduleSave(_:)`,
-    `reconcile(at:)`, `reconcileLive`, `classifyDiskContent`,
-    `isQuiescent`, `installPresenter` / `removePresenter`) and the `log`
-    actor drive the engine from inside the module and aren't part of the
-    host surface. **Clamshell is `@Observable`**: `entries` and
+    `reconcileLive`, `classifyDiskContent`, `isQuiescent`,
+    `installPresenter` / `removePresenter`) and the `log` actor drive
+    the engine from inside the module and aren't part of the host
+    surface. **Clamshell is `@Observable`**: `entries` and
     `homeRelativePath` are tracked properties; SwiftUI re-renders
     automatically when scan / title cache / home changes. The title
-    cache and post-save bookkeeping (mtime refresh, title update,
-    selective rescan) all live inside Clamshell — the host doesn't
-    thread any callbacks through it. **Editor-driven persistence** is
+    cache populates lazily through `lookupPage` cache misses
+    (`requestTitleWarm` off-MainActor, deduped on `pendingTitleWarms`)
+    — never eagerly on rescan, because each iCloud cold-cache read
+    costs ~1s and 50× of that would stall the home page open. Post-
+    save bookkeeping (mtime refresh, title update from the live
+    `Document`, selective rescan) all live inside Clamshell — the host
+    doesn't thread any callbacks through it. **Editor-driven persistence** is
     `documentDidChange(ops:in:)` (the unified commit primitive — applies
     the op batch to the recovery log when non-empty, then serializes and
     writes the `.md`, in one awaited sequence) and `flush(_:)` (await
@@ -96,20 +100,26 @@ user-picked workspace folder.
     flavoured page reference, host-side only — translated into
     `MentionItem` at the editor boundary). The page list and title
     cache live on `Clamshell`; `workspace.entries` and
-    `workspace.homeRelativePath` are passthroughs.
+    `workspace.homeRelativePath` are passthroughs. The closed-page
+    conflict sweep (`resolveConflictsForClosedPages`) is deferred —
+    `rescan()` no longer fires it; `WorkspaceWindow.handlePathChange`
+    calls `scheduleConflictSweepIfNeeded()` after the first successful
+    `openPage` so the 49× `NSFileVersion` query doesn't race the
+    home-page load. Cmd-R uses `rescan(includeConflictSweep: true)`.
   - `App/Sources/WorkspaceWindow.swift` — per-window navigation and
     edit-session state, AND the `EditorHost` implementation: `path: [URL]`
     (NavigationStack), `openDocument` (computed from a stored
     `openPage: Clamshell.OpenPage?`), move-to request plumbing.
     `handlePathChange` is the choreography: drain prior page via
     `clamshell.closePage(_:)`, then `await clamshell.openPage(at:)`
-    which returns the Document + reconcile summary + presenter handle
-    in one call (folds journal, auto-restores lost subtrees, installs
-    file presenter). The host methods (`openLink`,
-    `documentDidChange`, `flush`, …) live on the same type and
-    forward to `Clamshell`. Move-to is async — the editor
-    `await`s `host.onRequestMoveDestination(...)`, the host bridges to
-    the sheet via a `CheckedContinuation`.
+    which returns the parsed Document + presenter handle. The journal
+    fold (auto-restore of lost subtrees) is deferred — `openPage`
+    spawns a background reconcile Task and surfaces any restores via
+    `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
+    The host methods (`openLink`, `documentDidChange`, `flush`, …)
+    live on the same type and forward to `Clamshell`. Move-to is
+    async — the editor `await`s `host.onRequestMoveDestination(...)`,
+    the host bridges to the sheet via a `CheckedContinuation`.
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
   storage + parser/serializer (formerly SPM tests under `CoreTests/`).
   The test target depends only on the `Hunch` app target — Editor's

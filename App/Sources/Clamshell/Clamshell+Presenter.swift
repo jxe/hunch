@@ -69,31 +69,78 @@ extension Clamshell {
         NSFileCoordinator.removeFilePresenter(handle.presenter)
     }
 
-    /// One open page — the Document the editor renders against, the
-    /// reconcile summary from the initial load (banners), and the file
-    /// presenter handle. Hand back to `closePage(_:)` to tear down.
+    /// One open page — the Document the editor renders against and the
+    /// file presenter handle. Hand back to `closePage(_:)` to tear down.
+    /// The journal fold runs asynchronously after `openPage` returns; any
+    /// restored subtrees splice into `document` in place and surface via
+    /// `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
     public struct OpenPage {
         public let document: Document
-        public let summary: PatchEngine.ReconcileSummary
         let presenter: PresenterHandle
     }
 
-    /// Load `url`, fold its journal (auto-restoring any lost subtrees),
-    /// install the file presenter, and return everything the host needs
-    /// to render the editor. Symmetric inverse: `closePage(_:)`.
+    /// Load `url`, install the file presenter, and return immediately.
+    /// The journal fold (reconcile-against-log) is **deferred**: it runs
+    /// in a background Task after `openPage` returns, and any auto-
+    /// restored subtrees fire `onEvent(.restored(count:))` so the host
+    /// shows the same banner it would for a presenter-wakeup restore.
+    /// Symmetric inverse: `closePage(_:)`.
     ///
-    /// `onEvent` fires after every presenter wakeup — host shows
-    /// restore/conflict banners and refreshes per-window UI from it.
-    /// Filesystem-level work (conflict merge, content reload, journal
-    /// reconcile) is already done by the time the callback runs.
+    /// Why deferred: on iCloud workspaces, materializing the per-device
+    /// `.history/<rel>/<device-id>.jsonl` files dominates time-to-page
+    /// (4 device logs × ~1s of cold-cache fault-in). The common case has
+    /// nothing to restore, so paying that cost on the critical path is
+    /// pure latency. If the journal does have lost-but-alive blocks,
+    /// they appear a few seconds after the editor renders, with a
+    /// banner — same UX as iCloud delivering a foreign device's writes
+    /// mid-session.
+    ///
+    /// `onEvent` fires after every presenter wakeup AND once after the
+    /// deferred-reconcile background Task completes (only if it
+    /// restored anything). Filesystem-level work is already done by the
+    /// time the callback runs.
     @MainActor
     public func openPage(
         at url: URL,
         onEvent: @escaping @MainActor (PresenterEvent) -> Void
     ) async throws -> OpenPage {
-        let (document, summary) = try await reconcile(at: url)
+        let total = perfStart()
+        // Fast path: read + parse off MainActor. Skip the journal fold —
+        // it's deferred below.
+        let readT = perfStart()
+        let files = self.files
+        let (raw, blocks): (String, [Block]) = try await Task.detached(priority: .userInitiated) { [files, url] in
+            let raw = try files.read(url)
+            let blocks = BlockParser.parse(raw)
+            return (raw, blocks)
+        }.value
+        perfEnd(readT, "openPage.read+parse", "url=\(url.lastPathComponent) bytes=\(raw.utf8.count) blocks=\(blocks.count)")
+        let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        recordDiskContent(raw, at: url)
+        let document = Document(url: url, children: blocks, modificationDate: mtime)
+
+        let presT = perfStart()
         let presenter = installPresenter(for: document, onEvent: onEvent)
-        return OpenPage(document: document, summary: summary, presenter: presenter)
+        perfEnd(presT, "openPage.installPresenter", "url=\(url.lastPathComponent)")
+
+        // Deferred reconcile. `reconcileLive` gates on `isQuiescent`; if
+        // the user is mid-save when this runs, it returns nil and the
+        // next presenter wakeup (after the save completes) retries.
+        Task { @MainActor [weak self, weak document] in
+            guard let self, let document else { return }
+            let deferredT = perfStart()
+            do {
+                if let summary = try await self.reconcileLive(document), summary.didChange {
+                    onEvent(.restored(count: summary.restoredHashes.count))
+                }
+                perfEnd(deferredT, "openPage.deferredReconcile", "url=\(url.lastPathComponent)")
+            } catch {
+                Diag.merge.error("deferred reconcile failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        perfEnd(total, "openPage.total", "url=\(url.lastPathComponent)")
+        return OpenPage(document: document, presenter: presenter)
     }
 
     /// Symmetric inverse of `openPage`: flush any pending writes for the

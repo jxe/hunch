@@ -46,30 +46,14 @@ extension Clamshell {
         case unparseable
     }
 
-    /// Open-doc reconcile path: load `url` from disk, parse, reconcile
-    /// against the journal, and return a fresh `Document`. Any
-    /// auto-restore subtrees are spliced into the doc, bare-md /
-    /// external observations are lifted as `.add` records, and hashes
-    /// the engine can't restore are quarantined. The catch-up patch
-    /// lands before the save (`log strictly before file`); the .md
-    /// re-save (if the engine spliced anything in) goes through the
-    /// unified save chain so concurrent user commits stay ordered.
-    /// Throws on read failure.
-    @discardableResult
-    func reconcile(at url: URL) async throws -> (Document, PatchEngine.ReconcileSummary) {
-        let raw = try files.read(url)
-        let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        recordDiskContent(raw, at: url)
-        let doc = Document(url: url, children: BlockParser.parse(raw), modificationDate: mtime)
-        let summary = try await runReconcile(on: doc)
-        return (doc, summary)
-    }
-
-    /// Presenter-wakeup / periodic reconcile path: mutate `doc` in
-    /// place. Gated on `isQuiescent(at:)` — the engine assumes
-    /// `doc.children == parsed(.md)`, only true on a settled page.
-    /// Returns nil when the gate fires, so the caller can distinguish
-    /// "deferred, retry after flush" from "ran and found nothing."
+    /// Reconcile-against-journal on a live `Document`: mutate `doc` in
+    /// place if the engine finds blocks to splice. Gated on
+    /// `isQuiescent(at:)` — the engine assumes `doc.children ==
+    /// parsed(.md)`, only true on a settled page. Returns nil when the
+    /// gate fires, so the caller can distinguish "deferred, retry after
+    /// flush" from "ran and found nothing." Used both by openPage (the
+    /// initial post-load fold, deferred so it doesn't block first
+    /// paint) and by presenter wakeups.
     @discardableResult
     func reconcileLive(_ doc: Document) async throws -> PatchEngine.ReconcileSummary? {
         guard isQuiescent(at: doc.url) else {
@@ -85,9 +69,24 @@ extension Clamshell {
     private func runReconcile(on doc: Document) async throws -> PatchEngine.ReconcileSummary {
         let url = doc.url
         let rel = relativePath(of: url)
-        let journal = log.readJournal(page: rel)
+        let journalT = perfStart()
+        // `log.readJournal` is `nonisolated` but synchronous; called from a
+        // `@MainActor` context it would run on the main thread, and on
+        // iCloud the per-device JSONL reads stall (~1.5s each × 4 devices).
+        // Hop to a detached Task so the file reads + JSON decode happen
+        // off-main; LogJournal is Sendable.
+        let log = self.log
+        let journal = await Task.detached(priority: .userInitiated) { [log, rel] in
+            log.readJournal(page: rel)
+        }.value
+        let totalRecords = journal.devices.reduce(0) { $0 + $1.records.count }
+        perfEnd(journalT, "runReconcile.readJournal", "rel=\(rel) devices=\(journal.devices.count) records=\(totalRecords)")
+        let intentT = perfStart()
         let intent = PatchEngine.intent(from: journal)
+        perfEnd(intentT, "runReconcile.intent")
+        let reconT = perfStart()
         let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
+        perfEnd(reconT, "runReconcile.reconcile")
 
         var entries: [Patch.Entry] = []
         entries.reserveCapacity(recon.toAppend.count + recon.unrestorable.count)
@@ -100,7 +99,9 @@ extension Clamshell {
         Self.logUnrestorables(recon.unrestorable, url: url)
 
         if !entries.isEmpty {
+            let applyT = perfStart()
             try await log.apply(Patch(entries: entries), to: rel)
+            perfEnd(applyT, "runReconcile.logApply", "entries=\(entries.count)")
         }
 
         if recon.didChange {

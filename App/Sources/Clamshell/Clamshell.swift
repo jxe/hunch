@@ -58,9 +58,16 @@ public final class Clamshell {
 
     /// Per-URL title overlay, keyed by mtime so a stale entry is detected
     /// at access time (cached entry whose mtime no longer matches the file
-    /// falls back to the filename-derived title).
+    /// falls back to the filename-derived title). Populated on-demand by
+    /// `lookupPage` cache misses — never eagerly on rescan, because on
+    /// iCloud each cold-cache read costs ~1s and 50× that would block the
+    /// home page open for the better part of a minute.
     private var titleCache: [URL: CachedTitle] = [:]
-    @ObservationIgnored private var titleRefreshTask: Task<Void, Never>?
+
+    /// Dedupe set for in-flight title warm tasks. Without this, every
+    /// SwiftUI re-render that calls `lookupPage` for a cold-cache URL
+    /// would fire another fetch.
+    @ObservationIgnored private var pendingTitleWarms: Set<URL> = []
 
     /// Per-URL save chain head. Each `documentDidChange` spawns a Task that
     /// awaits the previous chain entry for that URL before running its own
@@ -69,6 +76,7 @@ public final class Clamshell {
     @ObservationIgnored private var saveChain: [URL: Task<Void, Never>] = [:]
 
     public init(root: URL) {
+        let total = perfStart()
         self.root = root
         let files = FileStore()
         self.files = files
@@ -76,7 +84,10 @@ public final class Clamshell {
         self.log = RecoveryLog(workspaceRoot: root, store: files)
 
         let metadataURL = Clamshell.metadataURL(forRoot: root)
-        if let metadata = Clamshell.readMetadata(at: metadataURL) {
+        let metaT = perfStart()
+        let metadata = Clamshell.readMetadata(at: metadataURL)
+        perfEnd(metaT, "Clamshell.init.readMetadata")
+        if let metadata {
             self.homeRelativePath = metadata.homeRelativePath
         } else if let legacy = UserDefaults.standard.string(forKey: WorkspaceBookmark.legacyHomePathDefaultsKey) {
             // One-time migration: pre-Clamshell builds stored the home page in
@@ -93,9 +104,13 @@ public final class Clamshell {
         // pool files to `.blocks/`. The recovery log replaces that — drop the
         // pool dir on first open by a log-aware build.
         let blocksDir = root.appendingPathComponent(".blocks")
-        if FileManager.default.fileExists(atPath: blocksDir.path) {
+        let probeT = perfStart()
+        let blocksExists = FileManager.default.fileExists(atPath: blocksDir.path)
+        perfEnd(probeT, "Clamshell.init.probeBlocksDir")
+        if blocksExists {
             try? FileManager.default.removeItem(at: blocksDir)
         }
+        perfEnd(total, "Clamshell.init")
     }
 
     // MARK: - Path conversions
@@ -119,7 +134,10 @@ public final class Clamshell {
     /// the raw scan result and the title cache so the two never drift —
     /// mutating either invalidates Observation subscribers automatically.
     /// SwiftUI views observe this directly; the scan runs eagerly on
-    /// workspace open and rescans fire on page-set changes.
+    /// workspace open and rescans fire on page-set changes. Title cache
+    /// is populated on-demand (see `lookupPage` / `requestTitleWarm`),
+    /// not at scan time, so entries for un-warmed pages carry the
+    /// filename-derived fallback title.
     public var entries: [WorkspaceEntry] {
         scanResult.map { entry in
             let title: String
@@ -137,15 +155,19 @@ public final class Clamshell {
         }
     }
 
-    /// Walk the workspace folder and refresh `entries`. Kicks a background
-    /// title-refresh pass for any rows whose mtime changed since the
-    /// title cache last saw them. Idempotent — safe to call on any
-    /// page-set change (create / trash / restore / external add).
+    /// Walk the workspace folder and refresh `entries`. Idempotent — safe
+    /// to call on any page-set change (create / trash / restore / external
+    /// add). Does **not** warm the title cache: doing that eagerly on an
+    /// iCloud workspace costs ~1s/file of cold-cache materialization, and
+    /// 50× of that on MainActor stalls the home page open for the better
+    /// part of a minute. Titles populate lazily through `lookupPage`
+    /// cache misses as subpage rows render.
     @discardableResult
     public func rescan() throws -> [WorkspaceEntry] {
+        let scanT = perfStart()
         let result = try files.scan(workspaceRoot: root)
+        perfEnd(scanT, "Clamshell.rescan.scan", "count=\(result.count)")
         scanResult = result
-        refreshTitlesInBackground(for: result)
         return result
     }
 
@@ -159,7 +181,9 @@ public final class Clamshell {
 
     /// Existence + cached title for a `*.md` page id. `.missing` when the
     /// file isn't on disk; `.present(title: nil)` when the title cache
-    /// hasn't been warmed for the URL yet.
+    /// hasn't been warmed for the URL yet — that case kicks an off-main
+    /// warm so the next render returns the cached title via @Observable.
+    /// Safe to call from a SwiftUI body: warm requests are deduped by URL.
     public func lookupPage(_ relativePath: String) -> PageLookup {
         guard relativePath.hasSuffix(".md") else { return .missing }
         let url = self.url(for: relativePath)
@@ -168,6 +192,7 @@ public final class Clamshell {
         if let cached = titleCache[url], cached.modificationDate == mtime {
             return .present(title: cached.title)
         }
+        requestTitleWarm(at: url, mtime: mtime)
         return .present(title: nil)
     }
 
@@ -232,36 +257,29 @@ public final class Clamshell {
         return titleChanged
     }
 
-    private func refreshTitlesInBackground(for scanned: [WorkspaceEntry]) {
-        let stale = scanned.filter { entry in
-            titleCache[entry.url]?.modificationDate != entry.modificationDate
-        }
-        guard !stale.isEmpty else { return }
-        titleRefreshTask?.cancel()
-        // `loadDocumentTitle` constructs a transient `Document` (MainActor)
-        // before deriving the title; the lookup itself stays cheap (no parse
-        // beyond the leading H1).
-        titleRefreshTask = Task { @MainActor [weak self, stale] in
-            var refreshed: [URL: CachedTitle] = [:]
-            for entry in stale {
-                guard !Task.isCancelled else { return }
-                if let title = try? self?.files.loadDocumentTitle(at: entry.url) {
-                    refreshed[entry.url] = CachedTitle(title: title, modificationDate: entry.modificationDate)
-                }
+    /// Fire-and-forget single-URL title warm. Reads + parses off MainActor
+    /// (`loadDocumentTitle` is nonisolated); hops back only to write the
+    /// cache. Deduped on `pendingTitleWarms` so multiple SwiftUI body calls
+    /// for the same URL collapse to one fetch. mtime-guarded on the way in
+    /// AND out — if a save lands a fresh title (via `postSaveBookkeeping`)
+    /// between fetch start and finish, we don't clobber it.
+    private func requestTitleWarm(at url: URL, mtime: Date?) {
+        guard !pendingTitleWarms.contains(url) else { return }
+        pendingTitleWarms.insert(url)
+        let files = self.files
+        let started = perfStart()
+        Task.detached(priority: .utility) { [weak self, files, url, mtime] in
+            let title = try? files.loadDocumentTitle(at: url)
+            await MainActor.run {
+                guard let self else { return }
+                self.pendingTitleWarms.remove(url)
+                guard let title else { return }
+                let currentMtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                guard currentMtime == mtime else { return }
+                self.titleCache[url] = CachedTitle(title: title, modificationDate: mtime)
+                perfEnd(started, "titleWarm", "url=\(url.lastPathComponent)")
             }
-            guard !Task.isCancelled else { return }
-            self?.applyRefreshedTitles(refreshed)
         }
-    }
-
-    private func applyRefreshedTitles(_ refreshed: [URL: CachedTitle]) {
-        guard !refreshed.isEmpty else { return }
-        let truly = refreshed.filter { url, new in
-            let prev = titleCache[url]
-            return prev?.title != new.title || prev?.modificationDate != new.modificationDate
-        }
-        guard !truly.isEmpty else { return }
-        titleCache.merge(truly) { _, new in new }
     }
 
     /// Drop title cache entry for `url`. Called on trash so a future page
@@ -536,7 +554,9 @@ public final class Clamshell {
         at url: URL,
         againstLive doc: Document? = nil
     ) async throws -> ConflictResolution {
+        let nsfvT = perfStart()
         let alternates = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        perfEnd(nsfvT, "NSFileVersion.unresolved", "url=\(url.lastPathComponent) count=\(alternates.count)")
         guard !alternates.isEmpty else { return .none }
 
         var alternateBlockLists: [[Block]] = []

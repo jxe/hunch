@@ -109,17 +109,22 @@ final class WorkspaceWindow {
             return
         }
         Task { @MainActor in
+            let total = perfStart()
             // Drain the outgoing doc's flush before loading the next — a
             // force-quit between path change and flush completion would
             // otherwise drop the last keystroke.
             if let outgoing {
+                let drain = perfStart()
                 await clamshell.closePage(outgoing)
                 workspace.unregisterOpenURL(outgoing.document.url)
+                perfEnd(drain, "handlePathChange.drainOutgoing")
             }
             do {
+                let openT = perfStart()
                 let open = try await clamshell.openPage(at: url) { [weak self] event in
                     self?.handlePresenterEvent(event, doc: nil)
                 }
+                perfEnd(openT, "handlePathChange.openPage", "url=\(url.lastPathComponent)")
                 // The user may have navigated again while we were awaiting.
                 guard path.last ?? workspace.homeURL == url else {
                     await clamshell.closePage(open)
@@ -127,7 +132,11 @@ final class WorkspaceWindow {
                 }
                 openPage = open
                 workspace.registerOpenURL(url)
-                postReconcileBanner(summary: open.summary, doc: open.document, url: url)
+                perfEnd(total, "handlePathChange.total", "url=\(url.lastPathComponent)")
+                // First successful openPage per mount triggers the deferred
+                // conflict sweep — keeps the home-page critical path clear of
+                // the 49× NSFileVersion sweep until the editor is visible.
+                workspace.scheduleConflictSweepIfNeeded()
             } catch {
                 workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
             }
@@ -146,34 +155,6 @@ final class WorkspaceWindow {
         case .externallyReloaded, .conflictMerged, .noteworthyNothing:
             break
         }
-    }
-
-    private func postReconcileBanner(
-        summary: PatchEngine.ReconcileSummary,
-        doc: Document,
-        url: URL
-    ) {
-        if !summary.unrestorable.isEmpty {
-            let hashList = summary.unrestorable.map(\.hash).joined(separator: ",")
-            Diag.merge.error("reconcile quarantining url=\(url.lastPathComponent, privacy: .public) count=\(summary.unrestorable.count, privacy: .public) hashes=\(hashList, privacy: .public)")
-            for entry in summary.unrestorable {
-                let reasonLabel: String
-                switch entry.reason {
-                case .parseFailure: reasonLabel = "parseFailure"
-                case .hashMismatch(let actual, let kind): reasonLabel = "hashMismatch actual=\(actual) kind=\(kind)"
-                case .descendantOfUnrestorableRoot(let rootHash): reasonLabel = "descendantOf=\(rootHash)"
-                }
-                let mdPreview = entry.recordedMarkdown
-                    .prefix(160)
-                    .replacingOccurrences(of: "\n", with: "\\n")
-                Diag.merge.error("unrestorable hash=\(entry.hash, privacy: .public) reason=\(reasonLabel, privacy: .public) parent=\(entry.recordedParent ?? "nil", privacy: .public) recordedAt=\(entry.recordedAt.timeIntervalSince1970, privacy: .public) md=\(String(mdPreview), privacy: .public)")
-            }
-        }
-        guard summary.didChange else { return }
-        let count = summary.restoredHashes.count
-        let noun = count == 1 ? "block" : "blocks"
-        workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
-        Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) hashes=\(summary.restoredHashes.joined(separator: ","), privacy: .public)")
     }
 
     /// Workspace was dropped (switchWorkspace, etc.). Clear all per-window
