@@ -333,14 +333,14 @@ public struct EditorView: View {
                 wireEditorCommands()
             }
             // Intercept inline `[text](path.md)` / `[text](https://…)` clicks
-            // inside read-only `Text` rows and route through `host.openLink`.
+            // inside read-only `Text` rows and route through `host.didActivateLink`.
             // The host classifies workspace-relative `.md` paths internally and
             // returns false for external URLs to fall through to the system
             // browser. Live-NSTextView link taps are still owned by the
             // underlying view's click handling — this only catches read-only
             // body text.
             .environment(\.openURL, OpenURLAction { [host] url in
-                host.openLink(.url(url)) ? .handled : .systemAction
+                host.didActivateLink(.url(url)) ? .handled : .systemAction
             })
             .onChange(of: state.currentDropTarget) { _, newValue in
                 handleDropTargetChange(newValue)
@@ -1860,7 +1860,7 @@ public struct EditorView: View {
         let images = readPasteboardImages(UIPasteboard.general)
         #endif
         if !images.isEmpty {
-            let paths = host.onSaveImages(images)
+            let paths = host.saveImages(images)
             guard !paths.isEmpty else { return true }
             let blocks: [Block] = paths.map { .image(source: $0, alt: "") }
             return spliceParsedBlocksAfter(state.cursor, parsed: blocks, focusLast: false)
@@ -1963,7 +1963,7 @@ public struct EditorView: View {
         case .cmdK(let preferredTitle):
             return convertBlockToSubpage(blockID: blockID, preferredTitle: preferredTitle)
         case .navigateBack:
-            host.onNavigateBack()
+            host.didNavigateBack()
             return .handled
         case .exitEditUp:
             transferFocus(to: .nav(cursor: state.editingBlock))
@@ -2000,7 +2000,7 @@ public struct EditorView: View {
     /// platform text view doesn't ALSO try to paste a string fallback.
     private func handleEditorImagePaste(_ images: [PastedImage], blockID: BlockID) -> KeyPress.Result {
         guard !images.isEmpty else { return .handled }
-        let paths = host.onSaveImages(images)
+        let paths = host.saveImages(images)
         guard !paths.isEmpty else { return .handled }
         let blocks: [Block] = paths.map { .image(source: $0, alt: "") }
         spliceParsedBlocksAfter(blockID, parsed: blocks, focusLast: false)
@@ -2149,7 +2149,7 @@ public struct EditorView: View {
         // nav stack on a load that's going to fail.
         guard !host.lookupPage(path).isMissing else { return true }
         transferFocus(to: .nav(cursor: blockID))
-        host.openLink(.workspacePage(pageID: path))
+        host.didActivateLink(.workspacePage(pageID: path))
         return true
     }
 

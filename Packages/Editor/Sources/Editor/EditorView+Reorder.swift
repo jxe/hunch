@@ -693,7 +693,7 @@ extension EditorView {
     }
 
     /// Drop-on-subpage / Move-to picker: append `ids` to the end of the
-    /// destination page (cross-document write via `onAppendToSubpage`) and
+    /// destination page (cross-document write via `appendToSubpage`) and
     /// remove them from this document. Tree shape and relative nesting are
     /// preserved verbatim — the destination receives the subtrees as-is.
     func moveBlocks(ids: [BlockID], intoSubpagePath path: String) async {
@@ -703,7 +703,7 @@ extension EditorView {
         let movingBlocks = ordered.compactMap { document.find($0) }
         guard !movingBlocks.isEmpty else { return }
 
-        guard await host.onAppendToSubpage(path, movingBlocks) else { return }
+        guard await host.appendToSubpage(path, movingBlocks) else { return }
 
         // Capture a cursor target near the source BEFORE removing the blocks,
         // so the nav cursor stays where the user moved from rather than

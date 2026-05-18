@@ -1,25 +1,14 @@
 import Foundation
 import Editor
 
-// MARK: - HunchEditorHost (protocol + forwarding defaults)
+// MARK: - WorkspaceWindow: EditorHost
+//
+// Most methods forward to `workspace.clamshell` or to stateless helpers.
+// The ones that genuinely need per-window state — navigation, the move-to
+// picker, durability sequencing for absorb / append — read `openDocument`
+// and the per-window navigation primitives directly.
 
-/// An `EditorHost` with access to `Workspace` and the currently-open
-/// `Document`. The default implementations below cover every method that
-/// doesn't need per-window state — page lookups, subpage create / load,
-/// pasteboard serialization, image storage, link previews — by forwarding
-/// to the workspace's `Clamshell` or to stateless helpers.
-///
-/// `WorkspaceWindow` conforms below and only has to implement the methods
-/// that genuinely depend on the window: navigation, the move-to picker
-/// sheet, and durability sequencing for absorb / append (which need to
-/// reach the parent doc mounted in *this* window).
-@MainActor
-protocol HunchEditorHost: EditorHost {
-    var workspace: Workspace { get }
-    var openDocument: Document? { get }
-}
-
-extension HunchEditorHost {
+extension WorkspaceWindow: EditorHost {
     // — Workspace-scoped forwarders —
 
     func suggestPages(_ query: String) -> [MentionItem] {
@@ -34,24 +23,24 @@ extension HunchEditorHost {
         workspace.workspaceRelativeMarkdownPath(for: url, currentDocURL: openDocument?.url)
     }
 
-    func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String? {
+    func createSubpage(title: String, requestedID: String?, initialContent: [Block]?) -> String? {
         workspace.createSubpage(title: title, requestedPath: requestedID, initialContent: initialContent)
             ?? requestedID
     }
 
-    func onLoadSubpage(_ pageID: String) -> [Block]? {
+    func subpageContents(of pageID: String) -> [Block]? {
         guard let clamshell = workspace.clamshell else { return nil }
         let target = clamshell.url(for: pageID)
         do {
             return try clamshell.loadDocument(at: target).children
         } catch {
-            Diag.subpage.error("onLoadSubpage: load(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
+            Diag.subpage.error("subpageContents(of:): load(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
 
-    func documentDidChange(ops: [EditorOp], on post: Document) {
-        workspace.clamshell?.documentDidChange(ops: ops, in: post)
+    func documentDidChange(ops: [EditorOp], in document: Document) {
+        workspace.clamshell?.documentDidChange(ops: ops, in: document)
     }
 
     func flush(_ document: Document) async {
@@ -59,7 +48,7 @@ extension HunchEditorHost {
         _ = await clamshell.flush(document)
     }
 
-    func onSaveImages(_ items: [PastedImage]) -> [String] {
+    func saveImages(_ items: [PastedImage]) -> [String] {
         guard let clamshell = workspace.clamshell else { return [] }
         var paths: [String] = []
         paths.reserveCapacity(items.count)
@@ -97,13 +86,11 @@ extension HunchEditorHost {
             MainActor.assumeIsolated { workspace.clamshell?.resolveImage(source: source) }
         }
     }
-}
 
-// MARK: - WorkspaceWindow: per-window methods only
+    // — Per-window navigation & durability —
 
-extension WorkspaceWindow: HunchEditorHost {
     @discardableResult
-    func openLink(_ target: LinkTarget) -> Bool {
+    func didActivateLink(_ target: LinkTarget) -> Bool {
         switch target {
         case .workspacePage(let pageID):
             openSubpage(relativePath: pageID)
@@ -120,7 +107,7 @@ extension WorkspaceWindow: HunchEditorHost {
         }
     }
 
-    func onAbsorbSubpage(_ pageID: String) async -> Bool {
+    func absorbSubpage(_ pageID: String) async -> Bool {
         // The editor calls this immediately after the inline-content mutation
         // and relies on the host to durably persist the parent doc before the
         // source file is trashed. Without the flush here, the autosave is
@@ -130,7 +117,7 @@ extension WorkspaceWindow: HunchEditorHost {
         let target = clamshell.url(for: pageID)
         guard FileManager.default.fileExists(atPath: target.path) else { return false }
         guard await clamshell.flush(parent) else {
-            Diag.subpage.error("onAbsorbSubpage: flush failed; skipping trash of \(pageID, privacy: .public) to avoid data loss")
+            Diag.subpage.error("absorbSubpage: flush failed; skipping trash of \(pageID, privacy: .public) to avoid data loss")
             return false
         }
         do {
@@ -142,7 +129,7 @@ extension WorkspaceWindow: HunchEditorHost {
         }
     }
 
-    func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool {
+    func appendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
         let target = clamshell.url(for: pageID)
         let doc: Document
@@ -164,17 +151,17 @@ extension WorkspaceWindow: HunchEditorHost {
 
     /// Editor's async move-destination call site: store a continuation,
     /// drive the sheet via `moveRequest`, resume from `resolveMoveRequest`.
-    func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget]) async -> MoveDestination? {
+    func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? {
         await withCheckedContinuation { (continuation: CheckedContinuation<MoveDestination?, Never>) in
             moveRequest = MoveRequest(
                 blockIDs: blockIDs,
-                inDocCandidates: inDocCandidates,
+                inDocCandidates: candidates,
                 completion: { destination in continuation.resume(returning: destination) }
             )
         }
     }
 
-    func onNavigateBack() {
+    func didNavigateBack() {
         goBack()
     }
 }

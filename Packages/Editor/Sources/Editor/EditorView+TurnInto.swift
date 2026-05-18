@@ -125,7 +125,7 @@ extension EditorView {
         // editor just hands over the body blocks (or nil when empty).
         let initialContent: [Block]? = block.children.isEmpty ? nil : block.children
 
-        guard let pageID = host.onCreateSubpage(title, requestedPageID, initialContent)
+        guard let pageID = host.createSubpage(title: title, requestedID: requestedPageID, initialContent: initialContent)
             ?? requestedPageID
         else { return .ignored }
 
@@ -144,7 +144,7 @@ extension EditorView {
     func expandSubpage(blockID: BlockID) -> KeyPress.Result {
         guard let block = document.find(blockID),
               case .subpage(_, let path) = block.kind else { return .ignored }
-        guard let loaded = host.onLoadSubpage(path), !loaded.isEmpty else { return .ignored }
+        guard let loaded = host.subpageContents(of: path), !loaded.isEmpty else { return .ignored }
 
         // Loaded subtrees inline at the subpage's tree position — no indent
         // math needed; the tree itself encodes depth.
@@ -250,8 +250,8 @@ extension EditorView {
         guard target != .page else { return .ignored }
         guard let block = document.find(blockID),
               case .subpage(let title, let path) = block.kind else { return .ignored }
-        guard var loaded = host.onLoadSubpage(path) else {
-            Diag.subpage.error("convertSubpage: onLoadSubpage returned nil — path=\(path, privacy: .public)")
+        guard var loaded = host.subpageContents(of: path) else {
+            Diag.subpage.error("convertSubpage: subpageContents returned nil — path=\(path, privacy: .public)")
             return .ignored
         }
         // Heading containment means the page's body lives as children of the
@@ -281,8 +281,8 @@ extension EditorView {
         // key-handler returns immediately — the host genuinely awaits the save
         // now, so the error log fires only on real failure.
         Task { @MainActor [host] in
-            if !(await host.onAbsorbSubpage(path)) {
-                Diag.subpage.error("convertSubpage: onAbsorbSubpage failed after mutation — orphan file at \(path, privacy: .public)")
+            if !(await host.absorbSubpage(path)) {
+                Diag.subpage.error("convertSubpage: absorbSubpage failed after mutation — orphan file at \(path, privacy: .public)")
             }
         }
         if target == .toggle {
@@ -426,7 +426,7 @@ extension EditorView {
                         ) {
                             let inDoc = inDocMoveCandidates(excluding: targetIDs)
                             Task { @MainActor in
-                                let destination = await host.onRequestMoveDestination(targetIDs, inDoc)
+                                let destination = await host.moveDestination(for: targetIDs, candidates: inDoc)
                                 switch destination {
                                 case .page(let pageID):
                                     await moveBlocks(ids: targetIDs, intoSubpagePath: pageID)

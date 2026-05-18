@@ -6,7 +6,7 @@ import Foundation
 ///
 /// `id` is opaque to the editor — it's whatever string the host uses to identify
 /// the page (a relative path, a UUID, a database key); the editor passes it back
-/// unchanged in `onSubpageTap`, `onLoadSubpage`, etc.
+/// unchanged in `didActivateLink(.workspacePage(...))`, `subpageContents(of:)`, etc.
 ///
 /// `subtitle` is shown beneath the title in the row when present — useful for
 /// disambiguating pages with identical titles (e.g. show the parent path).

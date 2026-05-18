@@ -54,7 +54,7 @@ public protocol EditorHost: AnyObject {
     /// false lets the editor fall through to the system's default URL
     /// handler (used by SwiftUI's `OpenURLAction.systemAction`).
     @discardableResult
-    func openLink(_ target: LinkTarget) -> Bool
+    func didActivateLink(_ target: LinkTarget) -> Bool
 
     /// Resolve an opaque page id to its existence + title. Used by inline-link
     /// and subpage rows for display, and by the editor to gate navigation
@@ -76,24 +76,24 @@ public protocol EditorHost: AnyObject {
     /// new page to start with (descendants of the source block); the host
     /// serializes it and prepends a title heading. Returns the host-assigned
     /// page id, or nil if creation failed.
-    func onCreateSubpage(_ title: String, _ requestedID: String?, _ initialContent: [Block]?) -> String?
+    func createSubpage(title: String, requestedID: String?, initialContent: [Block]?) -> String?
 
     /// Read the page at `pageID` and return its blocks. Nil → couldn't load,
     /// the calling action becomes a no-op.
-    func onLoadSubpage(_ pageID: String) -> [Block]?
+    func subpageContents(of pageID: String) -> [Block]?
 
     /// Absorb a subpage's content into its parent (Turn Into a non-page block):
     /// the editor inlines the loaded blocks at the subpage row's position and
     /// the host trashes the original file. Returns `true` if the host trashed
     /// the file. Async so the inline-then-trash sequence runs in real order
     /// (the host needs to force-save the parent before deleting the source).
-    func onAbsorbSubpage(_ pageID: String) async -> Bool
+    func absorbSubpage(_ pageID: String) async -> Bool
 
     /// Append blocks to the end of the page at `pageID`. Returns `true` on
     /// success. Used by drop-on-subpage to move dragged blocks into a child page.
     /// Async so the host can sequence log-then-file durability before returning —
     /// the editor's local-block-removal only fires on success.
-    func onAppendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool
+    func appendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool
 
     /// Ask the host to present its picker for a "Move to" action. The editor
     /// passes the moving block ids plus a list of in-document destinations
@@ -103,10 +103,10 @@ public protocol EditorHost: AnyObject {
     /// the user cancelled. Async so the editor's "Move to" call site reads as
     /// a single linear sequence instead of a callback bounced through host
     /// state.
-    func onRequestMoveDestination(_ blockIDs: [BlockID], _ inDocCandidates: [InDocMoveTarget]) async -> MoveDestination?
+    func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination?
 
     /// User pressed Cmd-[ / swipe-back / etc. — host pops its navigation stack.
-    func onNavigateBack()
+    func didNavigateBack()
 
     /// Document was just committed via `Document.transaction` — structural
     /// mutation via `EditorView.mutate(_:_:)`, typing commit via
@@ -131,7 +131,7 @@ public protocol EditorHost: AnyObject {
     /// "type-then-navigate" sequence relies on this to not drop the last
     /// keystroke. Persistence (log append, disk write) is fire-and-forget
     /// from the host's side.
-    func documentDidChange(ops: [EditorOp], on post: Document)
+    func documentDidChange(ops: [EditorOp], in document: Document)
 
     /// Await durability of any writes already in flight for `document`. With
     /// the commit-time atomic save model, every `documentDidChange` schedules
@@ -140,7 +140,7 @@ public protocol EditorHost: AnyObject {
     /// commit that just fired is durable before the row unmounts) and the
     /// host calls it directly from scene-phase / navigation-away / close
     /// paths. The doc is passed explicitly (symmetric with
-    /// `documentDidChange(ops:on:)`) so the host doesn't have to infer
+    /// `documentDidChange(ops:in:)`) so the host doesn't have to infer
     /// "current doc" from its own state.
     func flush(_ document: Document) async
 
@@ -155,7 +155,7 @@ public protocol EditorHost: AnyObject {
     /// Persist pasted image bytes. Returns relative paths suitable for
     /// `Block.image.source` (one per input, in order). Empty / shorter
     /// returned array cancels the paste.
-    func onSaveImages(_ items: [PastedImage]) -> [String]
+    func saveImages(_ items: [PastedImage]) -> [String]
 
     /// Async fetcher for external-URL preview metadata (favicon + page title).
     /// Editor calls this for every external `http`/`https` link in a rendered

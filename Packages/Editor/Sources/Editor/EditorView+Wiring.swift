@@ -36,7 +36,7 @@ extension EditorView {
                 let targetIDs = menuTargetIDs(anchorID: id)
                 let inDoc = inDocMoveCandidates(excluding: targetIDs)
                 Task { @MainActor in
-                    let destination = await host.onRequestMoveDestination(targetIDs, inDoc)
+                    let destination = await host.moveDestination(for: targetIDs, candidates: inDoc)
                     switch destination {
                     case .page(let pageID):
                         await moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
@@ -124,7 +124,7 @@ extension EditorView {
             case .escape:
                 handleEscapeKey()
             case .navigateBack:
-                host.onNavigateBack()
+                host.didNavigateBack()
             case .moveCursor(let delta):
                 moveCursor(by: delta)
             case .extendSelection(let delta):
@@ -193,7 +193,7 @@ extension EditorView {
             var validIDs: Set<BlockID> = []
             document.walk { block, _, _ in validIDs.insert(block.id) }
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
-            host.documentDidChange(ops: ops, on: document)
+            host.documentDidChange(ops: ops, in: document)
         }
 
         document.didReplaceChildren = {

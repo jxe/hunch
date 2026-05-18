@@ -171,14 +171,6 @@ public final class Clamshell {
         return result
     }
 
-    /// Live title for `relativePath` if the cache has one matching the
-    /// page's current mtime; nil otherwise. The serializer uses this for
-    /// subpage rows so the on-disk markdown stays in sync with the title
-    /// the user sees in other windows.
-    public func title(for relativePath: String) -> String? {
-        entries.first { $0.relativePath == relativePath }?.title
-    }
-
     /// Existence + cached title for a `*.md` page id. `.missing` when the
     /// file isn't on disk; `.present(title: nil)` when the title cache
     /// hasn't been warmed for the URL yet — that case kicks an off-main
@@ -439,7 +431,9 @@ public final class Clamshell {
     @MainActor
     @discardableResult
     private func save(_ document: Document) throws -> String {
-        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: { [weak self] rel in self?.title(for: rel) })
+        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: { [weak self] rel in
+            self?.entries.first { $0.relativePath == rel }?.title
+        })
         let url = document.url
         try files.write(newText, to: url)
         recordDiskContent(newText, at: url)
@@ -472,7 +466,7 @@ public final class Clamshell {
     /// Append `blocks` to the end of `relativePath`. Logs the appended
     /// blocks, then writes the file — the at-or-ahead invariant holds
     /// across crashes. Used by the editor's drop-on-subpage path via the
-    /// async `EditorHost.onAppendToSubpage`.
+    /// async `EditorHost.appendToSubpage`.
     ///
     /// Returns the loaded-and-mutated `Document` so callers can splice
     /// the appended content into any open window of the same URL.
@@ -485,7 +479,9 @@ public final class Clamshell {
             doc.insertSubtrees(blocks, at: DropPath(parent: nil, position: doc.children.count))
         }
         try await log.apply(Patch.adds(from: blocks), to: relativePath)
-        let newText = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: { [weak self] rel in self?.title(for: rel) })
+        let newText = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: { [weak self] rel in
+            self?.entries.first { $0.relativePath == rel }?.title
+        })
         try files.write(newText, to: url)
         recordDiskContent(newText, at: url)
         postSaveBookkeeping(doc)

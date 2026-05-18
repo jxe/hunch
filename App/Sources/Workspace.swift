@@ -55,6 +55,18 @@ final class Workspace {
     struct Banner: Identifiable, Equatable {
         let id = UUID()
         let message: String
+
+        /// Wording reused by every conflict-merge site (live-page presenter
+        /// event AND the closed-page scan) so the message can't drift.
+        static func merged(salvaged: Int, into title: String) -> Banner {
+            let noun = salvaged == 1 ? "block" : "blocks"
+            return Banner(message: "Merged \(salvaged) \(noun) from another device into \(title)")
+        }
+
+        static func restored(count: Int, into title: String) -> Banner {
+            let noun = count == 1 ? "block" : "blocks"
+            return Banner(message: "Restored \(count) \(noun) from another device into \(title)")
+        }
     }
 
     /// URLs currently mounted as `openDocument` in any `WorkspaceWindow`.
@@ -348,8 +360,7 @@ final class Workspace {
                 if resolution.salvaged > 0 {
                     anyMerged = true
                     let title = titleByURL[url] ?? url.deletingPathExtension().lastPathComponent
-                    let noun = resolution.salvaged == 1 ? "block" : "blocks"
-                    self.banner = Banner(message: "Merged \(resolution.salvaged) \(noun) from another device into \(title)")
+                    self.banner = .merged(salvaged: resolution.salvaged, into: title)
                 }
                 await Task.yield()
             }

@@ -122,7 +122,7 @@ final class WorkspaceWindow {
             do {
                 let openT = perfStart()
                 let open = try await clamshell.openPage(at: url) { [weak self] event in
-                    self?.handlePresenterEvent(event, doc: nil)
+                    self?.handlePresenterEvent(event)
                 }
                 perfEnd(openT, "handlePathChange.openPage", "url=\(url.lastPathComponent)")
                 // The user may have navigated again while we were awaiting.
@@ -143,15 +143,13 @@ final class WorkspaceWindow {
         }
     }
 
-    private func handlePresenterEvent(_ event: Clamshell.PresenterEvent, doc _: Document?) {
+    private func handlePresenterEvent(_ event: Clamshell.PresenterEvent) {
         guard let doc = openDocument else { return }
         switch event {
         case .conflictMerged(let salvaged) where salvaged > 0:
-            let noun = salvaged == 1 ? "block" : "blocks"
-            workspace.banner = .init(message: "Merged \(salvaged) \(noun) from another device into \(doc.title)")
+            workspace.banner = .merged(salvaged: salvaged, into: doc.title)
         case .restored(let count):
-            let noun = count == 1 ? "block" : "blocks"
-            workspace.banner = .init(message: "Restored \(count) \(noun) from another device into \(doc.title)")
+            workspace.banner = .restored(count: count, into: doc.title)
         case .externallyReloaded, .conflictMerged, .noteworthyNothing:
             break
         }
@@ -224,13 +222,13 @@ final class WorkspaceWindow {
         case .deletedPage(let trashEntry):
             return await workspace.restoreDeletedPage(trashEntry)
         case .lostBlock(let group):
-            return await performBlockRestore(.lost(group.root))
+            return await restoreBlock(.lost(group.root))
         case .purgedBlock(let group):
-            return await performBlockRestore(.purged(group.root))
+            return await restoreBlock(.purged(group.root))
         }
     }
 
-    private func performBlockRestore(_ target: Clamshell.RecoveryTarget) async -> Bool {
+    private func restoreBlock(_ target: Clamshell.RecoveryTarget) async -> Bool {
         guard let clamshell = workspace.clamshell else { return false }
         do {
             _ = try await clamshell.restore(target, liveDoc: openDocument)

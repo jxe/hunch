@@ -36,7 +36,7 @@ user-picked workspace folder.
     `RecoveryLog` (per-device JSONL appender + cross-device read union;
     every write goes through one primitive, `apply(Patch, to:)`),
     and `TrashStore` privately and exposes a single API:
-    `entries / rescan / title(for:) / lookupPage / pages(matching:) /
+    `entries / rescan / lookupPage / pages(matching:) /
     loadDocument / openPage / closePage / documentDidChange / flush /
     append / createPage / moveToTrash / listTrashedPages / restorePage /
     listLostBlocks / listPurgedBlocks / resolveConflictVersions`,
@@ -123,9 +123,9 @@ user-picked workspace folder.
     fold (auto-restore of lost subtrees) is deferred — `openPage`
     spawns a background reconcile Task and surfaces any restores via
     `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
-    The host methods (`openLink`, `documentDidChange`, `flush`, …)
+    The host methods (`didActivateLink`, `documentDidChange`, `flush`, …)
     live on the same type and forward to `Clamshell`. Move-to is
-    async — the editor `await`s `host.onRequestMoveDestination(...)`,
+    async — the editor `await`s `host.moveDestination(for:candidates:)`,
     the host bridges to the sheet via a `CheckedContinuation`.
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
   storage + parser/serializer (formerly SPM tests under `CoreTests/`).
@@ -191,7 +191,7 @@ assumes both inputs are stable.
 is the source of truth for what's open: `path == []` shows the home page,
 `path.last` is the visible doc, and a `.onChange(of: path)` calls
 `handlePathChange()` to flush the outgoing doc and load the new top.
-Subpage taps fire `host.openLink(.workspacePage(pageID))` →
+Subpage taps fire `host.didActivateLink(.workspacePage(pageID))` →
 `window.openSubpage` and append to `path`, pushing deeper.
 Search-sheet activation (`window.navigateFromSearch`) pushes a single
 entry on top of home (or drains to root when the picked page *is*
@@ -202,7 +202,7 @@ is a single `.md` link is detected in `BlockParser` (Clamshell owns
 the `.md` convention) and rendered via `subpageRow` in `BlockRow.swift`.
 **Inline `[text](url)` clicks inside read-only body text** route
 through an `OpenURLAction` interceptor *inside* `EditorView` (so the
-editor owns its link routing) → `host.openLink(.url(url))`. The host
+editor owns its link routing) → `host.didActivateLink(.url(url))`. The host
 classifies the URL via `host.resolveWorkspacePageID(from:)` — the
 *same* hook the editor uses at render time (to decorate internal-vs-
 external inline links) and at Cmd-K-on-link time (to decide subpage-
