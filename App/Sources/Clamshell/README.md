@@ -96,7 +96,7 @@ A `Patch` is a batch of `add` / `purge` entries (see
 the three callers' natural shapes onto the unified type:
 
 - `Patch.adds(from blocks: [Block])` — full-doc walks (used by
-  `write(_:patch:)` and `append(_:toPage:)`).
+  `writeClosedPage(_:patch:)` and `append(_:toPage:)`).
 - `Patch.adds(from observations: [PatchEngine.Observation])` — engine
   lifts from reconcile.
 - `Patch.from(ops: [EditorOp])` — editor structural diffs.
@@ -107,7 +107,7 @@ in one batched write. No write-time dedup: every entry emits a record.
 Duplicate `add`s for the same hash are harmless — intent is a
 latest-`(counter, deviceID)`-wins fold, so the union collapses them to
 the same intent at read time. The log just gets a little chattier on
-the rare full-doc-walk callers (`write(_:patch:)` after a conflict
+the rare full-doc-walk callers (`writeClosedPage(_:patch:)` after a conflict
 merge, `append(_:toPage:)` for subpage drops).
 
 ### Journal
@@ -164,7 +164,7 @@ inside `openPage(at:onEvent:)` (the `.md` is loaded fresh, so the
 page is quiescent by construction). Presenter-wakeup reconcile fires
 from the internal file presenter and mutates the live `Document` in
 place to preserve editor selection/cursor state; if the page isn't
-quiescent (debounce armed or save in flight) the wakeup defers and
+quiescent (a save chain entry is still pending) the wakeup defers and
 retries after the next `flush(_:)`. Either way, log apply is awaited
 strictly before the file save fires — the at-or-ahead invariant
 holds across crashes.
@@ -217,8 +217,11 @@ let open = try await clamshell.openPage(at: url) { event in
 }
 if !open.summary.restoredHashes.isEmpty { /* initial banner from open() */ }
 
-// Editor-driven write — appends ops to the recovery log and arms the
-// 600ms debounced save. Empty ops means a text-only edit.
+// Editor-driven write — commit-time atomic save. Non-empty ops are
+// applied to the recovery log; then the .md is serialized and written.
+// Calls for the same URL chain so concurrent commits land in order.
+// Empty ops still saves the .md (used by reconcile/restore paths after
+// they splice into a live doc).
 clamshell.documentDidChange(ops: ops, in: open.document)
 
 // Force-save (blur, scenePhase background, navigation away, shutdown).
@@ -254,7 +257,7 @@ existing instance and build a new one.
 | Read | `loadDocument(at:)` |
 | Page list (observable) | `entries`, `rescan()`, `title(for:)`, `lookupPage(_:)`, `pages(matching:excluding:)` |
 | Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document, summary}`), `closePage(_:)`. Load + reconcile + install presenter on open; flush + tear down on close. |
-| Editor-driven persistence | `documentDidChange(ops:in:)` (every mutation; appends to log, arms 600ms debounce), `flush(_:)` (force-save + drain; for blur / scenePhase / navigate-away). |
+| Editor-driven persistence | `documentDidChange(ops:in:)` (every commit; applies op batch to log and writes `.md` atomically per call, chained per URL), `flush(_:)` (await chain head + drain; for blur / scenePhase / navigate-away). |
 | Non-editor write | `append(_:toPage:)` for appending blocks to a non-open subpage. Sequences log-then-file. |
 | Restore | `restore(_:liveDoc:)` — the Recover-sheet entry point for both lost and purged blocks. |
 | Create | `createPage(title:requestedPath:blocks:)` |
@@ -270,8 +273,8 @@ came back) vs stomp (iCloud rolled us back) vs external (a different
 editor wrote). Callers don't have to seed anything.
 
 Engine orchestration (`reconcile`, `reconcileLive`, conflict-merge
-wakeups, save-state machine) is internal to the module — see the
-Swift docstrings in `Clamshell.swift`, `Clamshell+Saving.swift`,
+wakeups, save chain) is internal to the module — see the Swift
+docstrings in `Clamshell.swift`, `Clamshell+Saving.swift`,
 `Clamshell+Reconcile.swift`, and `Clamshell+Presenter.swift`.
 
 ---
@@ -286,16 +289,16 @@ device-hash cache short-circuiting duplicates: callers either filter
 upstream (the editor's `BlockTreeDiff` only emits ops for structural
 changes; reconcile's `unloggedObservations` filters against journal
 intent) or accept a small amount of log bloat (full-doc-walk callers
-like `write(_:patch:)` after a conflict merge). Intent is unchanged —
+like `writeClosedPage(_:patch:)` after a conflict merge). Intent is unchanged —
 duplicate `add`s for the same hash resolve to the same alive intent at
 read time, so chattier logs are correctness-equivalent.
 
-**Log durable before file durable.** The save lifecycle tracks the
-most-recent log-apply Task on the pending entry and awaits it before
-writing the `.md`. At any point a crash can happen, the log is
-at-or-ahead of the file → reconcile heals on next open. The editor's
-`documentDidChange` stays synchronous (no actor hop on the typing
-path); only the save side pays the barrier.
+**Log durable before file durable.** Every `documentDidChange` runs
+log apply + file write inside a single Task, log first. At any point
+a crash can happen, the log is at-or-ahead of the file → reconcile
+heals on next open. The editor's `documentDidChange` entry stays
+synchronous (it spawns the Task and returns); only the chained Task
+pays the I/O.
 
 **Cross-device merging happens on read, not write.** Each device only
 ever writes its own `<device-id>.jsonl`. Other devices' files are read
@@ -326,33 +329,37 @@ again automatically without any log mutation.
 restore is a page-bundle operation.
 
 **Editor-driven persistence is `documentDidChange` + `flush`.** The
-host calls `documentDidChange(ops:in:)` on every mutation: non-empty
-`ops` are appended to the recovery log, and a per-URL 600ms debounce
-is (re)armed for the markdown save. `flush(_:)` cancels the debounce,
-force-saves, and drains the per-URL coordinator — for blur, scenePhase
-backgrounding, navigation-away, app shutdown. Post-save bookkeeping
-(mtime refresh, title cache, page rescan) fires internally on every
-successful save; closed-doc paths (conflict merge, closed-page
-restore, drop-on-subpage append) get the same bookkeeping for free.
+host calls `documentDidChange(ops:in:)` at every commit point: non-
+empty `ops` are applied to the recovery log, then the `.md` is
+serialized and written, in one awaited sequence per call. Calls for
+the same URL chain so a fast burst (typing commit → focus blur →
+navigation) lands in order. `flush(_:)` awaits the chain head and
+drains the per-URL coordinator — for blur, scenePhase backgrounding,
+navigation-away, app shutdown. Post-save bookkeeping (mtime refresh,
+title cache, page rescan) fires internally on every successful save;
+closed-doc paths (conflict merge, closed-page restore, drop-on-subpage
+append) get the same bookkeeping for free.
 
-**`append(_:toPage:)` is the non-editor public write path.** Bypasses
-the debounce coalescer (the caller wants the file on disk now) and
-sequences the log apply strictly before the file write. Used by
-drop-on-subpage to add blocks to the end of a closed page. Concurrent
-writes to the same URL coalesce internally — if a write is already in
-flight, the new snapshot replaces any pending one and is written after
-the in-flight write completes.
+**`append(_:toPage:)` is the non-editor public write path.** Awaits
+the log apply strictly before the file write. Used by drop-on-subpage
+to add blocks to the end of a closed page. Closed-page writes don't
+go through `saveChain` (there's no live editor session to chain
+against); they write directly and await durability inline.
 
 **Editor mutations stream as ops.** Each `EditorView.mutate(_:_:)`
 transaction derives a pre→post `[EditorOp]` diff via
 `BlockTreeDiff.derive(_:_:)` and fires `host.documentDidChange(ops:on:)`.
 The host's adapter calls `Clamshell.documentDidChange(ops:in:)`, which
 projects the batch onto a `Patch` (inserts → `.add`, removes →
-`.purge`), spawns a Task that calls `log.apply` (tracked on the
-pending entry), and rearms the debounce. No pre/post tree snapshot,
-no diff inference: the op stream IS the log update. The debounced
-save awaits the latest log Task before writing the `.md` — log
-durability is the file save's barrier.
+`.purge`), then runs log apply + file write atomically. Typing
+bypasses `mutate` (per-keystroke diffs would flood the log); instead
+the editor's commit-time hook (`DocumentUndoController.afterCommit`,
+fired by every `commitLiveText`) computes a single-block
+`(.remove(preHash), .insert(nowHash))` pair against the
+`EditorState.editingPreHash` snapshot taken at edit-session entry and
+hands the same op batch to `documentDidChange`. No pre/post tree
+snapshot on the host side, no diff inference — the op stream is the
+log update.
 
 **Deletes are explicit, not inferred.** The op diff emits a
 `.remove(hash)` for every block id present in pre but absent in post.
@@ -387,9 +394,11 @@ tombstone from the union.
 (`homeRelativePath`) and the operations that touch it
 (`moveToTrash`, `restorePage`, the save paths). Path conversions, raw
 reads, and asset I/O are `nonisolated`. The underlying stores are
-actors (`RecoveryLog`, `TrashStore`, `DocumentSaveCoordinator`) or
-stateless `Sendable` (`FileStore`); call them from background tasks
-freely.
+actors (`RecoveryLog`, `TrashStore`) or stateless `Sendable`
+(`FileStore`); call them from background tasks freely. Per-URL save
+ordering during a live editor session is handled by `saveChain` (a
+plain `[URL: Task]` dictionary on Clamshell), not a queueing actor —
+the chain inherits the surrounding MainActor isolation.
 
 `PatchEngine` is pure — no actors, no I/O. `reconcile` and the
 helpers are `@MainActor` only because they hand back / accept `Block`
@@ -409,8 +418,9 @@ append" — `NSFileCoordinator` handles that.
   reads/writes, hands the engine its inputs, applies the engine's
   outputs.
 - [Clamshell+Saving.swift](Clamshell+Saving.swift) — editor-driven
-  save lifecycle: 600ms per-URL debounce, explicit save-state machine,
-  log-task-before-file-write barrier.
+  save lifecycle: commit-time atomic primitive `documentDidChange`
+  (log apply + .md write inside one Task), per-URL Task chain so
+  concurrent commits land in order, `flush(_:)` drain.
 - [Clamshell+Reconcile.swift](Clamshell+Reconcile.swift) — engine
   orchestration: open-doc reconcile, live-doc reconcile for presenter
   wakeups, and `restore(_:liveDoc:)` for the Recover sheet.
@@ -426,8 +436,6 @@ append" — `NSFileCoordinator` handles that.
   host's Recover-sheet UI grouping.
 - [FileStore.swift](FileStore.swift) — markdown file I/O and `Trash/`
   moves. Stateless, `Sendable`.
-- [DocumentSaveCoordinator.swift](DocumentSaveCoordinator.swift) —
-  per-URL serial, snapshot-coalescing actor for autosaves.
 - [RecoveryLog.swift](RecoveryLog.swift) — JSONL persistence only.
   Reads return `LogJournal`s for the engine; writes go through one
   primitive, `apply(_ patch: Patch, to:)`. The only other write is

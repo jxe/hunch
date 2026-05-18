@@ -44,15 +44,29 @@ public final class DocumentUndoController {
     /// and `breakCoalescing` to forward into the document's API.
     weak var document: Document?
 
-    /// Published by the active editor's Coordinator on `textDidBeginEditing`,
-    /// cleared on `textDidEndEditing`. EditorView calls this before any state
-    /// mutation that would unmount the live editor (e.g. clicking into another
-    /// block) so the in-flight text reaches the binding before the
-    /// `BlockTextEditor` tears down — otherwise the binding write happens during
-    /// SwiftUI's update pass and doesn't reliably propagate to the read-only
-    /// `Text` that takes the row's slot. Also wired into `Document.preMutation`
-    /// so every transaction flushes in-flight text before snapshotting.
-    var commitActiveEditor: (() -> Void)?
+    /// Wired by the active `BlockTextEditor` on mount (`makeNSView` /
+    /// `makeUIView`) and torn down on unmount. Invoking it commits the live
+    /// editor's `NSTextStorage` / `UITextView` text into the model binding
+    /// via the coordinator's `commitLiveText`. Callers fire this before any
+    /// state mutation that would unmount the live editor (e.g. clicking
+    /// into another block) so in-flight text reaches the binding before the
+    /// `BlockTextEditor` tears down — otherwise the binding write happens
+    /// during SwiftUI's update pass and doesn't reliably propagate to the
+    /// read-only `Text` that takes the row's slot. Also wired into
+    /// `Document.preMutation` so every transaction flushes in-flight text
+    /// before snapshotting. Firing `flushActiveText` triggers `commitLiveText`,
+    /// which in turn fires `afterCommit` at its tail (see below).
+    var flushActiveText: (() -> Void)?
+
+    /// Wired by `EditorView.installUndoApply`; fired at the end of every
+    /// `commitLiveText` (i.e. after the live editor's text has reached the
+    /// document model). Computes the active block's pre→now atomic-hash diff
+    /// and emits a `(.remove, .insert)` op pair to the host so the recovery
+    /// journal tombstones the prior version. Without this hook, typing-driven
+    /// hash changes would never reach the log — only structural-mutation diffs
+    /// from `mutate(_:_:)` do — and a subsequent reconcile would resurrect the
+    /// pre-edit version as a "lost block."
+    var afterCommit: (() -> Void)?
 
     public init() {
         self.undoManager = UndoManager()

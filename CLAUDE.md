@@ -33,7 +33,6 @@ user-picked workspace folder.
     images), and `.clamshell.json` (format metadata — currently just the
     home page pointer). `Clamshell` is the umbrella type — one per open
     directory, never reconfigured. Composes `FileStore`,
-    `DocumentSaveCoordinator` (per-URL serial, snapshot-coalescing actor),
     `RecoveryLog` (per-device JSONL appender + cross-device read union;
     every write goes through one primitive, `apply(Patch, to:)`),
     and `TrashStore` privately and exposes a single API:
@@ -42,27 +41,37 @@ user-picked workspace folder.
     append / createPage / moveToTrash / listTrashedPages / restorePage /
     listLostBlocks / listPurgedBlocks / resolveConflictVersions`,
     plus `relativePath(of:)` and `url(for:)` for path conversion.
-    Internal helpers (`write(_:patch:)`, `reconcile(at:)`,
-    `reconcileLive`, `classifyDiskContent`, `isQuiescent`,
-    `installPresenter` / `removePresenter`) and the `log` actor drive
-    the engine from inside the module and aren't part of the host
-    surface. **Clamshell is `@Observable`**: `entries` and
+    Internal helpers (`writeClosedPage(_:patch:)`, `scheduleSave(_:)`,
+    `reconcile(at:)`, `reconcileLive`, `classifyDiskContent`,
+    `isQuiescent`, `installPresenter` / `removePresenter`) and the `log`
+    actor drive the engine from inside the module and aren't part of the
+    host surface. **Clamshell is `@Observable`**: `entries` and
     `homeRelativePath` are tracked properties; SwiftUI re-renders
     automatically when scan / title cache / home changes. The title
     cache and post-save bookkeeping (mtime refresh, title update,
     selective rescan) all live inside Clamshell — the host doesn't
     thread any callbacks through it. **Editor-driven persistence** is
-    `documentDidChange(ops:in:)` (called on every mutation — projects
-    ops to a `Patch`, spawns a tracked log-apply Task, (re)arms the
-    per-URL 600ms debounce) and `flush(_:)` (await latest log task +
-    force-save + drain, used for blur/scenePhase/navigation). The save
-    side (`fireScheduledSave`, `flush`) awaits the latest log task
-    before writing the `.md`, establishing the invariant: **log durable
-    before file durable** — crash anywhere, log is at-or-ahead of file,
-    reconcile heals on next open. **Non-editor writes**
-    (`write(_:patch:)` for conflict merge + restore-into-closed-page;
-    `append(_:toPage:)` for drop-on-subpage) sequence log-then-file
-    atomically, preserving the at-or-ahead invariant. `moveToTrash`
+    `documentDidChange(ops:in:)` (the unified commit primitive — applies
+    the op batch to the recovery log when non-empty, then serializes and
+    writes the `.md`, in one awaited sequence) and `flush(_:)` (await
+    any pending chain entry; used for blur/scenePhase/navigation).
+    Concurrent calls for the same URL are chained on `saveChain[url]` —
+    each spawned Task awaits the previous before its own log apply +
+    file write — so the .md on disk always reflects the latest commit.
+    No debounce, no separate "log-apply Task," no `.armed` state:
+    edit-session commit points (`commitLiveText` →
+    `DocumentUndoController.afterCommit` for typing; `mutate(_:_:)` for
+    structural ops) are themselves the save events. The "log durable
+    before file durable" invariant is preserved structurally: every
+    `documentDidChange` writes log before file inside a single Task.
+    **Non-editor writes** (`writeClosedPage(_:patch:)` for conflict
+    merge + restore-into-closed-page; `append(_:toPage:)` for
+    drop-on-subpage) sequence log-then-file atomically without the
+    chain, since they're for documents that have no live editor
+    session. **Internal in-place mutations** (reconcile auto-restore
+    splice, manual-restore splice) call `scheduleSave(_:)` to enqueue a
+    .md write onto the same per-URL chain — no log apply, since the
+    journal is already current. `moveToTrash`
     clears `homeRelativePath` if it matched and moves the page's
     `.history/<rel>/` dir along with the `.md`. Also where the
     markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown
@@ -221,36 +230,48 @@ non-text parts (markers, paddings) fall through to the row's
 `cursorIsOnFirstLine()` / `cursorIsOnLastLine()` consult NSLayoutManager
 so wrapped paragraphs still allow intra-block arrow nav in the middle.
 
-**Autosave lives on `Clamshell`** ([`Clamshell+Saving.swift`](App/Sources/Clamshell/Clamshell+Saving.swift)):
-`documentDidChange(ops:in:)` projects ops to a `Patch`, spawns a
-tracked log-apply Task on the pending entry, and (re)arms a per-URL
-600ms debounce; `flush(_:)` awaits the latest log task, force-saves,
-and drains. Both `fireScheduledSave` and `flush` await the latest log
-task before writing the `.md` — log durable before file durable, so
-crash recovery is trivially correct (reconcile heals any divergence on
-next open). The host calls `documentDidChange` on every mutation and
-`flush` on blur / `scenePhase != .active` / navigation away. Per-URL
-coalescing happens at two levels: the debounce coalesces back-to-back
-edits within 600ms; `DocumentSaveCoordinator` underneath coalesces
-overlapping save calls. Post-save bookkeeping (mtime, title cache,
-rescan-when-title-changed) runs inside Clamshell's
-`postSaveBookkeeping(_:)` — fired automatically by every successful
-save path. No host hook is needed; Clamshell is `@Observable` and
-SwiftUI re-renders pick up the new entries/title state directly.
+**Save is commit-time atomic on `Clamshell`** ([`Clamshell+Saving.swift`](App/Sources/Clamshell/Clamshell+Saving.swift)):
+`documentDidChange(ops:in:)` is the single primitive — applies the op
+batch to the recovery log when non-empty, then serializes and writes
+the `.md`, in one awaited sequence per call. Concurrent calls for the
+same URL chain on `saveChain[url]` so a rapid burst (typing commit →
+focus blur → navigation) lands in order. `flush(_:)` awaits the chain
+head and drains the save coordinator. No debounce, no `.armed` /
+queued state machine, no separate log-apply Task: edit-session commit
+points (`commitLiveText` for typing; `mutate(_:_:)` for structural
+ops) are themselves the save events. The "log durable before file
+durable" invariant is preserved structurally — the log apply runs
+inside the same Task before the file write. Crash recovery is trivial:
+reconcile heals any divergence on next open. Post-save bookkeeping
+(mtime, title cache, rescan-when-title-changed) runs inside
+Clamshell's `postSaveBookkeeping(_:)` — fired by every successful save
+path. No host hook is needed; Clamshell is `@Observable` and SwiftUI
+re-renders pick up new entries/title state directly.
 
 **Structural mutations route through `EditorView.mutate(name:_:)`.**
-It commits the active editor's live text first (`commitActiveEditor`),
-snapshots `document.children`, runs the change closure, re-applies
-heading containment, registers the snapshot as the undo entry, derives
-the pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
-`host.documentDidChange(ops:on:)` with the `[EditorOp]` batch (host
-projects to a `Patch` and applies it to the recovery log in one
-ordered fsync, then kicks its debounced save). Moves and reorders
-produce an empty op list
-by design (id stable, hash stable); typing fires the same callback
-with empty ops from the row's `markDirty` closure. The exceptions are
-paths that don't mutate the document (Cmd-[ navigate-back, Esc) and
-the blur-time commit on `textDidEndEditing`; those stay explicit.
+It flushes the active editor's live text first (via
+`Document.preMutation` → `DocumentUndoController.flushActiveText`,
+which fires the post-commit hook below), snapshots
+`document.children`, runs the change closure, re-applies heading
+containment, registers the snapshot as the undo entry, derives the
+pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
+`host.documentDidChange(ops:on:)` with the `[EditorOp]` batch. Moves
+and reorders produce an empty op list by design (id stable, hash
+stable); the host still writes the `.md` for empty-ops calls so a
+reorder lands on disk.
+
+**Typing-driven hash changes route through the post-commit hook.**
+Typing bypasses `mutate` (per-keystroke diffs would flood the log).
+Instead, `EditorState.editingPreHash` snapshots the active block's
+hash at edit-session entry (`transferFocus(.editor)`); the
+`BlockTextEditor` coordinator fires `DocumentUndoController.afterCommit`
+at the end of every `commitLiveText` (blur, navigation, explicit
+commit). The hook (wired in `EditorView.installUndoApply`) computes
+`(preHash → block.atomicHash)` and emits `[.remove(preHash),
+.insert(nowHash, …)]` to the host. Without it, hash-changing edits
+would never reach the journal — only structural-mutation diffs do —
+and the next reconcile would resurrect the pre-edit version as a
+"lost block."
 
 **Nav-mode keyboard goes through `EditorCommands`.**
 `handleNavKeyPress` looks the press up in `EditorView.navBindings`

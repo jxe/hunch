@@ -206,12 +206,12 @@ final class WorkspaceWindow {
         openDocument?.url == url ? openDocument : nil
     }
 
-    // The save lifecycle (600ms debounce, per-URL coalescing, post-save
-    // bookkeeping) lives on `Clamshell`. The host calls
-    // `clamshell.documentDidChange(ops:in:)` on every edit and
-    // `clamshell.flush(_:)` on blur / scenePhase / navigation away. Clamshell
-    // keeps the title cache + entries in sync internally; the host doesn't
-    // thread anything through it.
+    // The save lifecycle (commit-time atomic save, per-URL Task chain,
+    // post-save bookkeeping) lives on `Clamshell`. The host calls
+    // `clamshell.documentDidChange(ops:in:)` at every edit-session commit
+    // point and `clamshell.flush(_:)` on blur / scenePhase / navigation
+    // away. Clamshell keeps the title cache + entries in sync internally;
+    // the host doesn't thread anything through it.
 
     // MARK: - Trash & restore (per-window)
 

@@ -30,7 +30,11 @@ public struct BlockRow: View, Equatable {
     /// hover→write→invalidate→layout→hover-redispatch feedback loop.
     public let state: EditorState
     public let onBlockChange: (Block) -> Void
-    public let markDirty: () -> Void
+    /// Toggles the `done` state of a `.todo` block. Routed through the host's
+    /// mutate path (which computes a `BlockTreeDiff` and emits ops) instead of
+    /// the row's binding so the recovery journal sees the hash flip — a bare
+    /// `onBlockChange` would skip the diff and leave the prior hash `.alive`.
+    public let onToggleTodo: (BlockID) -> Void
     /// Depth of this block in the document tree. Replaces the old per-case
     /// `indent` field — passed in by the visible-layout walk so the row
     /// renders the right leading inset without consulting the model directly.
@@ -240,7 +244,7 @@ public struct BlockRow: View, Equatable {
         block: Block,
         state: EditorState,
         onBlockChange: @escaping (Block) -> Void,
-        markDirty: @escaping () -> Void,
+        onToggleTodo: @escaping (BlockID) -> Void,
         depth: Int,
         editor: TextEditing?,
         isPageTitle: Bool,
@@ -281,7 +285,7 @@ public struct BlockRow: View, Equatable {
         self.block = block
         self.state = state
         self.onBlockChange = onBlockChange
-        self.markDirty = markDirty
+        self.onToggleTodo = onToggleTodo
         self.depth = depth
         self.editor = editor
         self.isPageTitle = isPageTitle
@@ -441,8 +445,12 @@ public struct BlockRow: View, Equatable {
             set: { newValue in
                 if String(newValue.characters) != String(block.text.characters) ||
                    !attributedStringMarksEqual(newValue, block.text) {
+                    // Update the model. Persistence is driven by the live
+                    // editor's `commitLiveText` → `documentUndoController.afterCommit`
+                    // hook (set in `EditorView.installUndoApply`), which diffs
+                    // pre vs current hash for the active block and writes the
+                    // log + .md atomically.
                     onBlockChange(block.withText(newValue))
-                    markDirty()
                 }
             }
         )
@@ -533,11 +541,8 @@ public struct BlockRow: View, Equatable {
     private func todoRow(done: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
             Button {
-                if case .todo(let text, let isDone) = block.kind {
-                    var updated = block
-                    updated.kind = .todo(text: text, done: !isDone)
-                    onBlockChange(updated)
-                    markDirty()
+                if case .todo = block.kind {
+                    onToggleTodo(block.id)
                 }
             } label: {
                 Image(systemName: done ? "checkmark.square.fill" : "square")

@@ -97,19 +97,22 @@ public protocol EditorHost: AnyObject {
     /// User pressed Cmd-[ / swipe-back / etc. — host pops its navigation stack.
     func onNavigateBack()
 
-    /// Document was just mutated. Fires for every change — typing, structural
-    /// transactions, autotransforms, undo, paste, move-to, etc.
+    /// Document was just committed at an edit-session boundary — structural
+    /// mutation via `EditorView.mutate(_:_:)`, typing commit
+    /// (`commitLiveText` → `DocumentUndoController.afterCommit`), autotransform,
+    /// undo, paste, move-to, etc.
     ///
-    /// When the change came through `EditorView.mutate(_:_:)`, `ops` carries
-    /// the pre→post diff from `BlockTreeDiff.derive(pre:post:)`:
-    /// `.insert(hash, parent, block)` for new (or content-changed) blocks and
-    /// `.remove(hash)` for ids that disappeared. The host translates these
-    /// to a recovery-log batch (one ordered unit) and kicks its debounced
-    /// save.
+    /// When the change came through `mutate`, `ops` carries the pre→post diff
+    /// from `BlockTreeDiff.derive(pre:post:)`: `.insert(hash, parent, block)`
+    /// for new (or content-changed) blocks and `.remove(hash)` for hashes
+    /// that are no longer the live hash of any post id. When the change came
+    /// from a typing commit, `ops` is `[.remove(preHash), .insert(nowHash, …)]`
+    /// for the single active block.
     ///
-    /// When `ops` is empty, the change is a text-only typing edit or a pure
-    /// reorder/move where the id-and-hash set is unchanged: nothing to log,
-    /// but the host should still kick its debounced save.
+    /// When `ops` is empty, the change is a pure reorder/move (same id, same
+    /// hash) — nothing to log, but the host should still persist the new tree
+    /// shape. The host writes log records (when non-empty) and the rendered
+    /// document as one ordered unit per call.
     ///
     /// Called *synchronously* on the mutation-commit thread so the host's
     /// dirty flag is readable in immediate flush-on-close paths — a fast

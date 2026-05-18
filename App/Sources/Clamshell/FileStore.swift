@@ -94,13 +94,6 @@ public struct FileStore: Sendable {
         return Document.deriveTitle(from: blocks, fallback: fallbackTitle)
     }
 
-    /// Write a previously-serialized document body to its URL. Caller is
-    /// responsible for serializing on the MainActor (where `Document` lives)
-    /// before handing the bytes off — keeping the on-disk path nonisolated.
-    public func saveSerialized(_ serialized: String, to url: URL) throws {
-        try write(serialized, to: url)
-    }
-
     @discardableResult
     public func moveToTrash(relativePath: String, workspaceRoot root: URL) throws -> String {
         let source = root.appendingPathComponent(relativePath)

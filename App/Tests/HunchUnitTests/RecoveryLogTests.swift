@@ -100,7 +100,7 @@ struct RecoveryLogTests {
         let keep = Block.paragraph(text: attr("Keep"))
         let lose = Block.paragraph(text: attr("Lose"))
         let doc = Document(url: url, children: [keep, lose], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         // Editor deletes `lose` — splice, derive ops, fire the canonical
         // editor save path so the purge is logged and the .md saved.
@@ -131,7 +131,7 @@ struct RecoveryLogTests {
             ],
             modificationDate: nil
         )
-        try await clamshell.write(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         // Simulate an external editor / iCloud stomp: overwrite .md directly,
         // bypassing the Clamshell save + editor op-stream so no purge fires.
@@ -155,7 +155,7 @@ struct RecoveryLogTests {
 
         let ghost = Block.paragraph(text: attr("ghost"))
         let doc = Document(url: url, children: [ghost], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         // Editor deletes the ghost: empty children + purge op.
         doc.replaceChildren([])
@@ -196,7 +196,7 @@ struct RecoveryLogTests {
         let body = Block.paragraph(text: attr("inside"))
         let toggle = Block.toggle(title: attr("Outer"), children: [body])
         let doc = Document(url: url, children: [toggle], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         let toggleHash = toggle.atomicHash
         let bodyHash = body.atomicHash
@@ -216,7 +216,7 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.empty)
+        try await clamshell.writeClosedPage(doc, patch: Patch.empty)
         // (empty page on disk, journal empty)
 
         let foreignBlock = Block.paragraph(text: attr("ghost"))
@@ -250,7 +250,7 @@ struct RecoveryLogTests {
 
         // Plant an empty live page so the live-set check excludes nothing.
         let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.empty)
+        try await clamshell.writeClosedPage(doc, patch: Patch.empty)
 
         // Hand-write a foreign device's log entry.
         let foreignBlock = Block.paragraph(text: attr("from another device"))
@@ -284,7 +284,7 @@ struct RecoveryLogTests {
             children: [Block.paragraph(text: attr("alive"))],
             modificationDate: nil
         )
-        try await clamshell.write(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         let liveHistoryDir = root
             .appendingPathComponent(RecoveryLog.directoryName)
@@ -370,7 +370,7 @@ struct RecoveryLogTests {
         let keep = Block.paragraph(text: attr("Keep"))
         let lose = Block.paragraph(text: attr("Lose"))
         let doc = Document(url: url, children: [keep, lose], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         doc.replaceChildren([keep])
         clamshell.documentDidChange(ops: [.remove(hash: lose.atomicHash)], in: doc)
@@ -412,7 +412,7 @@ struct RecoveryLogTests {
 
         // Plant the live .md so it's a valid scan target.
         let live = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.write(live, patch: Patch.empty)
+        try await clamshell.writeClosedPage(live, patch: Patch.empty)
 
         // Default 30-day cap excludes the ancient purge.
         let recent = await clamshell.listPurgedBlocks(filter: .page(relativePath: "p.md"))
@@ -436,7 +436,7 @@ struct RecoveryLogTests {
 
         let block = Block.paragraph(text: attr("phoenix"))
         let doc = Document(url: url, children: [block], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         doc.replaceChildren([])
         clamshell.documentDidChange(ops: [.remove(hash: block.atomicHash)], in: doc)
@@ -473,7 +473,7 @@ struct RecoveryLogTests {
 
         let doomed = Block.paragraph(text: attr("doomed"))
         let doc = Document(url: url, children: [doomed], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         doc.replaceChildren([])
         clamshell.documentDidChange(ops: [.remove(hash: doomed.atomicHash)], in: doc)
@@ -554,7 +554,7 @@ struct RecoveryLogTests {
 
         let block = Block.paragraph(text: attr("phoenix"))
         let doc = Document(url: url, children: [block], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
 
         doc.replaceChildren([])
         clamshell.documentDidChange(ops: [.remove(hash: block.atomicHash)], in: doc)
@@ -642,7 +642,7 @@ struct RecoveryLogTests {
 
         // Empty live page; hydrate our nextCounter low.
         let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.empty)
+        try await clamshell.writeClosedPage(doc, patch: Patch.empty)
 
         // Foreign device's add for hash H lands on disk with counter 500.
         let block = Block.paragraph(text: attr("to-purge"))
@@ -686,7 +686,7 @@ struct RecoveryLogTests {
 
         // Seed with an empty live page so the live-set excludes nothing.
         let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.write(doc, patch: Patch.empty)
+        try await clamshell.writeClosedPage(doc, patch: Patch.empty)
 
         // Plant a legacy add with t = far future (no `c` field).
         let block = Block.paragraph(text: attr("legacy-ghost"))
@@ -848,5 +848,45 @@ struct RecoveryLogTests {
 
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         #expect(lineCount(at: url) == 3, "initial add + purge + fresh add")
+    }
+
+    /// Same-device Turn Into: paragraph → bullet on a stable BlockID.
+    /// `BlockTreeDiff.derive` must tombstone the old paragraph hash so
+    /// reconcile against the post-change live doc doesn't resurrect the
+    /// pre-edit paragraph as a "lost block." Repros the iPhone bug where a
+    /// voice-recorded paragraph converted to a bullet came back at the
+    /// bottom of the page with a "Restored 1 block from another device"
+    /// banner.
+    @MainActor
+    @Test func turnIntoOnSameDeviceDoesNotAutoRestorePriorKind() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let id = BlockID()
+        let paragraph = Block(id: id, kind: .paragraph(text: attr("voice note")))
+        try await log.apply(Patch.adds(from: [paragraph]), to: "p.md")
+
+        let bullet = Block(id: id, kind: .bullet(text: attr("voice note")))
+        let ops = BlockTreeDiff.derive(pre: [paragraph], post: [bullet])
+        try await log.apply(Patch.from(ops: ops), to: "p.md")
+
+        let journal = log.readJournal(page: "p.md")
+        let intent = PatchEngine.intent(from: journal)
+
+        if case .tombstoned = intent.status(of: paragraph.atomicHash) {
+            // expected
+        } else {
+            Issue.record("expected paragraph hash tombstoned, got \(String(describing: intent.status(of: paragraph.atomicHash)))")
+        }
+        if case .alive = intent.status(of: bullet.atomicHash) {
+            // expected
+        } else {
+            Issue.record("expected bullet hash alive after Turn Into")
+        }
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: [bullet])
+        #expect(recon.inserts.isEmpty, "no subtrees should auto-restore")
+        #expect(recon.restoredHashes.isEmpty, "no hashes flagged for restore")
     }
 }

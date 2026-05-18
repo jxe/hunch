@@ -504,8 +504,8 @@ public struct EditorView: View {
 
         // Bundle of editor-only bindings/closures, present only on the row
         // currently being edited. Read-only rows pass `editor: nil` and avoid
-        // allocating any of this. (`onBlockChange` / `markDirty` stay at the
-        // top level — they're also fired by non-editor mutations like the
+        // allocating any of this. (`onBlockChange` / `onToggleTodo` stay at
+        // the top level — they're also fired by non-editor mutations like the
         // todo-row checkbox toggle.)
         let editing: BlockRow.TextEditing? = isEditing
             ? BlockRow.TextEditing(
@@ -527,7 +527,13 @@ public struct EditorView: View {
             block: block,
             state: state,
             onBlockChange: { newBlock in binding.wrappedValue = newBlock },
-            markDirty: { host.documentDidChange(ops: [], on: document) },
+            onToggleTodo: { id in
+                mutate("Toggle Todo") {
+                    guard let current = document.find(id),
+                          case .todo(let text, let done) = current.kind else { return }
+                    document.mutate(id) { $0.kind = .todo(text: text, done: !done) }
+                }
+            },
             depth: depth,
             editor: editing,
             isPageTitle: isPageTitleBlock(block, snapshot: snapshot),
@@ -939,10 +945,12 @@ public struct EditorView: View {
     /// text via `preMutation`, snapshotting `[Block]` for undo, enforcing
     /// heading containment, and registering the inverse. This caller adds one
     /// thing on top: derives the pre→post diff into `[EditorOp]` and hands it
-    /// to `host.documentDidChange(ops:on:)` so the host can append the batch
-    /// to its recovery log and kick its debounced save. Typing-path text
-    /// changes don't go through this wrapper — they fire
-    /// `host.documentDidChange(ops: [], on:)` directly from the row.
+    /// to `host.documentDidChange(ops:on:)` so the host can apply the batch to
+    /// its recovery log and write the .md atomically. Typing-path text changes
+    /// don't go through this wrapper — they go through `commitLiveText`, whose
+    /// post-commit hook (`DocumentUndoController.afterCommit`, wired in
+    /// `installUndoApply`) computes the single-block diff and calls
+    /// `host.documentDidChange` itself.
     func mutate(_ name: String, _ change: () -> Void) {
         var pre: [Block] = []
         document.transaction(name: name) { _ in
@@ -1004,8 +1012,8 @@ public struct EditorView: View {
         // Commit in-flight editor text into the model before mutating mode. The state
         // change unmounts the active BlockTextEditor; a binding write during teardown
         // doesn't reliably reach the freshly-rendered read-only Text — see
-        // `commitActiveEditor`.
-        undoController.commitActiveEditor?()
+        // `flushActiveText`.
+        undoController.flushActiveText?()
 
         switch target {
         case .editor(let id, let initialCursor):
@@ -1036,7 +1044,13 @@ public struct EditorView: View {
                 DispatchQueue.main.async { iosTransitioningEditorID = nil }
             }
             #endif
-            state.enterEditMode(on: id, initialCursor: initialCursor)
+            // Snapshot the block's atomic hash at edit-session entry. The
+            // `afterCommit` hook diffs against this on every `commitLiveText`,
+            // so typing-driven hash changes reach the recovery journal as a
+            // proper `(remove, insert)` op pair. Missing block = nil snapshot;
+            // the hook guards on it.
+            let preHash = document.find(id)?.atomicHash
+            state.enterEditMode(on: id, initialCursor: initialCursor, preHash: preHash)
 
         case .nav(let cursor):
             state.exitEditModeWithoutCursor()
@@ -1942,11 +1956,11 @@ public struct EditorView: View {
         // Sync live text into the binding before dispatching. Structural ops
         // (splitBlock, deleteEmptyBlock, changeIndent, convertBlockToSubpage,
         // …) all read `block.text` from the model *before* invoking
-        // `mutate(...)` and `mutate`'s own `commitActiveEditor` would fire
+        // `mutate(...)` and `mutate`'s own `flushActiveText` would fire
         // too late — the read would have already used the stale binding.
         // Idempotent (`textStorageDirty == false` short-circuits), so the
         // mention/escape cases that don't actually need a commit pay nothing.
-        undoController.commitActiveEditor?()
+        undoController.flushActiveText?()
         switch key {
         case .enter(let selectionStart, let selectionEnd):
             return splitBlock(blockID, selectionStart: selectionStart, selectionEnd: selectionEnd)

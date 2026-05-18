@@ -49,17 +49,19 @@ struct EditorViewPurgeDiffTests {
         #expect(ops == [.remove(hash: gone.atomicHash)])
     }
 
-    @Test func deriveEmitsInsertWhenSameIdGetsDifferentHash() {
-        // Structural-edit case: autotransform turns paragraph into heading;
-        // id stays, hash changes. Derive sees this as one insert (the new
-        // hash) — no remove (id is still present), and no need to tombstone
-        // the old hash (it remains alive in the journal as a recoverable
-        // prior version).
+    @Test func deriveEmitsRemoveAndInsertWhenSameIdGetsDifferentHash() {
+        // Structural-edit case: Turn Into or autotransform replaces a
+        // block's kind in place — id stays, hash changes. Derive
+        // tombstones the old hash and announces the new one. Without the
+        // remove, the old hash would stay `.alive` in the recovery journal
+        // and reconcile would resurrect the pre-edit version as a "lost
+        // block" on next open.
         let id = BlockID()
         let before = Block(id: id, kind: .paragraph(text: AttributedString("Title")))
         let after = Block(id: id, kind: .heading(level: .h1, text: AttributedString("Title")))
         let ops = BlockTreeDiff.derive(pre: [before], post: [after])
         #expect(ops == [
+            .remove(hash: before.atomicHash),
             .insert(hash: after.atomicHash, parent: nil, block: after)
         ])
     }

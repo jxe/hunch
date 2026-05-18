@@ -51,9 +51,10 @@ extension Clamshell {
     /// auto-restore subtrees are spliced into the doc, bare-md /
     /// external observations are lifted as `.add` records, and hashes
     /// the engine can't restore are quarantined. The catch-up patch
-    /// lands atomically before return (log strictly before .md), so a
-    /// markDirty fires only after the log is durable. Throws on read
-    /// failure.
+    /// lands before the save (`log strictly before file`); the .md
+    /// re-save (if the engine spliced anything in) goes through the
+    /// unified save chain so concurrent user commits stay ordered.
+    /// Throws on read failure.
     @discardableResult
     func reconcile(at url: URL) async throws -> (Document, PatchEngine.ReconcileSummary) {
         let raw = try files.read(url)
@@ -104,7 +105,11 @@ extension Clamshell {
 
         if recon.didChange {
             PatchEngine.apply(recon, to: doc)
-            markDirty(doc)
+            // Splice mutated `doc` in place; the journal already has the
+            // restored hashes (engine read them as alive). Save the .md
+            // through the per-URL save chain so concurrent user commits
+            // stay ordered.
+            scheduleSave(doc)
             let count = recon.restoredHashes.count
             Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
         }
@@ -219,9 +224,11 @@ extension Clamshell {
         }
 
         if isLive {
-            // Splice already mutated `doc` in place; arm the debounced save
-            // for the .md and apply the follow-up to the log separately.
-            markDirty(doc)
+            // Splice already mutated `doc` in place; save the .md through
+            // the per-URL save chain and apply the follow-up patch to the
+            // log separately (it carries the tombstones / fresh adds the
+            // restore needed).
+            scheduleSave(doc)
             if !followUp.isEmpty {
                 do {
                     try await log.apply(followUp, to: source)
@@ -237,7 +244,7 @@ extension Clamshell {
             // any bare-md absorbed at load time reaches the journal.
             let combined = Patch(entries: Patch.adds(from: doc.children).entries + followUp.entries)
             do {
-                try await write(doc, patch: combined)
+                try await writeClosedPage(doc, patch: combined)
             } catch {
                 Diag.merge.error("restore write failed page=\(source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 throw error

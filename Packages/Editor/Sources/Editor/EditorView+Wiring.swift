@@ -177,7 +177,31 @@ extension EditorView {
         undoController.document = document
 
         document.preMutation = { [weak undoController] in
-            undoController?.commitActiveEditor?()
+            undoController?.flushActiveText?()
+        }
+
+        // Post-commit diff: every `commitLiveText` ends by firing this hook so
+        // the recovery journal gets the typing diff. Without it, hash-changing
+        // text edits leave the prior hash `.alive` in the journal and the next
+        // reconcile resurrects the pre-edit version as a "lost block." The
+        // mutate path's own diff doesn't cover typing because typing bypasses
+        // `mutate` (it lives in `Document.transaction(coalesceKey:)`, untracked
+        // by mutate's snapshot). After emitting, the snapshot is rolled forward
+        // so a subsequent commit in the same session diffs against the just-
+        // flushed state.
+        undoController.afterCommit = {
+            guard let id = state.editingBlock,
+                  let preHash = state.editingPreHash,
+                  let block = document.find(id) else { return }
+            let nowHash = block.atomicHash
+            guard nowHash != preHash else { return }
+            let parentID = document.parent(of: id)
+            let parentHash = parentID.flatMap { document.find($0)?.atomicHash }
+            host.documentDidChange(ops: [
+                .remove(hash: preHash),
+                .insert(hash: nowHash, parent: parentHash, block: block)
+            ], on: document)
+            state.setEditingPreHash(nowHash)
         }
 
         // Capture by reference: `document` and `state` are class types reachable

@@ -71,7 +71,7 @@ extension EditorView {
         // keys. The mention-commit keyboard branches and the popover tap path
         // don't run that flush, so without this we'd read stale (possibly empty)
         // text and the trigger-range guard below would silently bail.
-        undoController.commitActiveEditor?()
+        undoController.flushActiveText?()
         guard let block = document.find(menu.blockID) else { return }
         let plain = String(block.text.characters) as NSString
 

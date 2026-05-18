@@ -43,7 +43,6 @@ public final class Clamshell {
     }
 
     @ObservationIgnored nonisolated let files: FileStore
-    @ObservationIgnored nonisolated let saver: DocumentSaveCoordinator
     @ObservationIgnored nonisolated let trash: TrashStore
     @ObservationIgnored nonisolated let log: RecoveryLog
 
@@ -63,15 +62,16 @@ public final class Clamshell {
     private var titleCache: [URL: CachedTitle] = [:]
     @ObservationIgnored private var titleRefreshTask: Task<Void, Never>?
 
-    /// Per-URL save state. Absent ⇒ clean. The explicit state machine
-    /// (`.armed` / `.saving`) lives in `Clamshell+Saving.swift`.
-    @ObservationIgnored var saveStates: [URL: SaveState] = [:]
+    /// Per-URL save chain head. Each `documentDidChange` spawns a Task that
+    /// awaits the previous chain entry for that URL before running its own
+    /// log apply + .md write, so concurrent commits land in order. Absent ⇒
+    /// no work pending (i.e. `isQuiescent(at:)`). See `Clamshell+Saving.swift`.
+    @ObservationIgnored var saveChain: [URL: Task<Void, Never>] = [:]
 
     public init(root: URL) {
         self.root = root
         let files = FileStore()
         self.files = files
-        self.saver = DocumentSaveCoordinator(store: files)
         self.trash = TrashStore(workspaceRoot: root, store: files)
         self.log = RecoveryLog(workspaceRoot: root, store: files)
 
@@ -353,10 +353,10 @@ public final class Clamshell {
     /// → `appendObservations`).
     @MainActor
     @discardableResult
-    func save(_ document: Document) async throws -> String {
+    func save(_ document: Document) throws -> String {
         let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: { [weak self] rel in self?.title(for: rel) })
         let url = document.url
-        try await saver.save(url: url, contents: newText)
+        try files.write(newText, to: url)
         recordDiskContent(newText, at: url)
         return newText
     }
@@ -364,20 +364,23 @@ public final class Clamshell {
     /// Apply `patch` to the recovery log, then persist `document` to disk.
     /// Awaited end-to-end so log lands strictly before file — a crash
     /// anywhere leaves the log at-or-ahead of disk and the next reconcile
-    /// heals. Used by conflict merge and closed-page manual restore.
-    /// Editor mutations go through `documentDidChange`; the sync append-
-    /// onto-subpage path goes through `append(_:toPage:)`.
+    /// heals. The closed-page sibling of `documentDidChange`: used when
+    /// there's no live editor session (no `saveChain` entry to enqueue
+    /// against), so the caller can await durability directly. Used by
+    /// conflict merge and closed-page manual restore. Editor mutations go
+    /// through `documentDidChange`; the sync append-onto-subpage path goes
+    /// through `append(_:toPage:)`.
     ///
     /// Folds in the post-save bookkeeping (mtime refresh, title cache)
-    /// so closed-doc paths get the same hygiene as the editor-debounced
+    /// so closed-doc paths get the same hygiene as the editor-driven
     /// save path.
     @MainActor
-    func write(_ document: Document, patch: Patch) async throws {
+    func writeClosedPage(_ document: Document, patch: Patch) async throws {
         let url = document.url
         if !patch.isEmpty {
             try await log.apply(patch, to: relativePath(of: url))
         }
-        _ = try await save(document)
+        _ = try save(document)
         postSaveBookkeeping(document)
     }
 
@@ -407,7 +410,8 @@ public final class Clamshell {
     /// Post-save hygiene: refresh the document's mtime from disk, update
     /// the title cache, and rescan the workspace if any of those changed
     /// the entries surface. Called from every successful save path
-    /// (`fireScheduledSave` via `driveSave`, `write(_:patch:)`,
+    /// (`documentDidChange` and `flush(_:)` via the per-URL chain in
+    /// `Clamshell+Saving.swift`, `writeClosedPage(_:patch:)`,
     /// `append(_:toPage:)`).
     @MainActor
     func postSaveBookkeeping(_ document: Document) {
@@ -419,12 +423,6 @@ public final class Clamshell {
             // re-render through the entries computed.
             _ = try? rescan()
         }
-    }
-
-    /// Awaits any in-flight + pending save for the URL. Internal — outside
-    /// callers go through `flush(_:)` which both saves and drains.
-    nonisolated func flush(url: URL) async throws {
-        try await saver.flush(url: url)
     }
 
 
@@ -506,7 +504,7 @@ public final class Clamshell {
         }
 
         let merged = Document(url: url, children: result.merged)
-        try await write(merged, patch: Patch.adds(from: merged.children))
+        try await writeClosedPage(merged, patch: Patch.adds(from: merged.children))
 
         let mutated: Bool
         if let doc {
@@ -682,7 +680,7 @@ public final class Clamshell {
     /// is visible (Notion / Obsidian convention) so the same file opens cleanly
     /// in any other markdown app.
     ///
-    /// One-shot, content-immutable writes — no need for the `DocumentSaveCoordinator`.
+    /// One-shot, content-immutable writes — no need to chain through `saveChain`.
     nonisolated public func writeImage(_ image: PastedImage) throws -> String {
         let safeExt = sanitizeImageExtension(image.ext)
         let filename = pastedImageFilename(ext: safeExt)

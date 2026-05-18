@@ -35,6 +35,15 @@ public final class EditorState {
     /// "seek to end".
     public internal(set) var pendingInitialCursor: InitialCursorTarget? = nil
 
+    /// Atomic hash of the editing block at the moment edit mode was entered.
+    /// Read by the post-commit hook to emit a `(.remove(preHash), .insert(nowHash))`
+    /// op pair when the block's hash has actually changed during the session. nil
+    /// outside edit mode. Set by `enterEditMode(on:initialCursor:preHash:)` and
+    /// cleared on every exit path. Updated in place by the post-commit hook so
+    /// follow-on commits within the same session diff against the just-flushed
+    /// state, not the entry state.
+    public internal(set) var editingPreHash: String? = nil
+
     // Hover — visible across all modes/gestures, drives drag-handle reveal.
     //
     // Set ONLY via `setHoveredBlock` / `setHoveredHandle`: those setters no-op
@@ -333,9 +342,10 @@ extension EditorState {
     /// (click point, start of split tail, merge join point); leave it nil to seek
     /// to end. The pending-cursor channel is rewritten on every call so a target
     /// from a previous edit session can't leak into the next mount.
-    func enterEditMode(on id: BlockID, initialCursor: InitialCursorTarget? = nil) {
+    func enterEditMode(on id: BlockID, initialCursor: InitialCursorTarget? = nil, preHash: String? = nil) {
         sessionState = .editing(id, overlay: nil)
         pendingInitialCursor = initialCursor
+        editingPreHash = preHash
     }
 
     /// Drop back to nav mode with the previously-editing block as the cursor.
@@ -344,12 +354,22 @@ extension EditorState {
         guard case .editing(let id, _) = sessionState else { return }
         sessionState = .navigating(Selection(blocks: [id], anchor: id, cursor: id), gesture: nil)
         pendingInitialCursor = nil
+        editingPreHash = nil
     }
 
     /// Drop edit mode AND any selection — page is unfocused entirely.
     func exitEditModeWithoutCursor() {
         sessionState = .navigating(Selection(), gesture: nil)
         pendingInitialCursor = nil
+        editingPreHash = nil
+    }
+
+    /// Update the stored pre-hash mid-session. Used by the post-commit hook
+    /// after emitting the typing diff so a subsequent commit within the same
+    /// edit session diffs against the just-flushed state rather than the
+    /// session-entry state.
+    func setEditingPreHash(_ hash: String?) {
+        editingPreHash = hash
     }
 
     /// Update the pending initial cursor mid-session, e.g. when an unbullet

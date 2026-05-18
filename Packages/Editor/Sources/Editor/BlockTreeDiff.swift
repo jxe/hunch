@@ -17,8 +17,12 @@ public enum EditorOp: Sendable, Equatable {
     /// paragraph into a heading). The `block` carries the post-mutation
     /// content so the host can serialize it atomically when persisting.
     case insert(hash: String, parent: String?, block: Block)
-    /// A block whose id was present in pre and is absent from post. The
-    /// hash is taken from pre — the post tree doesn't have this block.
+    /// A hash that was present in pre and isn't the live hash of any block
+    /// in post. Two cases: the id disappeared (block deleted), and the id
+    /// stayed with a different hash (Turn Into or an autotransform that
+    /// replaced kind in place). The second case has to tombstone too —
+    /// otherwise the old hash stays `.alive` in the recovery journal and
+    /// reconcile resurrects it as a "lost block" on the next open.
     case remove(hash: String)
 }
 
@@ -48,13 +52,13 @@ public enum BlockTreeDiff {
     public static func derive(pre: [Block], post: [Block]) -> [EditorOp] {
         var preIDToHash: [BlockID: String] = [:]
         collectIDHashes(pre, into: &preIDToHash)
-        var postIDs: Set<BlockID> = []
-        collectIDs(post, into: &postIDs)
+        var postIDToHash: [BlockID: String] = [:]
+        collectIDHashes(post, into: &postIDToHash)
 
         var ops: [EditorOp] = []
 
         let removedHashes = preIDToHash
-            .filter { !postIDs.contains($0.key) }
+            .filter { id, hash in postIDToHash[id] != hash }
             .sorted { $0.value < $1.value }
             .map(\.value)
         for hash in removedHashes {
@@ -78,13 +82,6 @@ public enum BlockTreeDiff {
         for block in blocks {
             out[block.id] = block.atomicHash
             collectIDHashes(block.children, into: &out)
-        }
-    }
-
-    private static func collectIDs(_ blocks: [Block], into out: inout Set<BlockID>) {
-        for block in blocks {
-            out.insert(block.id)
-            collectIDs(block.children, into: &out)
         }
     }
 }
