@@ -450,7 +450,7 @@ private struct EmptyWorkspaceView: View {
                 }
                 .buttonStyle(.bordered)
                 Button {
-                    guard let path = workspace.createSubpage(title: "Untitled", requestedPath: nil, initialContent: nil) else { return }
+                    guard let path = workspace.createPage(title: "Untitled", requestedPath: nil, initialContent: nil) else { return }
                     workspace.clamshell?.setHome(relativePath: path)
                 } label: {
                     Label("New page", systemImage: "plus")

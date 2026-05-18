@@ -202,7 +202,7 @@ final class Workspace {
         }
 
         // Empty folder — seed the welcome page and set it as home.
-        guard let path = createSubpage(
+        guard let path = createPage(
             title: "Welcome to Hunch",
             requestedPath: nil,
             initialContent: welcomeContentBlocks()
@@ -317,7 +317,7 @@ final class Workspace {
     /// and routes the throw into `self.error`. Returns the created
     /// relative path or nil on failure.
     @discardableResult
-    func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
+    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
         guard let clamshell else { return nil }
         do {
             return try clamshell.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)

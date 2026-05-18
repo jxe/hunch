@@ -6,7 +6,7 @@ import Foundation
 ///
 /// `id` is opaque to the editor — it's whatever string the host uses to identify
 /// the page (a relative path, a UUID, a database key); the editor passes it back
-/// unchanged in `didActivateLink(.page(...))`, `subpageContents(of:)`, etc.
+/// unchanged in `openPage(pageID:)`, `lookupPage(_:)`, etc.
 ///
 /// `subtitle` is shown beneath the title in the row when present — useful for
 /// disambiguating pages with identical titles (e.g. show the parent path).

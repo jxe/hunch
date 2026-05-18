@@ -14,16 +14,6 @@ public enum PageLookup: Equatable, Hashable, Sendable {
     case present(title: String?)
 }
 
-/// Destination of an inline-link / subpage-row click in the editor. Subpage
-/// rows arrive as `.page(pageID)` (the editor already knows the id).
-/// Inline `[text](url)` clicks arrive as `.url(URL)` — the host classifies
-/// them (internal page, external `http`/`https`, mail link, etc.) and
-/// routes accordingly.
-public enum LinkTarget: Equatable, Hashable, Sendable {
-    case page(pageID: String)
-    case url(URL)
-}
-
 extension PageLookup {
     /// The resolved page title if known; nil for `.missing` and for
     /// `.present` whose title hasn't been cached yet.
@@ -49,13 +39,12 @@ public protocol EditorHost: AnyObject {
     /// the first 8 results; host owns filtering/ranking.
     func suggestPages(_ query: String) -> [MentionItem]
 
-    /// User clicked an internal link or subpage row in the editor — host
-    /// dispatches to its navigation stack (workspace page) or system handler
-    /// (external URL). Returns true when the host fully handled the link;
-    /// false lets the editor fall through to the system's default URL
-    /// handler (used by SwiftUI's `OpenURLAction.systemAction`).
-    @discardableResult
-    func didActivateLink(_ target: LinkTarget) -> Bool
+    /// Navigate to the workspace page identified by `pageID`. Called from
+    /// subpage-row taps and from the OpenURLAction interceptor after the
+    /// editor has classified an inline `[text](url)` link as internal via
+    /// `resolvePageID(from:)`. External URLs never reach this method —
+    /// they fall through to the system handler at the OpenURLAction site.
+    func openPage(pageID: String)
 
     /// Resolve an opaque page id to its existence + title. Used by inline-link
     /// and subpage rows for display, and by the editor to gate navigation
@@ -73,37 +62,37 @@ public protocol EditorHost: AnyObject {
     /// page is currently mounted in this host.
     func resolvePageID(from url: URL) -> String?
 
-    /// Persist a new subpage. `initialContent` is the body the editor wants the
+    /// Persist a new page. `initialContent` is the body the editor wants the
     /// new page to start with (descendants of the source block); the host
     /// serializes it and prepends a title heading. `requestedPath` is honored
     /// as-is when non-nil (used by the editor for deterministic-id cases like
     /// redo / preserved-id mention create); pass nil to let the host derive a
     /// slug from `title`. Returns the host-assigned page id, or nil if
     /// creation failed.
-    func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String?
+    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) -> String?
 
     /// Load the page at `pageID` and return its blocks. Nil → couldn't load,
     /// the calling action becomes a no-op. Async because the host reads off
     /// disk; the editor awaits inside a Task spawned from the key-handler.
-    /// Paired with `inlineAndTrashSubpage(_:)` in the Convert flow — load
+    /// Paired with `inlineAndTrashPage(_:)` in the Convert flow — load
     /// the blocks, inline them into the parent, then ask the host to
     /// flush+trash the source.
-    func loadSubpageBlocks(_ pageID: String) async -> [Block]?
+    func loadPageBlocks(_ pageID: String) async -> [Block]?
 
-    /// Companion to `loadSubpageBlocks(_:)`: after the editor has inlined the
+    /// Companion to `loadPageBlocks(_:)`: after the editor has inlined the
     /// loaded blocks into the parent document, the host flushes the parent
     /// (so the inline is durable on disk) and then moves the source page to
     /// Trash. Returns `true` if the host trashed the file. Async so the
     /// inline-then-trash sequence runs in real order — the parent's save
     /// must land before the source goes away, or a crash window could leave
     /// the file gone and the inlined copy unpersisted.
-    func inlineAndTrashSubpage(_ pageID: String) async -> Bool
+    func inlineAndTrashPage(_ pageID: String) async -> Bool
 
     /// Append blocks to the end of the page at `pageID`. Returns `true` on
     /// success. Used by drop-on-subpage to move dragged blocks into a child page.
     /// Async so the host can sequence log-then-file durability before returning —
     /// the editor's local-block-removal only fires on success.
-    func appendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool
+    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool
 
     /// Ask the host to present its picker for a "Move to" action. The editor
     /// passes the moving block ids plus a list of in-document destinations

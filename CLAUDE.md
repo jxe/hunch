@@ -46,10 +46,9 @@ user-picked workspace folder.
     (the inline-link URL classifier lives next to the other URL ↔
     pageID helpers so they share one home).
     Internal helpers (`writeClosedPage(_:patch:)`, `enqueueSave(_:patch:)`,
-    `reconcileLive`, `classifyDiskContent`, `isQuiescent`,
-    `installPresenter` / `removePresenter`) and the `log` actor drive
-    the engine from inside the module and aren't part of the host
-    surface. The journal fold uses a watermark fast path
+    `reconcileLive`, `classifyDiskContent`, `isQuiescent`) and the `log`
+    actor drive the engine from inside the module and aren't part of the
+    host surface. The journal fold uses a watermark fast path
     (`RecoveryLog.reconcileAgainst`) — per-page `(deviceLog stats, .md
     mtime)` cached in `UserDefaults` lets the steady-state open skip
     every journal read; foreign-log growth triggers a tail read from
@@ -127,8 +126,8 @@ user-picked workspace folder.
     fold (auto-restore of lost subtrees) is deferred — `openPage`
     spawns a background reconcile Task and surfaces any restores via
     `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
-    The host methods (`didActivateLink`, `persistCommit`, `flush`, …)
-    live on the same type and forward to `Clamshell`. Move-to is
+    The host methods (`openPage`, `persistCommit`, `flush`, …) live on the
+    same type and forward to `Clamshell`. Move-to is
     async — the editor `await`s `host.moveDestination(for:candidates:)`,
     the host bridges to the sheet via a `CheckedContinuation`.
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
@@ -195,7 +194,7 @@ assumes both inputs are stable.
 is the source of truth for what's open: `path == []` shows the home page,
 `path.last` is the visible doc, and a `.onChange(of: path)` calls
 `handlePathChange()` to flush the outgoing doc and load the new top.
-Subpage taps fire `host.didActivateLink(.page(pageID))` →
+Subpage taps fire `host.openPage(pageID: path)` →
 `window.openSubpage` and append to `path`, pushing deeper.
 Search-sheet activation (`window.navigateFromSearch`) pushes a single
 entry on top of home (or drains to root when the picked page *is*
@@ -206,12 +205,14 @@ is a single `.md` link is detected in `BlockParser` (Clamshell owns
 the `.md` convention) and rendered via `subpageRow` in `BlockRow.swift`.
 **Inline `[text](url)` clicks inside read-only body text** route
 through an `OpenURLAction` interceptor *inside* `EditorView` (so the
-editor owns its link routing) → `host.didActivateLink(.url(url))`. The host
-classifies the URL via `host.resolvePageID(from:)` — the
-*same* hook the editor uses at render time (to decorate internal-vs-
-external inline links) and at Cmd-K-on-link time (to decide subpage-
-creation). One classifier, one source of truth; the editor is
-storage-agnostic about what counts as an internal page. The Hunch
+editor owns its link routing). The editor classifies the URL via
+`host.resolvePageID(from:)` — the *same* hook used at render time (to
+decorate internal-vs-external inline links) and at Cmd-K-on-link time
+(to decide subpage-creation). Internal hits dispatch to
+`host.openPage(pageID:)`; external URLs fall through to the system
+handler via `OpenURLAction.systemAction`. One classifier, one source
+of truth; the editor is storage-agnostic about what counts as an
+internal page. The Hunch
 impl forwards to `Clamshell.pageID(for:relativeTo:)`; external URLs
 return `nil`, the editor falls through to the system handler. Inline
 link taps *inside* an active TextEditor are not yet intercepted

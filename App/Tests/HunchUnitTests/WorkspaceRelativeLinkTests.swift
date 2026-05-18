@@ -2,16 +2,20 @@ import Testing
 import Foundation
 @testable import Hunch
 
+@MainActor
 @Suite("Workspace relative-link resolution")
 struct WorkspaceRelativeLinkTests {
     private let workspaceURL = URL(fileURLWithPath: "/tmp/hunch-test-workspace", isDirectory: true).standardizedFileURL
+    private let clamshell: Clamshell
+
+    init() {
+        self.clamshell = Clamshell(root: workspaceURL)
+    }
 
     private func resolve(_ link: String, from doc: String?) -> String? {
         let url = URL(string: link)!
         let docURL = doc.map { workspaceURL.appendingPathComponent($0).standardizedFileURL }
-        return Clamshell.resolvePageID(
-            for: url, currentDocURL: docURL, workspaceRoot: workspaceURL
-        )
+        return clamshell.pageID(for: url, relativeTo: docURL)
     }
 
     @Test func resolvesSiblingPage() {
@@ -55,17 +59,11 @@ struct WorkspaceRelativeLinkTests {
 
     @Test func acceptsFileSchemeInsideWorkspace() {
         let url = workspaceURL.appendingPathComponent("nested/Page.md")
-        let result = Clamshell.resolvePageID(
-            for: url, currentDocURL: nil, workspaceRoot: workspaceURL
-        )
-        #expect(result == "nested/Page.md")
+        #expect(clamshell.pageID(for: url) == "nested/Page.md")
     }
 
     @Test func rejectsFileSchemeOutsideWorkspace() {
         let url = URL(fileURLWithPath: "/tmp/elsewhere/Page.md")
-        let result = Clamshell.resolvePageID(
-            for: url, currentDocURL: nil, workspaceRoot: workspaceURL
-        )
-        #expect(result == nil)
+        #expect(clamshell.pageID(for: url) == nil)
     }
 }

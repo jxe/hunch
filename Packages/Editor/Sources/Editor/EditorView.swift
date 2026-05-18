@@ -332,14 +332,16 @@ public struct EditorView: View {
                 wireEditorCommands()
             }
             // Intercept inline `[text](path.md)` / `[text](https://…)` clicks
-            // inside read-only `Text` rows and route through `host.didActivateLink`.
-            // The host classifies workspace-relative `.md` paths internally and
-            // returns false for external URLs to fall through to the system
-            // browser. Live-NSTextView link taps are still owned by the
-            // underlying view's click handling — this only catches read-only
-            // body text.
+            // inside read-only `Text` rows. Editor classifies the URL via
+            // `resolvePageID` — same hook used at render time — and routes
+            // internal hits to `host.openPage`; external URLs fall through
+            // to the system browser via `.systemAction`. Live-NSTextView
+            // link taps are still owned by the underlying view's click
+            // handling — this only catches read-only body text.
             .environment(\.openURL, OpenURLAction { [host] url in
-                host.didActivateLink(.url(url)) ? .handled : .systemAction
+                guard let pageID = host.resolvePageID(from: url) else { return .systemAction }
+                host.openPage(pageID: pageID)
+                return .handled
             })
             .onChange(of: state.currentDropTarget) { _, newValue in
                 handleDropTargetChange(newValue)
@@ -2128,7 +2130,7 @@ public struct EditorView: View {
         // nav stack on a load that's going to fail.
         guard !host.lookupPage(path).isMissing else { return true }
         transferFocus(to: .nav(cursor: blockID))
-        host.didActivateLink(.page(pageID: path))
+        host.openPage(pageID: path)
         return true
     }
 

@@ -158,23 +158,13 @@ final class Clamshell {
     /// relative URLs against `currentDocURL?.deletingLastPathComponent()`
     /// when provided, otherwise against the workspace root.
     nonisolated func pageID(for url: URL, relativeTo currentDocURL: URL? = nil) -> String? {
-        Self.resolvePageID(for: url, currentDocURL: currentDocURL, workspaceRoot: root)
-    }
-
-    /// Pure function form of `pageID(for:relativeTo:)` — no Clamshell instance
-    /// required. Used by tests; the instance method just plugs in `self.root`.
-    nonisolated static func resolvePageID(
-        for url: URL,
-        currentDocURL: URL?,
-        workspaceRoot: URL
-    ) -> String? {
         if let scheme = url.scheme?.lowercased(), scheme != "file" { return nil }
 
         let resolvedURL: URL
         if url.scheme == "file" {
             resolvedURL = url.standardizedFileURL
         } else {
-            let baseDir = currentDocURL?.deletingLastPathComponent() ?? workspaceRoot
+            let baseDir = currentDocURL?.deletingLastPathComponent() ?? root
             guard let resolved = URL(string: url.relativeString, relativeTo: baseDir) else {
                 return nil
             }
@@ -183,10 +173,10 @@ final class Clamshell {
 
         guard resolvedURL.pathExtension.lowercased() == "md" else { return nil }
 
-        let root = workspaceRoot.standardizedFileURL.path
+        let rootPath = root.standardizedFileURL.path
         let resolvedPath = resolvedURL.path
-        guard resolvedPath.hasPrefix(root + "/") else { return nil }
-        return String(resolvedPath.dropFirst(root.count + 1))
+        guard resolvedPath.hasPrefix(rootPath + "/") else { return nil }
+        return String(resolvedPath.dropFirst(rootPath.count + 1))
     }
 
     // MARK: - Pages: read
@@ -325,11 +315,10 @@ final class Clamshell {
     // MARK: - Title cache
 
     /// Update the cache with this document's title + mtime. Returns true
-    /// when the cached title for the URL actually changed (so the host
-    /// can decide whether to refresh windowed title displays). Called
-    /// internally after every save; external callers don't need it.
+    /// when the cached title for the URL actually changed (so
+    /// `postSaveBookkeeping` knows when to fire a rescan).
     @discardableResult
-    func refreshTitleCache(from document: Document) -> Bool {
+    private func refreshTitleCache(from document: Document) -> Bool {
         let previous = titleCache[document.url]
         let titleChanged = previous?.title != document.title
         if titleChanged || previous?.modificationDate != document.modificationDate {
@@ -547,7 +536,7 @@ final class Clamshell {
     /// Append `blocks` to the end of `relativePath`. Logs the appended
     /// blocks, then writes the file — the at-or-ahead invariant holds
     /// across crashes. Used by the editor's drop-on-subpage path via the
-    /// async `EditorHost.appendToSubpage`.
+    /// async `EditorHost.appendToPage`.
     ///
     /// Returns the loaded-and-mutated `Document` so callers can splice
     /// the appended content into any open window of the same URL.
@@ -575,7 +564,7 @@ final class Clamshell {
     /// successful save path (chain task via `enqueueSave`,
     /// `writeClosedPage(_:patch:)`, `append(_:toPage:)`).
     @MainActor
-    func postSaveBookkeeping(_ document: Document) {
+    private func postSaveBookkeeping(_ document: Document) {
         document.modificationDate = (try? document.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
         let titleChanged = refreshTitleCache(from: document)
         // Refresh the reconcile watermark so this save (new `.md` mtime,

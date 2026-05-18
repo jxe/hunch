@@ -125,7 +125,7 @@ extension EditorView {
         // editor just hands over the body blocks (or nil when empty).
         let initialContent: [Block]? = block.children.isEmpty ? nil : block.children
 
-        guard let pageID = host.createSubpage(title: title, requestedPath: requestedPath, initialContent: initialContent)
+        guard let pageID = host.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
         else { return .ignored }
 
         mutate("Create Subpage") {
@@ -232,8 +232,8 @@ extension EditorView {
         // duplicate (file still in workspace, bullet on disk) rather
         // than data loss (file gone, bullet never persisted).
         Task { @MainActor in
-            guard var loaded = await host.loadSubpageBlocks(path) else {
-                Diag.subpage.error("convertSubpage: loadSubpageBlocks returned nil — path=\(path, privacy: .public)")
+            guard var loaded = await host.loadPageBlocks(path) else {
+                Diag.subpage.error("convertSubpage: loadPageBlocks returned nil — path=\(path, privacy: .public)")
                 return
             }
             // The subpage may have moved out from under us during the await.
@@ -265,8 +265,8 @@ extension EditorView {
                 state.expandedToggles.remove(blockID)
                 state.expandedTemplates.remove(blockID)
             }
-            if !(await host.inlineAndTrashSubpage(path)) {
-                Diag.subpage.error("convertSubpage: inlineAndTrashSubpage failed after mutation — orphan file at \(path, privacy: .public)")
+            if !(await host.inlineAndTrashPage(path)) {
+                Diag.subpage.error("convertSubpage: inlineAndTrashPage failed after mutation — orphan file at \(path, privacy: .public)")
             }
         }
         return .handled

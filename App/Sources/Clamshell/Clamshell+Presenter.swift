@@ -49,7 +49,7 @@ extension Clamshell {
     /// filesystem-level response in place (conflict merge, content
     /// reload, journal reconcile). The host reacts only with
     /// UI/workspace bookkeeping.
-    func installPresenter(
+    private func installPresenter(
         for doc: Document,
         onEvent: @escaping @MainActor (PresenterEvent) -> Void
     ) -> PresenterHandle {
@@ -65,7 +65,7 @@ extension Clamshell {
     }
 
     /// Tear down a previously-installed presenter. Idempotent.
-    func removePresenter(_ handle: PresenterHandle) {
+    private func removePresenter(_ handle: PresenterHandle) {
         NSFileCoordinator.removeFilePresenter(handle.presenter)
     }
 

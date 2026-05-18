@@ -5,7 +5,7 @@ import Editor
 //
 // Most methods forward to `workspace.clamshell` or to stateless helpers.
 // The ones that genuinely need per-window state — navigation, the move-to
-// picker, the multi-window splice for `appendToSubpage` — read
+// picker, the multi-window splice for `appendToPage` — read
 // `openDocument` and the per-window navigation primitives directly.
 
 extension WorkspaceWindow: EditorHost {
@@ -23,7 +23,7 @@ extension WorkspaceWindow: EditorHost {
         workspace.clamshell?.pageID(for: url, relativeTo: openDocument?.url)
     }
 
-    func createSubpage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
+    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
         guard let clamshell = workspace.clamshell else { return nil }
         do {
             return try clamshell.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
@@ -33,13 +33,13 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
-    func loadSubpageBlocks(_ pageID: String) async -> [Block]? {
+    func loadPageBlocks(_ pageID: String) async -> [Block]? {
         guard let clamshell = workspace.clamshell else { return nil }
         let target = clamshell.url(for: pageID)
         do {
             return try await clamshell.readBlocks(at: target)
         } catch {
-            Diag.subpage.error("loadSubpageBlocks(_:): read(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
+            Diag.subpage.error("loadPageBlocks(_:): read(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -95,25 +95,11 @@ extension WorkspaceWindow: EditorHost {
 
     // — Per-window navigation & durability —
 
-    @discardableResult
-    func didActivateLink(_ target: LinkTarget) -> Bool {
-        switch target {
-        case .page(let pageID):
-            openSubpage(relativePath: pageID)
-            return true
-        case .url(let url):
-            // Workspace-internal links resolve via the host classifier
-            // (same hook used for inline-link decoration at render time);
-            // everything else falls through to the system handler.
-            if let pageID = resolvePageID(from: url) {
-                openSubpage(relativePath: pageID)
-                return true
-            }
-            return false
-        }
+    func openPage(pageID: String) {
+        openSubpage(relativePath: pageID)
     }
 
-    func inlineAndTrashSubpage(_ pageID: String) async -> Bool {
+    func inlineAndTrashPage(_ pageID: String) async -> Bool {
         guard let clamshell = workspace.clamshell, let parent = openDocument else { return false }
         do {
             try await clamshell.inlineAndTrash(pageID: pageID, parent: parent)
@@ -124,7 +110,7 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
-    func appendToSubpage(_ pageID: String, _ blocks: [Block]) async -> Bool {
+    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
         let target = clamshell.url(for: pageID)
         let doc: Document
