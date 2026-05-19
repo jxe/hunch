@@ -102,7 +102,7 @@ We chase the typography Notion had before the 2026 redesign — the weights, siz
 
 ### 🤝  Open source
 
-You can read the code, fork it, audit your own data layer, and ship patches. (License: TBD — currently no LICENSE in the repo.)
+You can read the code, fork it, audit your own data layer, and ship patches. Licensed under [MIT](LICENSE).
 
 ---
 

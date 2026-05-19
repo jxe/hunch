@@ -37,9 +37,8 @@ xcodebuild -project Hunch.xcodeproj -scheme Hunch \
 ./scripts/run.sh
 ```
 
-`scripts/run.sh` kills any running `Hunch.app`, purges stale orphan bundles
-(pre-rename builds with the old `com.joeedelman.console` bundle id), and
-launches the newest Debug build.
+`scripts/run.sh` kills any running `Hunch.app` and launches the newest
+Debug build.
 
 `project.yml` is the source of truth for the Xcode project. If a file
 doesn't show up in the build, regenerate the project rather than dragging

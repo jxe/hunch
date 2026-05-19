@@ -6,7 +6,7 @@ import Foundation
 /// reinstall produces a new ID and a new log file alongside the existing
 /// ones — old logs stay readable for recovery.
 enum DeviceID {
-    private static let userDefaultsKey = "com.joeedelman.console.deviceID"
+    private static let userDefaultsKey = "org.nxhx.Hunch.deviceID"
 
     static let current: String = {
         if let existing = UserDefaults.standard.string(forKey: userDefaultsKey) {

@@ -17,7 +17,7 @@ final class HunchSplitKeyboardUITests: XCTestCase {
     override func setUp() async throws {
         continueAfterFailure = true
         app = XCUIApplication()
-        app.launchArguments = ["--console-ui-testing-tall-doc"]
+        app.launchArguments = ["--hunch-ui-testing-tall-doc"]
         app.launch()
     }
 

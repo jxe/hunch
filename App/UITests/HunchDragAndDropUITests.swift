@@ -244,14 +244,14 @@ final class HunchDragAndDropUITests: XCTestCase {
     private func launchApp() {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments = ["--console-ui-testing"]
+        app.launchArguments = ["--hunch-ui-testing"]
         app.launch()
     }
 
     private func launchTallDocApp() {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments = ["--console-ui-testing-tall-doc"]
+        app.launchArguments = ["--hunch-ui-testing-tall-doc"]
         app.launch()
     }
 

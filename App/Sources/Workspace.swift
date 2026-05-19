@@ -96,11 +96,11 @@ final class Workspace {
     // MARK: - Lifecycle
 
     func tryRestore() {
-        if ProcessInfo.processInfo.arguments.contains("--console-ui-testing") {
+        if ProcessInfo.processInfo.arguments.contains("--hunch-ui-testing") {
             installUITestWorkspace()
             return
         }
-        if ProcessInfo.processInfo.arguments.contains("--console-ui-testing-tall-doc") {
+        if ProcessInfo.processInfo.arguments.contains("--hunch-ui-testing-tall-doc") {
             installTallDocUITestWorkspace()
             return
         }
@@ -463,7 +463,7 @@ final class Workspace {
         do {
             let root = FileManager.default
                 .temporaryDirectory
-                .appendingPathComponent("console-ui-tests", isDirectory: true)
+                .appendingPathComponent("hunch-ui-tests", isDirectory: true)
             try? FileManager.default.removeItem(at: root)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let documentURL = root.appendingPathComponent("everything.md")
@@ -493,7 +493,7 @@ final class Workspace {
         do {
             let root = FileManager.default
                 .temporaryDirectory
-                .appendingPathComponent("console-ui-tests", isDirectory: true)
+                .appendingPathComponent("hunch-ui-tests", isDirectory: true)
             try? FileManager.default.removeItem(at: root)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let documentURL = root.appendingPathComponent("everything.md")

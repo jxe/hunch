@@ -4,10 +4,10 @@ import Foundation
 /// URL bookmark — format-level metadata like the home page lives inside the
 /// Clamshell itself (see `.clamshell.json`).
 enum WorkspaceBookmark {
-    private static let defaultsKey = "console.workspace.bookmark"
+    private static let defaultsKey = "org.nxhx.Hunch.workspace.bookmark"
     /// Legacy key — the home page used to live in UserDefaults. Read once on
     /// Clamshell init for migration into `.clamshell.json`, then cleared.
-    static let legacyHomePathDefaultsKey = "console.workspace.homeRelativePath"
+    static let legacyHomePathDefaultsKey = "org.nxhx.Hunch.workspace.homeRelativePath"
 
     static func save(url: URL) throws {
         let total = perfStart()

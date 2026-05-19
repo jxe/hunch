@@ -1,7 +1,5 @@
 # Hunch — Claude working notes
 
-(Repo dir is `hunch`, target/scheme/binary are `Hunch`. The product display name is Hunch; bundle id is `org.nxhx.Hunch` — pre-TestFlight builds used `com.joeedelman.console`, so any local installs from before the rename are orphaned and won't share UserDefaults / workspace bookmark with the new id. `scripts/clean-orphans.sh` purges those legacy bundles and rebuilds LaunchServices' index; `scripts/run.sh` calls it pre-launch so name-based resolution can't land on a stale bundle. The `console.workspace.bookmark` UserDefaults key and `--console-ui-testing` launch flag also predate the rename and are kept for compat.)
-
 A native iOS 26 + macOS 26 markdown editor. Each block is its own row in a
 SwiftUI `LazyVStack` — sidesteps the hardest problems of Notion-style editors
 (cross-block selection, cursor merge across types, hover-only floating UI
@@ -160,8 +158,8 @@ user-picked workspace folder.
 - `project.yml` — XcodeGen spec. **Don't hand-edit the `.xcodeproj`** —
   it's generated, gitignored, overwritten by `xcodegen generate`.
 - `References/typography/` — real Notion screenshots; see its README.
-- `.claude/skills/`, `tasks/`, `docs/` — per-project Claude skills, unordered
-  upcoming task notes, and accumulated working notes.
+- `.claude/skills/`, `docs/` — per-project Claude skills and accumulated
+  working notes. Upcoming work lives in `TODO.md` at the repo root.
 
 ## Build & test
 
@@ -417,12 +415,6 @@ log stream --predicate 'subsystem == "org.nxhx.Hunch"'
 # or narrow:
 log stream --predicate 'subsystem == "org.nxhx.Hunch" AND category == "navkey"'
 ```
-
-When attaching `lldb -p <pid>` to read live state, detach by sending
-`SIGTERM` to the lldb process — `SIGKILL` takes the target down with
-it. In Python breakpoint callbacks, use `frame.EvaluateExpression(...)`
-rather than `interp.HandleCommand(...)` — the latter loses the frame
-binding and expressions fail with `cannot find 'self' in scope`.
 
 Xcode tools that earn their keep:
 - **Accessibility Inspector** — what's hit-testable at a point; useful
