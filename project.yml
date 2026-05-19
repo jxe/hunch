@@ -45,7 +45,17 @@ targets:
         CFBundleName: Hunch
         CFBundleShortVersionString: "0.1"
         CFBundleVersion: "1"
+        LSApplicationCategoryType: public.app-category.productivity
         UILaunchScreen: {}
+        UISupportedInterfaceOrientations~iphone:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         LSSupportsOpeningDocumentsInPlace: YES
         UIFileSharingEnabled: YES
         NSHumanReadableCopyright: "© 2026 Joe Edelman"
