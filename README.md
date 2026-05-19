@@ -35,7 +35,7 @@ Cold start, scroll, keyboard latency, and memory footprint are all measurably be
 
 ### 📂  Your notes are a folder of `.md` files
 
-Hunch's storage format ("Clamshell") is a folder of plain markdown plus a small amount of sidecar state (recovery log, trash, assets). The folder is **durable, portable, readable, iCloud-friendly**. Drop it into Obsidian, hand it to an LLM agent, grep it, version-control it, import it into a Notion vault. See [App/Sources/Clamshell/README.md](App/Sources/Clamshell/README.md).
+Hunch's storage format ("Clamshell") is a folder of plain markdown plus a small amount of sidecar state (recovery log, trash, assets). The folder is **durable, portable, readable, iCloud-friendly**. Drop it into Obsidian, hand it to an LLM agent, grep it, version-control it, import it into a Notion vault.
 
 ### 🖼️  Images are plain files too
 
@@ -63,7 +63,7 @@ Slide a heading in nav mode and everything nested under it comes along. Notion m
 
 ### 🎯  One picker for "move to"
 
-Cmd+Shift+M opens a single picker with two grouped sections: **destinations on this page** (every heading and toggle, indented to show outline) and **other pages** in the workspace. One search field filters both. Arrow keys traverse both groups. Return commits the top match. ([MoveDestinationSheet.swift](App/Sources/Shell/MoveDestinationSheet.swift))
+Cmd+Shift+M opens a single picker with two grouped sections: **destinations on this page** (every heading and toggle, indented to show outline) and **other pages** in the workspace. One search field filters both. Arrow keys traverse both groups. Return commits the top match.
 
 ### 🔎  Search is local and instant
 
@@ -98,7 +98,7 @@ Cmd+N opens another window onto the same workspace; each window keeps its own na
 
 ### 🅰️  Pre-March-2026 Notion typography, on purpose
 
-We chase the typography Notion had before the 2026 redesign — the weights, sizes, and rhythm Notion users grew to like. References live under `References/typography/`; constants in `NotionStyle.swift`.
+We chase the typography Notion had before the 2026 redesign — the weights, sizes, and rhythm Notion users grew to like.
 
 ### 🤝  Open source
 
@@ -137,23 +137,21 @@ You can read the code, fork it, audit your own data layer, and ship patches. (Li
 
 ---
 
-# Probably never
+## Probably never
 
 - ❌ Real-time multiplayer collaboration
 - ❌ Full databases (relations, formulas, rollups, views)
 - ❌ Tables
 - ❌ Embeds besides just fancy external link mentions
-- ❌ AI features.
+- ❌ AI features
 
 ---
 
-## Building
+## Under the hood
 
-See [CLAUDE.md](CLAUDE.md) for the full dev loop.
+Hunch is built on two reusable pieces, both documented in this repo:
 
-```sh
-swift test --package-path Packages/Editor
-xcodegen generate --spec project.yml --project .
-xcodebuild -project Hunch.xcodeproj -scheme Hunch \
-  -destination 'platform=macOS' -configuration Debug build
-```
+- **[Editor](Packages/Editor/README.md)** — a SwiftUI block editor (paragraphs, headings, lists, toggles, code, inline marks, autotransforms, drag-reorder, @-mentions) with no opinion on storage, navigation, or serialization. Drop it into any iOS 26 / macOS 26 app and wire up an `EditorHost`.
+- **[Clamshell](App/Sources/Clamshell/README.md)** — Hunch's on-disk format and storage engine: a folder of `.md`, a per-device append-only recovery log, trash, and assets. Durable, portable, iCloud-friendly, recoverable.
+
+Want to build, hack on, or send a patch? See [CONTRIBUTING.md](CONTRIBUTING.md).

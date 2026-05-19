@@ -140,18 +140,17 @@ user-picked workspace folder.
 - `project.yml` — XcodeGen spec. **Don't hand-edit the `.xcodeproj`** —
   it's generated, gitignored, overwritten by `xcodegen generate`.
 - `References/typography/` — real Notion screenshots; see its README.
-- `skills/`, `tasks/`, `docs/` — per-project Claude skills, unordered
+- `.claude/skills/`, `tasks/`, `docs/` — per-project Claude skills, unordered
   upcoming task notes, and accumulated working notes.
 
 ## Build & test
 
-```sh
-swift test --package-path Packages/Editor
-xcodegen generate --spec project.yml --project .
-xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -configuration Debug build
-xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform=iOS Simulator' -configuration Debug build
-./scripts/run.sh   # macOS — kills any running Hunch.app, launches the newest build
-```
+The full build / test loop lives in [CONTRIBUTING.md](CONTRIBUTING.md). The
+short version: `swift test --package-path Packages/Editor` for the SPM
+tests; `xcodegen generate --spec project.yml --project .` to refresh the
+Xcode project (it's gitignored — don't hand-edit); `xcodebuild … -scheme
+Hunch -destination 'platform=macOS'` to build, then `./scripts/run.sh` to
+launch the freshest macOS build.
 
 ## Architecture you need to know to make changes
 
@@ -335,16 +334,12 @@ consumes. Override `keyDown(_:)` on a custom NSTextView subclass instead
 
 ## Project-level constraints
 
-- **iOS 26 / macOS 26 minimum.** Unlocks
-  `TextEditor(text: Binding<AttributedString>)` natively on iOS; macOS
-  uses NSViewRepresentable for tight control over insets.
-- **Single multiplatform target**, not two. `#if os(iOS)` / `#if
-  os(macOS)` for the divergent bits.
-- **swift-tools-version 6.2** in both Package.swift files.
-- **No code signing** (`CODE_SIGNING_ALLOWED: NO`).
-- **swift-markdown is the only third-party dep.** Its
-  `MarkupFormatter.format()` normalises surface syntax — accepted; we
-  don't try byte-exact preservation.
+General platform / toolchain constraints (iOS 26 + macOS 26 min, single
+multiplatform target, swift-tools 6.2, no code signing, swift-markdown as
+only third-party dep) are in [CONTRIBUTING.md](CONTRIBUTING.md). The
+constraint worth always having in context, because it shapes parser
+changes:
+
 - **Toggles are encoded as `▸ Title` paragraphs** with body blocks
   indented one unit (2 spaces) deeper. The `parseToggleContainers`
   pre-pass in `BlockParser` lifts toggles by indent before
@@ -355,15 +350,18 @@ consumes. Override `keyDown(_:)` on a custom NSTextView subclass instead
   is still parsed for backward compatibility (see the `assemble`
   function in `Parser.swift`); files convert to the new format on
   next save.
+- **swift-markdown's `MarkupFormatter.format()` normalises surface
+  syntax** — we accept that and don't try byte-exact preservation.
 
 ## Notion typography target
 
 Pre-March-2026 Notion. **Don't use `react-notion-x`'s CSS as truth** —
-its values diverge from real Notion. Work from the screenshots in
-`References/typography/`. Constants live in `NotionStyle.swift` — both the `NotionStyle` enum
-(sizes, colors, fonts) and the `BlockSpacing` enum (per-block margins,
-sibling-aware gaps) are in that file. Don't sprinkle magic numbers
-into `BlockRow.swift`.
+its values diverge from real Notion. Reference screenshots and the
+constants file location are documented in
+[CONTRIBUTING.md](CONTRIBUTING.md); the rule worth keeping in context is
+that **constants live in `NotionStyle.swift`** (both the `NotionStyle`
+enum and the `BlockSpacing` enum) — don't sprinkle magic numbers into
+`BlockRow.swift`.
 
 ## Debugging UI runtime issues
 
