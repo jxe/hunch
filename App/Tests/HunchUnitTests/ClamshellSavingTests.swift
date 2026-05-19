@@ -174,7 +174,6 @@ struct ClamshellSavingTests {
         let block = Block.paragraph(text: attr("standalone"))
         let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
 
-        #expect(clamshell.isQuiescent(at: doc.url), "no commits fired yet")
         await clamshell.flush(doc)
         #expect(!FileManager.default.fileExists(atPath: doc.url.path),
                 "flush does not trigger a save on a quiescent URL")

@@ -1,6 +1,6 @@
 ---
 name: dead-code-sweep
-description: Use when the user wants to prune dead code or tighten the public API surface — variants include "find unused symbols", "what's dead in the editor", "tighten public to internal where possible", "what only exists for tests", "earn its keep". Runs Periphery against both the Hunch app target and the Editor SPM package, triages findings against the project's actual usage (manual grep — Periphery's heuristics aren't sufficient on their own), then deletes test-only APIs and downgrades `public` to `internal` where nothing cross-module consumes a symbol.
+description: Use when the user wants to prune dead code, tighten the public API surface, or check whether cross-component API surfaces are still consumed — variants include "find unused symbols", "what's dead in the editor", "tighten public to internal where possible", "what only exists for tests", "earn its keep", "is anything on the Clamshell / EditorHost / EditorCommands surface unused", "are the canonical consumers actually calling everything we expose". Runs Periphery against both the Hunch app target and the Editor SPM package; runs a manual cross-component boundary audit for surfaces Periphery can't analyze (intra-module callers and test-only callers slip through both filters). Triages findings against actual usage (manual grep — Periphery's heuristics aren't sufficient on their own), then deletes dead API and tests, and downgrades `public` to `internal` where nothing cross-module consumes a symbol.
 ---
 
 # Dead-code & redundant-`public` sweep
@@ -32,14 +32,15 @@ code).
 ## The loop
 
 ```
-1. Scan
-2. Triage findings against actual usage
-3. Delete / downgrade
-4. Verify builds + tests
-5. Goto 1 until no real findings remain
+1. Scan (Periphery — intra-module dead code)
+2. Audit cross-component API boundaries (manual — boundary script)
+3. Triage findings against actual usage
+4. Delete / downgrade
+5. Verify builds + tests
+6. Goto 1 until no real findings remain
 ```
 
-Each round runs both scans via the bundled wrapper:
+Each round runs both Periphery scans via the bundled wrapper:
 
 ```sh
 .claude/skills/dead-code-sweep/scripts/scan.sh
@@ -50,6 +51,13 @@ The wrapper runs Periphery against both targets and strips the
 doesn't recognize Swift Testing roots, so every `@Test` flags as
 unused even though `swift test` runs them. The noise dominates the
 output if you don't filter, and the real findings get lost in it.
+
+Then audit cross-component boundaries (Periphery can't see these —
+read "Cross-component API audit" below):
+
+```sh
+.claude/skills/dead-code-sweep/scripts/audit-boundaries.sh
+```
 
 ### Known false positives in this repo (skim past these)
 
@@ -169,6 +177,71 @@ For each `warning: ... is declared public, but not used outside of
    uses `BlockTreeDiff.derive` to build test ops — `BlockTreeDiff`
    stays internal, the test uses `@testable`.)
 
+### Cross-component API audit (Periphery's blind spot)
+
+Periphery's two filters — `is unused` (zero callers in module) and
+`declared public, but not used outside of <Module>` (no cross-module
+callers) — both pass a class of dead API: **symbols on a named
+cross-component surface that have intra-component or test callers
+but no canonical consumer**. Examples:
+
+- A `Clamshell` method called only from another `Clamshell+*.swift`
+  file but never by host code outside the Clamshell directory. Looks
+  used to Periphery; doesn't earn its place on the host-facing
+  surface.
+- An `EditorHost` protocol method that the editor itself never
+  invokes — the host implements it for nothing.
+- An `EditorAction` enum case with no dispatch site in
+  `wireEditorCommands`, the menu bar, or the nav-mode key bindings.
+
+The user cares about deletion here, not visibility. The
+boundary-audit wrapper does the manual grep work:
+
+```sh
+.claude/skills/dead-code-sweep/scripts/audit-boundaries.sh
+# or one surface:
+.claude/skills/dead-code-sweep/scripts/audit-boundaries.sh clamshell
+.claude/skills/dead-code-sweep/scripts/audit-boundaries.sh editor-host
+.claude/skills/dead-code-sweep/scripts/audit-boundaries.sh editor-action
+```
+
+It emits one line per declared symbol on each surface:
+
+```
+SYMBOL                           consumer=N producer=N test=N
+```
+
+Verdicts:
+
+| Counts                                  | Verdict                        |
+|-----------------------------------------|--------------------------------|
+| `consumer>0`                            | live API. Leave alone.         |
+| `consumer=0` `test>0`                   | test-only. Delete symbol AND its tests. |
+| `consumer=0` `test=0` `producer>1`      | intra-component helper, not actually on the boundary. Leave (or `private` if you also want to clean visibility — separate question). |
+| `consumer=0` `test=0` `producer=1`      | dead. Delete.                  |
+
+There's also a soft case: `consumer=0` `test=1` `producer>1`. The
+symbol is live as an intra-component helper, and a *test*
+incidentally uses it as a sanity probe. Often the test asserts
+something else after the probe; the probe line itself is dead
+weight. Remove just the probe call from the test, keep the helper
+and the rest of the test.
+
+#### Adding a new boundary
+
+When a new cross-component surface appears (a new protocol, a new
+host-facing class), add a `run <name>)` arm to `audit-boundaries.sh`
+specifying:
+- `producer_files` — the declaration site(s)
+- `producer_exclude` — the path fragment that identifies the producer
+  scope (excluded from the consumer-count grep)
+- `consumer_paths` — where the canonical consumer code lives
+
+The script is grep-driven, so the surface needs to be enumerable by
+a simple regex (one symbol per line declaration: `func name(...)` or
+`case name`). Surfaces with macro-generated symbols or unusual
+declaration syntax need a hand-written enumerator.
+
 ### Test-only convenience accessors
 
 If a test uses a public/internal accessor that's a thin wrapper over a
@@ -266,7 +339,7 @@ Group by intent, not by file:
 2. Subsequent commits per loop iteration — title like
    "Periphery: <bucket> — prune <thing>" where bucket is one of
    *test-only API*, *redundant public (Hunch app)*, *redundant
-   public (Editor SPM)*, *cascade*. Body lists the specific
-   symbols.
+   public (Editor SPM)*, *cross-component boundary*, *cascade*.
+   Body lists the specific symbols.
 
 Until no more findings remain, you're not done.
