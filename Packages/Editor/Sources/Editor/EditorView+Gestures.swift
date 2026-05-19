@@ -303,6 +303,8 @@ struct IOSPageReorderGeometry {
     }
 }
 
+#if os(iOS)
+
 /// Linear-congruential PRNG — deterministic per seed so the grain pattern
 /// stays put across re-renders (and frames during animation).
 struct SeededLCG {
@@ -313,8 +315,6 @@ struct SeededLCG {
         return Double(state) / Double(UInt32.max)
     }
 }
-
-#if os(iOS)
 
 // MARK: - iOS UIKit bridges
 

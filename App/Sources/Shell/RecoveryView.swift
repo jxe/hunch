@@ -12,9 +12,6 @@ import Editor
 /// Inside the sheet a segmented control lets the user flip between scopes
 /// without re-opening; on entry from a deeper page it defaults to that page.
 struct RecoveryView: View {
-    /// Seed value — the live filter is `@State` so the segmented control can
-    /// flip between scopes without the sheet remounting.
-    let initialFilter: RecoveryListFilter
     /// Captured at sheet-open time. Empty when triggered from a no-page context
     /// (e.g. the empty-workspace state); in that case the segmented control
     /// hides "This page" and only `.all` is reachable.
@@ -26,6 +23,8 @@ struct RecoveryView: View {
     let onRestore: (RecoverableEntry) async -> Bool
     let onClose: () -> Void
 
+    /// Live filter — seeded from the `initialFilter` init param, then driven by
+    /// the segmented control so the sheet doesn't remount on scope change.
     @State private var filter: RecoveryListFilter
     @State private var entries: [RecoverableEntry] = []
     @State private var loadState: LoadState = .loading
@@ -42,7 +41,6 @@ struct RecoveryView: View {
         onRestore: @escaping (RecoverableEntry) async -> Bool,
         onClose: @escaping () -> Void
     ) {
-        self.initialFilter = initialFilter
         self.currentPageRelativePath = currentPageRelativePath
         self.entriesStream = entriesStream
         self.onRestore = onRestore

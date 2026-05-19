@@ -1,6 +1,6 @@
 import Foundation
 
-public enum BlockTransform: Equatable, Sendable {
+enum BlockTransform: Equatable, Sendable {
     case heading(level: Int)
     case bullet
     case numbered
@@ -11,11 +11,11 @@ public enum BlockTransform: Equatable, Sendable {
     case codeFence
 }
 
-public struct AutotransformResult: Equatable, Sendable {
-    public let transform: BlockTransform
-    public let remainingText: AttributedString
+struct AutotransformResult: Equatable, Sendable {
+    let transform: BlockTransform
+    let remainingText: AttributedString
 
-    public init(transform: BlockTransform, remainingText: AttributedString) {
+    init(transform: BlockTransform, remainingText: AttributedString) {
         self.transform = transform
         self.remainingText = remainingText
     }
@@ -25,7 +25,7 @@ extension BlockTransform {
     /// Returns the block(s) that replace the source row. Most transforms produce a single
     /// block. `divider` and `codeFence` produce two: the transform block plus a fresh empty
     /// paragraph for the cursor to land in.
-    public func apply(to remainingText: AttributedString) -> [Block] {
+    func apply(to remainingText: AttributedString) -> [Block] {
         switch self {
         case .heading(let level):
             return [.heading(level: level, text: remainingText)]
@@ -49,7 +49,7 @@ extension BlockTransform {
     /// Index into the result of `apply(to:)` where the cursor should land after the
     /// transform fires. For divider/codeFence we want the fresh paragraph (index 1) so the
     /// user can continue typing; everything else focuses the transformed block (index 0).
-    public var focusReplacementIndex: Int {
+    var focusReplacementIndex: Int {
         switch self {
         case .divider, .codeFence: return 1
         default: return 0

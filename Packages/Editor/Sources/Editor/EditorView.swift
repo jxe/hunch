@@ -86,8 +86,10 @@ public struct EditorView: View {
     /// DynamicProperty wrapper (which would defeat `.equatable()`). Keyed by
     /// the absolute URL; rows receive only the subset relevant to their text.
     @State var linkPreviews: [URL: LinkPreview] = [:]
+    #if os(iOS)
     @State var lastDropHapticTarget: DropTarget?
     @State var lastDropHapticFireAt: Date?
+    #endif
     @State var pinchGestureActive = false
     @State var pinchCrossedInsertThreshold = false
     @State var pinchCrossedFocusThreshold = false
@@ -168,7 +170,7 @@ public struct EditorView: View {
                         let gap = BlockSpacing.gap(before: block, depth: row.depth, after: row.prev, prevDepth: row.prevDepth)
                         let pinchExtraTopGap = pinchExtraGap(forIndex: k)
                         let reorderExtraTopGap = reorderDriftGap(at: k, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
-                        rowView(for: bindingForBlock(id: block.id), depth: row.depth, snapshot: snapshot, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
+                        rowView(for: bindingForBlock(id: block.id), depth: row.depth, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
                             .padding(.top, gap + pinchExtraTopGap)
                             // Per-row geometry observation. Replaces a previous
                             // GeometryReader+PreferenceKey per row; that pattern's
@@ -227,7 +229,7 @@ public struct EditorView: View {
                     // (see `EquatableEditorRow` below); when the row is "equal"
                     // and SwiftUI keeps the cached view, the closures retained
                     // alongside it must still see fresh document state.
-                    preliftReorder(blockID: blockID, snapshot: document.children)
+                    preliftReorder(blockID: blockID)
                     // Re-anchor immediately to the touch point so the lift sits under
                     // the finger from frame one (no center-then-snap).
                     tickReorderLift(blockID: blockID, at: location, anchorAt: location, snapshot: document.children)
@@ -440,7 +442,7 @@ public struct EditorView: View {
     }
 
     @ViewBuilder
-    private func rowView(for binding: Binding<Block>, depth: Int, snapshot: [Block], numberingIndex: Int?, selectedIDs: Set<BlockID>) -> some View {
+    private func rowView(for binding: Binding<Block>, depth: Int, numberingIndex: Int?, selectedIDs: Set<BlockID>) -> some View {
         let block = binding.wrappedValue
         // iOS has no nav-mode multi-select — there's no hardware keyboard arrow nav and the
         // blue tint after dismissing the keyboard is just visual noise. Hardcode false to
@@ -537,7 +539,7 @@ public struct EditorView: View {
             },
             depth: depth,
             editor: editing,
-            isPageTitle: isPageTitleBlock(block, snapshot: snapshot),
+            isPageTitle: isPageTitleBlock(block),
             numberingIndex: numberingIndex,
             isSelected: isSelected,
             isExpanded: state.expandedToggles.contains(block.id) || state.expandedTemplates.contains(block.id),
@@ -843,7 +845,7 @@ public struct EditorView: View {
         }
     }
 
-    private func isPageTitleBlock(_ block: Block, snapshot: [Block]) -> Bool {
+    private func isPageTitleBlock(_ block: Block) -> Bool {
         guard case .heading(.h1, _) = block.kind else { return false }
         guard let first = document.children.first else { return false }
         return first.id == block.id

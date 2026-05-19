@@ -88,10 +88,9 @@ extension EditorView {
     /// feedback — source row dims and lift overlay appears — instead of
     /// waiting for the first drag event. The next `tickReorderLift(at:)` call
     /// re-anchors `touchOffset` to the actual cursor location.
-    func preliftReorder(blockID: BlockID, snapshot: [Block]) {
+    func preliftReorder(blockID: BlockID) {
         guard let lift = makeReorderLift(
             blockID: blockID,
-            snapshot: snapshot,
             touchOffset: nil,
             location: nil,
             pendingAnchor: true,
@@ -100,13 +99,12 @@ extension EditorView {
         state.setReorderLift(lift)
     }
 
-    /// Build a `ReorderLift` for `blockID` against `snapshot`. Returns nil if
-    /// the block, its row frame, or its document position is missing.
-    /// `touchOffset` / `location` default to the source row's center — used by
-    /// the iOS prelift, which mounts before a real cursor anchor is known.
+    /// Build a `ReorderLift` for `blockID`. Returns nil if the block, its row
+    /// frame, or its document position is missing. `touchOffset` / `location`
+    /// default to the source row's center — used by the iOS prelift, which
+    /// mounts before a real cursor anchor is known.
     private func makeReorderLift(
         blockID: BlockID,
-        snapshot: [Block],
         touchOffset: CGSize?,
         location: CGPoint?,
         pendingAnchor: Bool,
@@ -164,7 +162,6 @@ extension EditorView {
             guard let sourceFrame = rowFrames[blockID],
                   let lift = makeReorderLift(
                       blockID: blockID,
-                      snapshot: snapshot,
                       touchOffset: CGSize(
                           width: anchorPoint.x - sourceFrame.minX,
                           height: anchorPoint.y - sourceFrame.minY

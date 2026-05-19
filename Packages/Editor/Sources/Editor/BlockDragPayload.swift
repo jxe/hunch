@@ -18,6 +18,7 @@ struct BlockDragPayload: Codable, Transferable, Sendable {
         self.ids = ids
     }
 
+    #if os(iOS)
     init?(jsonString: String) {
         guard let data = jsonString.data(using: .utf8),
               let payload = try? JSONDecoder().decode(BlockDragPayload.self, from: data) else {
@@ -25,6 +26,7 @@ struct BlockDragPayload: Codable, Transferable, Sendable {
         }
         self = payload
     }
+    #endif
 
     static var transferRepresentation: some TransferRepresentation {
         ProxyRepresentation(exporting: { (payload: BlockDragPayload) -> String in

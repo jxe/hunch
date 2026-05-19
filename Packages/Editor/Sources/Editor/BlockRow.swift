@@ -952,7 +952,7 @@ struct BlockRowPreview: View, Equatable {
     private var content: some View {
         switch block.kind {
         case .paragraph:
-            text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing)
                 .padding(.leading, NotionStyle.nonListLeading(depth: depth))
 
         case .heading(let level, _):
@@ -961,7 +961,7 @@ struct BlockRowPreview: View, Equatable {
                               : level == .h2 ? NotionStyle.h2Size
                                              : NotionStyle.h3Size
             let font = NotionStyle.body(size: size, weight: NotionStyle.headingWeight)
-            text(font: font, fontSize: size, bold: true, lineSpacing: NotionStyle.headingLineSpacing)
+            text(font: font, fontSize: size, lineSpacing: NotionStyle.headingLineSpacing)
                 .padding(.leading, NotionStyle.nonListLeading(depth: depth))
 
         case .bullet:
@@ -973,7 +973,7 @@ struct BlockRowPreview: View, Equatable {
                     .alignmentGuide(.firstTextBaseline) { dimensions in
                         dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                     }
-                text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+                text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing)
             }
             .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
 
@@ -983,7 +983,7 @@ struct BlockRowPreview: View, Equatable {
                     .font(NotionStyle.body())
                     .foregroundStyle(NotionStyle.foreground)
                     .frame(width: NotionStyle.numberedMarkerColumnWidth, alignment: .trailing)
-                text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+                text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing)
             }
             .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
 
@@ -993,7 +993,7 @@ struct BlockRowPreview: View, Equatable {
                     .font(.system(size: NotionStyle.todoCheckboxSize))
                     .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
                     .frame(width: NotionStyle.todoMarkerColumnWidth, alignment: .trailing)
-                text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing, strikethrough: done, muted: done)
+                text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing, strikethrough: done, muted: done)
             }
             .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
 
@@ -1003,7 +1003,7 @@ struct BlockRowPreview: View, Equatable {
                 Rectangle()
                     .fill(NotionStyle.foreground)
                     .frame(width: 3)
-                text(font: NotionStyle.body(size: quoteFontSize), fontSize: quoteFontSize, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+                text(font: NotionStyle.body(size: quoteFontSize), fontSize: quoteFontSize, lineSpacing: NotionStyle.bodyLineSpacing)
             }
             .padding(.leading, NotionStyle.nonListLeading(depth: depth))
 
@@ -1041,7 +1041,7 @@ struct BlockRowPreview: View, Equatable {
                     .alignmentGuide(.firstTextBaseline) { dimensions in
                         dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                     }
-                text(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+                text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
@@ -1108,7 +1108,7 @@ struct BlockRowPreview: View, Equatable {
     }
 
     @ViewBuilder
-    private func text(font: Font, fontSize: CGFloat, bold: Bool, lineSpacing: CGFloat, strikethrough: Bool = false, muted: Bool = false) -> some View {
+    private func text(font: Font, fontSize: CGFloat, lineSpacing: CGFloat, strikethrough: Bool = false, muted: Bool = false) -> some View {
         if String(block.text.characters).isEmpty {
             Text(" ")
                 .font(font)
