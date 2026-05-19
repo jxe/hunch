@@ -3,13 +3,14 @@ import Foundation
 @testable import Hunch
 import Editor
 
-/// Commit-time save model: every `persistCommit(ops:in:)` applies the
-/// patch to the log (when non-empty) and writes the .md atomically per call.
-/// Calls for the same URL chain so concurrent commits land in order, and
-/// `flush(_:)` drains pending work before returning. These tests pin the
-/// invariants that matter: typing-driven hash changes reach the journal as
-/// purge+add, the .md content matches the latest commit, and reconcile
-/// against the resulting journal does NOT resurrect prior versions.
+/// Commit-time save model: every `commit(_:to:)` applies the log entries
+/// (when non-empty) and writes the .md atomically per call. Calls for the
+/// same URL chain so concurrent commits land in order, and the top-level
+/// `await` propagates durability + errors to the caller. These tests pin
+/// the invariants that matter: typing-driven hash changes reach the
+/// journal as purge+add, the .md content matches the latest commit, and
+/// reconcile against the resulting journal does NOT resurrect prior
+/// versions.
 @Suite("Clamshell commit-time save")
 @MainActor
 struct ClamshellSavingTests {
@@ -38,11 +39,10 @@ struct ClamshellSavingTests {
 
         // Initial insert (e.g. user created the block). This drives a save +
         // log apply.
-        clamshell.persistCommit(
-            ops: [.insert(hash: v0.atomicHash, parent: nil, block: v0)],
-            in: doc
+        try await clamshell.commit(
+            .fromEditorOps([.insert(hash: v0.atomicHash, parent: nil, block: v0)]),
+            to: doc
         )
-        _ = await clamshell.flush(doc)
 
         // Simulate typing: the editor's textBinding setter updates the model.
         let v1 = Block(id: id, kind: .paragraph(text: attr("hello world")))
@@ -50,14 +50,13 @@ struct ClamshellSavingTests {
 
         // Editor's `commitLiveText` (blur, focus change, navigation, scenePhase,
         // mutate) opens a transaction whose pre→post diff fires onCommit.
-        clamshell.persistCommit(
-            ops: [
+        try await clamshell.commit(
+            .fromEditorOps([
                 .remove(hash: v0.atomicHash),
                 .insert(hash: v1.atomicHash, parent: nil, block: v1)
-            ],
-            in: doc
+            ]),
+            to: doc
         )
-        _ = await clamshell.flush(doc)
 
         // 1. .md reflects the latest commit.
         let mdText = try String(contentsOf: doc.url, encoding: .utf8)
@@ -83,10 +82,11 @@ struct ClamshellSavingTests {
         #expect(recon.restoredHashes.isEmpty)
     }
 
-    /// Empty ops still save the .md — used by reconcile / restore paths that
-    /// mutate `doc` in place and need the file rewritten without an extra log
-    /// entry.
-    @Test func emptyOpsStillWritesTheMarkdown() async throws {
+    /// Empty log entries still save the .md — used by reconcile / restore
+    /// paths that mutate `doc` in place and need the file rewritten
+    /// without an extra log entry (pure reorder/move, or a recon with no
+    /// observations to record).
+    @Test func emptyLogEntriesStillWriteTheMarkdown() async throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
@@ -94,18 +94,19 @@ struct ClamshellSavingTests {
         let block = Block.paragraph(text: attr("body"))
         let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
 
-        clamshell.persistCommit(ops: [], in: doc)
-        _ = await clamshell.flush(doc)
+        try await clamshell.commit(Commit(logEntries: []), to: doc)
 
-        #expect(FileManager.default.fileExists(atPath: doc.url.path), "empty ops should still save the .md")
+        #expect(FileManager.default.fileExists(atPath: doc.url.path), "empty log entries should still save the .md")
         let mdText = try String(contentsOf: doc.url, encoding: .utf8)
         #expect(mdText.contains("body"))
     }
 
     /// A burst of commits for the same URL chain — each waits for the
-    /// previous to land before its own log + .md write. After draining via
-    /// flush, the .md reflects the final commit (not a half-written
-    /// intermediate state) and the journal has every batch's records.
+    /// previous to land before its own log + .md write. Fired as
+    /// concurrent Tasks (mirrors the host bridge's fire-and-forget
+    /// pattern from `persistCommit`); after draining via flush, the .md
+    /// reflects the final commit (not a half-written intermediate state)
+    /// and the journal has every batch's records.
     @Test func rapidCommitsLandInOrderAndFlushDrains() async throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -117,24 +118,33 @@ struct ClamshellSavingTests {
         let v2 = Block(id: id, kind: .paragraph(text: attr("abc")))
         let doc = Document(url: clamshell.url(for: "p.md"), children: [v0])
 
-        clamshell.persistCommit(
-            ops: [.insert(hash: v0.atomicHash, parent: nil, block: v0)],
-            in: doc
-        )
+        let t1 = Task { @MainActor in
+            try await clamshell.commit(
+                .fromEditorOps([.insert(hash: v0.atomicHash, parent: nil, block: v0)]),
+                to: doc
+            )
+        }
         doc.replaceChildren([v1])
-        clamshell.persistCommit(
-            ops: [.remove(hash: v0.atomicHash),
-                  .insert(hash: v1.atomicHash, parent: nil, block: v1)],
-            in: doc
-        )
+        let t2 = Task { @MainActor in
+            try await clamshell.commit(
+                .fromEditorOps([.remove(hash: v0.atomicHash),
+                                .insert(hash: v1.atomicHash, parent: nil, block: v1)]),
+                to: doc
+            )
+        }
         doc.replaceChildren([v2])
-        clamshell.persistCommit(
-            ops: [.remove(hash: v1.atomicHash),
-                  .insert(hash: v2.atomicHash, parent: nil, block: v2)],
-            in: doc
-        )
+        let t3 = Task { @MainActor in
+            try await clamshell.commit(
+                .fromEditorOps([.remove(hash: v1.atomicHash),
+                                .insert(hash: v2.atomicHash, parent: nil, block: v2)]),
+                to: doc
+            )
+        }
 
-        _ = await clamshell.flush(doc)
+        _ = try await t1.value
+        _ = try await t2.value
+        _ = try await t3.value
+        await clamshell.flush(doc)
 
         let mdText = try String(contentsOf: doc.url, encoding: .utf8)
         #expect(mdText.contains("abc"), "final .md reflects last commit")
@@ -153,7 +163,7 @@ struct ClamshellSavingTests {
 
     /// Flush on a quiescent URL is a no-op: nothing pending → nothing to
     /// drain. The model is "every commit writes" — if you want bytes on
-    /// disk, call `persistCommit` (or open the page, which loads from
+    /// disk, call `commit(_:to:)` (or open the page, which loads from
     /// disk in the first place). Flush is only for *awaiting* in-flight
     /// writes, not for triggering a save.
     @Test func flushOnQuiescentURLIsNoop() async throws {

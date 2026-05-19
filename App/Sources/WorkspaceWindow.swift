@@ -170,11 +170,13 @@ final class WorkspaceWindow {
     }
 
     // The save lifecycle (commit-time atomic save, per-URL Task chain,
-    // post-save bookkeeping) lives on `Clamshell`. The host calls
-    // `clamshell.persistCommit(ops:in:)` at every edit-session commit
-    // point and `clamshell.flush(_:)` on blur / scenePhase / navigation
-    // away. Clamshell keeps the title cache + entries in sync internally;
-    // the host doesn't thread anything through it.
+    // post-save bookkeeping) lives on `Clamshell`. The host's
+    // `EditorHost.persistCommit` conformance spawns a Task that calls
+    // `clamshell.commit(.fromEditorOps(ops), to: doc)` at every
+    // edit-session commit point, and `clamshell.flush(_:)` awaits the
+    // chain on blur / scenePhase / navigation away. Clamshell keeps the
+    // title cache + entries in sync internally; the host doesn't thread
+    // anything through it.
 
     // MARK: - Trash & restore (per-window)
 

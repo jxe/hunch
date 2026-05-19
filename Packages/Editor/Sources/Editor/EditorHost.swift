@@ -125,22 +125,24 @@ public protocol EditorHost: AnyObject {
     /// shape. The host writes log records (when non-empty) and the rendered
     /// document as one ordered unit per call.
     ///
-    /// Called *synchronously* on the mutation-commit thread so the host's
-    /// dirty flag is readable in immediate flush-on-close paths — a fast
-    /// "type-then-navigate" sequence relies on this to not drop the last
-    /// keystroke. Persistence (log append, disk write) is fire-and-forget
-    /// from the host's side.
+    /// Called *synchronously* on the mutation-commit thread — the editor's
+    /// typing path can't await mid-`Document.transaction`. The host
+    /// translates the ops into whatever storage primitive it owns; in
+    /// practice the host spawns a Task and awaits durability internally,
+    /// reaching that Task through `flush(_:)`. From the editor's side
+    /// this is fire-and-forget on the typing thread; the host's
+    /// `flush(_:)` is the only way to await durability.
     func persistCommit(ops: [EditorOp], in document: Document)
 
-    /// Await durability of any writes already in flight for `document`. With
-    /// the commit-time atomic save model, every `persistCommit` schedules
-    /// its own log + .md write — `flush` doesn't *trigger* a save, it blocks
-    /// until pending ones complete. Editor calls this on focus-loss (so the
-    /// commit that just fired is durable before the row unmounts) and the
-    /// host calls it directly from scene-phase / navigation-away / close
-    /// paths. The doc is passed explicitly (symmetric with
-    /// `persistCommit(ops:in:)`) so the host doesn't have to infer
-    /// "current doc" from its own state.
+    /// Await durability of any writes already in flight for `document`.
+    /// With the commit-time atomic save model, every `persistCommit`
+    /// schedules its own log + .md write — `flush` doesn't *trigger* a
+    /// save, it blocks until any in-flight one(s) for this doc complete.
+    /// Editor calls this on focus-loss (so the commit that just fired is
+    /// durable before the row unmounts) and the host calls it directly
+    /// from scene-phase / navigation-away / close paths. The doc is
+    /// passed explicitly (symmetric with `persistCommit(ops:in:)`) so
+    /// the host doesn't have to infer "current doc" from its own state.
     func flush(_ document: Document) async
 
     /// Serialize blocks into a string the editor will write to the system

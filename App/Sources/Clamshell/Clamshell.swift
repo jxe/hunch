@@ -92,11 +92,26 @@ final class Clamshell {
     /// would fire another fetch.
     @ObservationIgnored private var pendingTitleWarms: Set<URL> = []
 
-    /// Per-URL save chain head. Each `persistCommit` spawns a Task that
+    /// Per-URL save chain head. Each `commit(_:to:)` spawns a Task that
     /// awaits the previous chain entry for that URL before running its own
-    /// log apply + .md write, so concurrent commits land in order. Absent ⇒
-    /// no work pending (i.e. `isQuiescent(at:)`).
-    @ObservationIgnored private var saveChain: [URL: Task<Void, Never>] = [:]
+    /// log apply + .md write, so concurrent commits land in order. The
+    /// chain head is the *latest* enqueued task; `commit` awaits its own
+    /// task before returning, so callers get durability-on-return. The
+    /// `id` lets a finishing commit recognize whether it's still the head
+    /// (newer commit may have replaced it) and only clear its own slot.
+    /// Absent ⇒ no work pending (i.e. `isQuiescent(at:)`).
+    ///
+    /// Why a hand-rolled chain rather than `actor PageWriter`: actor
+    /// reentrancy lets a second `commit` start during the first's `await
+    /// log.apply` suspension, which could let its `files.write` interleave
+    /// with the first's — breaking the per-commit "log before file"
+    /// ordering at the filesystem level. The chain's explicit
+    /// `await previous?.value` forecloses that.
+    private struct ChainEntry {
+        let id: UUID
+        let task: Task<Void, Error>
+    }
+    @ObservationIgnored private var saveChain: [URL: ChainEntry] = [:]
 
     init(root: URL) {
         let total = perfStart()
@@ -427,37 +442,70 @@ final class Clamshell {
 
     // MARK: - Pages: write
     //
-    // Save model is commit-time atomic: every `persistCommit(ops:in:)`
-    // applies its op batch to the recovery log and writes the .md file as
-    // one awaited sequence, log strictly before file. Concurrent calls for
-    // the same URL are chained on `saveChain[url]` — each spawned Task
-    // awaits the previous before its own log + .md write, so a fast burst
-    // of commits (typing → focus blur → navigation) lands in order. No
-    // debounce, no separate per-op log task: every `Document.transaction`
-    // (typing via `commitLiveText`, structural via `mutate(_:_:)`, undo,
-    // redo) emits its pre→post diff through
-    // `Document.didCommitTransaction` → here.
+    // Save model is commit-time atomic: every `commit(_:to:)` applies its
+    // log entries to the recovery log and writes the .md file as one
+    // awaited sequence, log strictly before file. Concurrent calls for the
+    // same URL are chained on `saveChain[url]` — each spawned Task awaits
+    // the previous before its own log + .md write, so a fast burst of
+    // commits (typing → focus blur → navigation) lands in order, and the
+    // top-level `await` in `commit` propagates errors back to the caller.
+    // No debounce, no separate per-op log task: every
+    // `Document.transaction` (typing via `commitLiveText`, structural via
+    // `mutate(_:_:)`, undo, redo) emits its pre→post diff through
+    // `Document.didCommitTransaction` → host bridge → `commit(_:to:)`.
 
-    /// Editor mutated `doc` and produced these `ops` — persist the commit.
-    /// Applies the patch to the recovery log (when non-empty), then
-    /// serializes the current `.md` and writes it. Calls for the same URL
-    /// are chained: the spawned Task awaits any pending chain head for that
-    /// URL before its own work, so rapid-fire commits land in order. Sync
-    /// entry so the editor can call it from the mutation-commit thread
-    /// without ceremony.
-    func persistCommit(ops: [EditorOp], in doc: Document) {
-        let patch: Patch = ops.isEmpty ? .empty : Patch.from(ops: ops)
-        enqueueSave(doc, patch: patch)
+    /// Persist a commit for `doc`. Awaits durability end-to-end: log
+    /// entries (if any) are applied to the recovery log strictly before
+    /// `.md` is serialized and written. Concurrent commits for the same
+    /// URL chain on `saveChain[url]` — each new task awaits the previous
+    /// before its own work, so a typing burst → blur → navigate sequence
+    /// lands in order. The caller's `await` returns only after this
+    /// commit's bytes are on disk; errors propagate.
+    ///
+    /// Caller is responsible for the in-memory state of `doc.children`:
+    /// editor mutations go through `Document.transaction` (which fires
+    /// `didCommitTransaction` → host bridge → here); reconcile mutates
+    /// via `PatchEngine.apply` before calling `commit`; conflict merge
+    /// builds a fresh `Document` with the merged tree.
+    @MainActor
+    func commit(_ commit: Commit, to doc: Document) async throws {
+        let url = doc.url
+        let rel = relativePath(of: url)
+        let previous = saveChain[url]?.task
+        let id = UUID()
+        let task = Task<Void, Error> { @MainActor [weak self] in
+            _ = try? await previous?.value
+            guard let self else { return }
+            if !commit.logEntries.isEmpty {
+                try await self.log.apply(Patch(entries: commit.logEntries), to: rel)
+            }
+            _ = try self.save(doc)
+            self.postSaveBookkeeping(doc)
+        }
+        saveChain[url] = ChainEntry(id: id, task: task)
+        do {
+            try await task.value
+            // Only clear the slot when we're still the head — a newer commit
+            // may have replaced us mid-flight; that one owns the cleanup.
+            if saveChain[url]?.id == id {
+                saveChain.removeValue(forKey: url)
+            }
+        } catch {
+            if saveChain[url]?.id == id {
+                saveChain.removeValue(forKey: url)
+            }
+            Diag.log.error("commit failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            throw error
+        }
     }
 
-    /// Await durability of any writes already in flight for `doc`. Does
-    /// not trigger a save — that's what `persistCommit` is for. Used on
+    /// Await durability of any commits already in flight for `doc`. Does
+    /// not trigger a save — that's what `commit(_:to:)` is for. Used on
     /// navigation / blur / scenePhase / close to make sure the bytes for
     /// the just-fired commit are on disk before the editor unmounts.
     func flush(_ doc: Document) async {
         guard let pending = saveChain[doc.url] else { return }
-        await pending.value
-        saveChain.removeValue(forKey: doc.url)
+        _ = try? await pending.task.value
     }
 
     /// True when no work is pending for `url`. The engine's reconcile and
@@ -467,37 +515,11 @@ final class Clamshell {
         saveChain[url] == nil
     }
 
-    /// Chain a log-apply (when non-empty) + `.md` write onto the per-URL
-    /// save queue. The editor entry point is `persistCommit(ops:in:)`;
-    /// Clamshell-internal callers that mutated the live doc in place
-    /// without an editor commit (reconcile auto-restore, manual restore)
-    /// pass `patch: .empty` because the journal is already current.
-    func enqueueSave(_ doc: Document, patch: Patch) {
-        let url = doc.url
-        let rel = relativePath(of: url)
-        let previous = saveChain[url]
-        let task = Task<Void, Never> { @MainActor [weak self] in
-            await previous?.value
-            guard let self else { return }
-            do {
-                if !patch.isEmpty {
-                    try await self.log.apply(patch, to: rel)
-                }
-                _ = try self.save(doc)
-                self.postSaveBookkeeping(doc)
-            } catch {
-                Diag.log.error("save failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
-        }
-        saveChain[url] = task
-    }
-
     /// The actual on-disk write. Serializes `document.children` and writes
     /// the bytes through `FileStore` (which wraps `NSFileCoordinator` to
     /// avoid racing with iCloud sync). Does NOT touch the recovery log —
-    /// callers that own the log durability invariant (chain tasks,
-    /// `writeClosedPage`, `append(_:toPage:)`) apply log records first,
-    /// then call this.
+    /// `commit(_:to:)` owns the log durability invariant (log entries
+    /// land first, then this runs).
     @MainActor
     @discardableResult
     private func save(_ document: Document) throws -> String {
@@ -508,54 +530,6 @@ final class Clamshell {
         try files.write(newText, to: url)
         recordDiskContent(newText, at: url)
         return newText
-    }
-
-    /// Apply `patch` to the recovery log, then persist `document` to disk.
-    /// Awaited end-to-end so log lands strictly before file — a crash
-    /// anywhere leaves the log at-or-ahead of disk and the next reconcile
-    /// heals. The closed-page sibling of `persistCommit`: used when there's
-    /// no live editor session (no `saveChain` entry to enqueue against),
-    /// so the caller can await durability directly. Used by conflict merge
-    /// and closed-page manual restore. Editor mutations go through
-    /// `persistCommit`; the sync append-onto-subpage path goes through
-    /// `append(_:toPage:)`.
-    ///
-    /// Folds in the post-save bookkeeping (mtime refresh, title cache)
-    /// so closed-doc paths get the same hygiene as the editor-driven
-    /// save path.
-    @MainActor
-    func writeClosedPage(_ document: Document, patch: Patch) async throws {
-        let url = document.url
-        if !patch.isEmpty {
-            try await log.apply(patch, to: relativePath(of: url))
-        }
-        _ = try save(document)
-        postSaveBookkeeping(document)
-    }
-
-    /// Append `blocks` to the end of `relativePath`. Logs the appended
-    /// blocks, then writes the file — the at-or-ahead invariant holds
-    /// across crashes. Used by the editor's drop-on-subpage path via the
-    /// async `EditorHost.appendToPage`.
-    ///
-    /// Returns the loaded-and-mutated `Document` so callers can splice
-    /// the appended content into any open window of the same URL.
-    @MainActor
-    @discardableResult
-    func append(_ blocks: [Block], toPage relativePath: String) async throws -> Document {
-        let url = self.url(for: relativePath)
-        let doc = try await loadDocument(at: url)
-        doc.transaction(name: "Append to subpage") {
-            doc.insertSubtrees(blocks, at: DropPath(parent: nil, position: doc.children.count))
-        }
-        try await log.apply(Patch.adds(from: blocks), to: relativePath)
-        let newText = BlockSerializer.serialize(doc.children, resolvingSubpageTitle: { [weak self] rel in
-            self?.entry(at: rel)?.title
-        })
-        try files.write(newText, to: url)
-        recordDiskContent(newText, at: url)
-        postSaveBookkeeping(doc)
-        return doc
     }
 
     /// Post-save hygiene: refresh the document's mtime from disk, update
@@ -652,7 +626,10 @@ final class Clamshell {
         }
 
         let merged = Document(url: url, children: result.merged)
-        try await writeClosedPage(merged, patch: Patch.adds(from: merged.children))
+        let mergeCommit = Commit(
+            logEntries: Patch.adds(from: merged.children).entries
+        )
+        try await commit(mergeCommit, to: merged)
 
         let mutated: Bool
         if let doc {

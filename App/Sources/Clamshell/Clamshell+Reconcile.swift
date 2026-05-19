@@ -59,9 +59,20 @@ extension Clamshell {
         return try await runReconcile(on: doc)
     }
 
-    /// Shared body: run the pure reconciliation, apply the catch-up
-    /// patch, splice inserts, mark the file dirty. Caller has already
-    /// decided which Document to operate on.
+    /// Shared body: run the pure reconciliation, mutate `doc` in place
+    /// for any inserts/removes, then commit the catch-up log entries
+    /// (observations + unrestorable quarantines) and the new `.md` shape
+    /// through the per-URL save chain. Caller has already decided which
+    /// Document to operate on.
+    ///
+    /// `recon.toAppend` is emitted as `observe`, not `add`: the engine's
+    /// observations describe blocks the doc has but no device's log has
+    /// claimed yet — typically because iCloud delivered the foreign
+    /// device's `.md` before its `.jsonl`. Recording these as `observe`
+    /// keeps a snapshot for the Recover sheet without making the hash
+    /// auto-restore-eligible, so a subsequent foreign delete won't trigger
+    /// a spurious resurrect. The `Reconciliation.asCommit()` projection
+    /// handles the entry shaping.
     private func runReconcile(on doc: Document) async throws -> PatchEngine.ReconcileSummary {
         let url = doc.url
         let rel = relativePath(of: url)
@@ -79,41 +90,23 @@ extension Clamshell {
             return PatchEngine.ReconcileSummary(restoredHashes: [])
         case .folded(let recon, let mode):
             perfEnd(foldT, "runReconcile.folded", "rel=\(rel) mode=\(mode) inserts=\(recon.inserts.count) removes=\(recon.removes.count) observe=\(recon.toAppend.count) quarantine=\(recon.unrestorable.count)")
-            // `toAppend` is emitted as `observe`, not `add`. The engine's
-            // observations describe blocks the doc has but no device's log
-            // has claimed yet — typically because iCloud delivered the
-            // foreign device's `.md` before its `.jsonl`. Recording these
-            // as `observe` keeps a snapshot for the Recover sheet without
-            // making the hash auto-restore-eligible, so a subsequent
-            // foreign delete won't trigger a spurious resurrect.
-            var entries: [Patch.Entry] = []
-            entries.reserveCapacity(recon.toAppend.count + recon.unrestorable.count)
-            for obs in recon.toAppend {
-                entries.append(.observe(hash: obs.hash, parent: obs.parent, markdown: obs.markdown))
-            }
-            for q in recon.unrestorable {
-                entries.append(.purge(hash: q.hash))
-            }
             Self.logUnrestorables(recon.unrestorable, url: url)
-
-            if !entries.isEmpty {
-                let applyT = perfStart()
-                try await log.apply(Patch(entries: entries), to: rel)
-                perfEnd(applyT, "runReconcile.logApply", "entries=\(entries.count)")
-            }
 
             if recon.didChange {
                 PatchEngine.apply(recon, to: doc)
-                // `doc` is mutated in place (subtree removes + subtree
-                // inserts). The journal already has the records that
-                // make this consistent (`add`/`purge` per device). Save
-                // the `.md` through the per-URL save chain so concurrent
-                // user commits stay ordered.
-                enqueueSave(doc, patch: .empty)
                 let restoredCount = recon.restoredHashes.count
                 let removedCount = recon.removes.count
                 let removedHashes = recon.removes.map(\.hash).joined(separator: ",")
                 Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(restoredCount, privacy: .public) removed=\(removedCount, privacy: .public) roots=\(recon.inserts.count, privacy: .public) restoredHashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public) removedHashes=\(removedHashes, privacy: .public)")
+            }
+
+            // Single commit covers: the (possibly empty) catch-up log
+            // entries and a `.md` write reflecting the post-apply doc.
+            // Skip entirely if there's nothing to do — pure-skipped
+            // reconciles are the steady-state hot path.
+            let reconCommit = recon.asCommit()
+            if !reconCommit.logEntries.isEmpty || recon.didChange {
+                try await commit(reconCommit, to: doc)
             }
 
             return PatchEngine.ReconcileSummary(restoredHashes: recon.restoredHashes)
@@ -123,7 +116,7 @@ extension Clamshell {
     /// Restore a single lost or purged block into its source page. Pass
     /// `liveDoc` when the source page is currently open in some window so
     /// the splice mutates the same `Document` the editor renders; pass nil
-    /// to load-from-disk and persist via the awaited `write(_:patch:)`.
+    /// to load-from-disk and persist via the unified `commit(_:to:)`.
     ///
     /// Lost-restore appends one `.purge` per covered hash so the Recover
     /// sheet stops surfacing the row. Purged-restore appends a fresh `.add`
@@ -221,34 +214,32 @@ extension Clamshell {
             followUp = Patch(entries: addEntries)
         }
 
+        // Splice has already mutated `doc` in place (live or freshly
+        // loaded). Both branches reduce to one `commit` — the difference
+        // is just the log entries we attach.
+        //
+        // Live page: the live doc has been edited and the journal already
+        // has `.alive` adds for everything in it. Attach only the
+        // follow-up entries (purges-for-lost or fresh-adds-for-purged).
+        //
+        // Closed page: we loaded fresh from disk. The journal may not yet
+        // have entries for every block currently in the file (bare-md
+        // absorption hasn't happened yet for this device's log). Attach
+        // a full-doc-walk of adds plus the follow-up so the on-disk
+        // shape and the log converge in one write.
+        let logEntries: [Patch.Entry]
         if isLive {
-            // Splice already mutated `doc` in place; save the .md through
-            // the per-URL save chain and apply the follow-up patch to the
-            // log separately (it carries the tombstones / fresh adds the
-            // restore needed).
-            enqueueSave(doc, patch: .empty)
-            if !followUp.isEmpty {
-                do {
-                    try await log.apply(followUp, to: source)
-                } catch {
-                    Diag.merge.error("restore follow-up failed page=\(source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                }
-            }
+            logEntries = followUp.entries
         } else {
-            // Closed page: log the follow-up (purges-for-lost or
-            // adds-for-purged) and the doc-blocks observation in one
-            // batched apply, then write the merged .md. The doc-blocks
-            // catch-up matches the `write(_:patch:)` full-doc-walk shape so
-            // any bare-md absorbed at load time reaches the journal.
-            let combined = Patch(entries: Patch.adds(from: doc.children).entries + followUp.entries)
-            do {
-                try await writeClosedPage(doc, patch: combined)
-            } catch {
-                Diag.merge.error("restore write failed page=\(source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                throw error
-            }
+            logEntries = Patch.adds(from: doc.children).entries + followUp.entries
         }
-
+        let restoreCommit = Commit(logEntries: logEntries)
+        do {
+            try await commit(restoreCommit, to: doc)
+        } catch {
+            Diag.merge.error("restore commit failed page=\(source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            throw error
+        }
     }
 
     private func resolveRestoreDoc(pageURL: URL, liveDoc: Document?) async throws -> (Document, Bool) {

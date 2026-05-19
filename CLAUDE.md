@@ -38,17 +38,16 @@ user-picked workspace folder.
     and `TrashStore` privately and exposes a single API:
     `entries / entry(at:) / rescan / lookupPage / pages(matching:) /
     loadDocument(at:) / readBlocks(at:) / openPage / closePage /
-    persistCommit / flush / append / inlineAndTrash / createPage /
+    commit / flush / inlineAndTrash / createPage /
     moveToTrash / listTrashedPages / restorePage / listLostBlocks /
     listPurgedBlocks / resolveConflictVersions / homeURL /
     homeRelativePath / isHome / setHome`, plus `relativePath(of:)`,
     `url(for:)`, and `pageID(for:relativeTo:)` for path conversion
     (the inline-link URL classifier lives next to the other URL ↔
     pageID helpers so they share one home).
-    Internal helpers (`writeClosedPage(_:patch:)`, `enqueueSave(_:patch:)`,
-    `reconcileLive`, `classifyDiskContent`, `isQuiescent`) and the `log`
-    actor drive the engine from inside the module and aren't part of the
-    host surface. **Journal records have three ops**: `add` (authoritative
+    Internal helpers (`reconcileLive`, `classifyDiskContent`,
+    `isQuiescent`) and the `log` actor drive the engine from inside the
+    module and aren't part of the host surface. **Journal records have three ops**: `add` (authoritative
     — claim authorship), `purge` (authoritative — tombstone), and
     `observe` (tentative — snapshot of a block seen in `.md` without
     claimed authorship; written by reconcile for unlogged-but-in-doc
@@ -76,29 +75,32 @@ user-picked workspace folder.
     costs ~1s and 50× of that would stall the home page open. Post-
     save bookkeeping (mtime refresh, title update from the live
     `Document`, selective rescan) all live inside Clamshell — the host
-    doesn't thread any callbacks through it. **Editor-driven persistence** is
-    `persistCommit(ops:in:)` (the unified commit primitive — applies
-    the op batch to the recovery log when non-empty, then serializes and
-    writes the `.md`, in one awaited sequence) and `flush(_:)` (await
-    any pending chain entry; used for blur/scenePhase/navigation).
-    Concurrent calls for the same URL are chained on `saveChain[url]` —
-    each spawned Task awaits the previous before its own log apply +
-    file write — so the .md on disk always reflects the latest commit.
-    No debounce, no separate "log-apply Task," no `.armed` state: every
-    `Document.transaction` (typing via `commitLiveText`, structural via
-    `mutate(_:_:)`, undo, redo) computes its pre→post diff and fires
-    `Document.didCommitTransaction`, which the editor forwards to the
-    host. That's the single save event. The "log durable
-    before file durable" invariant is preserved structurally: every
-    `persistCommit` writes log before file inside a single Task.
-    **Non-editor writes** (`writeClosedPage(_:patch:)` for conflict
-    merge + restore-into-closed-page; `append(_:toPage:)` for
-    drop-on-subpage) sequence log-then-file atomically without the
-    chain, since they're for documents that have no live editor
-    session. **Internal in-place mutations** (reconcile auto-restore
-    splice, manual-restore splice) call `enqueueSave(doc, patch: .empty)`
-    to enqueue a .md write onto the same per-URL chain — no log apply,
-    since the journal is already current. `moveToTrash`
+    doesn't thread any callbacks through it. **One write API:**
+    `commit(_:to:)` is the unified commit primitive — applies
+    the `Commit`'s log entries to the recovery log when non-empty,
+    then serializes and writes the `.md`, in one awaited sequence
+    per call; `flush(_:)` awaits the chain head without triggering
+    work (blur / scenePhase / navigation). Every flow — editor
+    commit, reconcile catch-up, manual restore, conflict-merge,
+    subpage append — projects to a `Commit` value (log entries + a
+    `CommitSummary` the host displays) and calls `commit(_:to:)`.
+    Concurrent calls for the same URL are chained on `saveChain[url]`
+    — each spawned Task awaits the previous before its own log apply
+    + file write, and the top-level `await` returns when *this*
+    commit's bytes are durable. No debounce, no `.armed` state: every
+    `Document.transaction` (typing via `commitLiveText`, structural
+    via `mutate(_:_:)`, undo, redo) computes its pre→post diff and
+    fires `Document.didCommitTransaction`, which the editor forwards
+    to `EditorHost.persistCommit` (sync, typing-thread-safe); the
+    host bridge wraps that in a Task that calls
+    `clamshell.commit(_:to:)` and awaits durability. That's the
+    single save event. The "log durable before file durable"
+    invariant is preserved structurally: every `commit` runs log
+    apply strictly before file write inside one Task. **Internal
+    in-place mutations** (reconcile auto-restore splice, manual-
+    restore splice) commit with `Commit(logEntries: [])` — no log
+    apply (journal already current), just an awaited `.md` write
+    through the same chain. `moveToTrash`
     clears `homeRelativePath` if it matched and moves the page's
     `.history/<rel>/` dir along with the `.md`. Also where the
     markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown
@@ -142,7 +144,10 @@ user-picked workspace folder.
     spawns a background reconcile Task and surfaces any restores via
     `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
     The host methods (`openPage`, `persistCommit`, `flush`, …) live on the
-    same type and forward to `Clamshell`. Move-to is
+    same type and forward to `Clamshell`. The host's `persistCommit`
+    conforms to `EditorHost`; internally it spawns a Task that calls
+    `clamshell.commit(.fromEditorOps(ops), to: doc)` so durability is
+    awaited while keeping the editor's sync hook contract intact. Move-to is
     async — the editor `await`s `host.moveDestination(for:candidates:)`,
     the host bridges to the sheet via a `CheckedContinuation`.
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
@@ -272,22 +277,27 @@ non-text parts (markers, paddings) fall through to the row's
 so wrapped paragraphs still allow intra-block arrow nav in the middle.
 
 **Save is commit-time atomic on `Clamshell`** ([`Clamshell.swift`](App/Sources/Clamshell/Clamshell.swift)):
-`persistCommit(ops:in:)` is the single primitive — applies the op
-batch to the recovery log when non-empty, then serializes and writes
-the `.md`, in one awaited sequence per call. Concurrent calls for the
-same URL chain on `saveChain[url]` so a rapid burst (typing commit →
-focus blur → navigation) lands in order. `flush(_:)` awaits the chain
-head and drains the save coordinator. No debounce, no `.armed` /
-queued state machine, no separate log-apply Task: edit-session commit
-points (`commitLiveText` for typing; `mutate(_:_:)` for structural
-ops) are themselves the save events. The "log durable before file
-durable" invariant is preserved structurally — the log apply runs
-inside the same Task before the file write. Crash recovery is trivial:
-reconcile heals any divergence on next open. Post-save bookkeeping
-(mtime, title cache, rescan-when-title-changed) runs inside
-Clamshell's `postSaveBookkeeping(_:)` — fired by every successful save
-path. No host hook is needed; Clamshell is `@Observable` and SwiftUI
-re-renders pick up new entries/title state directly.
+`commit(_:to:)` is the single primitive — applies the `Commit`'s
+log entries to the recovery log when non-empty, then serializes and
+writes the `.md`, in one awaited sequence per call. Concurrent calls
+for the same URL chain on `saveChain[url]` so a rapid burst (typing
+commit → focus blur → navigation) lands in order; the top-level
+`await` returns when *this* commit's bytes are on disk. `flush(_:)`
+awaits the chain head without triggering work. Every flow projects
+to a `Commit`: editor commits via `Commit.fromEditorOps(ops)`,
+reconcile via `Reconciliation.asCommit()`, manual restore /
+conflict-merge / subpage-append build the value directly. No
+debounce, no `.armed` / queued state machine, no separate log-apply
+Task: edit-session commit points (`commitLiveText` for typing;
+`mutate(_:_:)` for structural ops) are themselves the save events.
+The "log durable before file durable" invariant is preserved
+structurally — the log apply runs inside the same Task before the
+file write. Crash recovery is trivial: reconcile heals any divergence
+on next open. Post-save bookkeeping (mtime, title cache,
+rescan-when-title-changed) runs inside Clamshell's
+`postSaveBookkeeping(_:)` — fired by every successful commit. No
+host hook is needed; Clamshell is `@Observable` and SwiftUI re-
+renders pick up new entries/title state directly.
 
 **Every edit funnels through `Document.transaction`.** The transaction
 snapshots `children` *before* `preMutation` fires (so the snapshot

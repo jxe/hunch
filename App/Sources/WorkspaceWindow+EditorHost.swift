@@ -45,7 +45,16 @@ extension WorkspaceWindow: EditorHost {
     }
 
     func persistCommit(ops: [EditorOp], in document: Document) {
-        workspace.clamshell?.persistCommit(ops: ops, in: document)
+        guard let clamshell = workspace.clamshell else { return }
+        let commit = Commit.fromEditorOps(ops)
+        // Editor's `didCommitTransaction` is sync (typing path can't
+        // await). Spawn a Task that awaits durability; the host's
+        // subsequent `flush(_:)` calls (blur, nav, scenePhase) await
+        // the chain head and so will await this task too.
+        Task { @MainActor in
+            do { try await clamshell.commit(commit, to: document) }
+            catch { /* logged inside commit; nothing more to do here */ }
+        }
     }
 
     func flush(_ document: Document) async {
@@ -113,21 +122,26 @@ extension WorkspaceWindow: EditorHost {
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
         let target = clamshell.url(for: pageID)
-        let doc: Document
         do {
-            doc = try await clamshell.append(blocks, toPage: pageID)
+            let doc = try await clamshell.loadDocument(at: target)
+            doc.transaction(name: "Append to subpage") {
+                doc.insertSubtrees(blocks, at: DropPath(parent: nil, position: doc.children.count))
+            }
+            let appendCommit = Commit(logEntries: Patch.adds(from: blocks).entries)
+            try await clamshell.commit(appendCommit, to: doc)
+            // Multi-window splice: if this window has the subpage open,
+            // copy the appended children into the live instance rather
+            // than swapping doc identity — keeps editor state references
+            // stable.
+            if let live = openDocument, live.url == target, live !== doc {
+                live.replaceChildren(doc.children)
+                live.modificationDate = doc.modificationDate
+            }
+            return true
         } catch {
             workspace.error = "Failed to move blocks into \(pageID): \(error.localizedDescription)"
             return false
         }
-        // If this window has the subpage open (multi-window scenario), splice
-        // the appended content into the live instance rather than swapping —
-        // keeps the editor's state references stable.
-        if let live = openDocument, live.url == target, live !== doc {
-            live.replaceChildren(doc.children)
-            live.modificationDate = doc.modificationDate
-        }
-        return true
     }
 
     /// Editor's async move-destination call site: store a continuation,

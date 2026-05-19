@@ -54,11 +54,6 @@ enum LogRecord: Sendable, Hashable {
         }
     }
 
-    var isAdd: Bool {
-        if case .add = self { return true }
-        return false
-    }
-
     /// `add` and `purge` assert intent and drive `alive`/`tombstoned`.
     /// `observe` only carries a snapshot and doesn't shift status.
     var isAuthoritative: Bool {
@@ -155,8 +150,6 @@ struct Patch: Sendable {
     init(entries: [Entry]) {
         self.entries = entries
     }
-
-    static let empty = Patch(entries: [])
 
     /// Walk a block tree preorder and emit one `.add` entry per block.
     /// A parent's entry precedes its children, so if appended sequentially
@@ -389,7 +382,7 @@ enum PatchEngine {
                     // deletion). Don't strip it out from under the user.
                     continue
                 }
-                removes.append(Remove(hash: hash, blockID: blockID, purgedAt: purgedAt))
+                removes.append(Remove(hash: hash, blockID: blockID))
             case .observed:
                 // `observe` is non-authoritative: it neither restores nor
                 // removes. The snapshot is just a recorded sighting.
@@ -570,15 +563,10 @@ enum PatchEngine {
         /// `BlockID` of the block in `doc`. Passed straight to
         /// `Document.removeSubtree(_:)`.
         let blockID: BlockID
-        /// Timestamp on the latest purge record. Used by the engine's
-        /// mtime gate to suppress removes when the `.md` is newer than
-        /// the purge (an external `vim` edit re-added the block).
-        let purgedAt: Date
 
-        init(hash: String, blockID: BlockID, purgedAt: Date) {
+        init(hash: String, blockID: BlockID) {
             self.hash = hash
             self.blockID = blockID
-            self.purgedAt = purgedAt
         }
     }
 

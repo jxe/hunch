@@ -100,13 +100,12 @@ struct RecoveryLogTests {
         let keep = Block.paragraph(text: attr("Keep"))
         let lose = Block.paragraph(text: attr("Lose"))
         let doc = Document(url: url, children: [keep, lose], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         // Editor deletes `lose` — splice, derive ops, fire the canonical
         // editor save path so the purge is logged and the .md saved.
         doc.replaceChildren([keep])
-        clamshell.persistCommit(ops: [.remove(hash: lose.atomicHash)], in: doc)
-        _ = await clamshell.flush(doc)
+        try await clamshell.commit(.fromEditorOps([.remove(hash: lose.atomicHash)]), to: doc)
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty, "explicit purge should suppress the deleted block")
@@ -131,7 +130,7 @@ struct RecoveryLogTests {
             ],
             modificationDate: nil
         )
-        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         // Simulate an external editor / iCloud stomp: overwrite .md directly,
         // bypassing the Clamshell save + editor op-stream so no purge fires.
@@ -155,12 +154,11 @@ struct RecoveryLogTests {
 
         let ghost = Block.paragraph(text: attr("ghost"))
         let doc = Document(url: url, children: [ghost], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         // Editor deletes the ghost: empty children + purge op.
         doc.replaceChildren([])
-        clamshell.persistCommit(ops: [.remove(hash: ghost.atomicHash)], in: doc)
-        _ = await clamshell.flush(doc)
+        try await clamshell.commit(.fromEditorOps([.remove(hash: ghost.atomicHash)]), to: doc)
 
         // Intermediate: explicitly purged, so nothing is "lost".
         var lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
@@ -171,11 +169,7 @@ struct RecoveryLogTests {
         try await Task.sleep(for: .milliseconds(20))
         let revived = Block.paragraph(text: attr("ghost"))
         doc.replaceChildren([revived])
-        clamshell.persistCommit(
-            ops: [.insert(hash: revived.atomicHash, parent: nil, block: revived)],
-            in: doc
-        )
-        _ = await clamshell.flush(doc)
+        try await clamshell.commit(.fromEditorOps([.insert(hash: revived.atomicHash, parent: nil, block: revived)]), to: doc)
         lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty, "alive in .md, latest-record is add → not lost")
     }
@@ -196,7 +190,7 @@ struct RecoveryLogTests {
         let body = Block.paragraph(text: attr("inside"))
         let toggle = Block.toggle(title: attr("Outer"), children: [body])
         let doc = Document(url: url, children: [toggle], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         let toggleHash = toggle.atomicHash
         let bodyHash = body.atomicHash
@@ -216,7 +210,7 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.empty)
+        try await clamshell.commit(Commit(logEntries: []), to: doc)
         // (empty page on disk, journal empty)
 
         let foreignBlock = Block.paragraph(text: attr("ghost"))
@@ -250,7 +244,7 @@ struct RecoveryLogTests {
 
         // Plant an empty live page so the live-set check excludes nothing.
         let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.empty)
+        try await clamshell.commit(Commit(logEntries: []), to: doc)
 
         // Hand-write a foreign device's log entry.
         let foreignBlock = Block.paragraph(text: attr("from another device"))
@@ -284,7 +278,7 @@ struct RecoveryLogTests {
             children: [Block.paragraph(text: attr("alive"))],
             modificationDate: nil
         )
-        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         let liveHistoryDir = root
             .appendingPathComponent(RecoveryLog.directoryName)
@@ -370,11 +364,10 @@ struct RecoveryLogTests {
         let keep = Block.paragraph(text: attr("Keep"))
         let lose = Block.paragraph(text: attr("Lose"))
         let doc = Document(url: url, children: [keep, lose], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         doc.replaceChildren([keep])
-        clamshell.persistCommit(ops: [.remove(hash: lose.atomicHash)], in: doc)
-        _ = await clamshell.flush(doc)
+        try await clamshell.commit(.fromEditorOps([.remove(hash: lose.atomicHash)]), to: doc)
 
         let purged = await clamshell.listPurgedBlocks(
             filter: .page(relativePath: "p.md"),
@@ -412,7 +405,7 @@ struct RecoveryLogTests {
 
         // Plant the live .md so it's a valid scan target.
         let live = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.writeClosedPage(live, patch: Patch.empty)
+        try await clamshell.commit(Commit(logEntries: []), to: live)
 
         // Default 30-day cap excludes the ancient purge.
         let recent = await clamshell.listPurgedBlocks(filter: .page(relativePath: "p.md"))
@@ -436,11 +429,10 @@ struct RecoveryLogTests {
 
         let block = Block.paragraph(text: attr("phoenix"))
         let doc = Document(url: url, children: [block], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         doc.replaceChildren([])
-        clamshell.persistCommit(ops: [.remove(hash: block.atomicHash)], in: doc)
-        _ = await clamshell.flush(doc)
+        try await clamshell.commit(.fromEditorOps([.remove(hash: block.atomicHash)]), to: doc)
 
         // External writer brings the hash back into the log via a foreign
         // device's add with a counter strictly greater than anything our
@@ -473,11 +465,10 @@ struct RecoveryLogTests {
 
         let doomed = Block.paragraph(text: attr("doomed"))
         let doc = Document(url: url, children: [doomed], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         doc.replaceChildren([])
-        clamshell.persistCommit(ops: [.remove(hash: doomed.atomicHash)], in: doc)
-        _ = await clamshell.flush(doc)
+        try await clamshell.commit(.fromEditorOps([.remove(hash: doomed.atomicHash)]), to: doc)
 
         // It's now purged.
         let purgedBefore = await clamshell.listPurgedBlocks(
@@ -554,11 +545,10 @@ struct RecoveryLogTests {
 
         let block = Block.paragraph(text: attr("phoenix"))
         let doc = Document(url: url, children: [block], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.adds(from: doc.children))
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         doc.replaceChildren([])
-        clamshell.persistCommit(ops: [.remove(hash: block.atomicHash)], in: doc)
-        _ = await clamshell.flush(doc)
+        try await clamshell.commit(.fromEditorOps([.remove(hash: block.atomicHash)]), to: doc)
 
         // Foreign device: counter 9999 but wall-clock 100s in the *past*.
         let h = block.atomicHash
@@ -642,7 +632,7 @@ struct RecoveryLogTests {
 
         // Empty live page; hydrate our nextCounter low.
         let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.empty)
+        try await clamshell.commit(Commit(logEntries: []), to: doc)
 
         // Foreign device's add for hash H lands on disk with counter 500.
         let block = Block.paragraph(text: attr("to-purge"))
@@ -687,7 +677,7 @@ struct RecoveryLogTests {
 
         // Seed with an empty live page so the live-set excludes nothing.
         let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.writeClosedPage(doc, patch: Patch.empty)
+        try await clamshell.commit(Commit(logEntries: []), to: doc)
 
         // Plant a legacy add with t = far future (no `c` field).
         let block = Block.paragraph(text: attr("legacy-ghost"))

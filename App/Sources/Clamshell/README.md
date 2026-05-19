@@ -85,7 +85,9 @@ Two flavours: **authoritative** (`add`, `purge`) and **tentative**
 - **`purge`** is a tombstone, appended at the moment of structural
   removal. The editor's `mutate(_:_:)` derives a pre→post `[EditorOp]`
   diff via `BlockTreeDiff.derive(_:_:)` and fires
-  `host.persistCommit(ops:in:)`; the host projects the batch onto
+  `host.persistCommit(ops:in:)` (the editor-facing `EditorHost`
+  protocol method); the host bridges that to `Clamshell.commit(_:to:)`,
+  which projects the batch onto
   a `Patch` (inserts → `.add`, removes → `.purge`) and routes it to
   `RecoveryLog.apply(_:to:)` for one ordered append with sequential
   counters. Authoritative — drives `.tombstoned` and triggers engine
@@ -115,7 +117,8 @@ A `Patch` is a batch of `add` / `purge` / `observe` entries (see
 the three callers' natural shapes onto the unified type:
 
 - `Patch.adds(from blocks: [Block])` — full-doc walks (used by
-  `writeClosedPage(_:patch:)` and `append(_:toPage:)`). Emits `add`.
+  conflict-merge writes and the subpage-append host bridge). Emits
+  `add`.
 - `Patch.from(ops: [EditorOp])` — editor structural diffs. Emits
   `add` / `purge`.
 - `Patch.Entry.observe(hash:parent:markdown:)` — used by reconcile
@@ -127,8 +130,9 @@ in one batched write. No write-time dedup: every entry emits a record.
 Duplicate `add`s for the same hash are harmless — intent is a
 latest-`(counter, deviceID)`-wins fold, so the union collapses them to
 the same intent at read time. The log just gets a little chattier on
-the rare full-doc-walk callers (`writeClosedPage(_:patch:)` after a conflict
-merge, `append(_:toPage:)` for subpage drops).
+the rare full-doc-walk callers (conflict-merge in
+`resolveConflictVersions`, subpage drops via
+`EditorHost.appendToPage`).
 
 ### Journal
 
@@ -183,8 +187,10 @@ children, and the `.md` file's modification date, it produces:
 `PatchEngine.apply(_:to:)` is the @MainActor convenience that strips
 every `Remove` then splices every `Insert`, plus re-enforces heading
 containment. The orchestrator (`Clamshell+Reconcile.swift`) calls
-`apply` and then `enqueueSave(doc, patch: .empty)` so the post-
-reconcile `.md` reflects the merged state.
+`apply` and then projects the rest of the reconcile output —
+`toAppend` observations and `unrestorable` quarantines — into a
+single `Commit` via `Reconciliation.asCommit()`, which `commit(_:to:)`
+routes through the per-URL save chain.
 
 #### The mtime gate
 
@@ -353,14 +359,18 @@ let open = try await clamshell.openPage(at: url) { event in
     }
 }
 
-// Editor-driven write — commit-time atomic save. Non-empty ops are
-// applied to the recovery log; then the .md is serialized and written.
-// Calls for the same URL chain so concurrent commits land in order.
-// Empty ops still saves the .md (used by reconcile/restore paths after
-// they splice into a live doc).
-clamshell.persistCommit(ops: ops, in: open.document)
+// Editor-driven write — commit-time atomic save. Non-empty log entries
+// are applied to the recovery log; then the .md is serialized and
+// written. Calls for the same URL chain so concurrent commits land in
+// order. The top-level `await` returns when this commit is durable —
+// the host bridge wraps this in a Task for the editor's sync hook.
+// Empty log entries still save the .md (used by reconcile/restore
+// paths after they splice into a live doc).
+try await clamshell.commit(Commit.fromEditorOps(ops), to: open.document)
 
-// Force-save (blur, scenePhase background, navigation away, shutdown).
+// Force-flush any in-flight commits (blur, scenePhase background,
+// navigation away, shutdown). No-op if the chain is empty; never
+// triggers a save on its own.
 await clamshell.flush(open.document)
 
 // Symmetric inverse of openPage: flush + tear down the presenter.
@@ -393,8 +403,7 @@ existing instance and build a new one.
 | Read | `loadDocument(at:)` — async; seeds the iCloud disk-content ring buffer for the live-page path. `readBlocks(at:)` — async; one-off read that doesn't seed history (used by inline-expand). |
 | Page list (observable) | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:)` |
 | Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. Load + parse + install presenter on open (journal fold runs deferred in a background Task, fires `onEvent(.restored)` if anything was auto-spliced); flush + tear down on close. |
-| Editor-driven persistence | `persistCommit(ops:in:)` (every commit; applies op batch to log and writes `.md` atomically per call, chained per URL), `flush(_:)` (await chain head + drain; for blur / scenePhase / navigate-away). |
-| Non-editor write | `append(_:toPage:)` for appending blocks to a non-open subpage. Sequences log-then-file. `inlineAndTrash(pageID:parent:)` flushes the parent and trashes the named page in one durable sequence — used by inline-expand. |
+| Write (all flows) | `commit(_:to:)` — the one durable write primitive. Applies the `Commit`'s log entries to the recovery log (when non-empty), then serializes and writes the `.md`. Awaited end-to-end: returns when the bytes are on disk. Concurrent calls for the same URL chain so they land in arrival order. Used by the editor host bridge, reconcile, manual restore, conflict-merge, and subpage append — each builds the appropriate `Commit` and awaits the same method. `flush(_:)` awaits any in-flight commit head without triggering work; for blur / scenePhase / navigate-away. `inlineAndTrash(pageID:parent:)` flushes the parent and trashes the named page in one durable sequence — used by inline-expand. |
 | Restore | `restoreBlocks(_:liveDoc:)` — the Recover-sheet entry point for both lost and purged blocks. (Paired with `restorePage(_:)` in the Trash group below, which restores a whole trashed page.) |
 | Create | `createPage(title:requestedPath:initialContent:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
@@ -440,17 +449,21 @@ counters, encodes JSONL, appends to our device's file. There's no
 device-hash cache short-circuiting duplicates: callers either filter
 upstream (the editor's `BlockTreeDiff` only emits ops for structural
 changes; reconcile's `unloggedObservations` filters against journal
-intent) or accept a small amount of log bloat (full-doc-walk callers
-like `writeClosedPage(_:patch:)` after a conflict merge). Intent is unchanged —
+intent) or accept a small amount of log bloat (full-doc-walk commits
+from conflict-merge or closed-page restore). Intent is unchanged —
 duplicate `add`s for the same hash resolve to the same alive intent at
 read time, so chattier logs are correctness-equivalent.
 
-**Log durable before file durable.** Every `persistCommit` runs
+**Log durable before file durable.** Every `commit(_:to:)` runs
 log apply + file write inside a single Task, log first. At any point
 a crash can happen, the log is at-or-ahead of the file → reconcile
-heals on next open. The editor's `persistCommit` entry stays
-synchronous (it spawns the Task and returns); only the chained Task
-pays the I/O.
+heals on next open. The editor's `EditorHost.persistCommit` protocol
+method stays synchronous (typing path can't await) — the host bridge
+wraps it in a Task that calls `Clamshell.commit(_:to:)` and awaits
+its durability; only the chained Task pays the I/O. The Task is
+reachable via `flush(_:)`, which awaits the chain head so blur /
+scenePhase / nav-away callbacks land bytes on disk before the editor
+unmounts.
 
 **Cross-device merging happens on read, not write.** Each device only
 ever writes its own `<device-id>.jsonl`. Other devices' files are read
@@ -487,32 +500,28 @@ again automatically without any log mutation.
 `.history/<rel>/` directory moves alongside the `.md`, so trash +
 restore is a page-bundle operation.
 
-**Editor-driven persistence is `persistCommit` + `flush`.** The
-host calls `persistCommit(ops:in:)` at every commit point: non-
-empty `ops` are applied to the recovery log, then the `.md` is
-serialized and written, in one awaited sequence per call. Calls for
-the same URL chain so a fast burst (typing commit → focus blur →
-navigation) lands in order. `flush(_:)` awaits the chain head and
-drains the per-URL coordinator — for blur, scenePhase backgrounding,
-navigation-away, app shutdown. Post-save bookkeeping (mtime refresh,
-title cache, page rescan) fires internally on every successful save;
-closed-doc paths (conflict merge, closed-page restore, drop-on-subpage
-append) get the same bookkeeping for free.
-
-**`append(_:toPage:)` is the non-editor public write path.** Awaits
-the log apply strictly before the file write. Used by drop-on-subpage
-to add blocks to the end of a closed page. Closed-page writes don't
-go through `saveChain` (there's no live editor session to chain
-against); they write directly and await durability inline.
+**One write API: `commit(_:to:)` + `flush(_:)`.** Every durable write
+— editor commit, reconcile catch-up, manual restore, conflict-merge,
+subpage append — projects to a `Commit` and goes through
+`Clamshell.commit(_:to:)`. The method is async-throws: log entries
+land in the recovery log first, the `.md` is serialized and written
+second, both inside one chained Task. Concurrent calls for the same
+URL chain so a typing burst → blur → navigate sequence lands in
+order, and the caller's `await` returns when this commit's bytes are
+durable. `flush(_:)` awaits the chain head without triggering work —
+for blur, scenePhase backgrounding, navigation-away, app shutdown.
+Post-save bookkeeping (mtime refresh, title cache, page rescan) fires
+internally on every successful commit.
 
 **Editor mutations stream as ops.** Every `Document.transaction`
 (forward and undo/redo) derives a pre→post `[EditorOp]` diff via
 `BlockTreeDiff.derive(_:_:)` and fires
 `Document.didCommitTransaction`, which the editor wires to
-`host.persistCommit(ops:in:)`. The host's adapter calls
-`Clamshell.persistCommit(ops:in:)`, which projects the batch onto
-a `Patch` (inserts → `.add`, removes → `.purge`) and runs log apply +
-file write atomically. Typing goes through the same path:
+`EditorHost.persistCommit(ops:in:)`. The host's adapter projects the
+ops onto a `Commit.fromEditorOps(ops)` (inserts → `.add`, removes →
+`.purge`) and spawns a Task that calls `Clamshell.commit(_:to:)` —
+the editor's sync hook surface is preserved, durability is awaited
+inside the spawned Task. Typing goes through the same path:
 `commitLiveText` opens a `transaction(name:"Type", coalesceKey:)` and
 the resulting diff flows through the same hook. Undo and redo fire it
 too with the (inverted) diff so the journal stays symmetric. No
@@ -580,10 +589,17 @@ append" — `NSFileCoordinator` handles that.
 
 - [Clamshell.swift](Clamshell.swift) — the umbrella API. Orchestrates
   reads/writes, hands the engine its inputs, applies the engine's
-  outputs. Also owns the per-URL save chain: `persistCommit`
-  (commit-time atomic log + .md write) and `flush(_:)` (await
-  durability). Engine-internal in-place saves go through the same
-  `enqueueSave(doc, patch: .empty)` primitive.
+  outputs. Also owns the per-URL save chain: `commit(_:to:)`
+  (commit-time atomic log + .md write, awaited end-to-end) and
+  `flush(_:)` (await chain head without triggering work). Engine-
+  internal in-place saves (reconcile auto-restore) project to a
+  `Commit` with no log entries and go through the same primitive.
+- [Commit.swift](Commit.swift) — the `Commit` value type that
+  unifies every durable write (editor commit, reconcile catch-up,
+  manual restore, conflict-merge, subpage append). One Commit = log
+  entries to append + a CommitSummary the host displays. Factories:
+  `Commit.fromEditorOps(_:)`, `Reconciliation.asCommit()`; the other
+  call sites build the value directly.
 - [Clamshell+Reconcile.swift](Clamshell+Reconcile.swift) — engine
   orchestration: open-doc reconcile, live-doc reconcile for presenter
   wakeups, and `restoreBlocks(_:liveDoc:)` for the Recover sheet.
