@@ -17,8 +17,10 @@ Console.xcodeproj/
 *.swp
 *.bak
 
-## Claude session worktrees / metadata
-.claude/
+## Claude session worktrees / metadata. Skill content under
+## .claude/skills/ is per-project and tracked.
+.claude/*
+!.claude/skills/
 
 ## Original full-resolution Notion reference screenshots — working copies
 ## (resized to <1900px) live in References/typography/ and are committed
