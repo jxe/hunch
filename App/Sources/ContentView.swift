@@ -9,6 +9,9 @@ struct ContentView: View {
     @Bindable var workspace: Workspace
     @State private var window: WorkspaceWindow
     @Environment(\.scenePhase) private var scenePhase
+    #if os(iOS)
+    @State private var showIconPicker = false
+    #endif
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -99,6 +102,10 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: workspace.banner?.id)
+        #if os(iOS)
+        .onShake { showIconPicker = true }
+        .sheet(isPresented: $showIconPicker) { IconPickerView() }
+        #endif
     }
 
     /// NavigationStack root: the home page editor when home is set and loaded;

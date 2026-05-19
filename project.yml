@@ -63,10 +63,29 @@ targets:
         NSSpeechRecognitionUsageDescription: Hunch transcribes recorded audio so it can append the text to the current page.
         UIBackgroundModes: [audio]
         ITSAppUsesNonExemptEncryption: false
+        CFBundleIcons:
+          CFBundlePrimaryIcon:
+            CFBundleIconFiles: [AppIcon]
+            CFBundleIconName: AppIcon
+          CFBundleAlternateIcons:
+            AppIcon-Woman:
+              CFBundleIconFiles: [AppIcon-Woman]
+              CFBundleIconName: AppIcon-Woman
+              UIPrerenderedIcon: false
+        CFBundleIcons~ipad:
+          CFBundlePrimaryIcon:
+            CFBundleIconFiles: [AppIcon]
+            CFBundleIconName: AppIcon
+          CFBundleAlternateIcons:
+            AppIcon-Woman:
+              CFBundleIconFiles: [AppIcon-Woman]
+              CFBundleIconName: AppIcon-Woman
+              UIPrerenderedIcon: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.nxhx.Hunch
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: AppIcon-Woman
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         ENABLE_HARDENED_RUNTIME: YES
