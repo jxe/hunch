@@ -704,8 +704,10 @@ final class ContainedTextView: NSTextView {
                     if onKey(.backspaceAtStart) == .handled { return }
                 }
             case 48: // Tab
+                // Reserved for indent/outdent; never insert a literal tab character.
                 let shift = event.modifierFlags.contains(.shift)
-                if onKey(shift ? .shiftTab : .tab) == .handled { return }
+                _ = onKey(shift ? .shiftTab : .tab)
+                return
             case 53: // Escape
                 // cancelOperation handles Esc via NSTextView's normal routing — keyDown
                 // never fires for Esc on NSTextView (it's intercepted as a command).
