@@ -10,14 +10,31 @@ import Editor
 /// A single record in a per-(device, page) log. Mirrors the on-disk JSONL
 /// `Wire` struct in `RecoveryLog`, but as a `Sendable` enum the engine and
 /// tests can construct directly without going through the file format.
+///
+/// Three ops, two flavours:
+/// - **Authoritative** (`add`, `purge`) — the device is asserting an intent.
+///   `add` claims authorship and makes the hash a valid auto-restore target;
+///   `purge` makes it dead.
+/// - **Tentative** (`observe`) — the device noticed the block in its `.md`
+///   but isn't claiming authorship. Carries the snapshot (markdown + parent)
+///   so the Recover sheet can still surface the block if it later goes
+///   missing, but does NOT make the hash eligible for auto-restore. Written
+///   when reconcile sees a block in `doc` that no device's log has yet —
+///   typically because iCloud delivered the foreign device's `.md` before
+///   its `.jsonl`. Without `observe`, the engine would either lift (the old
+///   bug — synthesize an `add`, then resurrect the block when the foreign
+///   device deletes it) or drop the block on the floor (no journal trail
+///   for external `vim` edits).
 enum LogRecord: Sendable, Hashable {
     case add(counter: UInt64?, hash: String, parent: String?, markdown: String, t: TimeInterval)
     case purge(counter: UInt64?, hash: String, t: TimeInterval)
+    case observe(counter: UInt64?, hash: String, parent: String?, markdown: String, t: TimeInterval)
 
     var hash: String {
         switch self {
         case .add(_, let h, _, _, _): return h
         case .purge(_, let h, _): return h
+        case .observe(_, let h, _, _, _): return h
         }
     }
 
@@ -25,6 +42,7 @@ enum LogRecord: Sendable, Hashable {
         switch self {
         case .add(let c, _, _, _, _): return c
         case .purge(let c, _, _): return c
+        case .observe(let c, _, _, _, _): return c
         }
     }
 
@@ -32,6 +50,7 @@ enum LogRecord: Sendable, Hashable {
         switch self {
         case .add(_, _, _, _, let t): return t
         case .purge(_, _, let t): return t
+        case .observe(_, _, _, _, let t): return t
         }
     }
 
@@ -40,6 +59,23 @@ enum LogRecord: Sendable, Hashable {
         return false
     }
 
+    /// `add` and `purge` assert intent and drive `alive`/`tombstoned`.
+    /// `observe` only carries a snapshot and doesn't shift status.
+    var isAuthoritative: Bool {
+        switch self {
+        case .add, .purge: return true
+        case .observe: return false
+        }
+    }
+
+    /// `add` and `observe` carry parent + markdown (snapshot of the block at
+    /// record time). `purge` does not.
+    var carriesSnapshot: Bool {
+        switch self {
+        case .add, .observe: return true
+        case .purge: return false
+        }
+    }
 }
 
 /// One device's per-page log.
@@ -77,18 +113,20 @@ struct LogJournal: Sendable {
 // Patches are intentionally dumb value types — no counters, no timestamps,
 // no device-id. Those are persistence-layer concerns minted at append time.
 
-/// A batch of `add` / `purge` entries to be applied to one page's log.
+/// A batch of `add` / `purge` / `observe` entries to be applied to one
+/// page's log. See `LogRecord` for the semantic difference between
+/// authoritative ops (`add` / `purge`) and tentative (`observe`).
 struct Patch: Sendable {
-    enum Op: Sendable, Hashable { case add, purge }
+    enum Op: Sendable, Hashable { case add, purge, observe }
 
     struct Entry: Sendable, Hashable {
         let op: Op
         let hash: String
         /// Parent hash at the moment this entry was authored. Meaningful
-        /// for `.add` only.
+        /// for `.add` and `.observe`.
         let parent: String?
         /// Atomic-markdown serialization of the block. Meaningful for
-        /// `.add` only.
+        /// `.add` and `.observe`.
         let markdown: String?
 
         init(op: Op, hash: String, parent: String? = nil, markdown: String? = nil) {
@@ -104,6 +142,10 @@ struct Patch: Sendable {
 
         static func purge(hash: String) -> Entry {
             Entry(op: .purge, hash: hash)
+        }
+
+        static func observe(hash: String, parent: String?, markdown: String) -> Entry {
+            Entry(op: .observe, hash: hash, parent: parent, markdown: markdown)
         }
     }
 
@@ -161,10 +203,19 @@ struct IntentState: Sendable {
     }
 
     enum Status: Sendable {
-        /// Latest record overall is an `add`. Carries the latest add's metadata.
+        /// Latest authoritative record is an `add`. The block is claimed
+        /// alive by at least one device; eligible for auto-restore if it
+        /// goes missing from doc (subject to the mtime gate).
         case alive(latestAdd: AddSnapshot)
-        /// Latest record overall is a `purge`. May still carry a prior `add`'s
-        /// markdown + parent (for the "Deleted on purpose" recovery surface).
+        /// No authoritative record (no `add` and no `purge`), but at least
+        /// one `observe` record carries a snapshot. The block exists in
+        /// some device's `.md` view but nobody has claimed authorship —
+        /// auto-restore is NOT eligible. Recovery sheet can still surface
+        /// the block on demand via the carried snapshot.
+        case observed(latestSnapshot: AddSnapshot)
+        /// Latest authoritative record is a `purge`. May still carry a
+        /// prior `add` or `observe` snapshot (for the "Deleted on purpose"
+        /// recovery surface).
         case tombstoned(latestAdd: AddSnapshot?, purgedAt: Date)
     }
 
@@ -174,11 +225,13 @@ struct IntentState: Sendable {
         self.byHash = byHash
     }
 
-    /// Latest `add`'s recorded parent for `hash`. Latest-add survives a later
-    /// `purge` so this works on tombstoned hashes too.
+    /// Latest snapshot's recorded parent for `hash`. Works on `.alive`,
+    /// `.observed`, and `.tombstoned` (when the tombstone carries a prior
+    /// snapshot).
     func parent(of hash: String) -> String? {
         switch byHash[hash] {
-        case .alive(let add): return add.parent
+        case .alive(let snapshot): return snapshot.parent
+        case .observed(let snapshot): return snapshot.parent
         case .tombstoned(let latestAdd, _): return latestAdd?.parent
         case nil: return nil
         }
@@ -220,71 +273,136 @@ enum PatchEngine {
     /// (with counter) strictly succeed legacy ones in the order — legacy
     /// records pre-date the upgrade in any realistic scenario.
     static func intent(from journal: LogJournal) -> IntentState {
-        var latestByHash: [String: (record: LogRecord, deviceID: String)] = [:]
-        var latestAddByHash: [String: (record: LogRecord, deviceID: String)] = [:]
+        // Per hash, we track three things:
+        //   - latestAuthoritative: the latest `add` or `purge`. Drives the
+        //     alive/tombstoned decision.
+        //   - latestSnapshot: the latest record carrying a snapshot (`add`
+        //     or `observe`). Drives what markdown + parent we surface for
+        //     recovery, regardless of authoritative status.
+        //   - hasObserve: any `observe` exists. Lets a hash with no
+        //     authoritative record show up as `.observed` rather than
+        //     vanishing from the intent.
+        var latestAuthoritative: [String: (record: LogRecord, deviceID: String)] = [:]
+        var latestSnapshot: [String: (record: LogRecord, deviceID: String)] = [:]
+        var hasObserve: Set<String> = []
         for device in journal.devices {
             for record in device.records {
                 let hash = record.hash
-                if let existing = latestByHash[hash] {
-                    if isStrictlyAfter(record, on: device.deviceID, than: existing.record, on: existing.deviceID) {
-                        latestByHash[hash] = (record, device.deviceID)
-                    }
-                } else {
-                    latestByHash[hash] = (record, device.deviceID)
-                }
-                if record.isAdd {
-                    if let existing = latestAddByHash[hash] {
+                if record.isAuthoritative {
+                    if let existing = latestAuthoritative[hash] {
                         if isStrictlyAfter(record, on: device.deviceID, than: existing.record, on: existing.deviceID) {
-                            latestAddByHash[hash] = (record, device.deviceID)
+                            latestAuthoritative[hash] = (record, device.deviceID)
                         }
                     } else {
-                        latestAddByHash[hash] = (record, device.deviceID)
+                        latestAuthoritative[hash] = (record, device.deviceID)
                     }
+                }
+                if record.carriesSnapshot {
+                    if let existing = latestSnapshot[hash] {
+                        if isStrictlyAfter(record, on: device.deviceID, than: existing.record, on: existing.deviceID) {
+                            latestSnapshot[hash] = (record, device.deviceID)
+                        }
+                    } else {
+                        latestSnapshot[hash] = (record, device.deviceID)
+                    }
+                }
+                if case .observe = record {
+                    hasObserve.insert(hash)
                 }
             }
         }
 
         var byHash: [String: IntentState.Status] = [:]
-        for (hash, latest) in latestByHash {
-            let snapshot: IntentState.AddSnapshot? = latestAddByHash[hash].flatMap { Self.addSnapshot(from: $0.record) }
-            switch latest.record {
-            case .add:
-                if let snapshot {
-                    byHash[hash] = .alive(latestAdd: snapshot)
+        let allHashes = Set(latestAuthoritative.keys).union(hasObserve)
+        for hash in allHashes {
+            let snapshot = latestSnapshot[hash].flatMap { Self.addSnapshot(from: $0.record) }
+            if let auth = latestAuthoritative[hash] {
+                switch auth.record {
+                case .add:
+                    if let snapshot {
+                        byHash[hash] = .alive(latestAdd: snapshot)
+                    }
+                case .purge(_, _, let t):
+                    byHash[hash] = .tombstoned(latestAdd: snapshot, purgedAt: Date(timeIntervalSince1970: t))
+                case .observe:
+                    break // unreachable: observe isn't authoritative
                 }
-            case .purge(_, _, let t):
-                byHash[hash] = .tombstoned(latestAdd: snapshot, purgedAt: Date(timeIntervalSince1970: t))
+            } else if let snapshot {
+                byHash[hash] = .observed(latestSnapshot: snapshot)
             }
         }
         return IntentState(byHash: byHash)
     }
 
     /// Compute insertion instructions to bring `doc` in line with `intent`.
-    /// Pure: `reconcile(i, d).inserts.applied(to: d)` is deterministic.
+    /// Pure: `reconcile(i, d, m).inserts.applied(to: d)` is deterministic.
     ///
     /// For each hash with `.alive` intent that isn't present in `doc`, the
     /// engine assembles a subtree (pulling in any descendants whose
     /// recorded-parent hash points back into the alive set), climbs the
     /// recorded-parent chain to the closest live ancestor's `BlockID`, and
-    /// emits one `Insert` per root. Returns empty inserts when `doc`
-    /// already covers everything intent considers alive.
-    static func reconcile(intent: IntentState, doc: [Block]) -> Reconciliation {
+    /// emits one `Insert` per root.
+    ///
+    /// `.observed` hashes are never auto-restored — the engine can compute
+    /// a snapshot for them (via the Recover sheet) but won't synthesize an
+    /// auto-insert. That's the whole point of the `observe` op: see a
+    /// foreign-authored block, journal a snapshot, don't take ownership.
+    ///
+    /// `mdMtime` gates auto-restore for `.alive` hashes too. If the latest
+    /// `add` is older than the `.md`'s mtime, the `.md` has had a chance
+    /// to intentionally drop the block (e.g. a foreign device deleted it
+    /// and synced the `.md` before its purge log) — trust the `.md` and
+    /// skip restore. If the latest `add` is newer (e.g. log apply
+    /// succeeded but save crashed before writing `.md`), the journal
+    /// genuinely knows something the `.md` doesn't — restore. Pass `nil`
+    /// to disable the gate (used by tests and manual recover paths).
+    static func reconcile(
+        intent: IntentState,
+        doc: [Block],
+        mdMtime: Date? = nil
+    ) -> Reconciliation {
         let liveByHash = liveHashes(doc)
         let toAppend = unloggedObservations(doc: doc, intent: intent)
 
         var aliveEntries: [LostBlock] = []
+        var removes: [Remove] = []
         for (hash, status) in intent.byHash {
-            guard case .alive(let add) = status, liveByHash[hash] == nil else { continue }
-            aliveEntries.append(LostBlock.adapt(
-                hash: hash,
-                parentHash: add.parent,
-                markdown: add.markdown,
-                source: "",
-                recordedAt: add.recordedAt
-            ))
+            switch status {
+            case .alive(let add):
+                guard liveByHash[hash] == nil else { continue }
+                if let mdMtime, add.recordedAt < mdMtime {
+                    // `.md` is newer than the journal record. Trust the `.md`.
+                    continue
+                }
+                aliveEntries.append(LostBlock.adapt(
+                    hash: hash,
+                    parentHash: add.parent,
+                    markdown: add.markdown,
+                    source: "",
+                    recordedAt: add.recordedAt
+                ))
+            case .tombstoned(_, let purgedAt):
+                guard let blockID = liveByHash[hash] else { continue }
+                if let mdMtime, purgedAt < mdMtime {
+                    // `.md` is newer than the purge — likely an external
+                    // re-add (vim'd the block back in after a prior
+                    // deletion). Don't strip it out from under the user.
+                    continue
+                }
+                removes.append(Remove(hash: hash, blockID: blockID, purgedAt: purgedAt))
+            case .observed:
+                // `observe` is non-authoritative: it neither restores nor
+                // removes. The snapshot is just a recorded sighting.
+                continue
+            }
         }
         guard !aliveEntries.isEmpty else {
-            return Reconciliation(inserts: [], restoredHashes: [], toAppend: toAppend)
+            return Reconciliation(
+                inserts: [],
+                restoredHashes: [],
+                removes: removes,
+                toAppend: toAppend
+            )
         }
         let aliveByHash = Dictionary(uniqueKeysWithValues: aliveEntries.map { ($0.hash, $0) })
         let roots = LostBlockForest.assemble(aliveEntries)
@@ -351,6 +469,7 @@ enum PatchEngine {
         return Reconciliation(
             inserts: inserts,
             restoredHashes: restoredHashes,
+            removes: removes,
             toAppend: toAppend,
             unrestorable: unrestorable
         )
@@ -405,10 +524,16 @@ enum PatchEngine {
         let inserts: [Insert]
         /// Hashes the inserts covered (root + descendants). For UI / banner.
         let restoredHashes: [String]
+        /// Subtrees present in `doc` whose latest journal record is a
+        /// `purge` — the journal says these are dead but the doc still
+        /// has them. Caller should remove them and re-save the `.md`.
+        /// Together with `inserts`, this is how `doc` converges to the
+        /// journal's view in steady state ("logs as source of truth").
+        let removes: [Remove]
         /// Observations the engine made about blocks present in `doc` but
-        /// not in the journal — synthesized `add` records the caller should
-        /// append to *this device's* log to lift the doc's current content
-        /// into the journal.
+        /// not in the journal — `observe` records the caller should
+        /// append to *this device's* log so the journal records the
+        /// snapshot without claiming authorship.
         let toAppend: [Observation]
         /// Hashes the journal classifies as `.alive` but the engine can't
         /// turn into a valid `Insert`: the recorded `m` won't parse, or it
@@ -419,18 +544,41 @@ enum PatchEngine {
         /// reason, parsed kind on mismatch) to debug what's drifting.
         let unrestorable: [UnrestorableEntry]
 
-        var didChange: Bool { !inserts.isEmpty }
+        var didChange: Bool { !inserts.isEmpty || !removes.isEmpty }
 
         init(
             inserts: [Insert],
             restoredHashes: [String],
+            removes: [Remove] = [],
             toAppend: [Observation] = [],
             unrestorable: [UnrestorableEntry] = []
         ) {
             self.inserts = inserts
             self.restoredHashes = restoredHashes
+            self.removes = removes
             self.toAppend = toAppend
             self.unrestorable = unrestorable
+        }
+    }
+
+    /// A block currently in `doc` whose latest authoritative record is a
+    /// `purge`. Caller removes it via `Document.removeSubtree(blockID)`
+    /// (PatchEngine.apply does this for the standard auto-apply flow).
+    struct Remove: Sendable {
+        /// Atomic hash of the block being stripped.
+        let hash: String
+        /// `BlockID` of the block in `doc`. Passed straight to
+        /// `Document.removeSubtree(_:)`.
+        let blockID: BlockID
+        /// Timestamp on the latest purge record. Used by the engine's
+        /// mtime gate to suppress removes when the `.md` is newer than
+        /// the purge (an external `vim` edit re-added the block).
+        let purgedAt: Date
+
+        init(hash: String, blockID: BlockID, purgedAt: Date) {
+            self.hash = hash
+            self.blockID = blockID
+            self.purgedAt = purgedAt
         }
     }
 
@@ -691,12 +839,17 @@ enum PatchEngine {
     }
 
     private static func addSnapshot(from record: LogRecord) -> IntentState.AddSnapshot? {
-        guard case .add(_, _, let parent, let markdown, let t) = record else { return nil }
-        return IntentState.AddSnapshot(
-            parent: parent,
-            markdown: markdown,
-            recordedAt: Date(timeIntervalSince1970: t)
-        )
+        switch record {
+        case .add(_, _, let parent, let markdown, let t),
+             .observe(_, _, let parent, let markdown, let t):
+            return IntentState.AddSnapshot(
+                parent: parent,
+                markdown: markdown,
+                recordedAt: Date(timeIntervalSince1970: t)
+            )
+        case .purge:
+            return nil
+        }
     }
 
     /// Hash → BlockID for every block in `doc` (preorder, first-wins on
@@ -738,12 +891,21 @@ enum PatchEngine {
 
 @MainActor
 extension PatchEngine {
-    /// Apply `recon` to a live `Document`. Inserts every subtree under its
-    /// resolved parent (end-of-children) and re-runs heading containment.
-    /// Returns true if any insertion happened.
+    /// Apply `recon` to a live `Document`. Strips every block in
+    /// `recon.removes` (subtree-removal — descendants come with the
+    /// root), then inserts every subtree from `recon.inserts` under its
+    /// resolved parent, then re-runs heading containment. Returns true
+    /// if any mutation happened.
+    ///
+    /// Removes go first: if a tombstoned parent and a tombstoned child
+    /// are both flagged, removing the parent strips the child as a side
+    /// effect — `removeSubtree` is then a no-op for the child's id.
     @discardableResult
     static func apply(_ recon: Reconciliation, to doc: Document) -> Bool {
-        guard !recon.inserts.isEmpty else { return false }
+        guard !recon.inserts.isEmpty || !recon.removes.isEmpty else { return false }
+        for remove in recon.removes {
+            _ = doc.removeSubtree(remove.blockID)
+        }
         for insert in recon.inserts {
             let siblings = insert.parent.flatMap(doc.find)?.children ?? doc.children
             _ = doc.insertSubtrees(

@@ -455,6 +455,244 @@ struct PatchEngineTests {
         }
     }
 
+    // MARK: - Observe op semantics
+
+    private func observeRecord(
+        _ block: Block,
+        parent: Block? = nil,
+        counter: UInt64? = nil,
+        t: TimeInterval = 1
+    ) -> LogRecord {
+        .observe(
+            counter: counter,
+            hash: block.atomicHash,
+            parent: parent?.atomicHash,
+            markdown: BlockSerializer.serializeAtomic(block),
+            t: t
+        )
+    }
+
+    /// `observe` alone produces `.observed`, not `.alive`. The block is
+    /// in the intent (so we don't re-observe it), but it is NOT eligible
+    /// for auto-restore — the engine can't claim authorship from a
+    /// non-authoritative record.
+    @Test func observeAloneIsObservedNotAlive() {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [observeRecord(x, counter: 1)])))
+
+        guard case .observed(let snapshot) = intent.byHash[x.atomicHash] else {
+            Issue.record("expected .observed, got \(String(describing: intent.byHash[x.atomicHash]))")
+            return
+        }
+        #expect(snapshot.markdown == BlockSerializer.serializeAtomic(x))
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: [])
+        #expect(recon.inserts.isEmpty, "observe alone is never auto-restored")
+        #expect(recon.didChange == false)
+    }
+
+    /// `observe` then later `add` → `.alive`. Authorship was eventually
+    /// claimed; auto-restore becomes eligible again.
+    @Test func addAfterObservePromotesToAlive() {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            observeRecord(x, counter: 1),
+            addRecord(x, counter: 2),
+        ])))
+
+        guard case .alive = intent.byHash[x.atomicHash] else {
+            Issue.record("expected .alive after add, got \(String(describing: intent.byHash[x.atomicHash]))")
+            return
+        }
+        let recon = PatchEngine.reconcile(intent: intent, doc: [])
+        #expect(recon.inserts.count == 1)
+    }
+
+    /// `observe` then `purge` → `.tombstoned` with the observe's snapshot
+    /// surfaced for the Recover sheet. This is the external-edit recovery
+    /// path: vim adds a block, Hunch journals an observe, user deletes in
+    /// Hunch — the markdown survives in the tombstone.
+    @Test func purgeAfterObserveTombstonesWithSnapshot() throws {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            observeRecord(x, counter: 1),
+            purgeRecord(x, counter: 2),
+        ])))
+
+        guard case .tombstoned(let latestAdd, _) = intent.byHash[x.atomicHash] else {
+            Issue.record("expected .tombstoned, got \(String(describing: intent.byHash[x.atomicHash]))")
+            return
+        }
+        let snapshot = try #require(latestAdd)
+        #expect(snapshot.markdown == BlockSerializer.serializeAtomic(x), "observe snapshot survives the tombstone")
+    }
+
+    /// An `observe`-tombstoned hash surfaces in the Recover sheet via the
+    /// preserved snapshot, even though no device ever claimed authorship
+    /// with an `add`.
+    @Test func observeThenPurgeShowsInPurgedEntries() {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            observeRecord(x, counter: 1),
+            purgeRecord(x, counter: 2),
+        ])))
+
+        let purged = intent.purgedEntries(notIn: [], source: "p.md", since: nil)
+        #expect(purged.count == 1)
+        #expect(purged.first?.hash == x.atomicHash)
+    }
+
+    /// `observed` hashes don't show up in `lostEntries` — they're not
+    /// eligible for auto-restore so they shouldn't be advertised as
+    /// "lost" either.
+    @Test func observedHashesAreNotLost() {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [observeRecord(x, counter: 1)])))
+
+        let lost = intent.lostEntries(notIn: [], source: "p.md")
+        #expect(lost.isEmpty, "observe-only hashes aren't lost; they're just snapshots")
+    }
+
+    /// Foreign device `observe` records don't trigger re-observation by
+    /// us — the intent already covers the hash.
+    @Test func observedHashesArentReObserved() {
+        let a = Block.paragraph(text: attr("A"))
+        let intent = PatchEngine.intent(from: journal(("dev-B", [observeRecord(a, counter: 1)])))
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: [a])
+
+        #expect(recon.toAppend.isEmpty, "intent covers A via dev-B's observe — no need to re-observe")
+        #expect(recon.inserts.isEmpty)
+    }
+
+    // MARK: - mtime gate on auto-restore
+
+    /// Latest `add` is OLDER than the `.md` mtime → the `.md` has had a
+    /// chance to intentionally drop the block (e.g. a foreign device
+    /// deleted it and synced the `.md` before its purge log). Trust the
+    /// `.md` and don't auto-restore.
+    @Test func autoRestoreSuppressedWhenAddOlderThanMd() {
+        let x = Block.paragraph(text: attr("X"))
+        let addT: TimeInterval = 100
+        let mdMtime = Date(timeIntervalSince1970: 200)
+        let intent = PatchEngine.intent(from: journal(("dev-A", [addRecord(x, counter: 1, t: addT)])))
+
+        let gated = PatchEngine.reconcile(intent: intent, doc: [], mdMtime: mdMtime)
+        let ungated = PatchEngine.reconcile(intent: intent, doc: [], mdMtime: nil)
+
+        #expect(gated.inserts.isEmpty, ".md is newer than the add → trust .md, skip restore")
+        #expect(ungated.inserts.count == 1, "without the gate, the engine restores")
+    }
+
+    /// Latest `add` is NEWER than the `.md` mtime → crash-recovery shape.
+    /// log.apply landed but save() didn't update the `.md` before the
+    /// crash; the journal genuinely knows something the `.md` doesn't.
+    /// Restore.
+    @Test func autoRestoreFiresWhenAddNewerThanMd() {
+        let x = Block.paragraph(text: attr("X"))
+        let addT: TimeInterval = 200
+        let mdMtime = Date(timeIntervalSince1970: 100)
+        let intent = PatchEngine.intent(from: journal(("dev-A", [addRecord(x, counter: 1, t: addT)])))
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: [], mdMtime: mdMtime)
+        #expect(recon.inserts.count == 1, "add is newer than .md → restore")
+    }
+
+    /// `mdMtime: nil` disables the gate (used by tests and manual
+    /// recover paths).
+    @Test func nilMdMtimeDisablesGate() {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [addRecord(x, counter: 1, t: 1)])))
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: [], mdMtime: nil)
+        #expect(recon.inserts.count == 1)
+    }
+
+    // MARK: - Engine removes (tombstoned-in-doc)
+
+    /// `(tombstoned in journal, present in doc)` → engine emits a
+    /// `Remove`. This is the symmetric counterpart to auto-restore: when
+    /// a foreign device's purge eventually syncs, doc converges to the
+    /// journal's view by dropping the stale block.
+    @Test func tombstonedInDocProducesRemove() throws {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            addRecord(x, counter: 1, t: 100),
+            purgeRecord(x, counter: 2, t: 200),
+        ])))
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: [x])
+
+        #expect(recon.inserts.isEmpty)
+        #expect(recon.removes.count == 1)
+        let remove = try #require(recon.removes.first)
+        #expect(remove.hash == x.atomicHash)
+        #expect(remove.blockID == x.id)
+        #expect(recon.didChange)
+    }
+
+    /// Tombstoned-not-in-doc → no remove (nothing to strip; already gone).
+    @Test func tombstonedNotInDocProducesNoRemove() {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            addRecord(x, counter: 1),
+            purgeRecord(x, counter: 2),
+        ])))
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: [])
+
+        #expect(recon.removes.isEmpty)
+        #expect(recon.didChange == false)
+    }
+
+    /// mtime gate also applies to removes (symmetrically with inserts).
+    /// `.md mtime > purge.t` means the `.md` was written *after* the
+    /// purge — likely an external re-add (vim'd back in). Don't strip
+    /// it out from under the user.
+    @Test func removeSuppressedWhenPurgeOlderThanMd() {
+        let x = Block.paragraph(text: attr("X"))
+        let purgeT: TimeInterval = 100
+        let mdMtime = Date(timeIntervalSince1970: 200)
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            addRecord(x, counter: 1, t: 50),
+            purgeRecord(x, counter: 2, t: purgeT),
+        ])))
+
+        let gated = PatchEngine.reconcile(intent: intent, doc: [x], mdMtime: mdMtime)
+        let ungated = PatchEngine.reconcile(intent: intent, doc: [x], mdMtime: nil)
+
+        #expect(gated.removes.isEmpty, ".md is newer than the purge → trust .md, skip remove")
+        #expect(ungated.removes.count == 1, "without the gate, the engine removes")
+    }
+
+    /// Purge newer than `.md` → remove fires. Mirrors the crash-recovery
+    /// case for inserts: the journal knows something the `.md` hasn't
+    /// caught up to yet, and we propagate it.
+    @Test func removeFiresWhenPurgeNewerThanMd() {
+        let x = Block.paragraph(text: attr("X"))
+        let mdMtime = Date(timeIntervalSince1970: 100)
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            addRecord(x, counter: 1, t: 50),
+            purgeRecord(x, counter: 2, t: 200),
+        ])))
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: [x], mdMtime: mdMtime)
+        #expect(recon.removes.count == 1, "purge is newer than .md → remove")
+    }
+
+    /// `.observed` status never produces a remove (or an insert). It's
+    /// a snapshot, not an intent.
+    @Test func observedInDocProducesNoRemoveOrInsert() {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [observeRecord(x, counter: 1)])))
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: [x])
+
+        #expect(recon.inserts.isEmpty)
+        #expect(recon.removes.isEmpty)
+        #expect(recon.didChange == false)
+    }
+
     @Test func purgedEntriesRespectSinceWindow() {
         let x = Block.paragraph(text: attr("X"))
         let now = Date()

@@ -78,19 +78,19 @@ extension Clamshell {
             perfEnd(foldT, "runReconcile.skipped", "rel=\(rel)")
             return PatchEngine.ReconcileSummary(restoredHashes: [])
         case .folded(let recon, let mode):
-            perfEnd(foldT, "runReconcile.folded", "rel=\(rel) mode=\(mode) inserts=\(recon.inserts.count) lift=\(recon.toAppend.count) quarantine=\(recon.unrestorable.count)")
-            // Deliberately do NOT persist recon.toAppend (lift observations).
-            // Lift records are indistinguishable from user-authored adds in
-            // the journal: when iCloud delivers .md before the foreign device's
-            // .jsonl, we observe a block whose origin we don't know yet, and
-            // synthesizing an `add` for it claims false authorship. The next
-            // foreign sync then deletes it from .md, and our synthetic add
-            // looks like a lost-block claim → spurious auto-restore.
-            // Trade-off: blocks introduced by editing the .md outside Hunch
-            // are not journaled. That's acceptable; external tooling owns
-            // recovery for external edits.
+            perfEnd(foldT, "runReconcile.folded", "rel=\(rel) mode=\(mode) inserts=\(recon.inserts.count) removes=\(recon.removes.count) observe=\(recon.toAppend.count) quarantine=\(recon.unrestorable.count)")
+            // `toAppend` is emitted as `observe`, not `add`. The engine's
+            // observations describe blocks the doc has but no device's log
+            // has claimed yet — typically because iCloud delivered the
+            // foreign device's `.md` before its `.jsonl`. Recording these
+            // as `observe` keeps a snapshot for the Recover sheet without
+            // making the hash auto-restore-eligible, so a subsequent
+            // foreign delete won't trigger a spurious resurrect.
             var entries: [Patch.Entry] = []
-            entries.reserveCapacity(recon.unrestorable.count)
+            entries.reserveCapacity(recon.toAppend.count + recon.unrestorable.count)
+            for obs in recon.toAppend {
+                entries.append(.observe(hash: obs.hash, parent: obs.parent, markdown: obs.markdown))
+            }
             for q in recon.unrestorable {
                 entries.append(.purge(hash: q.hash))
             }
@@ -104,13 +104,16 @@ extension Clamshell {
 
             if recon.didChange {
                 PatchEngine.apply(recon, to: doc)
-                // Splice mutated `doc` in place; the journal already has the
-                // restored hashes (engine read them as alive). Save the .md
-                // through the per-URL save chain so concurrent user commits
-                // stay ordered.
+                // `doc` is mutated in place (subtree removes + subtree
+                // inserts). The journal already has the records that
+                // make this consistent (`add`/`purge` per device). Save
+                // the `.md` through the per-URL save chain so concurrent
+                // user commits stay ordered.
                 enqueueSave(doc, patch: .empty)
-                let count = recon.restoredHashes.count
-                Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(count, privacy: .public) roots=\(recon.inserts.count, privacy: .public) hashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public)")
+                let restoredCount = recon.restoredHashes.count
+                let removedCount = recon.removes.count
+                let removedHashes = recon.removes.map(\.hash).joined(separator: ",")
+                Diag.merge.log("auto-restore url=\(url.lastPathComponent, privacy: .public) restored=\(restoredCount, privacy: .public) removed=\(removedCount, privacy: .public) roots=\(recon.inserts.count, privacy: .public) restoredHashes=\(recon.restoredHashes.joined(separator: ","), privacy: .public) removedHashes=\(removedHashes, privacy: .public)")
             }
 
             return PatchEngine.ReconcileSummary(restoredHashes: recon.restoredHashes)

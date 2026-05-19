@@ -52,34 +52,53 @@ two on every page open.
 
 ### Patches
 
-A **patch** is one record on a per-(device, page) JSONL log. Two record
-kinds, distinguished by `op`:
+A **patch** is one record on a per-(device, page) JSONL log. Three
+record kinds, distinguished by `op`:
 
 ```jsonc
-{"op":"add","h":"<full-sha256>","p":"<parent-hash>"|null,"m":"<atomic markdown>","t":1714867200.123,"c":42}
-{"op":"purge","h":"<full-sha256>","t":1714867200.123,"c":43}
+{"op":"add",    "h":"<full-sha256>","p":"<parent-hash>"|null,"m":"<atomic markdown>","t":1714867200.123,"c":42}
+{"op":"observe","h":"<full-sha256>","p":"<parent-hash>"|null,"m":"<atomic markdown>","t":1714867200.123,"c":43}
+{"op":"purge",  "h":"<full-sha256>",                                                 "t":1714867200.123,"c":44}
 ```
 
-- **`add`** carries content. `h` is the full SHA-256 of the canonical
-  block (see
+Two flavours: **authoritative** (`add`, `purge`) and **tentative**
+(`observe`).
+
+- **`add`** claims authorship. The block became alive via a direct
+  edit on this device. `h` is the full SHA-256 of the canonical block
+  (see
   [BlockFingerprint](../../../Packages/Editor/Sources/Editor/BlockFingerprint.swift)).
   `p` is the parent hash *at first observation* (may go stale; see
   below). `m` is the atomic markdown — the block on its own, no
-  children.
+  children. Authoritative for `.alive` classification → eligible for
+  auto-restore if the hash later goes missing from `doc`.
+- **`observe`** is structurally identical to `add` (same fields) but
+  semantically distinct: "I noticed this block in my `.md` but I'm
+  not claiming authorship." Written by reconcile when it finds a
+  block in `doc` that no device's log has claimed yet — typically
+  because iCloud delivered the foreign device's `.md` before its
+  `.jsonl`. Carries a snapshot for the Recover sheet but is **not**
+  authoritative for `.alive`, so a later foreign `purge` doesn't
+  resurrect from our `observe` (the lift-bug fix). Also covers
+  external edits (vim'd a block into `.md`): the journal still has
+  a snapshot for recovery, but we don't take ownership we don't have.
 - **`purge`** is a tombstone, appended at the moment of structural
   removal. The editor's `mutate(_:_:)` derives a pre→post `[EditorOp]`
   diff via `BlockTreeDiff.derive(_:_:)` and fires
   `host.persistCommit(ops:in:)`; the host projects the batch onto
   a `Patch` (inserts → `.add`, removes → `.purge`) and routes it to
   `RecoveryLog.apply(_:to:)` for one ordered append with sequential
-  counters. Removes also appear in the patches assembled by reconcile
-  (unrestorable quarantines) and by the manual Recover-sheet sweep.
-- **`t`** is unix seconds with millisecond precision. Used for display
-  and the `since:` filter on `listPurgedBlocks`. Not the order resolver.
+  counters. Authoritative — drives `.tombstoned` and triggers engine
+  removes for stale-but-still-in-doc subtrees on peer sync.
+- **`t`** is unix seconds with millisecond precision. Used for display,
+  the `since:` filter on `listPurgedBlocks`, and the engine's mtime
+  gate (latest-snapshot timestamp compared to `.md` mtime).
 - **`c`** is a per-page Lamport counter, monotonically incrementing per
   device. Records compare on `(c, device-id)` lex; legacy records (no
   `c`) fall back to `t` and always lose to modern records in mixed
   comparisons — they predate the upgrade in any realistic timeline.
+
+Unknown `op` values are skipped on read for forward compatibility.
 
 ### Patches as the write unit
 
@@ -91,13 +110,16 @@ actor RecoveryLog {
 }
 ```
 
-A `Patch` is a batch of `add` / `purge` entries (see
+A `Patch` is a batch of `add` / `purge` / `observe` entries (see
 [PatchEngine.swift](PatchEngine.swift)). Static factories project from
 the three callers' natural shapes onto the unified type:
 
 - `Patch.adds(from blocks: [Block])` — full-doc walks (used by
-  `writeClosedPage(_:patch:)` and `append(_:toPage:)`).
-- `Patch.from(ops: [EditorOp])` — editor structural diffs.
+  `writeClosedPage(_:patch:)` and `append(_:toPage:)`). Emits `add`.
+- `Patch.from(ops: [EditorOp])` — editor structural diffs. Emits
+  `add` / `purge`.
+- `Patch.Entry.observe(hash:parent:markdown:)` — used by reconcile
+  to write snapshots of unclaimed blocks (see "Reconciliation" below).
 
 `apply` mints sequential per-page Lamport counters for each entry in
 the patch, encodes them as JSONL, and appends to our device's log file
@@ -119,40 +141,92 @@ the engine's input.
 `PatchEngine.intent(from: journal) -> IntentState` is a pure function
 that classifies every hash the journal mentions:
 
-| Status         | Meaning                                                                 |
-|----------------|-------------------------------------------------------------------------|
-| `.alive`       | Latest record (across all devices, `(c, device-id)` lex) is an `add`.   |
-| `.tombstoned`  | Latest record is a `purge`. Carries the prior `add` for restore display.|
+| Status         | Meaning                                                                                                                                |
+|----------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| `.alive`       | Latest **authoritative** record (`add` / `purge`) is an `add`. Eligible for auto-restore.                                              |
+| `.observed`    | No authoritative record exists, but at least one `observe` carries a snapshot. Not auto-restore-eligible; surfaceable via Recover sheet. |
+| `.tombstoned`  | Latest authoritative record is a `purge`. Carries the latest prior snapshot (from `add` or `observe`) for restore display.             |
 
-`IntentState` also exposes `parent(of:)` (the latest add's `p`, useful
-even on tombstoned hashes for chain climbs) and `tombstones()`.
+The classification ignores `observe` records when picking between
+alive / tombstoned (only `add` and `purge` move that needle), but
+collects them when computing the latest snapshot — so an `observe`
+followed by a `purge` still leaves the snapshot recoverable.
+
+`IntentState` also exposes `parent(of:)` (the latest snapshot's `p`,
+useful even on tombstoned hashes for chain climbs) and `tombstones()`.
 
 ### Reconciliation
 
-`PatchEngine.reconcile(intent:doc:)` is the engine's main entry
-point. Given the page's intent state and the doc's current children, it
-produces:
+`PatchEngine.reconcile(intent:doc:mdMtime:)` is the engine's main
+entry point. Given the page's intent state, the doc's current
+children, and the `.md` file's modification date, it produces:
 
 - **`inserts: [Insert]`** — subtrees to splice into the doc for hashes
-  the intent says are alive but the doc is missing. Each `Insert`
+  the intent says are `.alive` but the doc is missing. Each `Insert`
   carries the live ancestor's `BlockID` (resolved by climbing the
-  recorded-parent chain through other alive hashes). Applied via
-  `PatchEngine.apply(_:to:)`.
-- **`toAppend: [Observation]`** — synthesized `add` records for blocks
-  present in the doc but absent from the journal. Drives bare-md
-  absorption (`.md` files with no `.history/` dir get their blocks
-  logged on first open) and external-edit absorption (blocks an
-  external editor wrote that no device has logged).
+  recorded-parent chain through other alive hashes).
+- **`removes: [Remove]`** — subtrees to strip from the doc for hashes
+  the intent says are `.tombstoned` but the doc still has. Symmetric
+  to inserts; this is how doc converges to the journal when a peer's
+  purge arrives after the user's "stale-but-still-in-doc" state.
+- **`toAppend: [Observation]`** — `observe` records the caller should
+  append to *this device's* log for blocks present in the doc but
+  absent from the journal. Drives bare-md absorption (`.md` files
+  with no `.history/` dir get their blocks recorded as snapshots on
+  first open) and external-edit absorption (vim'd blocks get a
+  Recover-sheet handle without claimed authorship).
+- **`unrestorable: [UnrestorableEntry]`** — hashes the journal calls
+  alive but the engine can't materialise (markdown won't parse or
+  round-trips to a different hash). Quarantined via a `purge` so they
+  stop firing reconcile.
 
-The contract is four rules:
+`PatchEngine.apply(_:to:)` is the @MainActor convenience that strips
+every `Remove` then splices every `Insert`, plus re-enforces heading
+containment. The orchestrator (`Clamshell+Reconcile.swift`) calls
+`apply` and then `enqueueSave(doc, patch: .empty)` so the post-
+reconcile `.md` reflects the merged state.
+
+#### The mtime gate
+
+The engine takes the `.md` modification date as a parameter. For
+each candidate insert and remove, it compares the corresponding
+record's timestamp against `mdMtime`:
+
+- **Insert suppression**: if `add.recordedAt < mdMtime`, skip the
+  restore. The `.md` had a chance to intentionally drop the block
+  (e.g. a foreign device deleted it and synced the `.md` before its
+  purge log). Trust the more recent piece of disk evidence.
+- **Remove suppression**: if `purge.recordedAt < mdMtime`, skip the
+  remove. The `.md` was written *after* the purge — likely an
+  external `vim` edit re-added the block. Don't strip user content
+  out from under them.
+- **Crash recovery / eager restore**: if `add.recordedAt > mdMtime`,
+  the journal knows something the `.md` doesn't (log apply succeeded
+  but save crashed, or a foreign log arrived before its `.md`) → do
+  restore.
+- Pass `nil` to disable the gate (used by tests and manual recover
+  paths where the caller has full control).
+
+The gate is small but load-bearing: it's how Clamshell handles the
+narrow window between a peer's `.md` and `.jsonl` arriving via
+iCloud. Without it, "Mac authored X, phone deletes X, phone's `.md`
+syncs first" would briefly resurrect X on Mac.
+
+The contract:
 
 1. **Existence**: a block is in `doc'` iff its hash is `.alive` in
-   intent OR present in `doc` and not `.tombstoned`.
+   intent OR present in `doc` and not `.tombstoned` (subject to the
+   mtime gate on both inserts and removes).
 2. **Order**: blocks already in `doc` keep their order; restored
    blocks land at end-of-children under the closest live ancestor.
 3. **Observation**: blocks in `doc` whose hash is absent from intent
-   get a synthesized `add`.
-4. **Idempotence**: `reconcile(intent ∪ toAppend, doc') == (doc', [])`.
+   get a synthesized `observe` (not `add` — we don't claim
+   authorship for blocks we didn't author).
+4. **Authority**: only `add` and `purge` records drive
+   `.alive`/`.tombstoned`. `observe` records contribute a snapshot
+   but never trigger auto-restore or auto-remove.
+5. **Idempotence**: `reconcile(intent ∪ toAppend, doc', mdMtime)`
+   produces zero inserts, zero removes, and zero new observations.
 
 ### Reconciliation paths
 
@@ -161,14 +235,31 @@ as soon as the `.md` is loaded + parsed; the journal fold runs in a
 background Task and fires `onEvent(.restored(count:))` if anything
 was spliced. Deferring the fold keeps the home-page critical path
 clear of the per-device JSONL iCloud reads, and the common case has
-nothing to restore. Presenter-wakeup reconcile fires from the
-internal file presenter on every wakeup and mutates the live
-`Document` in place to preserve editor selection / cursor state.
-Both paths go through `reconcileLive(_:)`, which gates on
-`isQuiescent(at:)` — if the page isn't settled (a save chain entry
-is still pending), it returns nil and the next wakeup retries after
-the save lands. Log apply is awaited strictly before the file save
-fires either way — the at-or-ahead invariant holds across crashes.
+nothing to restore.
+
+Presenter-wakeup reconcile fires from two presenters installed per
+open page:
+
+- **Document presenter** (`DocumentFilePresenter`) — watches `doc.url`
+  itself. Fires when an external editor or iCloud-delivered foreign
+  edit writes the `.md`. Triggers Phase 2 reload (classify echo /
+  stomp / external; in-place children swap for external) plus Phase 3
+  reconcile.
+- **Directory presenter** (`DocumentHistoryPresenter`) — watches the
+  per-page `.history/<rel>/` directory. Fires when any peer device's
+  `.jsonl` arrives via iCloud (or grows, or a brand-new device's log
+  first appears). Same wakeup handler; the journal-side update gets
+  picked up even if no `.md` change accompanies it. Without this,
+  peer purges that sync after their corresponding `.md` would never
+  trigger a re-reconcile and the stale Recover-sheet entries would
+  linger.
+
+Both presenters fire the same idempotent wakeup. The 250ms debounce
+plus `await flush(doc)` at the top of `handlePresenterWakeup`
+coalesce bursts and serialise against any pending Mac saves.
+
+Log apply is awaited strictly before the file save fires either way
+— the at-or-ahead invariant holds across crashes.
 
 **Watermark fast path.** `RecoveryLog.reconcileAgainst(page:doc:mdMtime:)`
 short-circuits the fold using per-page watermarks stored in
@@ -372,12 +463,19 @@ record sync'd in via iCloud after our last write still raises our
 next mint — purges authored after observing a foreign add reliably
 beat that add in the union.
 
-**Bare-md and external edits are absorbed.** Reconcile emits an
-`Observation` for any block present in `doc` but absent from the
-journal, folded into the same batched Patch as unrestorable
-quarantines. A `.md` opened with no `.history/` dir gets fully logged
-on first reconcile; a block an external editor wrote gets logged on
-the next file-presenter wakeup.
+**Bare-md and external edits are absorbed as `observe`, not `add`.**
+Reconcile emits an `Observation` for any block present in `doc` but
+absent from the journal, folded into the same batched Patch as
+unrestorable quarantines. The host writes these out as `observe`
+records (not `add`) — we record a snapshot for recoverability
+without claiming authorship of blocks we didn't actually author.
+A `.md` opened with no `.history/` dir gets every block journaled
+as `observe`; an external editor's write gets observed on the next
+file-presenter wakeup. If the user later authors a real edit on the
+block (typing replaces the content), the editor's diff produces a
+genuine `add` for the new hash plus a `purge` for the old one — at
+which point the journal has authoritative records and auto-restore
+becomes available going forward.
 
 **Live filtering.** A journal entry is only "lost" if its hash isn't
 in the live page's atomic-block set right now — re-creating the same
@@ -434,6 +532,12 @@ tombstones from comparing prior state to current state. Consequences:
 - A block dragged across pages purges from the source's log; the
   destination's save adds it cleanly.
 
+Reconcile's engine removes (`recon.removes`) **propagate** an explicit
+peer-authored `purge` to the live doc; they don't infer one. When a
+foreign device's purge log syncs and we have the now-tombstoned block
+still in `doc`, we strip it — that's converging to the journal, not
+inferring intent.
+
 **Intentional deletions stay recoverable.** Manually-purged hashes
 are tracked alongside "lost" entries — the union remembers both the
 latest record (purge) and the latest prior `add` (carrying markdown +
@@ -485,11 +589,17 @@ append" — `NSFileCoordinator` handles that.
   wakeups, and `restoreBlocks(_:liveDoc:)` for the Recover sheet.
 - [Clamshell+Presenter.swift](Clamshell+Presenter.swift) — the
   NSFilePresenter lifecycle, wakeup classification (echo / stomp /
-  external), and `openPage` / `closePage`.
+  external), and `openPage` / `closePage`. Installs two presenters
+  per open page: a `DocumentFilePresenter` on the `.md` and a
+  `DocumentHistoryPresenter` on `.history/<rel>/` for peer-log
+  changes. Both fire the same idempotent wakeup.
 - [PatchEngine.swift](PatchEngine.swift) — the engine. Pure
-  Sendable types: `LogJournal`, `LogRecord`, `IntentState`,
-  `Reconciliation`. Pure functions: `intent(from:)`,
-  `reconcile(intent:doc:)`, `insertion(rootHash:candidates:intent:doc:)`,
+  Sendable types: `LogJournal`, `LogRecord` (with three ops:
+  `add` / `purge` / `observe`), `IntentState` (`.alive` /
+  `.observed` / `.tombstoned`), `Reconciliation` (inserts,
+  removes, toAppend, unrestorable). Pure functions:
+  `intent(from:)`, `reconcile(intent:doc:mdMtime:)`,
+  `insertion(rootHash:candidates:intent:doc:)`,
   `mergeConflict(survivor:alternates:intent:)`. Plus the
   `LostBlockForest` forest assembler used by both the engine and the
   host's Recover-sheet UI grouping.

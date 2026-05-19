@@ -35,38 +35,60 @@ extension Clamshell {
         case restored(count: Int)
     }
 
-    /// Opaque handle to a registered presenter. Internal — the host only
-    /// sees it via `OpenPage` and passes the whole thing back to `closePage`.
+    /// Opaque handle to a registered pair of presenters. Internal — the
+    /// host only sees it via `OpenPage` and passes the whole thing back
+    /// to `closePage`.
+    ///
+    /// Two presenters per open page:
+    /// 1. `document` watches the `.md` itself. Catches user edits made by
+    ///    other apps and foreign-device `.md` syncs.
+    /// 2. `history` watches the per-page `.history/<rel>/` directory.
+    ///    Catches foreign-device `.jsonl` syncs that arrive without (or
+    ///    before) a corresponding `.md` change — eager restore, late
+    ///    purge arrivals, etc. Both fire the same wakeup handler; it's
+    ///    idempotent and self-debouncing.
     final class PresenterHandle {
-        fileprivate let presenter: DocumentFilePresenter
-        fileprivate init(_ presenter: DocumentFilePresenter) {
-            self.presenter = presenter
+        fileprivate let document: DocumentFilePresenter
+        fileprivate let history: DocumentHistoryPresenter
+        fileprivate init(document: DocumentFilePresenter, history: DocumentHistoryPresenter) {
+            self.document = document
+            self.history = history
         }
     }
 
-    /// Install a file presenter on `doc.url` and start watching for disk
-    /// changes. The callback fires after Clamshell has handled the
-    /// filesystem-level response in place (conflict merge, content
-    /// reload, journal reconcile). The host reacts only with
+    /// Install both presenters (`.md` and `.history/<rel>/`) and start
+    /// watching for disk changes. The callback fires after Clamshell has
+    /// handled the filesystem-level response in place (conflict merge,
+    /// content reload, journal reconcile). The host reacts only with
     /// UI/workspace bookkeeping.
     private func installPresenter(
         for doc: Document,
         onEvent: @escaping @MainActor (PresenterEvent) -> Void
     ) -> PresenterHandle {
-        let presenter = DocumentFilePresenter(url: doc.url) { [weak self, weak doc] in
+        let fire: @Sendable () -> Void = { [weak self, weak doc] in
             Task { @MainActor in
                 guard let self, let doc else { return }
                 let event = await self.handlePresenterWakeup(for: doc)
                 onEvent(event)
             }
         }
-        NSFileCoordinator.addFilePresenter(presenter)
-        return PresenterHandle(presenter)
+        let documentPresenter = DocumentFilePresenter(url: doc.url, onChange: fire)
+        NSFileCoordinator.addFilePresenter(documentPresenter)
+
+        let rel = relativePath(of: doc.url)
+        let historyDir = root
+            .appendingPathComponent(RecoveryLog.directoryName, isDirectory: true)
+            .appendingPathComponent(rel, isDirectory: true)
+        let historyPresenter = DocumentHistoryPresenter(directory: historyDir, onChange: fire)
+        NSFileCoordinator.addFilePresenter(historyPresenter)
+
+        return PresenterHandle(document: documentPresenter, history: historyPresenter)
     }
 
-    /// Tear down a previously-installed presenter. Idempotent.
+    /// Tear down previously-installed presenters. Idempotent.
     private func removePresenter(_ handle: PresenterHandle) {
-        NSFileCoordinator.removeFilePresenter(handle.presenter)
+        NSFileCoordinator.removeFilePresenter(handle.document)
+        NSFileCoordinator.removeFilePresenter(handle.history)
     }
 
     /// One open page — the Document the editor renders against and the
@@ -242,10 +264,11 @@ extension Clamshell {
     }
 }
 
-/// NSFilePresenter shim. `presentedItemURL` is immutable across the
-/// presenter's lifetime; the wakeup dispatches to a `@Sendable` closure
-/// the registrar provides. Internal to the Clamshell module — the host
-/// never names this type or its `PresenterHandle` wrapper directly.
+/// NSFilePresenter shim watching the page's `.md` itself.
+/// `presentedItemURL` is immutable across the presenter's lifetime; the
+/// wakeup dispatches to a `@Sendable` closure the registrar provides.
+/// Internal to the Clamshell module — the host never names this type or
+/// its `PresenterHandle` wrapper directly.
 final class DocumentFilePresenter: NSObject, NSFilePresenter {
     let presentedItemURL: URL?
     let presentedItemOperationQueue = OperationQueue.main
@@ -259,4 +282,33 @@ final class DocumentFilePresenter: NSObject, NSFilePresenter {
 
     func presentedItemDidChange() { onChange() }
     func presentedItemDidMove(to newURL: URL) { onChange() }
+}
+
+/// NSFilePresenter shim watching the per-page `.history/<rel>/` directory
+/// for foreign `.jsonl` changes. macOS routes per-subitem notifications to
+/// directory presenters; we treat any change as "a peer device's log
+/// updated, run reconcile." Fires the same closure as the `.md`-watching
+/// presenter — the wakeup handler is idempotent and 250ms-debounced, so a
+/// burst from both presenters during a multi-file iCloud sync coalesces
+/// cleanly.
+///
+/// Note: NSFilePresenter tolerates a non-existent `presentedItemURL`.
+/// Pages with no log activity yet have no `.history/<rel>/` dir on disk
+/// — that's fine, the presenter sits dormant until the dir materialises
+/// (typically via a foreign device's first log sync, which `iCloud`
+/// reports as a `presentedSubitemDidAppear`).
+final class DocumentHistoryPresenter: NSObject, NSFilePresenter {
+    let presentedItemURL: URL?
+    let presentedItemOperationQueue = OperationQueue.main
+    private let onChange: @Sendable () -> Void
+
+    init(directory: URL, onChange: @escaping @Sendable () -> Void) {
+        self.presentedItemURL = directory
+        self.onChange = onChange
+        super.init()
+    }
+
+    func presentedSubitemDidChange(at url: URL) { onChange() }
+    func presentedSubitemDidAppear(at url: URL) { onChange() }
+    func presentedSubitem(at oldURL: URL, didMoveTo newURL: URL) { onChange() }
 }

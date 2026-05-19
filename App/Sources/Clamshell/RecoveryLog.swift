@@ -15,11 +15,18 @@ import Editor
 /// Each line is one record:
 ///
 ///     {"op":"add","h":"<full-sha256>","p":"<parent-hash>"|null,"m":"<atomic markdown>","t":<unix-seconds>,"c":<lamport-counter>}
+///     {"op":"observe","h":"<full-sha256>","p":"<parent-hash>"|null,"m":"<atomic markdown>","t":<unix-seconds>,"c":<lamport-counter>}
 ///     {"op":"purge","h":"<full-sha256>","t":<unix-seconds>,"c":<lamport-counter>}
 ///
-/// `add` is appended on first observation of `h` on this device. `p` is the
-/// parent hash at first observation (may go stale if the block later moves).
-/// `purge` is a tombstone.
+/// `add` claims authorship of `h` on this device — the block became alive
+/// via a direct edit (or fresh page creation) here. `observe` notes that
+/// `h` is alive in `.md` but doesn't claim authorship: typically iCloud
+/// delivered a foreign device's `.md` before its `.jsonl`, so we record a
+/// snapshot for Recover-sheet surfaces without making the hash eligible
+/// for auto-restore if it later disappears. `p` is the parent hash at
+/// record time (may go stale if the block later moves). `purge` is a
+/// tombstone; only `add` and `purge` are authoritative for `alive` /
+/// `tombstoned` classification.
 ///
 /// The persistence layer is intentionally thin: it knows how to read/write
 /// JSONL and the per-device hash + counter caches that keep steady-state
@@ -92,6 +99,15 @@ actor RecoveryLog {
             case .add:
                 wires.append(Wire(
                     op: "add",
+                    h: entry.hash,
+                    p: entry.parent,
+                    m: entry.markdown ?? "",
+                    t: now,
+                    c: counter
+                ))
+            case .observe:
+                wires.append(Wire(
+                    op: "observe",
                     h: entry.hash,
                     p: entry.parent,
                     m: entry.markdown ?? "",
@@ -214,6 +230,7 @@ actor RecoveryLog {
             let recon = tailWalkFold(
                 rel: rel,
                 doc: doc,
+                mdMtime: mdMtime,
                 oldStats: w.devices,
                 newStats: currentStats
             )
@@ -224,7 +241,7 @@ actor RecoveryLog {
 
         // Full path: no watermark, or `.md` changed, or a foreign log
         // shrunk / vanished (cache invalid for that device).
-        let recon = fullFold(rel: rel, doc: doc)
+        let recon = fullFold(rel: rel, doc: doc, mdMtime: mdMtime)
         pageWatermarks?[rel] = PageWatermark(mdMtime: mdMtimeT, devices: currentStats)
         saveWatermarks()
         return .folded(recon, mode: .full)
@@ -265,14 +282,21 @@ actor RecoveryLog {
     /// in the unread tails of foreign device logs. Skips
     /// `unloggedObservations` (the prior fold absorbed the doc; the `.md`
     /// is unchanged so nothing new to absorb) and quarantines.
+    ///
+    /// Only `add` records make a hash a restore candidate. `observe`
+    /// records contribute a snapshot for completeness (so observed-only
+    /// hashes don't get re-observed by `unloggedObservations` in the
+    /// engine call) but don't promote a hash to `.alive`.
     private func tailWalkFold(
         rel: String,
         doc: [Block],
+        mdMtime: Date?,
         oldStats: [String: DeviceWatermark],
         newStats: [String: DeviceWatermark]
     ) -> PatchEngine.Reconciliation {
         let docHashes = Self.collectAtomicHashes(doc)
         var addsByHash: [String: IntentState.AddSnapshot] = [:]
+        var observesByHash: [String: IntentState.AddSnapshot] = [:]
         var purgedHashes: Set<String> = []
 
         for url in deviceLogURLs(for: rel) {
@@ -299,19 +323,35 @@ actor RecoveryLog {
                             markdown: markdown,
                             recordedAt: Date(timeIntervalSince1970: wire.t)
                         )
+                        observesByHash.removeValue(forKey: wire.h)
                         purgedHashes.remove(wire.h)
+                    }
+                case .observe:
+                    if addsByHash[wire.h] == nil, let markdown = wire.m {
+                        observesByHash[wire.h] = IntentState.AddSnapshot(
+                            parent: wire.p,
+                            markdown: markdown,
+                            recordedAt: Date(timeIntervalSince1970: wire.t)
+                        )
                     }
                 case .purge:
                     purgedHashes.insert(wire.h)
                     addsByHash.removeValue(forKey: wire.h)
+                    observesByHash.removeValue(forKey: wire.h)
                 }
             }
         }
 
-        // Candidates: alive-in-tail, not purged-in-tail, not in doc.
+        // Candidates: alive-in-tail (add-backed), not purged-in-tail, not
+        // in doc. Observe-only hashes become `.observed` so the engine's
+        // `unloggedObservations` won't re-emit them but they aren't
+        // auto-restore candidates either.
         var byHash: [String: IntentState.Status] = [:]
         for (hash, add) in addsByHash where !purgedHashes.contains(hash) && !docHashes.contains(hash) {
             byHash[hash] = .alive(latestAdd: add)
+        }
+        for (hash, snapshot) in observesByHash where !purgedHashes.contains(hash) && byHash[hash] == nil {
+            byHash[hash] = .observed(latestSnapshot: snapshot)
         }
         // Mark doc hashes as alive in the synthetic intent so
         // `unloggedObservations` doesn't try to lift them. Dummy
@@ -323,13 +363,13 @@ actor RecoveryLog {
             byHash[hash] = .alive(latestAdd: dummy)
         }
         let intent = IntentState(byHash: byHash)
-        return PatchEngine.reconcile(intent: intent, doc: doc)
+        return PatchEngine.reconcile(intent: intent, doc: doc, mdMtime: mdMtime)
     }
 
-    private func fullFold(rel: String, doc: [Block]) -> PatchEngine.Reconciliation {
+    private func fullFold(rel: String, doc: [Block], mdMtime: Date?) -> PatchEngine.Reconciliation {
         let journal = readJournal(page: rel)
         let intent = PatchEngine.intent(from: journal)
-        return PatchEngine.reconcile(intent: intent, doc: doc)
+        return PatchEngine.reconcile(intent: intent, doc: doc, mdMtime: mdMtime)
     }
 
     private func currentDeviceStats(rel: String) -> [String: DeviceWatermark] {
@@ -362,12 +402,13 @@ actor RecoveryLog {
     private nonisolated static func wireKind(_ wire: Wire) -> WireKind? {
         switch wire.op {
         case "add": return .add
+        case "observe": return .observe
         case "purge": return .purge
         default: return nil
         }
     }
 
-    private enum WireKind { case add, purge }
+    private enum WireKind { case add, observe, purge }
 
     // MARK: - Watermark persistence
 
@@ -637,6 +678,8 @@ actor RecoveryLog {
         switch wire.op {
         case "add":
             return .add(counter: wire.c, hash: wire.h, parent: wire.p, markdown: wire.m ?? "", t: wire.t)
+        case "observe":
+            return .observe(counter: wire.c, hash: wire.h, parent: wire.p, markdown: wire.m ?? "", t: wire.t)
         case "purge":
             return .purge(counter: wire.c, hash: wire.h, t: wire.t)
         default:

@@ -48,7 +48,19 @@ user-picked workspace folder.
     Internal helpers (`writeClosedPage(_:patch:)`, `enqueueSave(_:patch:)`,
     `reconcileLive`, `classifyDiskContent`, `isQuiescent`) and the `log`
     actor drive the engine from inside the module and aren't part of the
-    host surface. The journal fold uses a watermark fast path
+    host surface. **Journal records have three ops**: `add` (authoritative
+    — claim authorship), `purge` (authoritative — tombstone), and
+    `observe` (tentative — snapshot of a block seen in `.md` without
+    claimed authorship; written by reconcile for unlogged-but-in-doc
+    blocks). Only `add`/`purge` drive `.alive`/`.tombstoned` intent;
+    `observe` produces `.observed` (recoverable via Recover sheet but
+    not auto-restore-eligible). **`PatchEngine.reconcile` takes an
+    `mdMtime` parameter** and uses it to gate both auto-restore inserts
+    (skip if `add.t < mdMtime` — trust the .md) and auto-removes (skip
+    if `purge.t < mdMtime` — likely an external re-add). Engine emits
+    `removes` for tombstoned-but-still-in-doc subtrees so doc converges
+    to the journal when peer purges arrive after the user's stale-state.
+    The journal fold uses a watermark fast path
     (`RecoveryLog.reconcileAgainst`) — per-page `(deviceLog stats, .md
     mtime)` cached in `UserDefaults` lets the steady-state open skip
     every journal read; foreign-log growth triggers a tail read from
@@ -122,7 +134,10 @@ user-picked workspace folder.
     `openPage: Clamshell.OpenPage?`), move-to request plumbing.
     `handlePathChange` is the choreography: drain prior page via
     `clamshell.closePage(_:)`, then `await clamshell.openPage(at:)`
-    which returns the parsed Document + presenter handle. The journal
+    which returns the parsed Document + presenter handle (two
+    presenters per page: one on the `.md`, one on `.history/<rel>/`
+    so peer-log syncs trigger reconcile even without an accompanying
+    `.md` change). The journal
     fold (auto-restore of lost subtrees) is deferred — `openPage`
     spawns a background reconcile Task and surfaces any restores via
     `onEvent(.restored(count:))`, same as a presenter-wakeup restore.

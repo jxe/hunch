@@ -669,6 +669,7 @@ struct RecoveryLogTests {
         switch intent.byHash[h] {
         case .tombstoned: break
         case .alive: Issue.record("expected tombstoned, got alive — purge lost the union race")
+        case .observed: Issue.record("expected tombstoned, got observed")
         case .none: Issue.record("expected tombstoned, got no status")
         }
     }
