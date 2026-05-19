@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
-# audit-boundaries.sh — list every declared symbol on a named cross-
-# component API surface with caller counts in three buckets: the
-# canonical consumer, the producer (intra-component), and tests.
+# audit-boundaries.sh — for each named cross-component API surface,
+# list every declared symbol with caller counts in four buckets:
+# the canonical consumer, the producer (intra-component), the docs
+# (parsimony check), and tests (informational only).
 #
-# What this catches that Periphery and triage-public.sh miss:
-#   Periphery's "is unused" requires ZERO callers across the module.
-#   It happily passes any symbol with an intra-component caller (other
-#   file in the same producer dir) or a test-only caller. And triage-
-#   public.sh is a different question — visibility ("redundant
-#   public"), not deletion ("is this API surface actually consumed").
-#
-#   For each named surface in this repo, the question is: does the
-#   canonical consumer (host, editor, dispatch sites) actually invoke
-#   each declared symbol? If not, the symbol is either an intra-
-#   component helper masquerading as API, or genuinely dead.
+# The thing this catches that Periphery doesn't:
+#   Periphery's "is unused" requires ZERO callers in the module and
+#   passes anything with an intra-component caller. Periphery's
+#   "redundant public" answers a visibility question, not deletion.
+#   Neither flags a symbol that has intra-component callers but no
+#   canonical consumer — those are exactly the symbols this audit
+#   exists to find.
 #
 # Usage:
-#   audit-boundaries.sh                # run all surfaces
-#   audit-boundaries.sh <surface>      # run one
+#   audit-boundaries.sh                # all surfaces
+#   audit-boundaries.sh <surface>      # one
 #
 # Surfaces:
 #   clamshell      Methods on `Clamshell` and its extensions.
@@ -28,26 +25,37 @@
 #                  Consumer: anywhere except the declaration file.
 #
 # Output per symbol:
-#   SYMBOL                   consumer=N producer=N test=N
+#   SYMBOL                   consumer=N producer=N docs=N test=N
 #
 #   consumer  files OUTSIDE the producer scope that call this symbol.
+#             This is the only column that justifies keeping a symbol
+#             on the API surface.
 #   producer  files INSIDE the producer scope that mention this symbol
 #             (including the declaration line — so producer=1 means
 #             "declared but nobody in the producer uses it either").
+#   docs      files among the canonical doc set (CLAUDE.md, the two
+#             package READMEs) that mention this symbol. consumer=0
+#             with docs>0 means the docs are still advertising a
+#             dropped/internal API — fix the doc.
 #   test      files in App/Tests or Packages/Editor/Tests that call it.
+#             *Tests don't justify keeping a symbol.* This column is
+#             a heads-up that removing the symbol means removing those
+#             tests too.
 #
 # Verdicts:
-#   consumer>0                            live API. Leave alone.
-#   consumer=0 && test>0                  test-only — delete the symbol
-#                                         AND its tests (same rule as
-#                                         Periphery's test-only bucket).
-#   consumer=0 && test=0 && producer>1    intra-component helper, not
-#                                         actually on the boundary.
-#                                         Consider `private`, or leave
-#                                         (visibility isn't the focus
-#                                         of this audit).
-#   consumer=0 && test=0 && producer=1    dead — only the declaration
-#                                         mentions it. Delete.
+#   consumer>0                          live API. If marked `public`,
+#                                       keep the `public`. Make sure
+#                                       it's listed in the relevant doc.
+#   consumer=0  test=0  producer=1      dead. Delete the symbol; sweep
+#                                       any doc mentions.
+#   consumer=0  test>0  producer=1      test-only API. Delete the
+#                                       symbol AND the tests; sweep
+#                                       doc mentions.
+#   consumer=0  any test  producer>1    intra-component helper, not
+#                                       on the cross-component surface.
+#                                       Drop the `public` if any; remove
+#                                       from any "public API" listing
+#                                       in docs. Symbol stays.
 
 set -u
 cd "$(git rev-parse --show-toplevel)"
@@ -55,10 +63,20 @@ cd "$(git rev-parse --show-toplevel)"
 boundary="${1:-all}"
 
 # NSFilePresenter callbacks are protocol-mandated; skip them in the
-# enumeration. They live in the same file as Clamshell+Presenter
-# (Clamshell extension) but are members of a separate presenter class
-# that the macOS file system calls — not part of the Clamshell API.
+# enumeration. They live in Clamshell+Presenter.swift (same file as
+# the openPage/closePage extension members) but are members of a
+# separate presenter class the macOS file system calls — not part of
+# the Clamshell API.
 SKIP_NAMES_REGEX='^(presentedItemDidChange|presentedItemDidMove|presentedSubitem|presentedSubitemDidAppear|presentedSubitemDidChange)$'
+
+# Canonical doc files for the parsimony check. If a symbol is on the
+# cross-component API surface, it should appear here (and only if it's
+# consumed). If it's gone or never crossed the boundary, it shouldn't.
+DOC_FILES=(
+    "CLAUDE.md"
+    "App/Sources/Clamshell/README.md"
+    "Packages/Editor/README.md"
+)
 
 # enumerate <kind> <files...>
 #   kind: "func" or "case"
@@ -80,8 +98,7 @@ enumerate() {
 
 # count_files <name> <exclude-path-fragment> <paths...>
 #   Count files matching <name> in <paths>. If <exclude-path-fragment>
-#   is non-empty, exclude paths containing it. Matches `.name` (member
-#   access / enum case) or `name(` (call).
+#   is non-empty, exclude paths containing it.
 count_files() {
     local name="$1"; shift
     local exclude="$1"; shift
@@ -96,8 +113,8 @@ count_files() {
 }
 
 # count_files_in <name> <files...>
-#   Count how many of the listed files mention <name>. Used for the
-#   producer column (includes the declaration line).
+#   How many of the listed files mention <name>. Used for the producer
+#   column (includes the declaration line).
 count_files_in() {
     local name="$1"; shift
     local hits=0
@@ -112,18 +129,19 @@ count_files_in() {
 audit() {
     local label="$1"; shift
     local kind="$1"; shift
-    local producer_files="$1"; shift     # space-separated
-    local producer_exclude="$1"; shift   # path fragment to exclude from consumer count
-    local consumer_paths="$1"; shift     # space-separated paths to count consumer in
+    local producer_files="$1"; shift
+    local producer_exclude="$1"; shift
+    local consumer_paths="$1"; shift
 
     printf "\n=== %s ===\n" "$label"
     enumerate "$kind" $producer_files | while read -r name; do
         [[ -z "$name" ]] && continue
         local consumer=$(count_files "$name" "$producer_exclude" $consumer_paths)
         local producer=$(count_files_in "$name" $producer_files)
+        local docs=$(count_files_in "$name" "${DOC_FILES[@]}")
         local tests=$(count_files "$name" "" App/Tests Packages/Editor/Tests)
-        printf "  %-32s consumer=%s producer=%s test=%s\n" \
-            "$name" "$consumer" "$producer" "$tests"
+        printf "  %-32s consumer=%s producer=%s docs=%s test=%s\n" \
+            "$name" "$consumer" "$producer" "$docs" "$tests"
     done
 }
 

@@ -1,21 +1,20 @@
 ---
 name: dead-code-sweep
-description: Use when the user wants to prune dead code, tighten the public API surface, or check whether cross-component API surfaces are still consumed — variants include "find unused symbols", "what's dead in the editor", "tighten public to internal where possible", "what only exists for tests", "earn its keep", "is anything on the Clamshell / EditorHost / EditorCommands surface unused", "are the canonical consumers actually calling everything we expose". Runs Periphery against both the Hunch app target and the Editor SPM package; runs a manual cross-component boundary audit for surfaces Periphery can't analyze (intra-module callers and test-only callers slip through both filters). Triages findings against actual usage (manual grep — Periphery's heuristics aren't sufficient on their own), then deletes dead API and tests, and downgrades `public` to `internal` where nothing cross-module consumes a symbol.
+description: Use when the user wants to prune dead code, audit a cross-component API surface, or align doc + `public`-marker hygiene with what's actually consumed. Variants include "find unused symbols", "what's dead in the editor", "what only exists for tests", "earn its keep", "is anything on the Clamshell / EditorHost / EditorCommands surface unused", "are the canonical consumers actually calling everything we expose", "are the READMEs listing things nobody uses". Runs Periphery against both targets for in-module dead code; runs a manual cross-component boundary audit for the surfaces Periphery can't see (intra-module callers and test-only callers slip through Periphery's filters); triages findings against actual usage and against the canonical doc files. Tests never count as a justification to keep a symbol — a test-only API gets deleted along with its tests.
 ---
 
-# Dead-code & redundant-`public` sweep
+# Dead-code & API-surface sweep
 
 ## When this fires
 
-The user wants to remove dead code or tighten access levels. Phrases like
-"find unused stuff", "is anything dead", "what doesn't earn its keep",
-"clean up redundant public", "test-only APIs should go". The work spans
-both the Hunch app target and the Editor SPM package (different scan
-config for each — see below).
+The user wants to remove dead code, audit a cross-component API
+surface, or tidy the docs and `public` markers to match what's
+actually consumed. Phrases: "find unused stuff", "is anything dead",
+"what doesn't earn its keep", "are the canonical consumers calling
+everything we expose", "the README is listing things nobody uses".
 
-This is not a one-shot delete. It's an iterative loop because removing
-one symbol typically reveals downstream symbols that only that symbol
-used (cascade-dead code). Each round shortens.
+This is an iterative loop — removing one symbol typically reveals
+cascade-dead symbols only it used.
 
 ## Required tools
 
@@ -32,15 +31,15 @@ code).
 ## The loop
 
 ```
-1. Scan (Periphery — intra-module dead code)
-2. Audit cross-component API boundaries (manual — boundary script)
+1. Scan (Periphery — in-module dead code)
+2. Audit (cross-component boundary audit — what canonical consumers don't call)
 3. Triage findings against actual usage
-4. Delete / downgrade
+4. Delete; fix docs; drop `public` where no consumer needs it
 5. Verify builds + tests
 6. Goto 1 until no real findings remain
 ```
 
-Each round runs both Periphery scans via the bundled wrapper:
+Each round runs Periphery via the wrapper:
 
 ```sh
 .claude/skills/dead-code-sweep/scripts/scan.sh
@@ -49,11 +48,10 @@ Each round runs both Periphery scans via the bundled wrapper:
 The wrapper runs Periphery against both targets and strips the
 `@Test`-function "is unused" lines from the test bundles — Periphery
 doesn't recognize Swift Testing roots, so every `@Test` flags as
-unused even though `swift test` runs them. The noise dominates the
-output if you don't filter, and the real findings get lost in it.
+unused even though `swift test` runs them.
 
-Then audit cross-component boundaries (Periphery can't see these —
-read "Cross-component API audit" below):
+Then audit the cross-component boundaries — Periphery can't see
+these (read "Cross-component API audit" below):
 
 ```sh
 .claude/skills/dead-code-sweep/scripts/audit-boundaries.sh
@@ -62,30 +60,25 @@ read "Cross-component API audit" below):
 ### Known false positives in this repo (skim past these)
 
 Periphery's data-flow analysis misses these specific dispatch paths.
-The warnings will keep appearing every run; *don't* silence them in
-config (that risks hiding a real regression in the same file) — just
-recognize them and move on:
+Don't silence them in config (that risks hiding a real regression in
+the same file) — recognize and move on:
 
 - **`BlockRow.swift:95–115`** — `EqualitySnapshot`'s 21 fields, read
-  through a synthesized `==`. The compiler enforces the field list (a
-  missing field fails to type-check), so adding fields without thinking
-  isn't a risk.
+  through a synthesized `==`. The compiler enforces the field list.
 - **`Text/BlockTextEditor.swift:128,139`** — `font` / `isActive` are
   let-properties on a `View` struct read inside `Coordinator` /
-  `NSViewRepresentable` / `UIViewRepresentable` methods. Periphery's
-  data-flow doesn't trace into those.
+  `NSViewRepresentable` methods.
 - **`EditorView+Gestures.swift:286`** — `IOSPageReorderGeometry` is
   used by iOS production AND macOS tests, but Periphery sees neither
-  (iOS code is `#if`-gated out of the macOS scan, and `@Test` functions
-  aren't traced). Leave it.
+  (iOS code is `#if`-gated out of the macOS scan; `@Test` functions
+  aren't traced).
 - **`InlineMarksBridge.swift:6`** — `PlatformColor` typealias is only
   consumed by tests. Trivially cheap; not worth deleting.
 - **`Shell/RecoveryView.swift` `StreamKey`** — `filter` and
   `showAllPurged` feed the synthesized `Hashable` used as a
-  `.task(id:)` identity. Periphery doesn't trace the synthesized read.
+  `.task(id:)` identity.
 - **`VoiceRecordingIntents.swift`** — `HunchAppShortcuts` and
-  `AppIntent.description` are registered via AppIntents reflection at
-  runtime.
+  `AppIntent.description` are registered via AppIntents reflection.
 
 When you find a NEW false positive (a symbol whose grep proves
 production+test usage, but Periphery still flags), prefer **silencing
@@ -94,108 +87,58 @@ producers at the source" below.
 
 ## Triage rules
 
-Periphery is precise but not omniscient. **Every finding gets a grep
-before action.** Default to keeping the symbol if the grep is ambiguous
-— the user prefers occasional noise over hidden dead code.
+**Every finding gets a grep before action.** Default to keeping the
+symbol if the grep is ambiguous — the user prefers occasional noise
+over hidden dead code.
 
-### "Is unused" findings
+**Tests don't count as a user.** A symbol with no production caller
+but test callers is *test-only*. The action is delete the symbol AND
+the tests, not preserve it.
+
+### "Is unused" findings (Periphery scan)
 
 For each Periphery `warning: ... is unused`:
 
-1. Grep the full repo for the symbol name in production sources, then
-   in `App/Tests/` and `Packages/Editor/Tests/`.
-2. Decide based on what shows up:
-   - **Zero hits anywhere** → genuinely dead, delete it.
+1. Grep the full repo for the symbol name in production sources and
+   in `App/Tests/` / `Packages/Editor/Tests/`.
+2. Decide:
+   - **Zero hits anywhere** → genuinely dead, delete.
    - **Production hits only** → false positive (Periphery missed a
-     dispatch path — common with key bindings, command tables,
-     `#selector`, SwiftUI environment values). Leave it.
-   - **Test hits only** → **test-only API: delete it AND the tests
-     that exercised it.** This is the rule the user cares about most.
-     Don't preserve tests by keeping internal helpers alive purely
-     for them; integration tests catch the user-visible bug surface,
-     and unit tests against an internal helper that no production
-     code uses test a fiction.
+     dispatch path — key bindings, command tables, `#selector`,
+     SwiftUI environment values). Leave it; consider adding to the
+     known-FP list above if it'll recur.
+   - **Test hits only** → test-only API. Delete the symbol AND its
+     tests. (Don't keep internal helpers alive purely for their own
+     unit tests — that tests a fiction.)
    - **Production + test hits** → live, leave it.
 
-Beyond the repo-specific known false positives listed above, these
-generic categories are worth recognizing on first sight:
+Generic categories worth recognizing on first sight: SwiftUI `@State`
+/ `@FocusedValue` / `@Bindable` (sometimes flagged even when used in
+`body`); Previews (covered by `retain_swift_ui_previews: true` but
+preview-only helper structs sometimes still surface); `#selector` /
+Codable property reflection (covered by retain flags but exotic
+dispatch paths can slip through).
 
-- **SwiftUI `@State` / `@FocusedValue` / `@Bindable`** — sometimes
-  flagged even when used in `body`. Verify with grep.
-- **`SwiftUI` Previews** — covered by `retain_swift_ui_previews: true`,
-  but Preview-only helper structs sometimes still surface.
-- **`#selector` / Obj-C runtime dispatch / Codable property
-  reflection** — handled by `retain_objc_accessible` and
-  `retain_codable_properties` in the root config, but exotic dispatch
-  paths can still slip through.
+### Cross-component API audit
 
-### "Declared public, but not used outside of …" findings
+The named cross-component API surfaces in this repo:
 
-For each `warning: ... is declared public, but not used outside of
-<Module>`:
+- **`clamshell`** — methods on the `Clamshell` class. Canonical
+  consumer is the rest of `App/Sources` (anything outside the
+  `Clamshell/` dir).
+- **`editor-host`** — `EditorHost` protocol methods. Canonical
+  consumer is the Editor SPM itself: the editor invokes them on its
+  injected host.
+- **`editor-action`** — `EditorAction` enum cases. Canonical
+  consumer is "anywhere a case is dispatched" — `wireEditorCommands`,
+  the menu bar, nav-mode key bindings.
 
-1. **In the Hunch app target.** The app is a single Swift target, so
-   *every* `public` is documentary, not scope. **Default action:
-   downgrade to internal.** The only `public` markers worth keeping
-   are on symbols the Editor SPM package consumes from the Hunch app
-   — and there aren't any (the dependency is one-directional). Use
-   `sed`-style `replace_all "public " → ""` per file once you've
-   confirmed no `public` strings live in comments or string literals
-   inside that file. Watch out for `public internal(set) var`: drop
-   the `public` and (usually) the `internal(set)` too, since
-   internal-on-internal is redundant.
-
-2. **In the Editor SPM package.** Periphery's "redundant public"
-   analysis here is *unreliable*: when scanning the Editor package
-   alone, Periphery doesn't see the Hunch app target consuming it.
-   Many symbols Periphery flags as redundant are in fact consumed
-   cross-module. The default `Packages/Editor/.periphery.yml` sets
-   `retain_public: true` to keep these false positives out of the
-   normal scan — opt in explicitly when doing the redundant-public
-   bucket via:
-
-   ```sh
-   .claude/skills/dead-code-sweep/scripts/triage-public.sh
-   ```
-
-   The wrapper writes the no-retain config, runs the scan, extracts
-   each flagged symbol, and greps `App/Sources` for it — emitting one
-   line per symbol:
-
-   - `DROP:     <sym>` — zero hits in `App/Sources`. Safe to convert
-     `public` → `internal`.
-   - `KEEP (N): <sym>` — N files in `App/Sources` reference it.
-     Spot-check N>0 isn't all doc-comment mentions (CLAUDE.md,
-     READMEs masquerade as usages), but otherwise leave public.
-   - `MANUAL:   init(...)` — call sites use the parent type's name,
-     not `init`, so the grep can't decide. Look at the parent type's
-     own row to infer (parent KEEP → init usually KEEP too).
-
-   When a `DROP` symbol turns out to be needed by a Hunch *test*
-   (not by Hunch source), add `@testable import Editor` to that test
-   file rather than restoring `public`. (Example: `RecoveryLogTests.swift`
-   uses `BlockTreeDiff.derive` to build test ops — `BlockTreeDiff`
-   stays internal, the test uses `@testable`.)
-
-### Cross-component API audit (Periphery's blind spot)
-
-Periphery's two filters — `is unused` (zero callers in module) and
-`declared public, but not used outside of <Module>` (no cross-module
-callers) — both pass a class of dead API: **symbols on a named
-cross-component surface that have intra-component or test callers
-but no canonical consumer**. Examples:
-
-- A `Clamshell` method called only from another `Clamshell+*.swift`
-  file but never by host code outside the Clamshell directory. Looks
-  used to Periphery; doesn't earn its place on the host-facing
-  surface.
-- An `EditorHost` protocol method that the editor itself never
-  invokes — the host implements it for nothing.
-- An `EditorAction` enum case with no dispatch site in
-  `wireEditorCommands`, the menu bar, or the nav-mode key bindings.
-
-The user cares about deletion here, not visibility. The
-boundary-audit wrapper does the manual grep work:
+The boundary audit answers a question Periphery can't: *does the
+canonical consumer actually invoke this symbol?* Periphery's "is
+unused" passes any symbol with an intra-component or test caller;
+Periphery's "redundant public" is a visibility question, not a
+deletion one. The user cares about deletion of unused API and
+about doc/`public`-marker hygiene matching what's actually consumed.
 
 ```sh
 .claude/skills/dead-code-sweep/scripts/audit-boundaries.sh
@@ -205,27 +148,52 @@ boundary-audit wrapper does the manual grep work:
 .claude/skills/dead-code-sweep/scripts/audit-boundaries.sh editor-action
 ```
 
-It emits one line per declared symbol on each surface:
+Output per symbol:
 
 ```
-SYMBOL                           consumer=N producer=N test=N
+SYMBOL                   consumer=N producer=N docs=N test=N
 ```
 
-Verdicts:
+| Column   | Meaning |
+|----------|---------|
+| consumer | Files OUTSIDE the producer scope that call this symbol. **Only column that justifies keeping the symbol on the API surface.** |
+| producer | Files INSIDE the producer scope that mention the symbol (declaration line included — `producer=1` means "nobody else in the producer uses it either"). Helpful to tell intra-helper from truly dead. |
+| docs     | Files among `CLAUDE.md`, `App/Sources/Clamshell/README.md`, and `Packages/Editor/README.md` that mention the symbol. `consumer=0` with `docs>0` is a parsimony hint — the docs may be advertising a dropped or internal API. |
+| test     | Files in `App/Tests` or `Packages/Editor/Tests` that call it. Informational; doesn't justify keeping the symbol. |
 
-| Counts                                  | Verdict                        |
-|-----------------------------------------|--------------------------------|
-| `consumer>0`                            | live API. Leave alone.         |
-| `consumer=0` `test>0`                   | test-only. Delete symbol AND its tests. |
-| `consumer=0` `test=0` `producer>1`      | intra-component helper, not actually on the boundary. Leave (or `private` if you also want to clean visibility — separate question). |
-| `consumer=0` `test=0` `producer=1`      | dead. Delete.                  |
+**Verdicts:**
 
-There's also a soft case: `consumer=0` `test=1` `producer>1`. The
-symbol is live as an intra-component helper, and a *test*
-incidentally uses it as a sanity probe. Often the test asserts
-something else after the probe; the probe line itself is dead
-weight. Remove just the probe call from the test, keep the helper
-and the rest of the test.
+| Counts                                | Action |
+|---------------------------------------|--------|
+| `consumer>0`                          | Live API. If marked `public`, keep the `public`. Make sure it's listed in the relevant doc's API enumeration. |
+| `consumer=0  test=0  producer=1`      | Dead. Delete the symbol. Sweep any doc mentions. |
+| `consumer=0  test>0  producer=1`      | Test-only API. Delete the symbol AND its tests. Sweep doc mentions. |
+| `consumer=0  any test  producer>1`    | Intra-component helper, not on the cross-component surface. Drop the `public` if it has one; remove from any "public API" listing in docs. The symbol itself stays (some other file in the producer scope still calls it). |
+
+**Doc-mention follow-up.** When the audit says `docs>0` for a
+non-`consumer>0` row, grep:
+
+```sh
+grep -n "<symbol-name>" CLAUDE.md \
+  App/Sources/Clamshell/README.md \
+  Packages/Editor/README.md
+```
+
+Inspect each hit. *API enumeration* lines (tables, "Group / Methods"
+listings, the bullet "the public surface exposes X, Y, Z") should
+shed the dropped/internal symbol. *Architecture narrative* lines
+("internal helpers `X`, `Y`, and `Z` drive the engine") are fine to
+keep when they correctly label the symbols as internal — they're
+explaining implementation, not advertising API. The script can't
+tell which kind of mention you're looking at; the operator has to
+read the surrounding sentence.
+
+**Soft case:** `consumer=0  test=1  producer>1` *can* happen when a
+test uses an intra-helper as a sanity probe before a real
+assertion. The probe line itself is usually dead weight — remove
+just that line, keep the test and the helper. If the test has
+nothing left to assert without the probe, treat it as test-only and
+delete both.
 
 #### Adding a new boundary
 
@@ -233,22 +201,22 @@ When a new cross-component surface appears (a new protocol, a new
 host-facing class), add a `run <name>)` arm to `audit-boundaries.sh`
 specifying:
 - `producer_files` — the declaration site(s)
-- `producer_exclude` — the path fragment that identifies the producer
-  scope (excluded from the consumer-count grep)
+- `producer_exclude` — path fragment identifying the producer scope
+  (excluded from the consumer-count grep)
 - `consumer_paths` — where the canonical consumer code lives
 
-The script is grep-driven, so the surface needs to be enumerable by
-a simple regex (one symbol per line declaration: `func name(...)` or
+The script is grep-driven; the surface needs to be enumerable by a
+simple regex (one symbol per declaration line: `func name(...)` or
 `case name`). Surfaces with macro-generated symbols or unusual
 declaration syntax need a hand-written enumerator.
 
 ### Test-only convenience accessors
 
-If a test uses a public/internal accessor that's a thin wrapper over a
-visible data field (e.g. `IntentState.status(of: h)` is literally
+If a test uses a public/internal accessor that's a thin wrapper over
+a visible data field (e.g. `IntentState.status(of: h)` is literally
 `byHash[h]`), prefer **inlining the access at the test sites** over
-keeping the accessor alive. The `byHash` field is already `internal`,
-so `@testable import` sees it.
+keeping the accessor alive. `@testable import` lets tests reach
+internal stored properties.
 
 ```swift
 // Before
@@ -257,89 +225,61 @@ if case .alive = intent.status(of: h) { … }
 if case .alive = intent.byHash[h] { … }
 ```
 
-This pattern lets the test coverage stay intact without leaving a
-test-only API alive.
-
 ## Verification gate
 
 After **every** round of deletions/downgrades, all four gates must
 pass — Editor SPM tests, macOS build, iOS Simulator build,
-HunchUnitTests. Run them via:
+HunchUnitTests:
 
 ```sh
 .claude/skills/dead-code-sweep/scripts/verify.sh
 ```
 
-The wrapper runs all four in parallel and prints a PASS/FAIL summary;
-on failure it tails the failing log so you can see what broke
-without scrolling. Exit code is 0 only if everything passed. Don't
-commit until that's the case.
-
-## Doc sweep
-
-When a removed/renamed/downgraded symbol is mentioned in:
-
-- `Packages/Editor/README.md`
-- `App/Sources/Clamshell/README.md`
-- `CLAUDE.md`
-
-…fix the reference (rename, remove, or rephrase). One pass at the end
-is fine — find them with:
-
-```sh
-grep -n "<symbol-name>" Packages/Editor/README.md \
-  App/Sources/Clamshell/README.md CLAUDE.md
-```
-
-Doc text that describes *internal* architecture by naming types
-(e.g. "the editor uses `BlockTreeDiff.derive` to compute the diff
-that fires `persistCommit`") is fine to keep when those types
-become internal — they're not advertising a public API, they're
-describing implementation.
+Runs them in parallel, prints PASS/FAIL summary, tails failing logs.
+Exit 0 only if all four pass. Don't commit until that's the case.
 
 ## Silence iOS-only producers at the source
 
 Periphery scans the macOS build by default. A symbol whose *only*
-consumers live inside `#if os(iOS)` blocks looks dead to it, even
-though it's load-bearing on iOS. The right fix isn't a config exception
-— it's wrapping the *producer* in `#if os(iOS)` too. That makes the
-build truth match Periphery's view of the world, and the warning goes
+consumers live inside `#if os(iOS)` blocks looks dead to it even
+though it's load-bearing on iOS. The right fix isn't a config
+exception — wrap the *producer* in `#if os(iOS)` too. Build truth
+then matches Periphery's view of the world, and the warning goes
 away forever.
 
 Before doing this, grep to confirm the symbol has no macOS consumer
-anywhere — including tests. If a macOS test consumes it (the typical
-trap: a behavioural test runs cross-platform), leave the producer
-visible on both platforms.
+anywhere — including tests. If a macOS test consumes it, leave the
+producer visible on both platforms.
 
-Examples in this repo where this was applied:
-`SeededLCG`, `BlockDragPayload.init(jsonString:)`,
+Examples in this repo: `SeededLCG`, `BlockDragPayload.init(jsonString:)`,
 `EditorView.lastDropHapticTarget` / `lastDropHapticFireAt`.
 
 ## What NOT to do
 
 - **Don't add per-file `retain_files` entries** to silence noise in
-  `.periphery.yml`. Better to scroll past 21 BlockRow EqualitySnapshot
-  warnings every run than to permanently hide a real regression in
-  that file.
+  `.periphery.yml`. Better to scroll past warnings than permanently
+  hide a real regression.
 - **Don't run `auto-remove`.** Periphery has an experimental
   `--auto-remove` flag — never use it. Triage by hand.
 - **Don't restore `public` to make a test compile.** Use `@testable
-  import` instead. The whole point of the sweep is that nothing
-  outside the module needs the public marker.
-- **Don't delete tests just to silence Periphery's `is unused`
-  warning on `@Test` functions.** Those are false positives; `swift
-  test` will run them. Test-only API deletion is a different rule —
-  there the *API* is dead and its tests die with it.
+  import` instead.
+- **Don't delete tests to silence Periphery's `is unused` warning on
+  `@Test` functions.** Those are false positives; `swift test` runs
+  them. Test-only API deletion is a different rule — there the
+  *API* is dead and its tests die with it.
+- **Don't preserve a symbol because tests use it.** Tests aren't a
+  consumer. If the only thing keeping a symbol alive is its own
+  tests, both go.
+- **Don't do a willy-nilly `public → internal` sweep.** The
+  visibility question is only worth touching for symbols the
+  boundary audit flagged. Trim the named surfaces; don't audit every
+  `public` keyword in the repo.
 
 ## Commit shape
 
-Group by intent, not by file:
-
-1. One commit for new `.periphery.yml` configs.
-2. Subsequent commits per loop iteration — title like
-   "Periphery: <bucket> — prune <thing>" where bucket is one of
-   *test-only API*, *redundant public (Hunch app)*, *redundant
-   public (Editor SPM)*, *cross-component boundary*, *cascade*.
-   Body lists the specific symbols.
+Group by intent, not by file. Title format:
+"Periphery: <bucket> — prune <thing>" where bucket is one of
+*test-only API*, *cross-component boundary*, *cascade*, *doc
+parsimony*. Body lists the specific symbols.
 
 Until no more findings remain, you're not done.
