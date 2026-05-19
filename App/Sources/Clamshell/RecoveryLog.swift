@@ -251,12 +251,27 @@ actor RecoveryLog {
     /// the save path so a fresh `.md` mtime + grown own-log don't trigger
     /// a useless refold on next open. We saved the records that grew our
     /// log via `apply(_:to:)` and the engine has nothing else to do.
+    ///
+    /// Only our own device's stat is refreshed; foreign-device stats stay
+    /// at whatever the last real fold absorbed. Stomping them with the
+    /// current sizes here would claim we've absorbed records that iCloud
+    /// happened to land *during* our save — silently swallowing the next
+    /// foreign-driven presenter wakeup's reason to fold.
     func recordOwnSave(page rel: String, mdMtime: Date?) {
         loadWatermarksIfNeeded()
-        let stats = currentDeviceStats(rel: rel)
+        var devices = pageWatermarks?[rel]?.devices ?? [:]
+        let ourURL = ourLogURL(for: rel)
+        if let values = try? ourURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+           let size = values.fileSize,
+           let mtime = values.contentModificationDate {
+            devices[deviceID] = DeviceWatermark(
+                size: Int64(size),
+                mtime: mtime.timeIntervalSince1970
+            )
+        }
         pageWatermarks?[rel] = PageWatermark(
             mdMtime: mdMtime?.timeIntervalSince1970,
-            devices: stats
+            devices: devices
         )
         saveWatermarks()
     }
