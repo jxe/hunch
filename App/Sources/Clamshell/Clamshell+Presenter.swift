@@ -165,6 +165,15 @@ extension Clamshell {
         guard !Task.isCancelled else { return .noteworthyNothing }
         let url = doc.url
 
+        // Drain any pending save so doc.children, the journal, and .md
+        // are coherent before we classify or reconcile. Cheap when
+        // nothing is in flight (awaits a completed Task and clears the
+        // saveChain entry); essential when Mac is actively editing as
+        // iOS's bytes land. Without this, a completed-save corpse in
+        // saveChain leaves isQuiescent false for the rest of the session
+        // and every subsequent wakeup self-vetoes.
+        await flush(doc)
+
         // 1. iCloud conflict alternates. When merged into the live doc,
         //    the post-write `didSave` already reseeds the host's mtime
         //    + title cache via Clamshell's callback.
@@ -195,15 +204,14 @@ extension Clamshell {
                     Task { await self.flush(doc) }
                 }
             case .external:
-                if isQuiescent(at: url) {
-                    do {
-                        let reloaded = try await loadDocument(at: url)
-                        doc.replaceChildren(reloaded.children)
-                        doc.modificationDate = reloaded.modificationDate
-                        externallyReloaded = true
-                    } catch {
-                        Diag.merge.error("presenter reload failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                    }
+                // Quiescence is guaranteed by the upfront flush.
+                do {
+                    let reloaded = try await loadDocument(at: url)
+                    doc.replaceChildren(reloaded.children)
+                    doc.modificationDate = reloaded.modificationDate
+                    externallyReloaded = true
+                } catch {
+                    Diag.merge.error("presenter reload failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 }
             }
         }

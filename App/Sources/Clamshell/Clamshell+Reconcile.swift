@@ -79,11 +79,18 @@ extension Clamshell {
             return PatchEngine.ReconcileSummary(restoredHashes: [])
         case .folded(let recon, let mode):
             perfEnd(foldT, "runReconcile.folded", "rel=\(rel) mode=\(mode) inserts=\(recon.inserts.count) lift=\(recon.toAppend.count) quarantine=\(recon.unrestorable.count)")
+            // Deliberately do NOT persist recon.toAppend (lift observations).
+            // Lift records are indistinguishable from user-authored adds in
+            // the journal: when iCloud delivers .md before the foreign device's
+            // .jsonl, we observe a block whose origin we don't know yet, and
+            // synthesizing an `add` for it claims false authorship. The next
+            // foreign sync then deletes it from .md, and our synthetic add
+            // looks like a lost-block claim → spurious auto-restore.
+            // Trade-off: blocks introduced by editing the .md outside Hunch
+            // are not journaled. That's acceptable; external tooling owns
+            // recovery for external edits.
             var entries: [Patch.Entry] = []
-            entries.reserveCapacity(recon.toAppend.count + recon.unrestorable.count)
-            for obs in recon.toAppend {
-                entries.append(.add(hash: obs.hash, parent: obs.parent, markdown: obs.markdown))
-            }
+            entries.reserveCapacity(recon.unrestorable.count)
             for q in recon.unrestorable {
                 entries.append(.purge(hash: q.hash))
             }
