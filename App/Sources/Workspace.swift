@@ -483,7 +483,9 @@ final class Workspace {
             Foxtrot
             """
             try source.write(to: documentURL, atomically: true, encoding: .utf8)
-            try? mount(root: root).rescan()
+            let clamshell = mount(root: root)
+            clamshell.setHome(relativePath: "everything.md")
+            try? clamshell.rescan()
         } catch {
             self.error = "Failed to install UI test workspace: \(error.localizedDescription)"
         }

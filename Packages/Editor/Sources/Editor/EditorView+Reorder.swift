@@ -39,28 +39,31 @@ extension EditorView {
         return lift.isCopy ? 1 : 0.12
     }
 
+    func rowSurfaceLift() -> RowSurfaceLift<BlockID>? {
+        guard let lift = state.reorderLift else { return nil }
+        return RowSurfaceLift(
+            id: lift.block.id,
+            sourceFrame: lift.sourceFrame,
+            touchOffset: lift.touchOffset,
+            location: lift.location
+        )
+    }
+
     @ViewBuilder
-    func reorderLiftView() -> some View {
-        if let lift = state.reorderLift {
+    func reorderLiftContent(for id: BlockID, size: CGSize) -> some View {
+        if let lift = state.reorderLift, lift.block.id == id {
             BlockRowPreview(
                 block: lift.block,
                 depth: 0,
                 pageLookups: resolvePageLookups(for: lift.block, host: host)
             )
-            .frame(width: lift.sourceFrame.width, height: lift.sourceFrame.height, alignment: .leading)
+            .frame(width: size.width, height: size.height, alignment: .leading)
             .overlay(alignment: .topLeading) {
                 if lift.isCopy {
                     copyBadge
                         .offset(x: -10, y: -10)
                 }
             }
-            .scaleEffect(1.035)
-            .position(
-                x: lift.location.x - lift.touchOffset.width + (lift.sourceFrame.width / 2),
-                y: lift.location.y - lift.touchOffset.height + (lift.sourceFrame.height / 2)
-            )
-            .allowsHitTesting(false)
-            .zIndex(100)
         }
     }
 
@@ -178,7 +181,6 @@ extension EditorView {
             state.setReorderLift(lift)
         }
         applyDropTarget(at: location.y, snapshot: snapshot)
-        updateReorderAutoScroll(for: location)
     }
 
     /// Option held → drop performs a duplicate. macOS-only; iOS has no
@@ -196,7 +198,6 @@ extension EditorView {
     /// lift unmount, nor the row reflow springs.
     func endReorderLift(atY y: CGFloat, snapshot: [Block]) {
         guard let lift = state.reorderLift else { return }
-        stopReorderAutoScroll()
         SoundFX.play(.drop)
         let hidden = hiddenBlockIDs(in: snapshot)
         let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot)
@@ -231,91 +232,12 @@ extension EditorView {
     }
 
     func cancelReorderLift() {
-        stopReorderAutoScroll()
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             state.currentDropTarget = nil
             state.setReorderLift(nil)
         }
-    }
-
-    // MARK: - Auto-scroll while dragging near the viewport edge
-
-    /// Edge-band autoscroll for an active reorder lift. Mirrors the pinch
-    /// auto-scroll pattern in `EditorView+Pinch.swift` — same threshold/velocity
-    /// curve, separate state so the two gestures don't fight over one Task.
-    /// Bottom edge sits at the *content area* bottom (viewport minus top &
-    /// bottom insets) so it's symmetric with the top: `pageLocation.y` already
-    /// has top inset subtracted, so y=0 is the top of the content area; for the
-    /// bottom band to fire at max velocity past the bottom edge, it must sit at
-    /// the bottom of the content area too.
-    func updateReorderAutoScroll(for location: CGPoint) {
-        let threshold: CGFloat = 110
-        let maxVelocity: CGFloat = 620
-        let effectiveBottom = scrollMetrics.viewportHeight - scrollMetrics.topInset - scrollMetrics.bottomInset
-        // NSLog("[REORDER-AS] update loc.y=%f viewportH=%f topInset=%f bottomInset=%f effectiveBottom=%f", location.y, scrollMetrics.viewportHeight, scrollMetrics.topInset, scrollMetrics.bottomInset, effectiveBottom)
-        guard effectiveBottom > threshold * 2 else {
-            // NSLog("[REORDER-AS] effectiveBottom too small (%f <= %f), bailing", effectiveBottom, threshold * 2)
-            stopReorderAutoScroll()
-            return
-        }
-
-        let topDistance = location.y
-        let bottomDistance = effectiveBottom - location.y
-        let velocity: CGFloat
-        if topDistance < threshold {
-            let progress = min(1, max(0, (threshold - topDistance) / threshold))
-            velocity = -maxVelocity * progress * progress
-        } else if bottomDistance < threshold {
-            let progress = min(1, max(0, (threshold - bottomDistance) / threshold))
-            velocity = maxVelocity * progress * progress
-        } else {
-            velocity = 0
-        }
-        // NSLog("[REORDER-AS] velocity=%f topD=%f bottomD=%f", velocity, topDistance, bottomDistance)
-
-        reorderAutoScrollVelocity = velocity
-        if abs(velocity) > 1 {
-            startReorderAutoScrollIfNeeded()
-        } else {
-            stopReorderAutoScroll()
-        }
-    }
-
-    fileprivate func startReorderAutoScrollIfNeeded() {
-        guard reorderAutoScrollTask == nil else {
-            // NSLog("[REORDER-AS] task already running")
-            return
-        }
-        // NSLog("[REORDER-AS] starting task")
-        reorderAutoScrollTask = Task { @MainActor in
-            let frameDuration: TimeInterval = 1.0 / 60.0
-            while !Task.isCancelled {
-                let velocity = reorderAutoScrollVelocity
-                if abs(velocity) <= 1 {
-                    // NSLog("[REORDER-AS] velocity dropped, breaking")
-                    break
-                }
-                // NSLog("[REORDER-AS] tick velocity=%f scrollBy=%f offsetY(before)=%f", velocity, velocity * frameDuration, scrollMetrics.contentOffsetY)
-                scrollBy(velocity * frameDuration)
-                if let liftY = state.reorderLift?.location.y {
-                    // `applyDropTarget` reads the tree via the layout cache's
-                    // cached `[VisibleRow]`, so pass the live tree root
-                    // directly; no need to rebuild a flat preorder every tick.
-                    applyDropTarget(at: liftY, snapshot: document.children)
-                }
-                try? await Task.sleep(for: .milliseconds(16))
-            }
-            // NSLog("[REORDER-AS] task ended")
-            reorderAutoScrollTask = nil
-        }
-    }
-
-    func stopReorderAutoScroll() {
-        reorderAutoScrollVelocity = 0
-        reorderAutoScrollTask?.cancel()
-        reorderAutoScrollTask = nil
     }
 
     /// Update `currentDropTarget` based on the live drop point. Source rows
@@ -501,19 +423,6 @@ extension EditorView {
         #else
         _ = target
         #endif
-    }
-
-    /// Drop target rendered inside a row's existing top-gap area (or the trailing
-    /// page-bottom area). Adds no layout space — the hit area is provided by an
-    /// in-flow `Color.clear` whose vertical extent exactly matches the existing gap.
-    @ViewBuilder
-    func gapDropTarget(at index: Int, height: CGFloat) -> some View {
-        Color.clear
-            .frame(maxWidth: .infinity)
-            .frame(height: height)
-            .contentShape(Rectangle())
-            .accessibilityIdentifier("block-drop-slot-\(index)")
-            .accessibilityLabel("Drop before block \(index + 1)")
     }
 
     /// Compute the BlockIDs to include in a drag started from `blockID`. If the row

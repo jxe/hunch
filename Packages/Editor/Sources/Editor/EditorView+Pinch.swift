@@ -39,16 +39,15 @@ extension EditorView {
     /// latched until `handlePinchCommit` clears it (so a brief pinch-back
     /// doesn't re-enable reorder/swipe mid-gesture). Pinch-close commits on
     /// release.
-    func handlePinchUpdate(_ value: PagePinchValue) {
+    @discardableResult
+    func handlePinchUpdate(_ value: PagePinchValue) -> Bool {
         guard state.editingBlock == nil else {
             if state.pinchPreview != nil { state.setPinchPreview(nil) }
             pinchPendingInsertIndex = nil
-            stopPinchAutoScroll()
-            return
+            return false
         }
         if value.spreadDelta >= Self.pinchOpenDeadzone {
             pinchGestureActive = true
-            updatePinchAutoScroll(for: value.location)
             // Subtract the deadzone so the gap opens at exactly 0 px when the
             // user first crosses the threshold and grows smoothly from there.
             let gapHeight = pinchRubberBand(value.spreadDelta - Self.pinchOpenDeadzone)
@@ -85,6 +84,7 @@ extension EditorView {
             } else if gapHeight < Self.pinchInsertFocusGap {
                 pinchCrossedFocusThreshold = false
             }
+            return true
         } else if state.pinchPreview != nil {
             // Pinched back below deadzone after opening — close the preview
             // visually but keep `pinchGestureActive` latched so a re-open
@@ -94,6 +94,7 @@ extension EditorView {
             }
             clearPinchThresholds()
         }
+        return false
     }
 
     /// Reset the pinch's per-gesture bookkeeping (insert-slot anchor + the
@@ -144,72 +145,6 @@ extension EditorView {
         }
         clearPinchThresholds()
         pinchGestureActive = false
-        stopPinchAutoScroll()
-    }
-
-    fileprivate func updatePinchAutoScroll(for location: CGPoint) {
-        let threshold: CGFloat = 88
-        let maxVelocity: CGFloat = 520
-        let effectiveBottom = scrollMetrics.viewportHeight - scrollMetrics.topInset - scrollMetrics.bottomInset
-        guard effectiveBottom > threshold * 2 else {
-            stopPinchAutoScroll()
-            return
-        }
-
-        let topDistance = location.y
-        let bottomDistance = effectiveBottom - location.y
-        let velocity: CGFloat
-        if topDistance < threshold {
-            let progress = min(1, max(0, (threshold - topDistance) / threshold))
-            velocity = -maxVelocity * progress * progress
-        } else if bottomDistance < threshold {
-            let progress = min(1, max(0, (threshold - bottomDistance) / threshold))
-            velocity = maxVelocity * progress * progress
-        } else {
-            velocity = 0
-        }
-
-        pinchAutoScrollVelocity = velocity
-        if abs(velocity) > 1 {
-            startPinchAutoScrollIfNeeded()
-        } else {
-            stopPinchAutoScroll()
-        }
-    }
-
-    fileprivate func startPinchAutoScrollIfNeeded() {
-        guard pinchAutoScrollTask == nil else { return }
-        pinchAutoScrollTask = Task { @MainActor in
-            let frameDuration: TimeInterval = 1.0 / 60.0
-            while !Task.isCancelled {
-                let velocity = pinchAutoScrollVelocity
-                if abs(velocity) <= 1 { break }
-                scrollBy(velocity * frameDuration)
-                try? await Task.sleep(for: .milliseconds(16))
-            }
-            pinchAutoScrollTask = nil
-        }
-    }
-
-    fileprivate func stopPinchAutoScroll() {
-        pinchAutoScrollVelocity = 0
-        pinchAutoScrollTask?.cancel()
-        pinchAutoScrollTask = nil
-    }
-
-    /// Programmatic scroll by `deltaY` pixels — clamped to content extent. Shared
-    /// by pinch and reorder auto-scroll. iOS routes through the UIScrollView
-    /// bridge populated by `IOSScrollMetricsReader`; macOS uses SwiftUI's
-    /// `ScrollPosition` populated alongside it.
-    func scrollBy(_ deltaY: CGFloat) {
-        let maxOffset = max(0, scrollMetrics.contentHeight - scrollMetrics.viewportHeight)
-        let nextOffset = min(maxOffset, max(0, scrollMetrics.contentOffsetY + deltaY))
-        guard abs(nextOffset - scrollMetrics.contentOffsetY) > 0.5 else { return }
-        #if os(iOS)
-        PageScrollController.shared.scroll(toY: nextOffset)
-        #else
-        scrollPosition.scrollTo(point: CGPoint(x: 0, y: nextOffset))
-        #endif
     }
 
     /// The insert slot for a pinch whose midpoint is at `point` (page hover

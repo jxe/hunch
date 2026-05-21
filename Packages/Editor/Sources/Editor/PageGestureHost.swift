@@ -27,10 +27,10 @@ extension View {
     /// macOS-only page-level drag-reorder. iOS uses the existing
     /// `iosPageReorder` UIKit bridge.
     @ViewBuilder
-    func macPageDragReorder(
-        layoutCache: BlockLayoutCache,
+    func macPageDragReorder<ID: Hashable>(
+        layoutCache: RowSurfaceLayoutCache<ID>,
         isReorderEnabled: Bool,
-        onBegan: @escaping (BlockID, _ location: CGPoint, _ anchor: CGPoint) -> Void,
+        onBegan: @escaping (ID, _ location: CGPoint, _ anchor: CGPoint) -> Void,
         onChanged: @escaping (_ location: CGPoint, _ anchor: CGPoint) -> Void,
         onEnded: @escaping (CGPoint) -> Void
     ) -> some View {
@@ -56,14 +56,14 @@ extension View {
 /// once on the first `.onChanged` (the gesture has no `.onBegan` callback;
 /// the first `.onChanged` arrives just past minimumDistance), then keep
 /// firing `onChanged` callbacks with that block id throughout.
-private struct MacPageDragReorder: ViewModifier {
-    let layoutCache: BlockLayoutCache
+private struct MacPageDragReorder<ID: Hashable>: ViewModifier {
+    let layoutCache: RowSurfaceLayoutCache<ID>
     let isReorderEnabled: Bool
-    let onBegan: (BlockID, CGPoint, CGPoint) -> Void
+    let onBegan: (ID, CGPoint, CGPoint) -> Void
     let onChanged: (CGPoint, CGPoint) -> Void
     let onEnded: (CGPoint) -> Void
 
-    @State private var activeBlockID: BlockID?
+    @State private var activeBlockID: ID?
 
     func body(content: Content) -> some View {
         // `.simultaneousGesture` so inner gestures (the text content's

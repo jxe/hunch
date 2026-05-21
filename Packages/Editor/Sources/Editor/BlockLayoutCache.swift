@@ -167,11 +167,11 @@ private func insertSubtree(_ block: Block, into hidden: inout Set<BlockID>) {
     }
 }
 
-/// Canonical source of row geometry for the page editor. Replaces a previous
-/// pattern of per-row `.onGeometryChange(for: CGRect)` observation that fired
-/// on every layout pass (every scroll tick, every text-wrap delta, every hover
-/// redispatch) and wrote a full CGRect into a dictionary, churning four
-/// scalars per row per pass.
+/// Generic source of row geometry for row-surface-backed editors. Replaces a
+/// previous pattern of per-row `.onGeometryChange(for: CGRect)` observation
+/// that fired on every layout pass (every scroll tick, every text-wrap delta,
+/// every hover redispatch) and wrote a full CGRect into a dictionary, churning
+/// four scalars per row per pass.
 ///
 /// **What rows publish:** just their height, via a height-only
 /// `.onGeometryChange(for: CGFloat) { $0.size.height }` modifier. SwiftUI fires
@@ -186,9 +186,9 @@ private func insertSubtree(_ block: Block, into hidden: inout Set<BlockID>) {
 /// LazyVStack. One anchor publishes one number per scroll tick; the cache
 /// gives every row's frame on demand without observing N positions.
 ///
-/// **Reference type.** Mutations must NOT invalidate `EditorView.body`, so
-/// this is a class held by an EditorView `@State` slot. Same shape as the
-/// outgoing `RowFramesStore` for that reason.
+/// **Reference type.** Mutations must NOT invalidate the parent view's body,
+/// so this is a class held by a `@State` slot. Same shape as the outgoing
+/// `RowFramesStore` for that reason.
 ///
 /// **Why a separate cache instead of querying SwiftUI's layout?** SwiftUI
 /// doesn't expose row positions for off-screen rows in a `LazyVStack`. The
@@ -199,17 +199,17 @@ private func insertSubtree(_ block: Block, into hidden: inout Set<BlockID>) {
 /// off-screen rows so drop targets snap correctly when scrolling past an
 /// unmounted row mid-drag.
 @MainActor
-final class BlockLayoutCache {
+class RowSurfaceLayoutCache<ID: Hashable> {
     /// Measured height per block. Populated lazily as rows mount; survives
     /// unmount so an off-screen row's height stays available for hit-testing.
-    private(set) var heights: [BlockID: CGFloat] = [:]
+    private(set) var heights: [ID: CGFloat] = [:]
 
     /// Visible blocks in document order — matches the layout's `ForEach`
     /// iteration. Source of truth for slot/index space.
-    private(set) var orderedIDs: [BlockID] = []
+    private(set) var orderedIDs: [ID] = []
 
     /// Reverse index. O(1) lookup of a block's slot.
-    private(set) var indexByID: [BlockID: Int] = [:]
+    private(set) var indexByID: [ID: Int] = [:]
 
     /// Prefix sum of heights. `offsets[i]` is the y-position of row `i`'s top
     /// in document-local space (0 = top of LazyVStack content). Length:
@@ -234,52 +234,6 @@ final class BlockLayoutCache {
     /// origin. Used to synthesize CGRect frames.
     var contentWidth: CGFloat = 0
 
-    // MARK: - Structural row cache
-    //
-    // Cached visible-row layout + hidden set. The drag-reorder and pinch
-    // gestures both call `computeVisibleLayout` from per-tick callbacks
-    // (drag onChanged, pinch update, auto-scroll's 16ms inner Task). The
-    // tree shape doesn't change during an active gesture, so caching the
-    // result for the duration of structurally-stable spans removes both
-    // tree walks from the hot path. Invalidated explicitly on document
-    // transactions and on expand/collapse state changes — both are
-    // wired by `EditorView` at mount.
-
-    private var cachedVisibleRows: [VisibleRow]?
-    private var cachedHidden: Set<BlockID>?
-
-    /// Bumped on every invalidation. Useful for diagnostics + asserting
-    /// cache-hit behavior during smoke tests.
-    private(set) var structuralVersion: UInt64 = 0
-
-    /// Drop the cached structural-row layout. Called when the document's
-    /// block tree mutates (insert/delete/move/etc.) or when expand state
-    /// changes. Cheap — just nils two slots and bumps the version.
-    func invalidateStructure() {
-        cachedVisibleRows = nil
-        cachedHidden = nil
-        structuralVersion &+= 1
-    }
-
-    /// Cached accessor for the visible-row layout. Rebuilds on miss
-    /// using the provided `snapshot` + `isCollapsed` closure; subsequent
-    /// calls return the cached values without walking the tree.
-    /// `isCollapsed` is invoked only during rebuild — the cache itself
-    /// holds no reference to editor state.
-    func currentVisibleRows(
-        snapshot: [Block],
-        isCollapsed: (Block) -> Bool
-    ) -> (rows: [VisibleRow], hidden: Set<BlockID>) {
-        if let r = cachedVisibleRows, let h = cachedHidden {
-            return (r, h)
-        }
-        let hidden = hiddenBlockIDs(in: snapshot, isCollapsed: isCollapsed)
-        let rows = computeVisibleLayout(snapshot: snapshot, hidden: hidden, isCollapsed: isCollapsed)
-        cachedHidden = hidden
-        cachedVisibleRows = rows
-        return (rows, hidden)
-    }
-
     /// Same-value guarded height write. Mutates `heights` and reruns the
     /// prefix-sum table if the value changed. Returns true on change.
     ///
@@ -289,7 +243,7 @@ final class BlockLayoutCache {
     /// steady-state scrolling fires zero writes — `.onGeometryChange(for:
     /// CGFloat)` only fires on height delta, not on every layout pass.
     @discardableResult
-    func setHeight(_ h: CGFloat, for id: BlockID) -> Bool {
+    func setHeight(_ h: CGFloat, for id: ID) -> Bool {
         if let existing = heights[id], existing == h { return false }
         heights[id] = h
         recomputeOffsets()
@@ -297,9 +251,9 @@ final class BlockLayoutCache {
     }
 
     /// Replace the ordered ID list and reverse index, then recompute offsets.
-    /// Called once per body render with the same `[BlockID]` the `ForEach`
+    /// Called once per body render with the same `[ID]` the `ForEach`
     /// iterates over. No-op if the order didn't change.
-    func updateOrder(_ ids: [BlockID]) {
+    func updateOrder(_ ids: [ID]) {
         if ids == orderedIDs { return }
         orderedIDs = ids
         indexByID.removeAll(keepingCapacity: true)
@@ -340,7 +294,7 @@ final class BlockLayoutCache {
 
     /// Find the block whose y-extent contains `pageY` in
     /// PageHoverCoordinateSpace. Convenience over `indexAtY`.
-    func blockIDAtY(_ pageY: CGFloat) -> BlockID? {
+    func blockIDAtY(_ pageY: CGFloat) -> ID? {
         indexAtY(pageY).map { orderedIDs[$0] }
     }
 
@@ -348,7 +302,7 @@ final class BlockLayoutCache {
     /// fall back to the row whose midY is closest. Mirrors the outgoing
     /// `nearestRowID(to:in:)` helper — same hit-test the macOS hover and
     /// iOS reorder-shouldBegin both used.
-    func nearestBlockID(toY pageY: CGFloat) -> BlockID? {
+    func nearestBlockID(toY pageY: CGFloat) -> ID? {
         if let id = blockIDAtY(pageY) { return id }
         guard !orderedIDs.isEmpty else { return nil }
         let docY = pageY - contentOriginY
@@ -365,7 +319,7 @@ final class BlockLayoutCache {
 
     /// y-position (in PageHoverCoordinateSpace) of `id`'s top. Nil if `id`
     /// isn't in the visible-row order.
-    func topY(of id: BlockID) -> CGFloat? {
+    func topY(of id: ID) -> CGFloat? {
         guard let i = indexByID[id] else { return nil }
         return contentOriginY + offsets[i]
     }
@@ -373,7 +327,7 @@ final class BlockLayoutCache {
     /// Synthetic CGRect for `id` in PageHoverCoordinateSpace. Reconstructed
     /// from `(contentOriginX, contentOriginY, contentWidth, offsets, heights)`.
     /// Returns nil if `id` is unknown or unmeasured.
-    func frame(of id: BlockID) -> CGRect? {
+    func frame(of id: ID) -> CGRect? {
         guard let i = indexByID[id], let h = heights[id] else { return nil }
         return CGRect(
             x: contentOriginX,
@@ -401,14 +355,14 @@ final class BlockLayoutCache {
         return binarySearchContaining(docY: internalY)
     }
 
-    func blockIDAtInternalY(_ internalY: CGFloat) -> BlockID? {
+    func blockIDAtInternalY(_ internalY: CGFloat) -> ID? {
         indexAtInternalY(internalY).map { orderedIDs[$0] }
     }
 
     /// Nearest-by-midY fallback in LazyVStack-internal coords. Used for
     /// hover when the cursor isn't strictly inside a row (e.g. hovering in
     /// the inter-row top-gap area).
-    func nearestBlockIDAtInternalY(_ internalY: CGFloat) -> BlockID? {
+    func nearestBlockIDAtInternalY(_ internalY: CGFloat) -> ID? {
         if let id = blockIDAtInternalY(internalY) { return id }
         guard !orderedIDs.isEmpty else { return nil }
         var bestIdx = 0
@@ -423,7 +377,7 @@ final class BlockLayoutCache {
 
     /// LazyVStack-internal frame of `id`. Origin (0, offsets[i]); height is
     /// the cached measurement. Width is `contentWidth`.
-    func internalFrame(of id: BlockID) -> CGRect? {
+    func internalFrame(of id: ID) -> CGRect? {
         guard let i = indexByID[id], let h = heights[id] else { return nil }
         return CGRect(x: 0, y: offsets[i], width: contentWidth, height: h)
     }
@@ -445,5 +399,56 @@ final class BlockLayoutCache {
             }
         }
         return lo < orderedIDs.count ? lo : nil
+    }
+}
+
+/// Block-specific structural cache layered on top of the generic row geometry.
+/// `EditorView` owns block visibility, collapse state, and tree-aware slots;
+/// `RowSurface` only needs the generic height/offset portion above.
+@MainActor
+final class BlockLayoutCache: RowSurfaceLayoutCache<BlockID> {
+    // MARK: - Structural row cache
+    //
+    // Cached visible-row layout + hidden set. The drag-reorder and pinch
+    // gestures both call `computeVisibleLayout` from per-tick callbacks
+    // (drag onChanged, pinch update, auto-scroll's 16ms inner Task). The
+    // tree shape doesn't change during an active gesture, so caching the
+    // result for the duration of structurally-stable spans removes both
+    // tree walks from the hot path. Invalidated explicitly on document
+    // transactions and on expand/collapse state changes — both are wired by
+    // `EditorView` at mount.
+
+    private var cachedVisibleRows: [VisibleRow]?
+    private var cachedHidden: Set<BlockID>?
+
+    /// Bumped on every invalidation. Useful for diagnostics + asserting
+    /// cache-hit behavior during smoke tests.
+    private(set) var structuralVersion: UInt64 = 0
+
+    /// Drop the cached structural-row layout. Called when the document's
+    /// block tree mutates (insert/delete/move/etc.) or when expand state
+    /// changes. Cheap — just nils two slots and bumps the version.
+    func invalidateStructure() {
+        cachedVisibleRows = nil
+        cachedHidden = nil
+        structuralVersion &+= 1
+    }
+
+    /// Cached accessor for the visible-row layout. Rebuilds on miss using the
+    /// provided `snapshot` + `isCollapsed` closure; subsequent calls return the
+    /// cached values without walking the tree. `isCollapsed` is invoked only
+    /// during rebuild — the cache itself holds no reference to editor state.
+    func currentVisibleRows(
+        snapshot: [Block],
+        isCollapsed: (Block) -> Bool
+    ) -> (rows: [VisibleRow], hidden: Set<BlockID>) {
+        if let r = cachedVisibleRows, let h = cachedHidden {
+            return (r, h)
+        }
+        let hidden = hiddenBlockIDs(in: snapshot, isCollapsed: isCollapsed)
+        let rows = computeVisibleLayout(snapshot: snapshot, hidden: hidden, isCollapsed: isCollapsed)
+        cachedHidden = hidden
+        cachedVisibleRows = rows
+        return (rows, hidden)
     }
 }

@@ -104,10 +104,6 @@ public struct EditorView: View {
     @State var pinchPendingInsertIndex: Int?
     @State var scrollMetrics = PageScrollMetrics()
     @State var scrollPosition = ScrollPosition()
-    @State var pinchAutoScrollTask: Task<Void, Never>?
-    @State var pinchAutoScrollVelocity: CGFloat = 0
-    @State var reorderAutoScrollTask: Task<Void, Never>?
-    @State var reorderAutoScrollVelocity: CGFloat = 0
     /// Drives the compact block action popover. On iOS this is opened by a
     /// leading row swipe; on macOS by clicking the drag handle or Cmd-/ in nav mode.
     /// Wraps `BlockID` because the latter is Hashable but not Identifiable.
@@ -167,176 +163,90 @@ public struct EditorView: View {
             let selectedIDs = effectiveSelectedIDs()
             #endif
             let horizontalPadding = NotionStyle.pageHorizontalPadding(for: geometry.size.width)
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(visibleRows, id: \.id) { row in
-                        let k = row.slot
-                        let gap = BlockSpacing.gap(before: row.kind, depth: row.depth, after: row.prevKind, prevDepth: row.prevDepth)
-                        let pinchExtraTopGap = pinchExtraGap(forIndex: k)
-                        let reorderExtraTopGap = reorderDriftGap(at: k, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
-                        rowView(for: bindingForBlock(id: row.id), depth: row.depth, numberingIndex: numbering[row.id], selectedIDs: selectedIDs)
-                            .padding(.top, gap + pinchExtraTopGap)
-                            // Per-row height observation. Replaces a previous
-                            // CGRect-publishing pattern that fired on every
-                            // layout pass (every scroll tick, every hover
-                            // redispatch). A `for: CGFloat` observation fires
-                            // only when the closure's result — the row's
-                            // height — actually changes, which is rare: text-
-                            // wrap delta on edit, mode toggle, expand/collapse.
-                            // Position is derived by the cache from cumulative
-                            // heights + the LazyVStack-origin anchor below.
-                            //
-                            // The reorder drift gap is applied *after* this
-                            // observer so the measured height excludes the
-                            // gap — otherwise the drift would inflate the
-                            // row's slot midpoint into the open gap region,
-                            // flipping the drop slot to the wrong neighbor
-                            // when the finger crossed the original midY.
-                            .onGeometryChange(for: CGFloat.self) { proxy in
-                                proxy.size.height
-                            } action: { newHeight in
-                                layoutCache.setHeight(newHeight, for: row.id)
-                            }
-                            .padding(.top, reorderExtraTopGap)
-                            .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
-                    }
-                    let trailingPinchGap = pinchExtraGap(forIndex: trailingSlot)
-                    let trailingReorderGap = reorderDriftGap(at: trailingSlot, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
-                    gapDropTarget(at: trailingSlot, height: 32 + trailingPinchGap + trailingReorderGap)
-                        .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
-                }
-                // LazyVStack-origin anchor. One observation per scroll tick
-                // publishes the content column's frame in
-                // PageHoverCoordinateSpace; the cache derives every row's
-                // position from `contentOriginY + offsets[i]`. Replaces N
-                // per-row CGRect observers with one. Attached BEFORE the
-                // .padding(.top, 32) so the rect measures the LazyVStack
-                // itself (whose minY is row 0's top in page coords).
-                .onGeometryChange(for: CGRect.self) { proxy in
-                    proxy.frame(in: .named(PageHoverCoordinateSpace.name))
-                } action: { rect in
-                    layoutCache.contentOriginX = rect.minX
-                    layoutCache.contentOriginY = rect.minY
-                    layoutCache.contentWidth = rect.width
-                }
-                .frame(maxWidth: NotionStyle.maxContentWidth, alignment: .leading)
-                .padding(.horizontal, horizontalPadding)
-                .padding(.top, 32)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .iosPageReorder(
-                    isEnabled: !pinchGestureActive,
-                    layoutCache: layoutCache
-                ) { blockID, location in
-                    // Read `document.children` at gesture-fire time rather than
-                    // capturing the body-eval-time `snapshot` constant. The row
-                    // wrapper that hosts these closures gets EquatableView gating
-                    // (see `EquatableEditorRow` below); when the row is "equal"
-                    // and SwiftUI keeps the cached view, the closures retained
-                    // alongside it must still see fresh document state.
-                    preliftReorder(blockID: blockID)
-                    // Re-anchor immediately to the touch point so the lift sits under
-                    // the finger from frame one (no center-then-snap).
-                    tickReorderLift(blockID: blockID, at: location, anchorAt: location, snapshot: document.children)
-                    Haptics.light()
-                } onChanged: { location in
-                    guard let id = state.reorderLift?.ids.first else { return }
-                    tickReorderLift(blockID: id, at: location, anchorAt: location, snapshot: document.children)
-                } onEnded: { location in
-                    endReorderLift(atY: location.y, snapshot: document.children)
-                } onCancelled: {
-                    cancelReorderLift()
-                }
-                .iosPagePinch(
-                    isEnabled: state.editingBlock == nil,
-                    onUpdate: { value in handlePinchUpdate(value) },
-                    onCommit: { value in handlePinchCommit(value) }
+            let visibleRowByID = Dictionary(uniqueKeysWithValues: visibleRows.map { ($0.id, $0) })
+            let surfaceRows = visibleRows.map { row in
+                let gap = BlockSpacing.gap(before: row.kind, depth: row.depth, after: row.prevKind, prevDepth: row.prevDepth)
+                return RowSurfaceRow(
+                    id: row.id,
+                    slot: row.slot,
+                    depth: row.depth,
+                    spacingBefore: gap,
+                    pinchGap: pinchExtraGap(forIndex: row.slot),
+                    reorderGap: reorderDriftGap(at: row.slot, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint),
+                    isSourceDimmed: reorderSourceOpacity(for: row.id) < 1,
+                    accessibilityDropSlotID: "block-drop-slot-\(row.slot)"
                 )
-                // Mount the iOS metrics reader INSIDE the ScrollView so its UIView's
-                // superview chain walks up through the UIScrollView. Attached as a
-                // background of the outer ScrollView, the background sits as a
-                // sibling and superview never reaches the scroll view → metrics stay
-                // at zero, autoscroll bails. macScrollMetrics uses
-                // `.onScrollGeometryChange` so it doesn't need to be inside.
-                .iosScrollMetrics(scrollMetrics)
             }
-            .coordinateSpace(name: PageHoverCoordinateSpace.name)
-            .iosPageBlockDropTarget(
-                onUpdate: { y in
+            let trailingPinchGap = pinchExtraGap(forIndex: trailingSlot)
+            let trailingReorderGap = reorderDriftGap(at: trailingSlot, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
+            let surfaceActions = RowSurfaceActions<BlockID>(
+                onHover: { id in state.setHoveredBlock(id) },
+                onTapRow: { id in handleRowClick(blockID: id) },
+                onTapGutter: { id in handleHandleClick(blockID: id) },
+                onTapBelowRows: { point in handleTapBelowRows(at: point) },
+                onReorderBegin: { blockID, location, anchor in
+                    if anchor == location {
+                        preliftReorder(blockID: blockID)
+                        Haptics.light()
+                    }
+                    tickReorderLift(blockID: blockID, at: location, anchorAt: anchor, snapshot: document.children)
+                },
+                onReorderChanged: { location, anchor in
+                    guard let id = state.reorderLift?.ids.first else { return }
+                    tickReorderLift(blockID: id, at: location, anchorAt: anchor, snapshot: document.children)
+                },
+                onReorderEnded: { location in
+                    endReorderLift(atY: location.y, snapshot: document.children)
+                },
+                onReorderCancelled: {
+                    cancelReorderLift()
+                },
+                onReorderAutoscroll: { location in
+                    applyDropTarget(at: location.y, snapshot: document.children)
+                },
+                onPinchUpdate: { value in
+                    handlePinchUpdate(value)
+                },
+                onPinchCommit: { value in
+                    handlePinchCommit(value)
+                },
+                onExternalDropUpdate: { y in
                     applyDropTarget(at: y, snapshot: document.children)
                 },
-                onDrop: { payload, y in
-                    performPayloadDrop(payload, atY: y, snapshot: document.children)
+                onExternalDrop: { string, y in
+                    if let payload = BlockDragPayload(jsonString: string) {
+                        performPayloadDrop(payload, atY: y, snapshot: document.children)
+                    }
                 },
-                onCancel: {
+                onExternalDropCancel: {
                     if state.currentDropTarget != nil {
                         state.currentDropTarget = nil
                     }
                 }
             )
-            .macScrollMetrics(scrollMetrics)
-            .macScrollPosition($scrollPosition)
-            #if os(macOS)
-            // Page-level drag-reorder. SwiftUI `DragGesture` mounted at the
-            // EditorView container — the container is the single per-
-            // document view and never recycles, so the lift survives
-            // autoscroll, edge-band scrolls, and any amount of LazyVStack
-            // row remounting underneath. No NSEvent mouse-up backstop
-            // needed.
-            //
-            // The OLD code mounted the same `DragGesture` per row inside
-            // the LazyVStack; SwiftUI destroyed the gesture mid-drag when
-            // autoscroll recycled the source row, so `.onEnded` never
-            // fired. Page-level eliminates that vector.
-            .macPageDragReorder(
+
+            RowSurface(
+                rows: surfaceRows,
                 layoutCache: layoutCache,
-                isReorderEnabled: state.editingBlock == nil,
-                onBegan: { blockID, location, anchor in
-                    tickReorderLift(
-                        blockID: blockID,
-                        at: location,
-                        anchorAt: anchor,
-                        snapshot: document.children
-                    )
-                },
-                onChanged: { location, anchor in
-                    guard let id = state.reorderLift?.ids.first else { return }
-                    tickReorderLift(
-                        blockID: id,
-                        at: location,
-                        anchorAt: anchor,
-                        snapshot: document.children
-                    )
-                },
-                onEnded: { location in
-                    endReorderLift(atY: location.y, snapshot: document.children)
+                maxContentWidth: NotionStyle.maxContentWidth,
+                horizontalPadding: horizontalPadding,
+                gutterWidth: DragHandle.gutterWidth,
+                trailingDropHeight: 32 + trailingPinchGap + trailingReorderGap,
+                activeLift: rowSurfaceLift(),
+                scrollMetrics: scrollMetrics,
+                scrollPosition: $scrollPosition,
+                isIOSReorderEnabled: !pinchGestureActive,
+                isMacReorderEnabled: state.editingBlock == nil,
+                isPinchEnabled: state.editingBlock == nil,
+                actions: surfaceActions
+            ) { id in
+                if let row = visibleRowByID[id] {
+                    rowView(for: bindingForBlock(id: id), depth: row.depth, numberingIndex: numbering[id], selectedIDs: selectedIDs)
                 }
-            )
-            // Page-level hover. Single observer hit-tests through the
-            // cache; the same-value guard inside `setHoveredBlock` keeps
-            // a continuous hover from invalidating the rows that read it.
-            .onContinuousHover { phase in
-                switch phase {
-                case .active(let location):
-                    state.setHoveredBlock(layoutCache.nearestBlockID(toY: location.y))
-                case .ended:
-                    state.setHoveredBlock(nil)
-                }
+            } liftContent: { id, size in
+                reorderLiftContent(for: id, size: size)
             }
-            #endif
             .background(NotionStyle.background)
-            // Page-level tap. Inner `SpatialTapGesture`s (the text
-            // content's cursor-positioner) get the touch first; this only
-            // fires for taps that didn't hit any inner gesture. Hit-test
-            // through the cache to route: row body → enter edit,
-            // handle gutter → action menu, below the last row →
-            // append a paragraph.
-            .tapBelowRows { point in
-                handlePageLevelTap(at: point)
-            }
-            .overlay(alignment: .topLeading) {
-                reorderLiftView()
-            }
             .overlay(alignment: .bottom) {
                 if let toast = state.actionToast {
                     HStack(spacing: 12) {
@@ -817,36 +727,6 @@ public struct EditorView: View {
         }
     }
 
-
-    /// Page-level tap dispatcher. The page tap modifier uses `.gesture`
-    /// (not `.simultaneousGesture`), so inner SwiftUI gestures (the text
-    /// content's cursor-positioner inside `BlockRow`) get touches first;
-    /// this only fires for taps that didn't hit any inner gesture.
-    ///
-    /// Routes via the layout cache:
-    /// - **In the drag-handle gutter** of a row (`x < frame.minX`, but
-    ///   within `DragHandle.gutterWidth` of it): collapse selection to
-    ///   the row and open its action menu. Same behavior the previous
-    ///   per-row `DragHandle.onTapGesture` drove on macOS.
-    /// - **In a row's content area**: enter edit mode at end-of-row.
-    ///   Same as the previous per-row `.onTapGesture { onTapOutsideText() }`.
-    /// - **Below the last row's bottom**: append a paragraph at root —
-    ///   the original `handleTapBelowRows` behavior.
-    private func handlePageLevelTap(at point: CGPoint) {
-        if let blockID = layoutCache.blockIDAtY(point.y),
-           let frame = layoutCache.frame(of: blockID) {
-            let handleLeft = frame.minX - DragHandle.gutterWidth
-            if point.x >= handleLeft, point.x < frame.minX {
-                handleHandleClick(blockID: blockID)
-                return
-            }
-            if point.x >= frame.minX, point.x <= frame.maxX {
-                handleRowClick(blockID: blockID)
-                return
-            }
-        }
-        handleTapBelowRows(at: point)
-    }
 
     /// Same as the previous per-row `onTapOutsideText`: subpage rows
     /// navigate; everything else enters edit mode at end-of-row.

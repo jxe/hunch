@@ -62,10 +62,10 @@ extension View {
     }
 
     @ViewBuilder
-    func iosPageReorder(
+    func iosPageReorder<ID: Hashable>(
         isEnabled: Bool,
-        layoutCache: BlockLayoutCache,
-        onBegin: @escaping (BlockID, CGPoint) -> Void,
+        layoutCache: RowSurfaceLayoutCache<ID>,
+        onBegin: @escaping (ID, CGPoint) -> Void,
         onChanged: @escaping (CGPoint) -> Void,
         onEnded: @escaping (CGPoint) -> Void,
         onCancelled: @escaping () -> Void
@@ -291,10 +291,10 @@ struct IOSNavigationBackGestureGate: UIViewControllerRepresentable {
 /// didn't help either: `DragGesture(minimumDistance: 0)` claims the touch
 /// at the SwiftUI layer and blocks the scroll view's pan even when our
 /// handler ignores the events.
-struct IOSPageReorderGestureBridge: UIViewRepresentable {
+struct IOSPageReorderGestureBridge<ID: Hashable>: UIViewRepresentable {
     var isEnabled: Bool
-    var layoutCache: BlockLayoutCache
-    var onBegin: (BlockID, CGPoint) -> Void
+    var layoutCache: RowSurfaceLayoutCache<ID>
+    var onBegin: (ID, CGPoint) -> Void
     var onChanged: (CGPoint) -> Void
     var onEnded: (CGPoint) -> Void
     var onCancelled: () -> Void
@@ -333,7 +333,7 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
         var parent: IOSPageReorderGestureBridge
         weak var recognizer: UILongPressGestureRecognizer?
         weak var scrollView: UIScrollView?
-        private var activeBlockID: BlockID?
+        private var activeBlockID: ID?
 
         init(parent: IOSPageReorderGestureBridge) {
             self.parent = parent

@@ -3,6 +3,58 @@ import Foundation
 import Testing
 @testable import Editor
 
+@Suite("RowSurfaceLayoutCache")
+@MainActor
+struct RowSurfaceLayoutCacheTests {
+    @Test func setHeightGuardsSameValueWritesForGenericIDs() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["a"])
+        #expect(cache.setHeight(40, for: "a") == true)
+        #expect(cache.setHeight(40, for: "a") == false)
+        #expect(cache.setHeight(44, for: "a") == true)
+    }
+
+    @Test func orderAndOffsetsUseGenericIDs() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["a", "b", "c"])
+        cache.setHeight(10, for: "a")
+        cache.setHeight(20, for: "b")
+        cache.setHeight(30, for: "c")
+
+        #expect(cache.offsets == [0, 10, 30, 60])
+        #expect(cache.blockIDAtInternalY(35) == "c")
+
+        cache.updateOrder(["b", "a", "c"])
+        #expect(cache.offsets == [0, 20, 30, 60])
+        #expect(cache.indexByID["b"] == 0)
+    }
+
+    @Test func pageCoordinateHitTestingUsesContentOrigin() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["row"])
+        cache.setHeight(50, for: "row")
+        cache.contentOriginX = 24
+        cache.contentOriginY = 100
+        cache.contentWidth = 320
+
+        #expect(cache.blockIDAtY(99) == nil)
+        #expect(cache.blockIDAtY(100) == "row")
+        #expect(cache.blockIDAtY(149) == "row")
+        #expect(cache.blockIDAtY(150) == nil)
+        #expect(cache.frame(of: "row") == CGRect(x: 24, y: 100, width: 320, height: 50))
+    }
+
+    @Test func unmeasuredRowsDoNotProduceFrames() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["measured", "unmeasured"])
+        cache.setHeight(25, for: "measured")
+
+        #expect(cache.offsets == [0, 25, 25])
+        #expect(cache.frame(of: "measured")?.height == 25)
+        #expect(cache.frame(of: "unmeasured") == nil)
+    }
+}
+
 @Suite("BlockLayoutCache")
 @MainActor
 struct BlockLayoutCacheTests {
