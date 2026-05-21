@@ -33,40 +33,16 @@ extension View {
     }
 
     @ViewBuilder
-    func macNearestRowHover(rowFrames: RowFramesStore, onChange: @escaping (BlockID?) -> Void) -> some View {
-        #if os(macOS)
-        self.onContinuousHover { phase in
-            switch phase {
-            case .active(let location):
-                onChange(nearestRowID(to: location, in: rowFrames.frames))
-            case .ended:
-                onChange(nil)
-            }
-        }
-        #else
-        self
-        #endif
-    }
-
-    @ViewBuilder
-    func macRowReorder(
-        isEnabled: Bool,
-        onChanged: @escaping (DragGesture.Value) -> Void,
-        onEnded: @escaping (DragGesture.Value) -> Void
+    func blockActionPopover<Content: View>(
+        isPresented: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        #if os(macOS)
-        if isEnabled {
-            self.simultaneousGesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .named(PageHoverCoordinateSpace.name))
-                    .onChanged(onChanged)
-                    .onEnded(onEnded)
-            )
-        } else {
-            self
+        self.popover(isPresented: isPresented) {
+            content()
+                #if os(iOS)
+                .presentationCompactAdaptation(.popover)
+                #endif
         }
-        #else
-        self
-        #endif
     }
 
     @ViewBuilder
@@ -86,22 +62,9 @@ extension View {
     }
 
     @ViewBuilder
-    func blockActionPopover<Content: View>(
-        isPresented: Binding<Bool>,
-        @ViewBuilder content: @escaping () -> Content
-    ) -> some View {
-        self.popover(isPresented: isPresented) {
-            content()
-                #if os(iOS)
-                .presentationCompactAdaptation(.popover)
-                #endif
-        }
-    }
-
-    @ViewBuilder
     func iosPageReorder(
         isEnabled: Bool,
-        rowFrames: RowFramesStore,
+        layoutCache: BlockLayoutCache,
         onBegin: @escaping (BlockID, CGPoint) -> Void,
         onChanged: @escaping (CGPoint) -> Void,
         onEnded: @escaping (CGPoint) -> Void,
@@ -110,11 +73,11 @@ extension View {
         #if os(iOS)
         // Apply unconditionally; gate the recognizer via isEnabled. Avoids
         // ViewBuilder branch flips on every pinch — same pattern as
-        // iosBlockTouchActions / iosPagePinch.
+        // iosPagePinch.
         self.background(
             IOSPageReorderGestureBridge(
                 isEnabled: isEnabled,
-                rowFrames: rowFrames,
+                layoutCache: layoutCache,
                 onBegin: onBegin,
                 onChanged: onChanged,
                 onEnded: onEnded,
@@ -230,20 +193,6 @@ struct PagePinchValue {
     var spreadDelta: CGFloat
 }
 
-/// Live row-frame store. Each row writes its own frame here from an
-/// `.onGeometryChange` modifier in `EditorView.body`. Reference type so
-/// per-scroll-tick mutations don't reassign EditorView's `@State`-held value
-/// and invalidate `body`; reorder/hover gesture handlers read through the
-/// same live instance.
-@MainActor
-final class RowFramesStore {
-    var frames: [BlockID: CGRect] = [:]
-
-    subscript(id: BlockID) -> CGRect? {
-        frames[id]
-    }
-}
-
 /// Reference type so property mutations (driven by every scroll tick) don't
 /// reassign `EditorView`'s `@State`-held value and invalidate `body`. The
 /// gesture extensions (reorder/pinch auto-scroll) read these properties from
@@ -266,21 +215,6 @@ final class PageScrollMetrics {
 
 enum PageHoverCoordinateSpace {
     static let name = "EditorView.hover"
-}
-
-// Prefer the row whose y-range contains the point — picking by nearest midY
-// alone makes tall blocks lose to their neighbors near the edges (hovering
-// near the top of a tall paragraph is closer to the previous row's center
-// than to its own). Only check y, not full `.contains()`: the drag handle
-// sits in a gutter horizontally outside the row frame, and we want the
-// correct row to win even when the cursor is in that gutter. Fall back to
-// nearest midY when no row contains the y (above first / below last).
-func nearestRowID(to point: CGPoint, in frames: [BlockID: CGRect]) -> BlockID? {
-    let containing = frames.filter { $0.value.minY <= point.y && point.y < $0.value.maxY }
-    if !containing.isEmpty {
-        return containing.min { abs($0.value.midY - point.y) < abs($1.value.midY - point.y) }?.key
-    }
-    return frames.min { abs($0.value.midY - point.y) < abs($1.value.midY - point.y) }?.key
 }
 
 struct IOSPageReorderGeometry {
@@ -359,7 +293,7 @@ struct IOSNavigationBackGestureGate: UIViewControllerRepresentable {
 /// handler ignores the events.
 struct IOSPageReorderGestureBridge: UIViewRepresentable {
     var isEnabled: Bool
-    var rowFrames: RowFramesStore
+    var layoutCache: BlockLayoutCache
     var onBegin: (BlockID, CGPoint) -> Void
     var onChanged: (CGPoint) -> Void
     var onEnded: (CGPoint) -> Void
@@ -440,7 +374,7 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
             let location = pageCoordinateLocation(for: recognizer, scrollView: scrollView)
             switch recognizer.state {
             case .began:
-                guard let blockID = nearestRowID(to: location, frames: parent.rowFrames.frames) else {
+                guard let blockID = parent.layoutCache.nearestBlockID(toY: location.y) else {
                     activeBlockID = nil
                     return
                 }
@@ -475,13 +409,6 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
             )
         }
 
-        private func nearestRowID(to point: CGPoint, frames: [BlockID: CGRect]) -> BlockID? {
-            frames
-                .filter { $0.value.contains(point) }
-                .min(by: { abs($0.value.midY - point.y) < abs($1.value.midY - point.y) })?
-                .key
-        }
-
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
@@ -495,7 +422,7 @@ struct IOSPageReorderGestureBridge: UIViewRepresentable {
                 return true
             }
             let location = pageCoordinateLocation(for: gestureRecognizer, scrollView: scrollView)
-            return nearestRowID(to: location, frames: parent.rowFrames.frames) != nil
+            return parent.layoutCache.nearestBlockID(toY: location.y) != nil
         }
     }
 }

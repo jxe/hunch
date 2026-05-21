@@ -424,21 +424,27 @@ extension EditorState {
     /// anchor; if the editing block disappeared, falls back to nav mode at
     /// `fallbackCursor`. Preserves any in-flight gesture.
     func revalidate(against validIDs: Set<BlockID>, fallbackCursor: BlockID?) {
+        let next: SessionState
         switch sessionState {
         case .navigating(var sel, let gesture):
             sel.blocks = sel.blocks.intersection(validIDs)
             if let c = sel.cursor, !validIDs.contains(c) { sel.cursor = fallbackCursor }
             if let a = sel.anchor, !validIDs.contains(a) { sel.anchor = sel.cursor }
             if sel.blocks.isEmpty, let c = sel.cursor { sel.blocks = [c] }
-            sessionState = .navigating(sel, gesture: gesture)
+            next = .navigating(sel, gesture: gesture)
         case .editing(let id, let overlay):
             if validIDs.contains(id) {
-                sessionState = .editing(id, overlay: overlay)
+                next = .editing(id, overlay: overlay)
             } else if let c = fallbackCursor {
-                sessionState = .navigating(Selection(blocks: [c], anchor: c, cursor: c), gesture: nil)
+                next = .navigating(Selection(blocks: [c], anchor: c, cursor: c), gesture: nil)
             } else {
-                sessionState = .navigating(Selection(), gesture: nil)
+                next = .navigating(Selection(), gesture: nil)
             }
         }
+        // Guard the same-value write — @Observable invalidates on every set,
+        // even when the value is identical, and `revalidate` fires after every
+        // `Document.transaction`. An unguarded write here primes a body-eval
+        // for every mutation including ones that didn't change the selection.
+        if sessionState != next { sessionState = next }
     }
 }

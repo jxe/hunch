@@ -73,9 +73,6 @@ struct BlockRow: View, Equatable {
     /// visibility is read from `state` inside `body` so hover writes don't
     /// invalidate `EditorView.body`.
     let isSelectionHandleRow: Bool
-    /// Whether this row is the source of an in-flight macOS drag — keeps the
-    /// handle hit-testable / gesture mounted even if the cursor drifts off.
-    let isMacDragSource: Bool
     let accessibilityID: String
     let accessibilityLabelText: String
 
@@ -108,7 +105,6 @@ struct BlockRow: View, Equatable {
         let reorderSourceOpacity: Double
         let isReorderingThisBlock: Bool
         let isSelectionHandleRow: Bool
-        let isMacDragSource: Bool
         let accessibilityID: String
         let accessibilityLabelText: String
         let pageLookups: [String: PageLookup]
@@ -137,7 +133,6 @@ struct BlockRow: View, Equatable {
             reorderSourceOpacity: reorderSourceOpacity,
             isReorderingThisBlock: isReorderingThisBlock,
             isSelectionHandleRow: isSelectionHandleRow,
-            isMacDragSource: isMacDragSource,
             accessibilityID: accessibilityID,
             accessibilityLabelText: accessibilityLabelText,
             pageLookups: pageLookups,
@@ -229,16 +224,10 @@ struct BlockRow: View, Equatable {
     let host: EditorHost
 
     let onTapOutsideText: () -> Void
-    let onMacReorderChanged: (DragGesture.Value) -> Void
-    let onMacReorderEnded: (DragGesture.Value) -> Void
     let onActionMenuDismiss: () -> Void
     let onMentionMenuDismiss: () -> Void
     let onIOSDelete: () -> Void
     let onIOSShowMenu: () -> Void
-    let onHandleHover: (Bool) -> Void
-    let onHandleTap: () -> Void
-    let onHandleReorderChanged: (DragGesture.Value) -> Void
-    let onHandleReorderEnded: (DragGesture.Value) -> Void
     let actionMenuContent: () -> AnyView
     let mentionMenuContent: () -> AnyView
 
@@ -260,7 +249,6 @@ struct BlockRow: View, Equatable {
         reorderSourceOpacity: Double,
         isReorderingThisBlock: Bool,
         isSelectionHandleRow: Bool,
-        isMacDragSource: Bool,
         accessibilityID: String,
         accessibilityLabelText: String,
         onClickAtPoint: @escaping (CGPoint) -> Void,
@@ -271,16 +259,10 @@ struct BlockRow: View, Equatable {
         onLinkPreviewLoaded: @escaping (URL, LinkPreview) -> Void,
         host: EditorHost,
         onTapOutsideText: @escaping () -> Void,
-        onMacReorderChanged: @escaping (DragGesture.Value) -> Void,
-        onMacReorderEnded: @escaping (DragGesture.Value) -> Void,
         onActionMenuDismiss: @escaping () -> Void,
         onMentionMenuDismiss: @escaping () -> Void,
         onIOSDelete: @escaping () -> Void,
         onIOSShowMenu: @escaping () -> Void,
-        onHandleHover: @escaping (Bool) -> Void,
-        onHandleTap: @escaping () -> Void,
-        onHandleReorderChanged: @escaping (DragGesture.Value) -> Void,
-        onHandleReorderEnded: @escaping (DragGesture.Value) -> Void,
         actionMenuContent: @escaping () -> AnyView,
         mentionMenuContent: @escaping () -> AnyView
     ) {
@@ -301,7 +283,6 @@ struct BlockRow: View, Equatable {
         self.reorderSourceOpacity = reorderSourceOpacity
         self.isReorderingThisBlock = isReorderingThisBlock
         self.isSelectionHandleRow = isSelectionHandleRow
-        self.isMacDragSource = isMacDragSource
         self.accessibilityID = accessibilityID
         self.accessibilityLabelText = accessibilityLabelText
         self.onClickAtPoint = onClickAtPoint
@@ -312,16 +293,10 @@ struct BlockRow: View, Equatable {
         self.onLinkPreviewLoaded = onLinkPreviewLoaded
         self.host = host
         self.onTapOutsideText = onTapOutsideText
-        self.onMacReorderChanged = onMacReorderChanged
-        self.onMacReorderEnded = onMacReorderEnded
         self.onActionMenuDismiss = onActionMenuDismiss
         self.onMentionMenuDismiss = onMentionMenuDismiss
         self.onIOSDelete = onIOSDelete
         self.onIOSShowMenu = onIOSShowMenu
-        self.onHandleHover = onHandleHover
-        self.onHandleTap = onHandleTap
-        self.onHandleReorderChanged = onHandleReorderChanged
-        self.onHandleReorderEnded = onHandleReorderEnded
         self.actionMenuContent = actionMenuContent
         self.mentionMenuContent = mentionMenuContent
     }
@@ -382,11 +357,6 @@ struct BlockRow: View, Equatable {
                         .allowsHitTesting(false)
                 }
             }
-            .macRowReorder(
-                isEnabled: !isEditing,
-                onChanged: onMacReorderChanged,
-                onEnded: onMacReorderEnded
-            )
             .blockActionPopover(
                 isPresented: Binding(
                     get: { isActionMenuPresented },
@@ -405,36 +375,33 @@ struct BlockRow: View, Equatable {
             }
             .opacity(reorderSourceOpacity)
             .contentShape(Rectangle())
+            #if os(iOS)
             .iosBlockTouchActions(
                 isEnabled: !isEditing && !isPinching,
                 onDelete: onIOSDelete,
                 onShowMenu: onIOSShowMenu
             )
+            // Row-level tap on iOS enters edit mode (no macOS analog — macOS
+            // taps come through `MacPageGestureHost.onClickRow` instead).
+            .onTapGesture {
+                onTapOutsideText()
+            }
+            #endif
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier(accessibilityID)
             .accessibilityLabel(accessibilityLabelText)
             .accessibilityValue(isReorderingThisBlock ? "reorder-source" : "")
-            .onTapGesture {
-                onTapOutsideText()
-            }
             .overlay(alignment: .topLeading) {
+                // Drag handle: visual-only on macOS — pan + click both come
+                // from `MacPageGestureHost`. No `.onHover`, no
+                // `.onTapGesture`, no `.macRowReorder` here; those used to
+                // anchor recyclable per-row gestures inside the LazyVStack
+                // and were the source of the "destroyed mid-drag" failure
+                // mode that needed the NSEvent mouse-up backstop.
                 DragHandle()
                     .opacity(isHandleVisible && !isEditing ? 1 : 0)
                     .offset(x: -DragHandle.gutterWidth, y: BlockSpacing.dragHandleYOffset(block))
-                    .onHover(perform: onHandleHover)
-                    .onTapGesture(perform: onHandleTap)
-                    // Keep the handle hit-testable AND the gesture mounted for
-                    // the duration of an in-flight drag. As the cursor leaves
-                    // the source row, hoveredBlock shifts and `isHandleVisible`
-                    // flips false; without `allowsHitTesting` mirroring the
-                    // `isMacDragSource` condition, SwiftUI silently cancels the
-                    // gesture mid-drag and `.onEnded` never fires.
-                    .macRowReorder(
-                        isEnabled: (isHandleVisible || isMacDragSource) && !isEditing,
-                        onChanged: onHandleReorderChanged,
-                        onEnded: onHandleReorderEnded
-                    )
-                    .allowsHitTesting(isHandleVisible || isMacDragSource)
+                    .allowsHitTesting(false)
             }
     }
 

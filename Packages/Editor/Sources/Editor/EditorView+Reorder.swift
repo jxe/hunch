@@ -39,14 +39,6 @@ extension EditorView {
         return lift.isCopy ? 1 : 0.12
     }
 
-    func isMacDraggingFromRow(_ id: BlockID) -> Bool {
-        #if os(macOS)
-        return state.reorderLift?.ids.contains(id) == true
-        #else
-        return false
-        #endif
-    }
-
     @ViewBuilder
     func reorderLiftView() -> some View {
         if let lift = state.reorderLift {
@@ -111,7 +103,7 @@ extension EditorView {
         isCopy: Bool
     ) -> ReorderLift? {
         guard let block = document.find(blockID),
-              let sourceFrame = rowFrames[blockID]
+              let sourceFrame = layoutCache.frame(of: blockID)
         else { return nil }
         let ids = dragIDs(for: blockID)
         let parentID = document.parent(of: blockID)
@@ -153,13 +145,14 @@ extension EditorView {
     /// 4pt away from where the gesture-cleared `value.location` is).
     ///
     /// `sourceFrame`, `sourceIndex`, and `touchOffset` are frozen once the
-    /// lift exists with a real anchor — `rowFrames[id]` keeps shifting as the
-    /// drift gap animates open and recomputing against a moving frame would
-    /// drift the lift away from the cursor.
+    /// lift exists with a real anchor — the synthesized frame keeps shifting
+    /// as the drift gap animates open (it adjusts the source row's height)
+    /// and recomputing against a moving frame would drift the lift away from
+    /// the cursor.
     func tickReorderLift(blockID: BlockID, at location: CGPoint, anchorAt anchorPoint: CGPoint, snapshot: [Block]) {
         let isCopy = currentReorderCopyIntent()
         if state.reorderLift == nil {
-            guard let sourceFrame = rowFrames[blockID],
+            guard let sourceFrame = layoutCache.frame(of: blockID),
                   let lift = makeReorderLift(
                       blockID: blockID,
                       touchOffset: CGSize(
@@ -324,55 +317,6 @@ extension EditorView {
         reorderAutoScrollTask = nil
     }
 
-    #if os(macOS)
-    /// Backstop for SwiftUI `DragGesture.onEnded`, which is silently dropped
-    /// when the gesture's host row gets recycled by `LazyVStack` mid-drag
-    /// (autoscroll moves the source row out of view → row unmounts → gesture
-    /// destroyed). The deferred dispatch lets a surviving `onEnded` race us —
-    /// if it fires first and clears `state.reorderLift`, our handler bails
-    /// via the `state.reorderLift != nil` guard.
-    ///
-    /// Local vs. global differ in what the user intended:
-    /// - **Local** (release inside our app, even over the sidebar). The lift
-    ///   overlay stays painted at `lift.location` regardless of row
-    ///   recycling, so the user is releasing where they *see* the lift —
-    ///   commit a real drop at that y. Note `lift.location` may be stale
-    ///   relative to the cursor's actual final position (the gesture stopped
-    ///   firing `onChanged` when the source row recycled), but the visible
-    ///   lift is the contract.
-    /// - **Global** (release over another app — typically post cmd-tab or
-    ///   Mission Control). No drop intent — just cancel.
-    func installMacReorderMouseUpBackstop() {
-        if macReorderMouseUpLocalMonitor == nil {
-            macReorderMouseUpLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp]) { event in
-                DispatchQueue.main.async {
-                    guard let lift = state.reorderLift else { return }
-                    endReorderLift(atY: lift.location.y, snapshot: document.children)
-                }
-                return event
-            }
-        }
-        if macReorderMouseUpGlobalMonitor == nil {
-            macReorderMouseUpGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { _ in
-                DispatchQueue.main.async {
-                    if state.reorderLift != nil { cancelReorderLift() }
-                }
-            }
-        }
-    }
-
-    func removeMacReorderMouseUpBackstop() {
-        if let monitor = macReorderMouseUpLocalMonitor {
-            NSEvent.removeMonitor(monitor)
-            macReorderMouseUpLocalMonitor = nil
-        }
-        if let monitor = macReorderMouseUpGlobalMonitor {
-            NSEvent.removeMonitor(monitor)
-            macReorderMouseUpGlobalMonitor = nil
-        }
-    }
-    #endif
-
     /// Update `currentDropTarget` based on the live drop point. Source rows
     /// (the lift itself) are excluded from the drop-on hit-test so you can't
     /// drop onto your own collapsed parent.
@@ -399,7 +343,7 @@ extension EditorView {
         // drops.
         let edgeBand: CGFloat = 6
         for row in rows where !liftIDs.contains(row.block.id) {
-            guard let frame = rowFrames[row.block.id] else { continue }
+            guard let frame = layoutCache.frame(of: row.block.id) else { continue }
             if case .subpage(_, let path) = row.block.kind,
                y >= frame.minY && y <= frame.maxY {
                 return .intoSubpage(row.block.id, path)
@@ -418,15 +362,15 @@ extension EditorView {
     }
 
     /// Converts a Y-position into a slot index in `rows` (the full
-    /// visible-row layout). Under `LazyVStack`, only on-screen rows have
-    /// entries in `rowFrames`, so the resolver's "kth frame" answer lives in
-    /// a sparser space than `rows` — this maps one to the other so callers
-    /// always speak the `rows` index space (which is what `dropPath` and the
-    /// gap renderers expect). Returns 0 when nothing is on screen, which
-    /// `dropPath` handles as "top of document."
+    /// visible-row layout). The layout cache holds heights for every row
+    /// that's ever been measured — including off-screen rows whose
+    /// LazyVStack mount has since been recycled — so the answer is in the
+    /// full `rows` index space without a sparser-to-full remap. Returns 0
+    /// when no row has yet been measured, which `dropPath` handles as
+    /// "top of document."
     func resolveDropSlot(forY y: CGFloat, in rows: [EditorView.VisibleRow], previousIndex: Int? = nil) -> Int {
         let knownFrames: [(rowsIndex: Int, frame: ReorderDropFrame)] = rows.enumerated().compactMap { (k, row) in
-            rowFrames[row.block.id].map { (k, ReorderDropFrame(frame: $0)) }
+            layoutCache.frame(of: row.block.id).map { (k, ReorderDropFrame(frame: $0)) }
         }
         guard !knownFrames.isEmpty else { return previousIndex ?? 0 }
         let prevInKnownSpace: Int? = previousIndex.map { prev in
