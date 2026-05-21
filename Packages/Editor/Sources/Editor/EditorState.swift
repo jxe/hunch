@@ -63,8 +63,25 @@ public final class EditorState {
 
     // Page-local view state — defaults to all closed every time the page opens.
     // Toggle expansion is intentionally not persisted to markdown.
-    public internal(set) var expandedToggles: Set<BlockID> = []
-    public internal(set) var expandedTemplates: Set<BlockID> = []
+    //
+    // The `didSet` observers fire `onStructureChange` so the editor's
+    // layout cache can drop its cached `[VisibleRow]` — expand/collapse
+    // changes which blocks are visible and thus which slots a drag/pinch
+    // can land in. Set/Set mutations like `.insert(_:)` route through
+    // Swift's `_modify` accessor, which runs `didSet` after each call.
+    public internal(set) var expandedToggles: Set<BlockID> = [] {
+        didSet { onStructureChange?() }
+    }
+    public internal(set) var expandedTemplates: Set<BlockID> = [] {
+        didSet { onStructureChange?() }
+    }
+
+    /// Fired when state that affects the visible-row layout changes
+    /// (toggle/templateButton expand/collapse). Wired by `EditorView`
+    /// at mount; the editor invalidates its `BlockLayoutCache`'s
+    /// structural-row cache from here.
+    @ObservationIgnored
+    internal var onStructureChange: (() -> Void)? = nil
 
     // Transient bottom-of-page toast (e.g. "Deleted") with an Undo affordance.
     public internal(set) var actionToast: String? = nil

@@ -130,7 +130,6 @@ public struct EditorView: View {
         GeometryReader { geometry in
             let numbering = NumberingContext.compute(document.children)
             let snapshot = document.children
-            let hidden = hiddenBlockIDs(in: snapshot)
             // Tree-aware visible-row layout walk — yields one VisibleRow per
             // displayed block, each carrying its slot, depth, and prev-sibling
             // reference so the ForEach below can iterate over the rows array
@@ -144,7 +143,14 @@ public struct EditorView: View {
             // context only accepts let/var/View expressions, so we wrap the
             // computation in an IIFE.
             let visibleRows: [VisibleRow] = {
-                let rows = computeVisibleLayout(snapshot: snapshot, hidden: hidden)
+                // Route body through the same cache the gestures hit, so
+                // a body re-evaluation warms the cache for the next drag /
+                // pinch tick (and conversely, an in-flight drag's cached
+                // rows are reused on the body re-eval that follows a
+                // non-structural change like hover).
+                let (rows, _) = layoutCache.currentVisibleRows(
+                    snapshot: snapshot, isCollapsed: isCollapsedSection
+                )
                 layoutCache.updateOrder(rows.map(\.block.id))
                 return rows
             }()
@@ -1368,32 +1374,11 @@ public struct EditorView: View {
     /// IDs of blocks that should be hidden from rendering and from arrow-nav because they
     /// live inside a collapsed section. The section row itself is always visible; only its
     /// body (subsequent blocks at greater indent) is hidden when collapsed.
+    /// Thin wrapper around the file-scope walker in `BlockLayoutCache.swift`;
+    /// supplies `isCollapsedSection` so the walker doesn't need a reference
+    /// to `EditorState`.
     func hiddenBlockIDs(in blocks: [Block]) -> Set<BlockID> {
-        var hidden: Set<BlockID> = []
-        collectHidden(in: blocks, into: &hidden)
-        return hidden
-    }
-
-    private func collectHidden(in blocks: [Block], into hidden: inout Set<BlockID>) {
-        for block in blocks {
-            if isCollapsedSection(block) {
-                // The container itself stays visible — only its descendants
-                // hide. Nested expanded toggles inside a closed parent stay
-                // hidden because we never recurse past the closed boundary.
-                for child in block.children {
-                    insertSubtree(child, into: &hidden)
-                }
-            } else {
-                collectHidden(in: block.children, into: &hidden)
-            }
-        }
-    }
-
-    private func insertSubtree(_ block: Block, into hidden: inout Set<BlockID>) {
-        hidden.insert(block.id)
-        for child in block.children {
-            insertSubtree(child, into: &hidden)
-        }
+        Editor.hiddenBlockIDs(in: blocks, isCollapsed: isCollapsedSection)
     }
 
     private func isCollapsibleSection(_ block: Block) -> Bool {
@@ -1482,63 +1467,12 @@ public struct EditorView: View {
         }
     }
 
-    /// One-pass visible-row layout precompute used by `body`. Walks the tree
-    /// in preorder, skipping any subtree under a closed toggle/templateButton,
-    /// and emits one `VisibleRow` per visible block. Replaces the old flat-
-    /// snapshot indexing scheme.
-    struct VisibleRow {
-        let block: Block
-        let depth: Int
-        let parentID: BlockID?
-        let slot: Int
-        let prev: Block?
-        let prevDepth: Int
-    }
-
+    /// Body's entry into the file-scope visible-row walker. Routes
+    /// through the layout cache so a sequence of body re-evaluations
+    /// over a structurally-stable document reuses one walk. Drag-reorder
+    /// and pinch read from the same cache via `currentVisibleRows(...)`.
     func computeVisibleLayout(snapshot: [Block], hidden: Set<BlockID>) -> [VisibleRow] {
-        var rows: [VisibleRow] = []
-        rows.reserveCapacity(snapshot.count)
-        var lastVisible: Block? = nil
-        var lastDepth: Int = 0
-        appendVisible(in: snapshot, depth: 0, parentID: nil, hidden: hidden,
-                      rows: &rows,
-                      lastVisible: &lastVisible, lastDepth: &lastDepth)
-        return rows
-    }
-
-    private func appendVisible(
-        in blocks: [Block],
-        depth: Int,
-        parentID: BlockID?,
-        hidden: Set<BlockID>,
-        rows: inout [VisibleRow],
-        lastVisible: inout Block?,
-        lastDepth: inout Int
-    ) {
-        for block in blocks {
-            // Block visibility: hidden if any ancestor is collapsed. The
-            // `hidden` set is populated by `hiddenBlockIDs` which marks every
-            // descendant of a closed container.
-            if !hidden.contains(block.id) {
-                rows.append(VisibleRow(
-                    block: block, depth: depth, parentID: parentID,
-                    slot: rows.count, prev: lastVisible, prevDepth: lastDepth
-                ))
-                lastVisible = block
-                lastDepth = depth
-            }
-            // Recurse into children only if this block is not a collapsed
-            // container — descendants under a closed toggle don't render.
-            // Heading containers don't bump depth: their children render
-            // flush with the heading itself (Notion-style), so a paragraph
-            // under an H1 sits at the same horizontal position as the H1.
-            if !isCollapsedSection(block) {
-                let childDepth = block.isHeading ? depth : depth + 1
-                appendVisible(in: block.children, depth: childDepth, parentID: block.id, hidden: hidden,
-                              rows: &rows,
-                              lastVisible: &lastVisible, lastDepth: &lastDepth)
-            }
-        }
+        Editor.computeVisibleLayout(snapshot: snapshot, hidden: hidden, isCollapsed: isCollapsedSection)
     }
 
     /// Preorder flat view of every block in the tree. Cheap derived

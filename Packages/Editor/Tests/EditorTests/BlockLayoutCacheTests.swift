@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import Editor
 
@@ -122,5 +123,65 @@ struct BlockLayoutCacheTests {
         #expect(cache.blockIDAtY(100) == id)
         #expect(cache.blockIDAtY(149) == id)
         #expect(cache.blockIDAtY(150) == nil)
+    }
+
+    // MARK: - Structural row cache
+
+    @Test func currentVisibleRowsCachesWithinStableSpan() {
+        let cache = BlockLayoutCache()
+        let a = Block.paragraph(text: AttributedString("a"))
+        let b = Block.paragraph(text: AttributedString("b"))
+        let snapshot = [a, b]
+
+        let v0 = cache.structuralVersion
+        let (rows1, _) = cache.currentVisibleRows(snapshot: snapshot, isCollapsed: { _ in false })
+        let (rows2, _) = cache.currentVisibleRows(snapshot: snapshot, isCollapsed: { _ in false })
+
+        #expect(rows1.count == 2)
+        #expect(rows1.map { $0.block.id } == rows2.map { $0.block.id })
+        // No invalidation between calls — version should not advance.
+        #expect(cache.structuralVersion == v0)
+    }
+
+    @Test func invalidateStructureForcesRebuild() {
+        let cache = BlockLayoutCache()
+        let a = Block.paragraph(text: AttributedString("a"))
+        let b = Block.paragraph(text: AttributedString("b"))
+
+        let v0 = cache.structuralVersion
+        _ = cache.currentVisibleRows(snapshot: [a, b], isCollapsed: { _ in false })
+        cache.invalidateStructure()
+        #expect(cache.structuralVersion == v0 &+ 1)
+
+        // After invalidation, a different snapshot must be honored.
+        let c = Block.paragraph(text: AttributedString("c"))
+        let (rows, _) = cache.currentVisibleRows(snapshot: [a, b, c], isCollapsed: { _ in false })
+        #expect(rows.count == 3)
+        #expect(rows.last?.block.id == c.id)
+    }
+
+    @Test func collapsedSubtreeIsHiddenFromVisibleRows() {
+        let cache = BlockLayoutCache()
+        let child = Block.paragraph(text: AttributedString("child"))
+        let toggle = Block.toggle(title: AttributedString("toggle"), children: [child])
+        let after = Block.paragraph(text: AttributedString("after"))
+
+        // Toggle closed.
+        let (rowsClosed, hiddenClosed) = cache.currentVisibleRows(
+            snapshot: [toggle, after],
+            isCollapsed: { $0.id == toggle.id }
+        )
+        #expect(rowsClosed.map { $0.block.id } == [toggle.id, after.id])
+        #expect(hiddenClosed.contains(child.id))
+
+        cache.invalidateStructure()
+
+        // Toggle open — child becomes visible.
+        let (rowsOpen, hiddenOpen) = cache.currentVisibleRows(
+            snapshot: [toggle, after],
+            isCollapsed: { _ in false }
+        )
+        #expect(rowsOpen.map { $0.block.id } == [toggle.id, child.id, after.id])
+        #expect(!hiddenOpen.contains(child.id))
     }
 }

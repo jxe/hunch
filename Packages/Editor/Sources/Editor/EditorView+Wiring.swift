@@ -188,11 +188,14 @@ extension EditorView {
         // recovery journal + .md stay in sync. Capture by reference:
         // `document`/`state`/`host` are reachable through this struct's
         // stored bindings; reads happen at fire time so the callback sees
-        // fresh state.
+        // fresh state. Also drops the layout cache's structural-row
+        // cache — any forward/undo/redo can shift which blocks are visible.
+        let layoutCache = self.layoutCache
         document.didCommitTransaction = { ops in
             var validIDs: Set<BlockID> = []
             document.walk { block, _, _ in validIDs.insert(block.id) }
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
+            layoutCache.invalidateStructure()
             host.persistCommit(ops: ops, in: document)
         }
 
@@ -201,6 +204,13 @@ extension EditorView {
             document.walk { block, _, _ in validIDs.insert(block.id) }
             Diag.mode.debug("document children replaced — revalidating state against \(validIDs.count, privacy: .public) blocks")
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
+            layoutCache.invalidateStructure()
+        }
+
+        // Expand/collapse changes a block's visibility — drop the cached
+        // visible-row layout so the next gesture tick rebuilds it.
+        state.onStructureChange = { [weak layoutCache] in
+            layoutCache?.invalidateStructure()
         }
     }
 

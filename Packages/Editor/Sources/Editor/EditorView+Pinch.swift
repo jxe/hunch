@@ -115,8 +115,9 @@ extension EditorView {
                 ?? pinchInsertIndex(for: value.startLocation)
             // Resolve the visible slot to a tree DropPath, with the visible-row
             // above/below at that slot as neighbour context for kind inference.
-            let hidden = hiddenBlockIDs(in: document.children)
-            let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden)
+            let (rows, _) = layoutCache.currentVisibleRows(
+                snapshot: document.children, isCollapsed: isCollapsedSection
+            )
             let path = dropPath(forVisibleSlot: slot, rows: rows)
             let above: Block? = (slot - 1 >= 0 && slot - 1 < rows.count) ? rows[slot - 1].block : nil
             let below: Block? = (slot >= 0 && slot < rows.count) ? rows[slot].block : nil
@@ -218,8 +219,12 @@ extension EditorView {
     /// participate) and resolves via `ReorderDropResolver` for parity with the
     /// reorder gesture.
     fileprivate func pinchInsertIndex(for point: CGPoint) -> Int {
-        let hidden = hiddenBlockIDs(in: document.children)
-        let rows = computeVisibleLayout(snapshot: document.children, hidden: hidden)
+        // Hot path: fires on every pinch recognizer tick. The cache
+        // returns the same `[VisibleRow]` for as long as the document
+        // is structurally stable.
+        let (rows, _) = layoutCache.currentVisibleRows(
+            snapshot: document.children, isCollapsed: isCollapsedSection
+        )
         return resolveDropSlot(forY: point.y, in: rows)
     }
 }

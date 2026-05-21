@@ -22,7 +22,7 @@ extension EditorView {
     /// Visible-slot range covered by the active reorder lift's blocks (and
     /// any descendants that render in the visible-row stack). Returns nil if
     /// no lift is active or none of the lifted ids correspond to visible rows.
-    func currentLiftFootprint(in rows: [EditorView.VisibleRow]) -> ClosedRange<Int>? {
+    func currentLiftFootprint(in rows: [VisibleRow]) -> ClosedRange<Int>? {
         guard let lift = state.reorderLift else { return nil }
         var slots: [Int] = []
         for (k, row) in rows.enumerated() where lift.draggedSubtreeIDs.contains(row.block.id) {
@@ -199,7 +199,7 @@ extension EditorView {
         stopReorderAutoScroll()
         SoundFX.play(.drop)
         let hidden = hiddenBlockIDs(in: snapshot)
-        let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot)
         let ids = lift.ids
         // Re-check Option at drop time so a release-just-before-drop reverts
         // to a move; the drop is the load-bearing read.
@@ -300,9 +300,10 @@ extension EditorView {
                 // NSLog("[REORDER-AS] tick velocity=%f scrollBy=%f offsetY(before)=%f", velocity, velocity * frameDuration, scrollMetrics.contentOffsetY)
                 scrollBy(velocity * frameDuration)
                 if let liftY = state.reorderLift?.location.y {
-                    var snapshot: [Block] = []
-                    document.walk { block, _, _ in snapshot.append(block) }
-                    applyDropTarget(at: liftY, snapshot: snapshot)
+                    // `applyDropTarget` reads the tree via the layout cache's
+                    // cached `[VisibleRow]`, so pass the live tree root
+                    // directly; no need to rebuild a flat preorder every tick.
+                    applyDropTarget(at: liftY, snapshot: document.children)
                 }
                 try? await Task.sleep(for: .milliseconds(16))
             }
@@ -321,14 +322,13 @@ extension EditorView {
     /// (the lift itself) are excluded from the drop-on hit-test so you can't
     /// drop onto your own collapsed parent.
     func applyDropTarget(at y: CGFloat, snapshot: [Block]) {
-        let hidden = hiddenBlockIDs(in: snapshot)
-        let target = resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        let target = resolveDropTarget(atY: y, snapshot: snapshot)
         if state.currentDropTarget != target {
             state.currentDropTarget = target
         }
     }
 
-    fileprivate func resolveDropTarget(atY y: CGFloat, snapshot: [Block], hidden: Set<BlockID>) -> DropTarget {
+    fileprivate func resolveDropTarget(atY y: CGFloat, snapshot: [Block]) -> DropTarget {
         let liftIDs = state.reorderLift?.ids ?? []
         // Build the visible-flat layout once and use it for BOTH the hit-test
         // (drop on subpage / closed parent) and the between-rows slot
@@ -336,7 +336,12 @@ extension EditorView {
         // nested rows; iterating the legacy flat preorder of `snapshot`
         // would double-count blocks that also live inside their parent's
         // `children` array.
-        let rows = computeVisibleLayout(snapshot: snapshot, hidden: hidden)
+        //
+        // Hot path: this fires on every drag tick (60+Hz) and every
+        // auto-scroll inner tick (16ms). The cache returns the same
+        // `[VisibleRow]` for as long as the document is structurally
+        // stable, so a sustained drag does zero tree walks here.
+        let (rows, _) = layoutCache.currentVisibleRows(snapshot: snapshot, isCollapsed: isCollapsedSection)
 
         // Hit-test for "drop on closed parent" / "drop onto subpage". Edge
         // band keeps the gap above/below the row reachable for between-rows
@@ -368,7 +373,7 @@ extension EditorView {
     /// full `rows` index space without a sparser-to-full remap. Returns 0
     /// when no row has yet been measured, which `dropPath` handles as
     /// "top of document."
-    func resolveDropSlot(forY y: CGFloat, in rows: [EditorView.VisibleRow], previousIndex: Int? = nil) -> Int {
+    func resolveDropSlot(forY y: CGFloat, in rows: [VisibleRow], previousIndex: Int? = nil) -> Int {
         let knownFrames: [(rowsIndex: Int, frame: ReorderDropFrame)] = rows.enumerated().compactMap { (k, row) in
             layoutCache.frame(of: row.block.id).map { (k, ReorderDropFrame(frame: $0)) }
         }
@@ -402,7 +407,7 @@ extension EditorView {
     ///   row[k-1] under that shared parent
     /// - otherwise (we're exiting row[k-1]'s subtree to land in below's
     ///   parent) → drop "before row[k]" at row[k]'s depth
-    func dropPath(forVisibleSlot slot: Int, rows: [EditorView.VisibleRow]) -> DropPath {
+    func dropPath(forVisibleSlot slot: Int, rows: [VisibleRow]) -> DropPath {
         if slot <= 0 {
             return DropPath(parent: nil, position: 0)
         }
@@ -438,7 +443,7 @@ extension EditorView {
     /// Returns the visible-flat slot the current drop hover corresponds to
     /// (if any). Used as a stickiness hint for `ReorderDropResolver` so the
     /// slot doesn't oscillate near gap boundaries.
-    func visibleSlotForCurrentDropPath(in rows: [EditorView.VisibleRow]) -> Int? {
+    func visibleSlotForCurrentDropPath(in rows: [VisibleRow]) -> Int? {
         guard let path = state.dropHoverPath else { return nil }
         // Find the row whose (parent, position) matches — i.e. the row whose
         // insertion would land at this DropPath. The slot is "the index of the
@@ -457,7 +462,7 @@ extension EditorView {
 
     func performPayloadDrop(_ payload: BlockDragPayload, atY y: CGFloat, snapshot: [Block]) {
         let hidden = hiddenBlockIDs(in: snapshot)
-        let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot, hidden: hidden)
+        let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot)
         switch target {
         case .insertAt(let path):
             moveBlocks(ids: payload.ids, to: path)
