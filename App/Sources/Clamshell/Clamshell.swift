@@ -107,9 +107,26 @@ final class Clamshell {
     /// with the first's — breaking the per-commit "log before file"
     /// ordering at the filesystem level. The chain's explicit
     /// `await previous?.value` forecloses that.
-    private struct ChainEntry {
+    ///
+    /// `pendingLogEntries` is mutable so an arriving `commit` whose
+    /// predecessor hasn't started yet can fold its work in instead of
+    /// chaining another full save. The task body snapshots the field
+    /// after flipping `started` on MainActor — no other MainActor work
+    /// can interleave between those two statements, so the read is
+    /// race-free.
+    @MainActor
+    private final class ChainEntry {
         let id: UUID
-        let task: Task<Void, Error>
+        let doc: Document
+        var pendingLogEntries: [Patch.Entry]
+        var started: Bool = false
+        var task: Task<Void, Error>!
+
+        init(id: UUID, doc: Document, pendingLogEntries: [Patch.Entry]) {
+            self.id = id
+            self.doc = doc
+            self.pendingLogEntries = pendingLogEntries
+        }
     }
     @ObservationIgnored private var saveChain: [URL: ChainEntry] = [:]
 
@@ -449,10 +466,18 @@ final class Clamshell {
     // the previous before its own log + .md write, so a fast burst of
     // commits (typing → focus blur → navigation) lands in order, and the
     // top-level `await` in `commit` propagates errors back to the caller.
-    // No debounce, no separate per-op log task: every
-    // `Document.transaction` (typing via `commitLiveText`, structural via
-    // `mutate(_:_:)`, undo, redo) emits its pre→post diff through
-    // `Document.didCommitTransaction` → host bridge → `commit(_:to:)`.
+    // When a new commit arrives and the tail's task hasn't started its
+    // body yet, the new commit's log entries are folded into the tail and
+    // the new caller awaits the tail — N rapid presses collapse into one
+    // serialize + one .md write. No debounce, no separate per-op log
+    // task: every `Document.transaction` (typing via `commitLiveText`,
+    // structural via `mutate(_:_:)`, undo, redo) emits its pre→post diff
+    // through `Document.didCommitTransaction` → host bridge →
+    // `commit(_:to:)`.
+    //
+    // Heavy lifting hops off MainActor: serialize + `NSFileCoordinator`
+    // write run on a detached task at `.userInitiated` so they don't
+    // contend with the UI work the edit burst is driving. See `save(_:)`.
 
     /// Persist a commit for `doc`. Awaits durability end-to-end: log
     /// entries (if any) are applied to the recovery log strictly before
@@ -471,20 +496,46 @@ final class Clamshell {
     func commit(_ commit: Commit, to doc: Document) async throws {
         let url = doc.url
         let rel = relativePath(of: url)
+
+        // Coalesce: if the tail's task hasn't started its body yet (still
+        // suspended awaiting its predecessor), fold this commit's log
+        // entries into it instead of spawning a second full save. The
+        // tail's body re-reads `pendingLogEntries` when it starts, so the
+        // merged entries land in one log apply + one .md write. Awaiting
+        // the tail's task value gives us the same durability guarantee
+        // the original caller had. Only coalesce on the same Document
+        // instance — a fresh Document for the same URL (e.g. conflict
+        // merge) needs its own commit so its block snapshot is the one
+        // serialized.
+        if let tail = saveChain[url], !tail.started, tail.doc === doc {
+            tail.pendingLogEntries.append(contentsOf: commit.logEntries)
+            try await tail.task.value
+            // Cleanup is owned by the originating commit call — don't
+            // touch saveChain here.
+            return
+        }
+
         let previous = saveChain[url]?.task
         let id = UUID()
-        let task = Task<Void, Error> { @MainActor [weak self] in
+        let entry = ChainEntry(id: id, doc: doc, pendingLogEntries: commit.logEntries)
+        entry.task = Task<Void, Error> { @MainActor [weak self, weak entry] in
             _ = try? await previous?.value
-            guard let self else { return }
-            if !commit.logEntries.isEmpty {
-                try await self.log.apply(Patch(entries: commit.logEntries), to: rel)
+            guard let self, let entry else { return }
+            // From here on, no more coalescing into this entry: subsequent
+            // commits will spawn their own chained task. Snapshot the
+            // merged log entries on the same MainActor tick (no
+            // suspension between `started = true` and the read).
+            entry.started = true
+            let logEntries = entry.pendingLogEntries
+            if !logEntries.isEmpty {
+                try await self.log.apply(Patch(entries: logEntries), to: rel)
             }
-            _ = try self.save(doc)
-            self.postSaveBookkeeping(doc)
+            _ = try await self.save(entry.doc)
+            self.postSaveBookkeeping(entry.doc)
         }
-        saveChain[url] = ChainEntry(id: id, task: task)
+        saveChain[url] = entry
         do {
-            try await task.value
+            try await entry.task.value
             // Only clear the slot when we're still the head — a newer commit
             // may have replaced us mid-flight; that one owns the cleanup.
             if saveChain[url]?.id == id {
@@ -520,16 +571,54 @@ final class Clamshell {
     /// avoid racing with iCloud sync). Does NOT touch the recovery log —
     /// `commit(_:to:)` owns the log durability invariant (log entries
     /// land first, then this runs).
+    ///
+    /// Snapshot reads happen on MainActor (Document is MainActor-isolated;
+    /// `titleCache` is private to this class) and then the heavy lifting
+    /// — `MarkupFormatter` serialize + `NSFileCoordinator`-coordinated
+    /// atomic write — runs off MainActor on a detached task. For large
+    /// docs the serialize alone is tens of ms and the iCloud-coordinated
+    /// write routinely hits 50–200ms; doing either on MainActor stalls
+    /// the very UI a typing/move burst is trying to drive.
     @MainActor
     @discardableResult
-    private func save(_ document: Document) throws -> String {
-        let newText = BlockSerializer.serialize(document.children, resolvingSubpageTitle: { [weak self] rel in
-            self?.entry(at: rel)?.title
-        })
+    private func save(_ document: Document) async throws -> String {
+        let children = document.children
         let url = document.url
-        try files.write(newText, to: url)
+        let titleMap = buildSubpageTitleMap(referencedBy: children)
+        let files = self.files
+
+        let newText = try await Task.detached(priority: .userInitiated) {
+            let text = BlockSerializer.serialize(children, resolvingSubpageTitle: { rel in
+                titleMap[rel]
+            })
+            try files.write(text, to: url)
+            return text
+        }.value
+
         recordDiskContent(newText, at: url)
         return newText
+    }
+
+    /// Resolve every `.subpage` page-ID referenced anywhere in `roots` to
+    /// the live title overlay (or filename fallback). Used to feed the
+    /// serializer a fully-snapshotted `[String: String]` map so the
+    /// off-actor serialize doesn't have to hop back here for each
+    /// subpage block.
+    @MainActor
+    private func buildSubpageTitleMap(referencedBy roots: [Block]) -> [String: String] {
+        var map: [String: String] = [:]
+        func walk(_ blocks: [Block]) {
+            for block in blocks {
+                if case .subpage(_, let pageID) = block.kind {
+                    if map[pageID] == nil, let title = entry(at: pageID)?.title {
+                        map[pageID] = title
+                    }
+                }
+                if !block.children.isEmpty { walk(block.children) }
+            }
+        }
+        walk(roots)
+        return map
     }
 
     /// Post-save hygiene: refresh the document's mtime from disk, update
