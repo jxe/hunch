@@ -206,6 +206,15 @@ enum BlockSpacing {
     /// Inter-block gap to insert *above* `current`, given the immediately preceding sibling
     /// in document order (visible-flat order, may be a sibling at a different tree depth).
     static func gap(before current: Block, depth: Int, after prev: Block?, prevDepth: Int) -> CGFloat {
+        gap(
+            before: VisibleRowKind(current.kind),
+            depth: depth,
+            after: prev.map { VisibleRowKind($0.kind) },
+            prevDepth: prevDepth
+        )
+    }
+
+    static func gap(before current: VisibleRowKind, depth: Int, after prev: VisibleRowKind?, prevDepth: Int) -> CGFloat {
         guard let prev else {
             // First child of a container — no gap above.
             return 0
@@ -277,11 +286,11 @@ enum BlockSpacing {
     /// and after an H2; list items get a non-zero top margin so item-to-item gaps match
     /// `notion_prompt_example.png` (the nested-child branch in `gap(...)` forces currTop = 0,
     /// so nested items still pack tight).
-    private static func topMargin(_ block: Block) -> CGFloat {
-        switch block.kind {
-        case .heading(.h1, _): return 40
-        case .heading(.h2, _): return 40
-        case .heading(.h3, _): return 30
+    private static func topMargin(_ kind: VisibleRowKind) -> CGFloat {
+        switch kind {
+        case .heading(.h1): return 40
+        case .heading(.h2): return 40
+        case .heading(.h3): return 30
         case .paragraph: return 4
         case .quote: return 4
         case .code: return 8
@@ -291,9 +300,13 @@ enum BlockSpacing {
         }
     }
 
-    private static func bottomMargin(_ block: Block) -> CGFloat {
-        switch block.kind {
-        case .heading(.h1, _): return 0
+    private static func topMargin(_ block: Block) -> CGFloat {
+        topMargin(VisibleRowKind(block.kind))
+    }
+
+    private static func bottomMargin(_ kind: VisibleRowKind) -> CGFloat {
+        switch kind {
+        case .heading(.h1): return 0
         case .heading: return 0
         case .paragraph: return 3
         case .quote: return 4
@@ -304,15 +317,28 @@ enum BlockSpacing {
         }
     }
 
+    private static func bottomMargin(_ block: Block) -> CGFloat {
+        bottomMargin(VisibleRowKind(block.kind))
+    }
+
+    private static func isHeading(_ kind: VisibleRowKind) -> Bool {
+        kind.isHeading
+    }
+
     private static func isHeading(_ block: Block) -> Bool {
-        if case .heading = block.kind { return true }
-        return false
+        isHeading(VisibleRowKind(block.kind))
+    }
+
+    private static func isListItem(_ kind: VisibleRowKind) -> Bool {
+        switch kind {
+        case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton:
+            return true
+        default:
+            return false
+        }
     }
 
     private static func isListItem(_ block: Block) -> Bool {
-        switch block.kind {
-        case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton: return true
-        default: return false
-        }
+        isListItem(VisibleRowKind(block.kind))
     }
 }

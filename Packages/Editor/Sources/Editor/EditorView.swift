@@ -151,7 +151,7 @@ public struct EditorView: View {
                 let (rows, _) = layoutCache.currentVisibleRows(
                     snapshot: snapshot, isCollapsed: isCollapsedSection
                 )
-                layoutCache.updateOrder(rows.map(\.block.id))
+                layoutCache.updateOrder(rows.map(\.id))
                 return rows
             }()
             // Translate the (tree-aware) drop hover and lift footprint into the
@@ -170,13 +170,12 @@ public struct EditorView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(visibleRows, id: \.block.id) { row in
+                    ForEach(visibleRows, id: \.id) { row in
                         let k = row.slot
-                        let block = row.block
-                        let gap = BlockSpacing.gap(before: block, depth: row.depth, after: row.prev, prevDepth: row.prevDepth)
+                        let gap = BlockSpacing.gap(before: row.kind, depth: row.depth, after: row.prevKind, prevDepth: row.prevDepth)
                         let pinchExtraTopGap = pinchExtraGap(forIndex: k)
                         let reorderExtraTopGap = reorderDriftGap(at: k, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
-                        rowView(for: bindingForBlock(id: block.id), depth: row.depth, numberingIndex: numbering[block.id], selectedIDs: selectedIDs)
+                        rowView(for: bindingForBlock(id: row.id), depth: row.depth, numberingIndex: numbering[row.id], selectedIDs: selectedIDs)
                             .padding(.top, gap + pinchExtraTopGap)
                             // Per-row height observation. Replaces a previous
                             // CGRect-publishing pattern that fired on every
@@ -197,7 +196,7 @@ public struct EditorView: View {
                             .onGeometryChange(for: CGFloat.self) { proxy in
                                 proxy.size.height
                             } action: { newHeight in
-                                layoutCache.setHeight(newHeight, for: block.id)
+                                layoutCache.setHeight(newHeight, for: row.id)
                             }
                             .padding(.top, reorderExtraTopGap)
                             .animation(.spring(response: 0.26, dampingFraction: 0.76), value: state.dropHoverPath)
@@ -773,25 +772,24 @@ public struct EditorView: View {
     /// Pick a sensible block kind for a pinch-open insert. Continues
     /// list/quote runs by mirroring the neighbour's kind — above wins, otherwise
     /// below, otherwise paragraph.
-    func smartInsertBlock(above: Block?, below: Block?) -> Block {
+    func smartInsertBlock(above: VisibleRowKind?, below: VisibleRowKind?) -> Block {
         if let kind = listLikeTemplate(from: above) { return kind }
         if let kind = listLikeTemplate(from: below) { return kind }
         return .paragraph(text: AttributedString())
     }
 
-    /// If `block` is a list-like row (bullet/numbered/todo/quote), return a
+    /// If `kind` is a list-like row (bullet/numbered/todo/quote), return a
     /// fresh empty block of the same kind. Tree-depth follows from where the
     /// caller inserts; no per-block indent to copy.
-    private func listLikeTemplate(from block: Block?) -> Block? {
-        guard let block else { return nil }
-        switch block.kind {
-        case .bullet:
+    private func listLikeTemplate(from kind: VisibleRowKind?) -> Block? {
+        switch kind {
+        case .some(.bullet):
             return .bullet(text: AttributedString())
-        case .numbered:
+        case .some(.numbered):
             return .numbered(text: AttributedString())
-        case .todo:
+        case .some(.todo):
             return .todo(text: AttributedString(), done: false)
-        case .quote:
+        case .some(.quote):
             return .quote(text: AttributedString())
         default:
             return nil
@@ -1396,6 +1394,17 @@ public struct EditorView: View {
             return !state.expandedToggles.contains(block.id)
         case .templateButton:
             return !state.expandedTemplates.contains(block.id)
+        default:
+            return false
+        }
+    }
+
+    func isCollapsedSection(id: BlockID, kind: VisibleRowKind) -> Bool {
+        switch kind {
+        case .toggle:
+            return !state.expandedToggles.contains(id)
+        case .templateButton:
+            return !state.expandedTemplates.contains(id)
         default:
             return false
         }

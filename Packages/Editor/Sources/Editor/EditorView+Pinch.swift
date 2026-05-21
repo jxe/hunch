@@ -119,8 +119,8 @@ extension EditorView {
                 snapshot: document.children, isCollapsed: isCollapsedSection
             )
             let path = dropPath(forVisibleSlot: slot, rows: rows)
-            let above: Block? = (slot - 1 >= 0 && slot - 1 < rows.count) ? rows[slot - 1].block : nil
-            let below: Block? = (slot >= 0 && slot < rows.count) ? rows[slot].block : nil
+            let above: VisibleRowKind? = (slot - 1 >= 0 && slot - 1 < rows.count) ? rows[slot - 1].kind : nil
+            let below: VisibleRowKind? = (slot >= 0 && slot < rows.count) ? rows[slot].kind : nil
             // Tier 1 (smaller pinch): pick a kind based on neighbours.
             // Tier 2 (larger pinch, past the second threshold): always H1.
             // Both tiers focus the new block.

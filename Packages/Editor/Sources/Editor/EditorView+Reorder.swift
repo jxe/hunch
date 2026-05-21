@@ -25,7 +25,7 @@ extension EditorView {
     func currentLiftFootprint(in rows: [VisibleRow]) -> ClosedRange<Int>? {
         guard let lift = state.reorderLift else { return nil }
         var slots: [Int] = []
-        for (k, row) in rows.enumerated() where lift.draggedSubtreeIDs.contains(row.block.id) {
+        for (k, row) in rows.enumerated() where lift.draggedSubtreeIDs.contains(row.id) {
             slots.append(k)
         }
         guard let lo = slots.min(), let hi = slots.max() else { return nil }
@@ -347,15 +347,15 @@ extension EditorView {
         // band keeps the gap above/below the row reachable for between-rows
         // drops.
         let edgeBand: CGFloat = 6
-        for row in rows where !liftIDs.contains(row.block.id) {
-            guard let frame = layoutCache.frame(of: row.block.id) else { continue }
-            if case .subpage(_, let path) = row.block.kind,
+        for row in rows where !liftIDs.contains(row.id) {
+            guard let frame = layoutCache.frame(of: row.id) else { continue }
+            if case .subpage(let path) = row.kind,
                y >= frame.minY && y <= frame.maxY {
-                return .intoSubpage(row.block.id, path)
+                return .intoSubpage(row.id, path)
             }
             guard y > frame.minY + edgeBand && y < frame.maxY - edgeBand else { continue }
-            if isCollapsedSection(row.block) {
-                return .asLastChildOf(row.block.id)
+            if isCollapsedSection(id: row.id, kind: row.kind) {
+                return .asLastChildOf(row.id)
             }
         }
 
@@ -375,7 +375,7 @@ extension EditorView {
     /// "top of document."
     func resolveDropSlot(forY y: CGFloat, in rows: [VisibleRow], previousIndex: Int? = nil) -> Int {
         let knownFrames: [(rowsIndex: Int, frame: ReorderDropFrame)] = rows.enumerated().compactMap { (k, row) in
-            layoutCache.frame(of: row.block.id).map { (k, ReorderDropFrame(frame: $0)) }
+            layoutCache.frame(of: row.id).map { (k, ReorderDropFrame(frame: $0)) }
         }
         guard !knownFrames.isEmpty else { return previousIndex ?? 0 }
         let prevInKnownSpace: Int? = previousIndex.map { prev in
@@ -421,22 +421,22 @@ extension EditorView {
         // and below share a depth value but below is structurally inside
         // above. Without this check, the slot would resolve to "next
         // sibling of above" — the wrong scope.
-        if below.parentID == above.block.id {
-            return DropPath(parent: above.block.id, position: 0)
+        if below.parentID == above.id {
+            return DropPath(parent: above.id, position: 0)
         }
 
         // Sibling under a shared parent.
         if above.parentID == below.parentID {
             let parentID = above.parentID
             let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
-            let i = siblings.firstIndex(where: { $0.id == above.block.id }) ?? siblings.count - 1
+            let i = siblings.firstIndex(where: { $0.id == above.id }) ?? siblings.count - 1
             return DropPath(parent: parentID, position: i + 1)
         }
 
         // Exiting above's subtree. Drop "before below" in below's parent.
         let parentID = below.parentID
         let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
-        let i = siblings.firstIndex(where: { $0.id == below.block.id }) ?? 0
+        let i = siblings.firstIndex(where: { $0.id == below.id }) ?? 0
         return DropPath(parent: parentID, position: i)
     }
 
@@ -453,7 +453,7 @@ extension EditorView {
                 let parentChildren: [Block] = path.parent.flatMap(document.find)?.children ?? document.children
                 if path.position < parentChildren.count {
                     let target = parentChildren[path.position].id
-                    if row.block.id == target { return k }
+                    if row.id == target { return k }
                 }
             }
         }

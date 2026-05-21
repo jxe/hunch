@@ -1,22 +1,81 @@
 import CoreGraphics
 import Foundation
 
+/// Display-shape subset of `BlockKind`, stripped of text payloads and children.
+/// SwiftUI copies `VisibleRow` values aggressively while diffing and laying out a
+/// `ForEach`; keeping recursive `Block` values out of this cache avoids copying
+/// whole subtrees just to answer spacing / drag-target questions.
+enum VisibleRowKind: Equatable {
+    case paragraph
+    case heading(HeadingLevel)
+    case bullet
+    case numbered
+    case todo
+    case quote
+    case code
+    case divider
+    case toggle
+    case templateButton
+    case subpage(pageID: String)
+    case image
+
+    init(_ kind: BlockKind) {
+        switch kind {
+        case .paragraph:
+            self = .paragraph
+        case .heading(let level, _):
+            self = .heading(level)
+        case .bullet:
+            self = .bullet
+        case .numbered:
+            self = .numbered
+        case .todo:
+            self = .todo
+        case .quote:
+            self = .quote
+        case .code:
+            self = .code
+        case .divider:
+            self = .divider
+        case .toggle:
+            self = .toggle
+        case .templateButton:
+            self = .templateButton
+        case .subpage(_, let pageID):
+            self = .subpage(pageID: pageID)
+        case .image:
+            self = .image
+        }
+    }
+
+    var isHeading: Bool {
+        if case .heading = self { return true }
+        return false
+    }
+
+    var isCollapsedContainer: Bool {
+        switch self {
+        case .toggle, .templateButton:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 /// Tree-aware visible-row layout entry. One per displayed block, in
 /// document-preorder, with rows under collapsed toggles/templateButtons
-/// elided. Carries depth, parent, slot, and prev-sibling metadata so
+/// elided. Carries id, kind, depth, parent, slot, and prev-sibling metadata so
 /// `ForEach`-time consumers don't need a second walk to compute spacing
 /// / drop targets. Lifted out of `EditorView` so `BlockLayoutCache` can
 /// own the cached form alongside its height/offset machinery.
-///
-/// `block` is a snapshot at structural-invalidation time. Gesture
-/// callers read `.id` and `.kind` only — both stable across text
-/// edits — so staleness on `.text` doesn't bite the per-tick paths.
 struct VisibleRow {
-    let block: Block
+    let id: BlockID
+    let kind: VisibleRowKind
     let depth: Int
     let parentID: BlockID?
     let slot: Int
-    let prev: Block?
+    let prevKind: VisibleRowKind?
     let prevDepth: Int
 }
 
@@ -32,13 +91,13 @@ func computeVisibleLayout(
 ) -> [VisibleRow] {
     var rows: [VisibleRow] = []
     rows.reserveCapacity(snapshot.count)
-    var lastVisible: Block? = nil
+    var lastVisibleKind: VisibleRowKind? = nil
     var lastDepth: Int = 0
     appendVisible(
         in: snapshot, depth: 0, parentID: nil, hidden: hidden,
         isCollapsed: isCollapsed,
         rows: &rows,
-        lastVisible: &lastVisible, lastDepth: &lastDepth
+        lastVisibleKind: &lastVisibleKind, lastDepth: &lastDepth
     )
     return rows
 }
@@ -50,16 +109,17 @@ private func appendVisible(
     hidden: Set<BlockID>,
     isCollapsed: (Block) -> Bool,
     rows: inout [VisibleRow],
-    lastVisible: inout Block?,
+    lastVisibleKind: inout VisibleRowKind?,
     lastDepth: inout Int
 ) {
     for block in blocks {
+        let kind = VisibleRowKind(block.kind)
         if !hidden.contains(block.id) {
             rows.append(VisibleRow(
-                block: block, depth: depth, parentID: parentID,
-                slot: rows.count, prev: lastVisible, prevDepth: lastDepth
+                id: block.id, kind: kind, depth: depth, parentID: parentID,
+                slot: rows.count, prevKind: lastVisibleKind, prevDepth: lastDepth
             ))
-            lastVisible = block
+            lastVisibleKind = kind
             lastDepth = depth
         }
         if !isCollapsed(block) {
@@ -70,7 +130,7 @@ private func appendVisible(
                 in: block.children, depth: childDepth, parentID: block.id,
                 hidden: hidden, isCollapsed: isCollapsed,
                 rows: &rows,
-                lastVisible: &lastVisible, lastDepth: &lastDepth
+                lastVisibleKind: &lastVisibleKind, lastDepth: &lastDepth
             )
         }
     }

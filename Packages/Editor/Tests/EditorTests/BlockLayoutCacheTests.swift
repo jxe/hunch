@@ -138,7 +138,7 @@ struct BlockLayoutCacheTests {
         let (rows2, _) = cache.currentVisibleRows(snapshot: snapshot, isCollapsed: { _ in false })
 
         #expect(rows1.count == 2)
-        #expect(rows1.map { $0.block.id } == rows2.map { $0.block.id })
+        #expect(rows1.map(\.id) == rows2.map(\.id))
         // No invalidation between calls — version should not advance.
         #expect(cache.structuralVersion == v0)
     }
@@ -157,7 +157,7 @@ struct BlockLayoutCacheTests {
         let c = Block.paragraph(text: AttributedString("c"))
         let (rows, _) = cache.currentVisibleRows(snapshot: [a, b, c], isCollapsed: { _ in false })
         #expect(rows.count == 3)
-        #expect(rows.last?.block.id == c.id)
+        #expect(rows.last?.id == c.id)
     }
 
     @Test func collapsedSubtreeIsHiddenFromVisibleRows() {
@@ -171,7 +171,7 @@ struct BlockLayoutCacheTests {
             snapshot: [toggle, after],
             isCollapsed: { $0.id == toggle.id }
         )
-        #expect(rowsClosed.map { $0.block.id } == [toggle.id, after.id])
+        #expect(rowsClosed.map(\.id) == [toggle.id, after.id])
         #expect(hiddenClosed.contains(child.id))
 
         cache.invalidateStructure()
@@ -181,7 +181,7 @@ struct BlockLayoutCacheTests {
             snapshot: [toggle, after],
             isCollapsed: { _ in false }
         )
-        #expect(rowsOpen.map { $0.block.id } == [toggle.id, child.id, after.id])
+        #expect(rowsOpen.map(\.id) == [toggle.id, child.id, after.id])
         #expect(!hiddenOpen.contains(child.id))
     }
 }
