@@ -326,6 +326,50 @@ struct DocumentMutationTests {
         #expect(doc.children[1].children.count == 1)
     }
 
+    @Test func slideSiblingsDownBeforeHeadingMovesToHeadingStart() {
+        // [bullet x, heading Out {a, b}]
+        // Slide-down x should land at the beginning of the heading body, not
+        // after the heading where heading-containment would append it.
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            children: [
+                .bullet(text: AttributedString("x")),
+                .heading(level: .h1, text: AttributedString("Out"), children: [
+                    .bullet(text: AttributedString("a")),
+                    .bullet(text: AttributedString("b"))
+                ])
+            ]
+        )
+        let xID = doc.children[0].id
+        let aID = doc.children[1].children[0].id
+        let bID = doc.children[1].children[1].id
+        #expect(doc.slideSiblings([xID], by: 1))
+        #expect(doc.children.count == 1)
+        #expect(doc.children[0].children.map(\.id) == [xID, aID, bID])
+    }
+
+    @Test func slideSiblingsDownBeforeContainerMovesToContainerStart() {
+        // [bullet x, toggle Out {a, b}]
+        // Slide-down x should use the same "beginning of the next block" rule
+        // for any container that can legally accept x.
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            children: [
+                .bullet(text: AttributedString("x")),
+                .toggle(title: AttributedString("Out"), children: [
+                    .bullet(text: AttributedString("a")),
+                    .bullet(text: AttributedString("b"))
+                ])
+            ]
+        )
+        let xID = doc.children[0].id
+        let aID = doc.children[1].children[0].id
+        let bID = doc.children[1].children[1].id
+        #expect(doc.slideSiblings([xID], by: 1))
+        #expect(doc.children.count == 1)
+        #expect(doc.children[0].children.map(\.id) == [xID, aID, bID])
+    }
+
     @Test func slideSiblingsAtBoundaryFallsBackToOutdentWhenNeighborIsLeaf() {
         // [bullet A {x}, paragraph P]
         // Slide-down x from end of A → P is a leaf, can't accept; falls back

@@ -699,8 +699,16 @@ public final class Document: @MainActor Identifiable {
                 for id in ids { removeSubtree(id) }
                 return insertSubtrees(movedBlocks, at: DropPath(parent: grandparentID, position: parentIndexUnderGrand + 1))
             }
-            // Slide down: remove slab, insert at first + 1 (so next-sibling lands before the slab)
             let movedBlocks = positions.map { siblings[$0] }
+            let nextSibling = siblings[nextPosition]
+            if nextSibling.isContainer {
+                let migrationTarget = DropPath(parent: nextSibling.id, position: 0)
+                if canDrop(ids: orderedIDs, to: migrationTarget) {
+                    for id in ids { removeSubtree(id) }
+                    return insertSubtrees(movedBlocks, at: migrationTarget)
+                }
+            }
+            // Slide down: remove slab, insert at first + 1 (so next-sibling lands before the slab)
             for id in ids { removeSubtree(id) }
             // After removal, original `first+1` (the next sibling) is now at index `first`.
             // To slide one position, insert moved blocks at index `first + 1`.
