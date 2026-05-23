@@ -154,6 +154,7 @@ public enum NotionStyle {
     static let inlineCodeSize: CGFloat = 13.6
     public static let inlineCodeRadius: CGFloat = 3
     public static let inlineCodeHorizontalPadding: CGFloat = 4
+    public static let inlineCodeVerticalPadding: CGFloat = 1.5
 
     // MARK: List indentation
     static let indentStep: CGFloat = 24

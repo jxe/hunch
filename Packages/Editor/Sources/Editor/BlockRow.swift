@@ -623,9 +623,10 @@ struct BlockRow: View, Equatable {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageLookups[$0]?.title }))
+                    InlineRenderer.swiftUIText(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageLookups[$0]?.title })
                         .font(NotionStyle.body())
                         .lineSpacing(NotionStyle.bodyLineSpacing)
+                        .textRenderer(InlineCodeChipRenderer())
                 }
                 .foregroundStyle(NotionStyle.foreground)
                 .padding(.horizontal, 8)
@@ -719,6 +720,7 @@ struct BlockRow: View, Equatable {
                     .font(font)
                     .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
                     .lineSpacing(lineSpacing)
+                    .textRenderer(InlineCodeChipRenderer())
                     .strikethrough(strikethrough)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -788,6 +790,7 @@ private func decoratedText(
     previews: [URL: LinkPreview]
 ) -> Text {
     var output = Text("")
+    let inlineCodePaddingText = "\u{2005}"
     for run in source.runs {
         let segment = source[run.range]
         let runText = String(segment.characters)
@@ -814,11 +817,11 @@ private func decoratedText(
             return preview
         }
 
-        var attributed = AttributedString(displayText)
+        let renderedDisplay = code ? inlineCodePaddingText + displayText + inlineCodePaddingText : displayText
+        var attributed = AttributedString(renderedDisplay)
         if code {
             attributed.font = NotionStyle.mono(size: NotionStyle.inlineCodeSize)
             attributed.foregroundColor = NotionStyle.codeForeground
-            attributed.backgroundColor = NotionStyle.codeBackground
         } else if externalWithPreview != nil {
             var f = NotionStyle.body(size: fontSize, weight: .medium)
             if italic { f = f.italic() }
@@ -847,7 +850,11 @@ private func decoratedText(
                 + Text(" ")
         }
 
-        output = output + Text(attributed)
+        var text = Text(attributed)
+        if code {
+            text = text.customAttribute(InlineCodeChipAttribute())
+        }
+        output = output + text
     }
     return output
 }
@@ -1026,9 +1033,10 @@ struct BlockRowPreview: View, Equatable {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    Text(InlineRenderer.swiftUIAttributed(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageLookups[$0]?.title }))
+                    InlineRenderer.swiftUIText(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageLookups[$0]?.title })
                         .font(NotionStyle.body())
                         .lineSpacing(NotionStyle.bodyLineSpacing)
+                        .textRenderer(InlineCodeChipRenderer())
                 }
                 .foregroundStyle(NotionStyle.foreground)
                 .padding(.horizontal, 8)
@@ -1095,6 +1103,7 @@ struct BlockRowPreview: View, Equatable {
                 .font(font)
                 .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
                 .lineSpacing(lineSpacing)
+                .textRenderer(InlineCodeChipRenderer())
                 .strikethrough(strikethrough)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

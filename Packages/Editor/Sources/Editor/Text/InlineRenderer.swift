@@ -1,15 +1,17 @@
 import SwiftUI
 
-/// Translates a `Core.AttributedString` (with our custom inline marks) into a SwiftUI-renderable
-/// `AttributedString` that uses Foundation/SwiftUI attributes (font weight, italic, link, etc.).
+/// Translates a `Core.AttributedString` (with our custom inline marks) into SwiftUI `Text`
+/// that uses Foundation/SwiftUI attributes (font weight, italic, link, etc.).
 enum InlineRenderer {
-    static func swiftUIAttributed(
+    private static let inlineCodePaddingText = "\u{2005}"
+
+    static func swiftUIText(
         _ source: AttributedString,
         baseFont: Font = NotionStyle.body(),
         boldFont: Font = NotionStyle.body(weight: .semibold),
         resolvingPageTitle pageTitle: (String) -> String? = { _ in nil }
-    ) -> AttributedString {
-        var result = AttributedString()
+    ) -> Text {
+        var result = Text("")
         for run in source.runs {
             let segment = source[run.range]
             let link = run.link
@@ -19,16 +21,16 @@ enum InlineRenderer {
             // a non-nil result is the resolved title to display in place of
             // the raw link text.
             let display = link.flatMap { pageTitle($0.absoluteString) } ?? String(segment.characters)
-            var attributed = AttributedString(display)
 
             let bold = run[InlineAttributes.BoldAttribute.self] == true
             let italic = run[InlineAttributes.ItalicAttribute.self] == true
             let code = run[InlineAttributes.CodeAttribute.self] == true
             let strike = run[InlineAttributes.StrikethroughAttribute.self] == true
+            let renderedDisplay = code ? Self.inlineCodePaddingText + display + Self.inlineCodePaddingText : display
+            var attributed = AttributedString(renderedDisplay)
             if code {
                 attributed.font = NotionStyle.mono(size: NotionStyle.inlineCodeSize)
                 attributed.foregroundColor = NotionStyle.codeForeground
-                attributed.backgroundColor = NotionStyle.codeBackground
             } else {
                 var font = bold ? boldFont : baseFont
                 if italic {
@@ -46,7 +48,11 @@ enum InlineRenderer {
                 attributed.foregroundColor = NotionStyle.linkForeground
             }
 
-            result.append(attributed)
+            var text = Text(attributed)
+            if code {
+                text = text.customAttribute(InlineCodeChipAttribute())
+            }
+            result = result + text
         }
         return result
     }
