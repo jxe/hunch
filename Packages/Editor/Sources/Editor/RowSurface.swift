@@ -113,6 +113,9 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
     }
 
     var body: some View {
+        let rowReorderGaps = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.reorderGap) })
+        let _ = layoutCache.updateOrder(rows.map(\.id), topGaps: rowReorderGaps)
+
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(rows, id: \.id) { row in

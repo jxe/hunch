@@ -147,7 +147,6 @@ public struct EditorView: View {
                 let (rows, _) = layoutCache.currentVisibleRows(
                     snapshot: snapshot, isCollapsed: isCollapsedSection
                 )
-                layoutCache.updateOrder(rows.map(\.id))
                 return rows
             }()
             // Translate the (tree-aware) drop hover and lift footprint into the

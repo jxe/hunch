@@ -95,6 +95,30 @@ struct ReorderDropResolverTests {
         }
     }
 
+    @MainActor
+    @Test func cacheBackedFramesKeepDropSlotStableAcrossGapRegion() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["a", "b", "c"], topGaps: ["b": 42])
+        cache.setHeight(30, for: "a")
+        cache.setHeight(30, for: "b")
+        cache.setHeight(30, for: "c")
+        cache.contentWidth = 320
+
+        let frames = ["a", "b", "c"].compactMap { id in
+            cache.frame(of: id).map { ReorderDropFrame(frame: $0) }
+        }
+
+        for y: CGFloat in [31, 45, 60, 71] {
+            #expect(
+                ReorderDropResolver.insertionIndex(
+                    forY: y,
+                    rowFrames: frames,
+                    previousIndex: 1
+                ) == 1
+            )
+        }
+    }
+
     @Test func acceptsLargeJumpsWithoutStickyIntermediateSlots() {
         let frames = makeFrames(count: 5)
 

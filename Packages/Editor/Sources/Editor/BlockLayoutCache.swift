@@ -219,6 +219,16 @@ class RowSurfaceLayoutCache<ID: Hashable> {
     /// row whose height is unknown isn't selectable as a slot boundary).
     private(set) var offsets: [CGFloat] = [0]
 
+    /// Extra layout space rendered before a row but not owned by the row
+    /// itself. Reorder uses this for the visible drop gap: hit-testing inside
+    /// that gap must not behave as though it were hovering over the row below.
+    private(set) var topGaps: [ID: CGFloat] = [:]
+
+    /// Cached row extents in document-local coordinates. These mirror
+    /// `orderedIDs` and deliberately exclude `topGaps` from the row height.
+    private var rowTops: [CGFloat] = []
+    private var rowBottoms: [CGFloat] = []
+
     /// Y-position of the LazyVStack's top in PageHoverCoordinateSpace.
     /// Updated from a single anchor view at the top of the content area.
     /// One write per scroll tick — vs. N writes when each row published its
@@ -252,10 +262,15 @@ class RowSurfaceLayoutCache<ID: Hashable> {
 
     /// Replace the ordered ID list and reverse index, then recompute offsets.
     /// Called once per body render with the same `[ID]` the `ForEach`
-    /// iterates over. No-op if the order didn't change.
-    func updateOrder(_ ids: [ID]) {
-        if ids == orderedIDs { return }
+    /// iterates over. `topGaps` carries layout space before each row that is
+    /// not part of that row's hit-testable frame.
+    func updateOrder(_ ids: [ID], topGaps newTopGaps: [ID: CGFloat] = [:]) {
+        let sanitizedTopGaps = newTopGaps.compactMapValues { gap in
+            gap > 0 ? gap : nil
+        }
+        if ids == orderedIDs, sanitizedTopGaps == topGaps { return }
         orderedIDs = ids
+        topGaps = sanitizedTopGaps
         indexByID.removeAll(keepingCapacity: true)
         for (i, id) in ids.enumerated() { indexByID[id] = i }
         recomputeOffsets()
@@ -266,11 +281,24 @@ class RowSurfaceLayoutCache<ID: Hashable> {
     /// O(N) but cheap — N here is visible rows, not document rows.
     func recomputeOffsets() {
         offsets.removeAll(keepingCapacity: true)
+        rowTops.removeAll(keepingCapacity: true)
+        rowBottoms.removeAll(keepingCapacity: true)
         offsets.reserveCapacity(orderedIDs.count + 1)
-        offsets.append(0)
+        rowTops.reserveCapacity(orderedIDs.count)
+        rowBottoms.reserveCapacity(orderedIDs.count)
         var sum: CGFloat = 0
         for id in orderedIDs {
-            sum += heights[id] ?? 0
+            sum += topGaps[id] ?? 0
+            let top = sum
+            let bottom = top + (heights[id] ?? 0)
+            offsets.append(top)
+            rowTops.append(top)
+            rowBottoms.append(bottom)
+            sum = bottom
+        }
+        if orderedIDs.isEmpty {
+            offsets.append(sum)
+        } else {
             offsets.append(sum)
         }
     }
@@ -310,7 +338,7 @@ class RowSurfaceLayoutCache<ID: Hashable> {
         var bestIdx = 0
         var bestDist: CGFloat = .infinity
         for i in 0..<orderedIDs.count {
-            let mid = (offsets[i] + offsets[i+1]) / 2
+            let mid = (rowTops[i] + rowBottoms[i]) / 2
             let d = abs(mid - docY)
             if d < bestDist { bestDist = d; bestIdx = i }
         }
@@ -321,7 +349,7 @@ class RowSurfaceLayoutCache<ID: Hashable> {
     /// isn't in the visible-row order.
     func topY(of id: ID) -> CGFloat? {
         guard let i = indexByID[id] else { return nil }
-        return contentOriginY + offsets[i]
+        return contentOriginY + rowTops[i]
     }
 
     /// Synthetic CGRect for `id` in PageHoverCoordinateSpace. Reconstructed
@@ -331,7 +359,7 @@ class RowSurfaceLayoutCache<ID: Hashable> {
         guard let i = indexByID[id], let h = heights[id] else { return nil }
         return CGRect(
             x: contentOriginX,
-            y: contentOriginY + offsets[i],
+            y: contentOriginY + rowTops[i],
             width: contentWidth,
             height: h
         )
@@ -368,7 +396,7 @@ class RowSurfaceLayoutCache<ID: Hashable> {
         var bestIdx = 0
         var bestDist: CGFloat = .infinity
         for i in 0..<orderedIDs.count {
-            let mid = (offsets[i] + offsets[i+1]) / 2
+            let mid = (rowTops[i] + rowBottoms[i]) / 2
             let d = abs(mid - internalY)
             if d < bestDist { bestDist = d; bestIdx = i }
         }
@@ -379,26 +407,28 @@ class RowSurfaceLayoutCache<ID: Hashable> {
     /// the cached measurement. Width is `contentWidth`.
     func internalFrame(of id: ID) -> CGRect? {
         guard let i = indexByID[id], let h = heights[id] else { return nil }
-        return CGRect(x: 0, y: offsets[i], width: contentWidth, height: h)
+        return CGRect(x: 0, y: rowTops[i], width: contentWidth, height: h)
     }
 
     // MARK: - Internals
 
-    /// Binary search for the row whose [offsets[i], offsets[i+1]) range
+    /// Binary search for the row whose [rowTops[i], rowBottoms[i]) range
     /// contains `docY`. Caller guarantees `docY` is in `[0, contentHeight)`.
     private func binarySearchContaining(docY: CGFloat) -> Int? {
-        // Find smallest i with offsets[i+1] > docY; that's the containing row.
+        // Find smallest i with rowBottoms[i] > docY; then verify the point
+        // is past that row's top so explicit gaps between rows hit no row.
         var lo = 0
         var hi = orderedIDs.count
         while lo < hi {
             let mid = (lo + hi) / 2
-            if offsets[mid + 1] <= docY {
+            if rowBottoms[mid] <= docY {
                 lo = mid + 1
             } else {
                 hi = mid
             }
         }
-        return lo < orderedIDs.count ? lo : nil
+        guard lo < orderedIDs.count, docY >= rowTops[lo], docY < rowBottoms[lo] else { return nil }
+        return lo
     }
 }
 

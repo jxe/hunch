@@ -53,6 +53,25 @@ struct RowSurfaceLayoutCacheTests {
         #expect(cache.frame(of: "measured")?.height == 25)
         #expect(cache.frame(of: "unmeasured") == nil)
     }
+
+    @Test func topGapIsEmptySpaceBeforeRow() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["a", "b", "c"], topGaps: ["b": 42])
+        cache.setHeight(30, for: "a")
+        cache.setHeight(30, for: "b")
+        cache.setHeight(30, for: "c")
+        cache.contentOriginX = 24
+        cache.contentOriginY = 100
+        cache.contentWidth = 320
+
+        #expect(cache.offsets == [0, 72, 102, 132])
+        #expect(cache.contentHeight == 132)
+        #expect(cache.frame(of: "b") == CGRect(x: 24, y: 172, width: 320, height: 30))
+        #expect(cache.blockIDAtY(130) == nil)
+        #expect(cache.blockIDAtInternalY(45) == nil)
+        #expect(cache.nearestBlockIDAtInternalY(31) == "a")
+        #expect(cache.nearestBlockIDAtInternalY(60) == "b")
+    }
 }
 
 @Suite("BlockLayoutCache")
