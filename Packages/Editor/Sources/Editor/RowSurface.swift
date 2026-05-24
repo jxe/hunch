@@ -214,7 +214,7 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
         .onContinuousHover { phase in
             switch phase {
             case .active(let location):
-                actions.onHover(layoutCache.nearestBlockID(toY: location.y))
+                actions.onHover(layoutCache.blockIDAtY(location.y))
             case .ended:
                 actions.onHover(nil)
             }
