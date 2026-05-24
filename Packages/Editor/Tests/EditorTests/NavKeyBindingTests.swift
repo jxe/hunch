@@ -65,6 +65,11 @@ struct NavKeyBindingTests {
         #expect(EditorView.navAction(for: KeyEquivalent("\u{19}"), modifiers: []) == .outdent)
     }
 
+    @Test func shiftedTabOutdents() {
+        // Some event paths report Shift+Tab as .tab plus a shift modifier.
+        #expect(EditorView.navAction(for: .tab, modifiers: .shift) == .outdent)
+    }
+
     @Test func plainArrowsMoveCursor() {
         #expect(EditorView.navAction(for: .upArrow, modifiers: []) == .moveCursor(delta: -1))
         #expect(EditorView.navAction(for: .downArrow, modifiers: []) == .moveCursor(delta: +1))

@@ -59,6 +59,7 @@ public struct EditorView: View {
     /// can ask "is the active editor for this block?" and call `makeFirstResponder`
     /// synchronously instead of waiting for the NSTextView's own async self-grab.
     @State var macActiveTextView = MacActiveTextView()
+    @State var macShiftTabMonitor: Any?
     #endif
     #if os(iOS)
     /// One-tick overlap during inter-block focus transfer: when `state.sessionState` flips
@@ -293,7 +294,15 @@ public struct EditorView: View {
                 forcePageFocusGrab()
                 installUndoApply()
                 wireEditorCommands()
+                #if os(macOS)
+                installShiftTabMonitor()
+                #endif
             }
+            #if os(macOS)
+            .onDisappear {
+                removeShiftTabMonitor()
+            }
+            #endif
             // Intercept inline `[text](path.md)` / `[text](https://…)` clicks
             // inside read-only `Text` rows. Editor classifies the URL via
             // `resolvePageID` — same hook used at render time — and routes
@@ -374,6 +383,30 @@ public struct EditorView: View {
         }
         clearCursor()
     }
+
+    #if os(macOS)
+    private func installShiftTabMonitor() {
+        guard macShiftTabMonitor == nil else { return }
+        macShiftTabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let isShiftTab =
+                event.keyCode == 48 &&
+                modifiers.contains(.shift) &&
+                modifiers.subtracting([.shift, .capsLock]).isEmpty
+            guard isShiftTab else { return event }
+            guard pageFocused || state.editingBlock != nil else { return event }
+            editorCommands.perform(.outdent)
+            return nil
+        }
+    }
+
+    private func removeShiftTabMonitor() {
+        if let monitor = macShiftTabMonitor {
+            NSEvent.removeMonitor(monitor)
+            macShiftTabMonitor = nil
+        }
+    }
+    #endif
 
 
     // MARK: - Row builder
@@ -856,9 +889,11 @@ public struct EditorView: View {
         .init(key: KeyEquivalent("\u{8}"), modifiers: [], action: .deleteSelection),
         .init(key: KeyEquivalent("\u{7F}"), modifiers: [], action: .deleteSelection),
 
-        // Tab — indent / outdent. Shift+Tab arrives as a distinct character
-        // (BackTab, U+0019), not as .tab + .shift, so it gets its own row.
+        // Tab — indent / outdent. Shift+Tab usually arrives as a distinct
+        // BackTab character (U+0019), but some paths report .tab + .shift.
+        // Bind both so indent/outdent stay symmetric in nav mode.
         .init(key: .tab, modifiers: [], action: .indent),
+        .init(key: .tab, modifiers: .shift, action: .outdent),
         .init(key: KeyEquivalent("\u{19}"), modifiers: [], action: .outdent),
 
         // Arrows — modifier-aware action.
