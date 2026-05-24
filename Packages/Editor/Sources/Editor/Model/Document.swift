@@ -623,98 +623,90 @@ public final class Document: @MainActor Identifiable {
         removeSubtree(blockID)
     }
 
-    /// Move a contiguous slab of sibling subtrees up or down by one position.
-    /// Requires all `ids` to be siblings under one parent. Returns `false`
-    /// otherwise. At a parent boundary, the slab tries to migrate into the
-    /// adjacent sibling-parent (end → first child of next sibling, top →
-    /// last child of previous sibling) when that sibling is a container that
-    /// accepts the slab; otherwise it reparents to the grandparent (the
-    /// classic outdent-at-boundary).
-    @discardableResult
-    public func slideSiblings(_ ids: Set<BlockID>, by delta: Int) -> Bool {
-        guard delta == -1 || delta == 1, !ids.isEmpty else { return false }
-        // Roots that share a parent
+    /// Can the given contiguous sibling slab slide by one outline step?
+    public func canSlideSiblings(_ ids: Set<BlockID>, by delta: Int) -> Bool {
+        slidePlan(for: ids, by: delta) != nil
+    }
+
+    private struct SlidePlan {
+        let orderedIDs: [BlockID]
+        let movedBlocks: [Block]
+        let target: DropPath
+    }
+
+    /// Resolve a contiguous sibling slab move without mutating the document.
+    ///
+    /// Option-arrow movement is an outline reorder operation, not an implicit
+    /// indent command. Headings are the one exception: because heading bodies
+    /// render flush with their heading, sliding across a heading boundary may
+    /// enter the heading body. Structural containers (toggles, templates, list
+    /// items) are skipped as whole subtrees; Tab/Shift-Tab are the explicit
+    /// hierarchy-changing commands for those.
+    private func slidePlan(for ids: Set<BlockID>, by delta: Int) -> SlidePlan? {
+        guard delta == -1 || delta == 1, !ids.isEmpty else { return nil }
         let parentID = parent(of: ids.first!)
-        for id in ids {
-            if parent(of: id) != parentID { return false }
-        }
+        for id in ids where parent(of: id) != parentID { return nil }
+
         let siblings: [Block] = parentID.flatMap(find)?.children ?? children
         let positions = ids.compactMap { id in siblings.firstIndex { $0.id == id } }.sorted()
-        guard positions.count == ids.count else { return false }
-        // Contiguous?
-        guard positions == Array(positions.first!...positions.last!) else { return false }
+        guard positions.count == ids.count else { return nil }
+        guard positions == Array(positions.first!...positions.last!) else { return nil }
 
         let first = positions.first!
         let last = positions.last!
         let orderedIDs = positions.map { siblings[$0].id }
+        let movedBlocks = positions.map { siblings[$0] }
+        let target: DropPath
 
         if delta < 0 {
             if first == 0 {
-                // At top of parent: prefer migrating into the previous sibling
-                // parent's tail (so the slab descends rather than popping out).
-                // Falls through to outdent if there's no previous sibling or
-                // it can't accept these blocks.
-                guard let parentID, let parentBlock = find(parentID) else { return false }
+                guard let parentID, let parentBlock = find(parentID) else { return nil }
                 let grandparentID = parent(of: parentID)
                 let outerSiblings: [Block] = grandparentID.flatMap(find)?.children ?? children
-                guard let parentIndexUnderGrand = outerSiblings.firstIndex(where: { $0.id == parentBlock.id }) else { return false }
-                let movedBlocks = positions.map { siblings[$0] }
-                if parentIndexUnderGrand > 0 {
-                    let prevSibling = outerSiblings[parentIndexUnderGrand - 1]
-                    let migrationTarget = DropPath(parent: prevSibling.id, position: prevSibling.children.count)
-                    if canDrop(ids: orderedIDs, to: migrationTarget) {
-                        for id in ids { removeSubtree(id) }
-                        return insertSubtrees(movedBlocks, at: migrationTarget)
-                    }
+                guard let parentIndex = outerSiblings.firstIndex(where: { $0.id == parentBlock.id }) else { return nil }
+                target = DropPath(parent: grandparentID, position: parentIndex)
+            } else {
+                let previousSibling = siblings[first - 1]
+                if previousSibling.isHeading {
+                    target = DropPath(parent: previousSibling.id, position: previousSibling.children.count)
+                } else {
+                    target = DropPath(parent: parentID, position: first - 1)
                 }
-                // Outdent: reparent slab to grandparent just before parent.
-                for id in ids { removeSubtree(id) }
-                return insertSubtrees(movedBlocks, at: DropPath(parent: grandparentID, position: parentIndexUnderGrand))
             }
-            // Swap with previous sibling (single-position slide)
-            let movedBlocks = positions.map { siblings[$0] }
-            for id in ids { removeSubtree(id) }
-            let drop = DropPath(parent: parentID, position: first - 1)
-            return insertSubtrees(movedBlocks, at: drop)
         } else {
             let nextPosition = last + 1
             if nextPosition >= siblings.count {
-                // At end of parent: prefer migrating into the next sibling
-                // parent's head. Falls through to outdent if there's no next
-                // sibling or it can't accept these blocks.
-                guard let parentID, let parentBlock = find(parentID) else { return false }
+                guard let parentID, let parentBlock = find(parentID) else { return nil }
                 let grandparentID = parent(of: parentID)
                 let outerSiblings: [Block] = grandparentID.flatMap(find)?.children ?? children
-                guard let parentIndexUnderGrand = outerSiblings.firstIndex(where: { $0.id == parentBlock.id }) else { return false }
-                let movedBlocks = positions.map { siblings[$0] }
-                if parentIndexUnderGrand + 1 < outerSiblings.count {
-                    let nextSibling = outerSiblings[parentIndexUnderGrand + 1]
-                    let migrationTarget = DropPath(parent: nextSibling.id, position: 0)
-                    if canDrop(ids: orderedIDs, to: migrationTarget) {
-                        for id in ids { removeSubtree(id) }
-                        return insertSubtrees(movedBlocks, at: migrationTarget)
-                    }
-                }
-                // Outdent: reparent slab to grandparent just after parent.
-                for id in ids { removeSubtree(id) }
-                return insertSubtrees(movedBlocks, at: DropPath(parent: grandparentID, position: parentIndexUnderGrand + 1))
-            }
-            let movedBlocks = positions.map { siblings[$0] }
-            let nextSibling = siblings[nextPosition]
-            if nextSibling.isContainer {
-                let migrationTarget = DropPath(parent: nextSibling.id, position: 0)
-                if canDrop(ids: orderedIDs, to: migrationTarget) {
-                    for id in ids { removeSubtree(id) }
-                    return insertSubtrees(movedBlocks, at: migrationTarget)
+                guard let parentIndex = outerSiblings.firstIndex(where: { $0.id == parentBlock.id }) else { return nil }
+                target = DropPath(parent: grandparentID, position: parentIndex + 1)
+            } else {
+                let nextSibling = siblings[nextPosition]
+                if nextSibling.isHeading {
+                    target = DropPath(parent: nextSibling.id, position: 0)
+                } else {
+                    // After removal, the old next sibling occupies `first`.
+                    // Inserting at `first + 1` places the slab just after it,
+                    // skipping any structural subtree it owns.
+                    target = DropPath(parent: parentID, position: first + 1)
                 }
             }
-            // Slide down: remove slab, insert at first + 1 (so next-sibling lands before the slab)
-            for id in ids { removeSubtree(id) }
-            // After removal, original `first+1` (the next sibling) is now at index `first`.
-            // To slide one position, insert moved blocks at index `first + 1`.
-            let drop = DropPath(parent: parentID, position: first + 1)
-            return insertSubtrees(movedBlocks, at: drop)
         }
+
+        guard canDrop(ids: orderedIDs, to: target) else { return nil }
+        return SlidePlan(orderedIDs: orderedIDs, movedBlocks: movedBlocks, target: target)
+    }
+
+    /// Move a contiguous slab of sibling subtrees up or down by one outline
+    /// step. Requires all `ids` to be siblings under one parent. Headings act
+    /// as section envelopes; toggles/templates/list items are skipped as whole
+    /// structural subtrees unless the slab is explicitly inside them.
+    @discardableResult
+    public func slideSiblings(_ ids: Set<BlockID>, by delta: Int) -> Bool {
+        guard let plan = slidePlan(for: ids, by: delta) else { return false }
+        for id in plan.orderedIDs { removeSubtree(id) }
+        return insertSubtrees(plan.movedBlocks, at: plan.target)
     }
 
     // MARK: - Bulk move (drop)

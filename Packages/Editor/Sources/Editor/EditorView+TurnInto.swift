@@ -490,9 +490,7 @@ extension EditorView {
     }
 
     fileprivate func indentMenuTargets(_ ids: [BlockID], by delta: Int) {
-        for id in ids {
-            _ = changeIndent(id, by: delta)
-        }
+        _ = indentBlocks(ids, by: delta)
     }
 
     fileprivate func turnIntoTargets(for blocks: [Block]) -> [BlockTurnInto] {

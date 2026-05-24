@@ -1545,15 +1545,11 @@ public struct EditorView: View {
     func moveBlocksInDocument(_ ids: Set<BlockID>, by delta: Int) {
         let roots = document.selectionSubtreeRoots(ids)
         guard !roots.isEmpty else { return }
-        // `slideSiblings` is internally atomic: it returns false and leaves the
-        // doc untouched if the slab isn't a valid contiguous same-parent set.
-        // On the invalid path the wrapping transaction still registers a
-        // before==after undo entry, which Cmd-Z silently no-ops — acceptable.
-        var moved = false
+        guard document.canSlideSiblings(Set(roots), by: delta) else { return }
         mutate("Move Block") {
-            moved = document.slideSiblings(Set(roots), by: delta)
+            _ = document.slideSiblings(Set(roots), by: delta)
         }
-        Diag.navkey.debug("slideSiblings ids=\(ids.count, privacy: .public) roots=\(roots.count, privacy: .public) delta=\(delta, privacy: .public) moved=\(moved, privacy: .public)")
+        Diag.navkey.debug("slideSiblings ids=\(ids.count, privacy: .public) roots=\(roots.count, privacy: .public) delta=\(delta, privacy: .public) moved=true")
         revealHiddenBlocks(ids)
     }
 
@@ -1649,15 +1645,23 @@ public struct EditorView: View {
         return firstAfter ?? lastBefore
     }
 
-    /// Apply Tab / Shift-Tab indent change to the effective selection. Each
-    /// subtree-root indents/outdents independently — selection across parents
-    /// is allowed; ops that aren't valid for some roots no-op for those.
+    /// Apply Tab / Shift-Tab indent change to the effective selection.
     func indentSelection(by delta: Int) {
-        let roots = document.selectionSubtreeRoots(state.selection)
-        guard !roots.isEmpty else { return }
-        guard canChangeIndent(ids: roots, by: delta) else { return }
+        _ = indentBlocks(state.selection, by: delta)
+    }
+
+    /// Bulk indent/outdent. All-or-nothing: every subtree-root must be legal
+    /// before the transaction starts. Indent runs top-down; outdent runs
+    /// bottom-up so siblings leaving the same parent keep their visible order.
+    @discardableResult
+    func indentBlocks(_ ids: some Sequence<BlockID>, by delta: Int) -> Bool {
+        let selected = Set(ids)
+        let roots = document.selectionSubtreeRoots(selected)
+        guard !roots.isEmpty else { return false }
+        guard canChangeIndent(ids: roots, by: delta) else { return false }
         mutate(delta > 0 ? "Indent" : "Outdent") {
-            for id in roots {
+            let ordered = delta < 0 ? Array(roots.reversed()) : roots
+            for id in ordered {
                 if delta > 0 {
                     document.indent(id)
                 } else if delta < 0 {
@@ -1665,7 +1669,8 @@ public struct EditorView: View {
                 }
             }
         }
-        revealHiddenBlocks(state.selection)
+        revealHiddenBlocks(selected)
+        return true
     }
 
     func copySelectionToPasteboard() -> Bool {

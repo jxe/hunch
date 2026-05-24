@@ -282,9 +282,10 @@ struct DocumentMutationTests {
         #expect(!doc.slideSiblings([topID, nestedID], by: -1))
     }
 
-    @Test func slideSiblingsDownAtEndMigratesIntoNextSiblingContainer() {
+    @Test func slideSiblingsDownAtEndExitsParentBeforeNextStructuralContainer() {
         // [bullet A {x, y}, bullet B {z}]
-        // Slide-down y from end of A → first child of B.
+        // Slide-down y from end of A exits A and lands before B. Option-arrow
+        // movement must not implicitly indent into structural containers.
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
             children: [
@@ -300,13 +301,14 @@ struct DocumentMutationTests {
         let yID = doc.children[0].children[1].id
         #expect(doc.slideSiblings([yID], by: 1))
         #expect(doc.children[0].children.count == 1)
-        #expect(doc.children[1].children.count == 2)
-        #expect(doc.children[1].children[0].id == yID)
+        #expect(doc.children.map(\.id) == [doc.children[0].id, yID, doc.children[2].id])
+        #expect(doc.children[2].children.count == 1)
     }
 
-    @Test func slideSiblingsUpAtTopMigratesIntoPrevSiblingContainer() {
+    @Test func slideSiblingsUpAtTopExitsParentAfterPreviousStructuralContainer() {
         // [bullet A {x}, bullet B {y, z}]
-        // Slide-up y from top of B → last child of A.
+        // Slide-up y from top of B exits B and lands after A. Option-arrow
+        // movement must not implicitly indent into structural containers.
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
             children: [
@@ -321,9 +323,9 @@ struct DocumentMutationTests {
         )
         let yID = doc.children[1].children[0].id
         #expect(doc.slideSiblings([yID], by: -1))
-        #expect(doc.children[0].children.count == 2)
-        #expect(doc.children[0].children[1].id == yID)
-        #expect(doc.children[1].children.count == 1)
+        #expect(doc.children.map(\.id) == [doc.children[0].id, yID, doc.children[2].id])
+        #expect(doc.children[0].children.count == 1)
+        #expect(doc.children[2].children.count == 1)
     }
 
     @Test func slideSiblingsDownBeforeHeadingMovesToHeadingStart() {
@@ -348,10 +350,10 @@ struct DocumentMutationTests {
         #expect(doc.children[0].children.map(\.id) == [xID, aID, bID])
     }
 
-    @Test func slideSiblingsDownBeforeContainerMovesToContainerStart() {
+    @Test func slideSiblingsDownBeforeToggleSkipsToggleSubtree() {
         // [bullet x, toggle Out {a, b}]
-        // Slide-down x should use the same "beginning of the next block" rule
-        // for any container that can legally accept x.
+        // Slide-down x skips the whole toggle subtree instead of indenting into
+        // it. Toggles require explicit Tab/drop-on-toggle to receive children.
         let doc = Document(
             url: URL(fileURLWithPath: "/tmp/test.md"),
             children: [
@@ -366,8 +368,97 @@ struct DocumentMutationTests {
         let aID = doc.children[1].children[0].id
         let bID = doc.children[1].children[1].id
         #expect(doc.slideSiblings([xID], by: 1))
-        #expect(doc.children.count == 1)
-        #expect(doc.children[0].children.map(\.id) == [xID, aID, bID])
+        #expect(doc.children.map(\.id) == [doc.children[0].id, xID])
+        #expect(doc.children[0].children.map(\.id) == [aID, bID])
+    }
+
+    @Test func slideSiblingsUpBelowHeadingMovesToHeadingEnd() {
+        // [heading Out {a, b}, bullet x]
+        // Slide-up x enters the end of the heading body because headings are
+        // section envelopes whose children render visually flush.
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            children: [
+                .heading(level: .h1, text: AttributedString("Out"), children: [
+                    .bullet(text: AttributedString("a")),
+                    .bullet(text: AttributedString("b"))
+                ]),
+                .bullet(text: AttributedString("x"))
+            ]
+        )
+        let headingID = doc.children[0].id
+        let aID = doc.children[0].children[0].id
+        let bID = doc.children[0].children[1].id
+        let xID = doc.children[1].id
+        #expect(doc.slideSiblings([xID], by: -1))
+        #expect(doc.children.map(\.id) == [headingID])
+        #expect(doc.children[0].children.map(\.id) == [aID, bID, xID])
+    }
+
+    @Test func slideSiblingsDownInsideToggleReordersInsteadOfIndentingIntoNextChild() {
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            children: [
+                .toggle(title: AttributedString("Out"), children: [
+                    .bullet(text: AttributedString("a")),
+                    .bullet(text: AttributedString("b"), children: [
+                        .bullet(text: AttributedString("c"))
+                    ])
+                ])
+            ]
+        )
+        let aID = doc.children[0].children[0].id
+        let bID = doc.children[0].children[1].id
+        let cID = doc.children[0].children[1].children[0].id
+        #expect(doc.slideSiblings([aID], by: 1))
+        #expect(doc.children[0].children.map(\.id) == [bID, aID])
+        #expect(doc.children[0].children[0].children.map(\.id) == [cID])
+    }
+
+    @Test func slideSiblingsAtToggleBoundariesCanExitToggle() {
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            children: [
+                .paragraph(text: AttributedString("before")),
+                .toggle(title: AttributedString("Out"), children: [
+                    .bullet(text: AttributedString("a")),
+                    .bullet(text: AttributedString("b"))
+                ]),
+                .paragraph(text: AttributedString("after"))
+            ]
+        )
+        let beforeID = doc.children[0].id
+        let toggleID = doc.children[1].id
+        let aID = doc.children[1].children[0].id
+        let bID = doc.children[1].children[1].id
+        let afterID = doc.children[2].id
+
+        #expect(doc.slideSiblings([aID], by: -1))
+        #expect(doc.children.map(\.id) == [beforeID, aID, toggleID, afterID])
+
+        #expect(doc.slideSiblings([bID], by: 1))
+        #expect(doc.children.map(\.id) == [beforeID, aID, toggleID, bID, afterID])
+        #expect(doc.children[2].children.isEmpty)
+    }
+
+    @Test func outdentOnlyChildOfToggleLeavesToggleEmpty() {
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            children: [
+                .toggle(title: AttributedString("Out"), children: [
+                    .bullet(text: AttributedString("a"))
+                ]),
+                .paragraph(text: AttributedString("after"))
+            ]
+        )
+        let toggleID = doc.children[0].id
+        let aID = doc.children[0].children[0].id
+        let afterID = doc.children[1].id
+
+        #expect(doc.canOutdent(aID))
+        #expect(doc.outdent(aID))
+        #expect(doc.children.map(\.id) == [toggleID, aID, afterID])
+        #expect(doc.children[0].children.isEmpty)
     }
 
     @Test func slideSiblingsAtBoundaryFallsBackToOutdentWhenNeighborIsLeaf() {

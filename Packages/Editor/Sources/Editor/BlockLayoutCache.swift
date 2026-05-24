@@ -211,12 +211,13 @@ class RowSurfaceLayoutCache<ID: Hashable> {
     /// Reverse index. O(1) lookup of a block's slot.
     private(set) var indexByID: [ID: Int] = [:]
 
-    /// Prefix sum of heights. `offsets[i]` is the y-position of row `i`'s top
-    /// in document-local space (0 = top of LazyVStack content). Length:
-    /// `orderedIDs.count + 1`; the trailing entry is the total content height.
-    /// Unmeasured rows contribute zero — drag-drop near them resolves to the
-    /// nearest measured neighbor, which is the right behavior (an off-screen
-    /// row whose height is unknown isn't selectable as a slot boundary).
+    /// Row top positions in document-local space plus a trailing total content
+    /// height. Top gaps shift row tops but do not become part of a row's
+    /// hit-testable extent. Length: `orderedIDs.count + 1`.
+    /// Unmeasured rows contribute zero height — drag-drop near them resolves
+    /// to the nearest measured neighbor, which is the right behavior (an
+    /// off-screen row whose height is unknown isn't selectable as a slot
+    /// boundary).
     private(set) var offsets: [CGFloat] = [0]
 
     /// Extra layout space rendered before a row but not owned by the row
@@ -296,11 +297,7 @@ class RowSurfaceLayoutCache<ID: Hashable> {
             rowBottoms.append(bottom)
             sum = bottom
         }
-        if orderedIDs.isEmpty {
-            offsets.append(sum)
-        } else {
-            offsets.append(sum)
-        }
+        offsets.append(sum)
     }
 
     /// Total content height (sum of all row heights). Excludes
