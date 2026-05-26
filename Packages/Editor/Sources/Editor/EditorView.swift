@@ -185,6 +185,7 @@ public struct EditorView: View {
                 onTapGutter: { id in handleHandleClick(blockID: id) },
                 onTapBelowRows: { point in handleTapBelowRows(at: point) },
                 onReorderBegin: { blockID, location, anchor in
+                    state.selectForReorderStart(on: blockID)
                     if anchor == location {
                         preliftReorder(blockID: blockID)
                         Haptics.light()

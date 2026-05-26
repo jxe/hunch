@@ -341,6 +341,23 @@ extension EditorState {
         sessionState = .navigating(Selection(blocks: blocks, anchor: anchor, cursor: cursor), gesture: nil)
     }
 
+    /// Select the row a reorder gesture started from before the lift is built.
+    /// If the row is already inside a multi-selection, keep the group but make
+    /// the grabbed row the cursor so macOS cursor-visibility scroll targets the
+    /// drag source instead of a stale off-screen row.
+    func selectForReorderStart(on id: BlockID) {
+        guard case .navigating(let sel, _) = sessionState else { return }
+        if sel.blocks.count > 1, sel.blocks.contains(id) {
+            let anchor = sel.anchor.flatMap { sel.blocks.contains($0) ? $0 : nil } ?? id
+            sessionState = .navigating(
+                Selection(blocks: sel.blocks, anchor: anchor, cursor: id),
+                gesture: nil
+            )
+        } else {
+            sessionState = .navigating(Selection(blocks: [id], anchor: id, cursor: id), gesture: nil)
+        }
+    }
+
 }
 
 // MARK: - Edit-mode transitions
