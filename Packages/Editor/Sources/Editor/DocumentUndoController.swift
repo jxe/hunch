@@ -68,7 +68,12 @@ public final class DocumentUndoController {
     /// via `didCommitTransaction`.
     @discardableResult
     func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: () -> Void) -> [EditorOp] {
-        document?.transaction(name: name, coalesceKey: coalesceKey, change) ?? []
+        document?.transaction(
+            name: name,
+            coalesceKey: coalesceKey,
+            undoManager: undoManager,
+            change
+        ) ?? []
     }
 
     /// Force the next coalesce-keyed transaction to register a fresh undo entry

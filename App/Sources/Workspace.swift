@@ -53,19 +53,43 @@ final class Workspace {
     /// Transient, informational. Identity is per-instance so the view can
     /// distinguish "same message, new event" and restart its timer.
     struct Banner: Identifiable, Equatable {
+        enum Kind: Equatable {
+            case info
+            case warning
+            case error
+        }
+
         let id = UUID()
         let message: String
+        var kind: Kind = .info
+        var systemImage: String = "arrow.triangle.merge"
+        var dismissAfter: Duration? = .seconds(4)
 
         /// Wording reused by every conflict-merge site (live-page presenter
         /// event AND the closed-page scan) so the message can't drift.
         static func merged(salvaged: Int, into title: String) -> Banner {
             let noun = salvaged == 1 ? "block" : "blocks"
-            return Banner(message: "Merged \(salvaged) \(noun) from another device into \(title)")
+            return Banner(
+                message: "Merged \(salvaged) \(noun) from another device into \(title)",
+                systemImage: "arrow.triangle.merge"
+            )
         }
 
         static func restored(count: Int, into title: String) -> Banner {
             let noun = count == 1 ? "block" : "blocks"
-            return Banner(message: "Restored \(count) \(noun) from another device into \(title)")
+            return Banner(
+                message: "Restored \(count) \(noun) from another device into \(title)",
+                systemImage: "clock.arrow.circlepath"
+            )
+        }
+
+        static func saveFailed(page title: String, error: Error) -> Banner {
+            Banner(
+                message: "Couldn't save \(title): \(error.localizedDescription)",
+                kind: .error,
+                systemImage: "exclamationmark.triangle.fill",
+                dismissAfter: .seconds(10)
+            )
         }
     }
 

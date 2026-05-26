@@ -35,6 +35,7 @@
 		77ABC90E5643B5559553AE1B /* Clamshell+Reconcile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 454E8E145765A1A4C9633C3E /* Clamshell+Reconcile.swift */; };
 		7C8E5BD992CE032FCAC3E4E9 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 60D4D0042A0050D48AF58979 /* Markdown */; };
 		83407D2B20E40C8CC73BB9AB /* TrashStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D433D497F5377461A70E47E /* TrashStoreTests.swift */; };
+		8BF2EE5945E6943556B74272 /* BannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2F06B0B8E466E1C833D3F5C /* BannerTests.swift */; };
 		9245A5F0D515374FE64FBFD4 /* WelcomeContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADBC532DB9A1E9EF1B3F9FA /* WelcomeContent.swift */; };
 		96052357A5A3DF167EBAEFE7 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D68ED38B354E02D3C714C9F /* ContentView.swift */; };
 		972D37F624C91A6B2DC50454 /* WorkspaceWindow+EditorHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BEFD45270C885363076629E /* WorkspaceWindow+EditorHost.swift */; };
@@ -138,6 +139,7 @@
 		E0D5BC6AC3A24FE2C74A0EC1 /* WorkspaceBookmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceBookmarkTests.swift; sourceTree = "<group>"; };
 		E2197087185758C1F3392D4B /* WorkspaceRelativeLinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRelativeLinkTests.swift; sourceTree = "<group>"; };
 		F152EE3E8A4F7205FF247D87 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F2F06B0B8E466E1C833D3F5C /* BannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BannerTests.swift; sourceTree = "<group>"; };
 		F40BF2D87C103EC5F23D76AE /* WorkspaceWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -235,6 +237,7 @@
 		9B5C332DDDEE5B9FD6248334 /* HunchUnitTests */ = {
 			isa = PBXGroup;
 			children = (
+				F2F06B0B8E466E1C833D3F5C /* BannerTests.swift */,
 				B86B2B46F1F0BB24DD1FF81C /* BlockFingerprintRoundtripTests.swift */,
 				DBE1F6088D2A2F400DBB4939 /* BlockFingerprintTests.swift */,
 				AD818E80A31A592762987ECC /* ClamshellImageTests.swift */,
@@ -514,6 +517,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8BF2EE5945E6943556B74272 /* BannerTests.swift in Sources */,
 				5B8553C9E3C848BEDA38C5B7 /* BlockFingerprintRoundtripTests.swift in Sources */,
 				71C3633279FDAFCA2127A43A /* BlockFingerprintTests.swift in Sources */,
 				708FF72CA6FD1CF943DB968E /* ClamshellImageTests.swift in Sources */,

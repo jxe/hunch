@@ -126,8 +126,8 @@ drag-drop) alongside NSTextView's typing-undo on the same shared
 
 `EditorView` takes three things: a `Document` reference, an `EditorState`,
 and a host conforming to `EditorHost`. `Document` is `@Observable` and
-swapped in place via `replaceChildren(_:)` on external reloads, so a plain
-reference suffices — no `Binding` needed. The host is class-bound and held
+updated in place on external reloads, so a plain reference suffices — no
+`Binding` needed. The host is class-bound and held
 by reference; keep one stable instance per editor (e.g. `@State` on a
 parent view) rather than constructing a fresh one each render — the
 editor's row-level `.equatable()` gating relies on the host's identity
@@ -150,7 +150,7 @@ final class MyHost: EditorHost {
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
     func persistCommit(ops: [EditorOp], in document: Document) {}
-    func flush(_ document: Document) async {}
+    func flush(_ document: Document) async throws {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
     func saveImages(_ items: [PastedImage]) -> [String] { [] }
@@ -259,7 +259,7 @@ public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
 @Observable @MainActor
 public final class Document {
     public let url: URL
-    public internal(set) var children: [Block]   // root-level siblings; written via transaction or replaceChildren
+    public internal(set) var children: [Block]   // root-level siblings; written via transaction or named replacement helpers
     public var modificationDate: Date?
     public var title: String { … }                // derived from first H1, falls back to url.lastPathComponent
 
@@ -270,9 +270,11 @@ public final class Document {
     // through here; hosts rarely call it directly.
     public func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: (Document) -> Void)
 
-    // Bulk non-undoable replacement — for conflict-resolution merges and
-    // external-edit reloads where the new content is the authoritative state.
-    public func replaceChildren(_ newChildren: [Block])
+    // Bulk non-undoable replacements — for system-owned tree swaps where
+    // the new content is the authoritative state.
+    public func replaceChildrenFromExternalReload(_ newChildren: [Block])
+    public func replaceChildrenFromConflictResolution(_ newChildren: [Block])
+    public func replaceChildrenFromSystemMutation(_ newChildren: [Block])
 
     // Read access
     public func snapshot() -> [Block]
@@ -295,7 +297,7 @@ public final class Document {
     public weak var undoManager: UndoManager?
     public var preMutation: (() -> Void)?                       // flush in-flight NSTextView text before snapshot
     public var didCommitTransaction: (([EditorOp]) -> Void)?    // fires after every transaction (forward / undo / redo) with the diff
-    public var didReplaceChildren: (() -> Void)?                // revalidate selection after replaceChildren swaps the tree wholesale
+    public var didReplaceChildren: (() -> Void)?                // revalidate selection after system replacements swap the tree wholesale
 }
 ```
 
@@ -303,7 +305,8 @@ public final class Document {
   `transaction(name:_:)` (or its primitives `mutate` / `setText` /
   `insertSubtree` / `replaceSubtree`) so undo and heading containment
   are applied uniformly. For bulk non-undoable replacement (conflict
-  resolution, reload), use `replaceChildren(_:)`.
+  resolution, reload, reconcile-style system mutation), use the narrowly
+  named replacement helper for that path.
 - **`title` is derived.** No stored field, no risk of drift after children
   mutate — pulled from the first top-level H1 with the URL's filename
   (sans extension) as fallback.

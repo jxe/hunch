@@ -53,13 +53,18 @@ extension WorkspaceWindow: EditorHost {
         // the chain head and so will await this task too.
         Task { @MainActor in
             do { try await clamshell.commit(commit, to: document) }
-            catch { /* logged inside commit; nothing more to do here */ }
+            catch { showSaveFailure(for: document, error: error) }
         }
     }
 
-    func flush(_ document: Document) async {
+    func flush(_ document: Document) async throws {
         guard let clamshell = workspace.clamshell else { return }
-        await clamshell.flush(document)
+        do {
+            try await clamshell.flush(document)
+        } catch {
+            showSaveFailure(for: document, error: error)
+            throw error
+        }
     }
 
     func saveImages(_ items: [PastedImage]) -> [String] {
@@ -123,6 +128,13 @@ extension WorkspaceWindow: EditorHost {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
         let target = clamshell.url(for: pageID)
         do {
+            if let live = clamshell.liveDocument(at: target) {
+                live.replaceChildrenFromSystemMutation(live.children + blocks)
+                let appendCommit = Commit(logEntries: Patch.adds(from: blocks).entries)
+                try await clamshell.commit(appendCommit, to: live)
+                return true
+            }
+
             let doc = try await clamshell.loadDocument(at: target)
             doc.transaction(name: "Append to subpage") {
                 doc.insertSubtrees(blocks, at: DropPath(parent: nil, position: doc.children.count))
@@ -134,7 +146,7 @@ extension WorkspaceWindow: EditorHost {
             // than swapping doc identity — keeps editor state references
             // stable.
             if let live = openDocument, live.url == target, live !== doc {
-                live.replaceChildren(doc.children)
+                live.replaceChildrenFromSystemMutation(doc.children)
                 live.modificationDate = doc.modificationDate
             }
             return true
@@ -153,5 +165,9 @@ extension WorkspaceWindow: EditorHost {
                 completion: { destination in continuation.resume(returning: destination) }
             )
         }
+    }
+
+    private func showSaveFailure(for document: Document, error: Error) {
+        workspace.banner = .saveFailed(page: document.title, error: error)
     }
 }

@@ -104,7 +104,7 @@ struct RecoveryLogTests {
 
         // Editor deletes `lose` — splice, derive ops, fire the canonical
         // editor save path so the purge is logged and the .md saved.
-        doc.replaceChildren([keep])
+        doc.replaceChildrenFromSystemMutation([keep])
         try await clamshell.commit(.fromEditorOps([.remove(hash: lose.atomicHash)]), to: doc)
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
@@ -157,7 +157,7 @@ struct RecoveryLogTests {
         try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
         // Editor deletes the ghost: empty children + purge op.
-        doc.replaceChildren([])
+        doc.replaceChildrenFromSystemMutation([])
         try await clamshell.commit(.fromEditorOps([.remove(hash: ghost.atomicHash)]), to: doc)
 
         // Intermediate: explicitly purged, so nothing is "lost".
@@ -168,7 +168,7 @@ struct RecoveryLogTests {
         // through a millisecond boundary so latest-wins picks the new add.
         try await Task.sleep(for: .milliseconds(20))
         let revived = Block.paragraph(text: attr("ghost"))
-        doc.replaceChildren([revived])
+        doc.replaceChildrenFromSystemMutation([revived])
         try await clamshell.commit(.fromEditorOps([.insert(hash: revived.atomicHash, parent: nil, block: revived)]), to: doc)
         lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty, "alive in .md, latest-record is add → not lost")
@@ -366,7 +366,7 @@ struct RecoveryLogTests {
         let doc = Document(url: url, children: [keep, lose], modificationDate: nil)
         try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
-        doc.replaceChildren([keep])
+        doc.replaceChildrenFromSystemMutation([keep])
         try await clamshell.commit(.fromEditorOps([.remove(hash: lose.atomicHash)]), to: doc)
 
         let purged = await clamshell.listPurgedBlocks(
@@ -431,7 +431,7 @@ struct RecoveryLogTests {
         let doc = Document(url: url, children: [block], modificationDate: nil)
         try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
-        doc.replaceChildren([])
+        doc.replaceChildrenFromSystemMutation([])
         try await clamshell.commit(.fromEditorOps([.remove(hash: block.atomicHash)]), to: doc)
 
         // External writer brings the hash back into the log via a foreign
@@ -467,7 +467,7 @@ struct RecoveryLogTests {
         let doc = Document(url: url, children: [doomed], modificationDate: nil)
         try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
-        doc.replaceChildren([])
+        doc.replaceChildrenFromSystemMutation([])
         try await clamshell.commit(.fromEditorOps([.remove(hash: doomed.atomicHash)]), to: doc)
 
         // It's now purged.
@@ -547,7 +547,7 @@ struct RecoveryLogTests {
         let doc = Document(url: url, children: [block], modificationDate: nil)
         try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
-        doc.replaceChildren([])
+        doc.replaceChildrenFromSystemMutation([])
         try await clamshell.commit(.fromEditorOps([.remove(hash: block.atomicHash)]), to: doc)
 
         // Foreign device: counter 9999 but wall-clock 100s in the *past*.

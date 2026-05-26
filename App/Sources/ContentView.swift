@@ -83,7 +83,7 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, new in
             if new != .active, let doc = window.openDocument {
-                Task { await window.flush(doc) }
+                Task { try? await window.flush(doc) }
             }
         }
         .alert("Error", isPresented: errorBinding) {

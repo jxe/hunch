@@ -14,8 +14,9 @@ struct BannerView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "arrow.triangle.merge")
+            Image(systemName: banner.systemImage)
                 .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(iconStyle)
             Text(banner.message)
                 .font(.system(size: 13))
                 .lineLimit(2)
@@ -37,11 +38,23 @@ struct BannerView: View {
         .transition(.move(edge: .top).combined(with: .opacity))
         .task(id: banner.id) {
             dismissTask?.cancel()
+            guard let dismissAfter = banner.dismissAfter else { return }
             dismissTask = Task {
-                try? await Task.sleep(for: .seconds(4))
+                try? await Task.sleep(for: dismissAfter)
                 guard !Task.isCancelled else { return }
                 onDismiss()
             }
+        }
+    }
+
+    private var iconStyle: AnyShapeStyle {
+        switch banner.kind {
+        case .info:
+            AnyShapeStyle(HierarchicalShapeStyle.primary)
+        case .warning:
+            AnyShapeStyle(Color.orange)
+        case .error:
+            AnyShapeStyle(Color.red)
         }
     }
 }

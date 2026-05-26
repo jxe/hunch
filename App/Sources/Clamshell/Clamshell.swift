@@ -130,6 +130,33 @@ final class Clamshell {
     }
     @ObservationIgnored private var saveChain: [URL: ChainEntry] = [:]
 
+    @MainActor
+    final class LivePage {
+        let url: URL
+        let document: Document
+        let presenter: PresenterHandle
+        var subscribers: [UUID: @MainActor (PresenterEvent) -> Void]
+
+        init(
+            url: URL,
+            document: Document,
+            presenter: PresenterHandle,
+            firstSubscriberID: UUID,
+            onEvent: @escaping @MainActor (PresenterEvent) -> Void
+        ) {
+            self.url = url
+            self.document = document
+            self.presenter = presenter
+            self.subscribers = [firstSubscriberID: onEvent]
+        }
+    }
+
+    /// One live `Document` per open page URL. Multiple windows may hold
+    /// `OpenPage` handles for the same URL, but they all render/mutate this
+    /// shared document instance so per-URL saves do not serialize stale
+    /// snapshots from independent in-memory trees.
+    @ObservationIgnored var livePages: [URL: LivePage] = [:]
+
     init(root: URL) {
         let total = perfStart()
         self.root = root
@@ -554,9 +581,9 @@ final class Clamshell {
     /// not trigger a save — that's what `commit(_:to:)` is for. Used on
     /// navigation / blur / scenePhase / close to make sure the bytes for
     /// the just-fired commit are on disk before the editor unmounts.
-    func flush(_ doc: Document) async {
+    func flush(_ doc: Document) async throws {
         guard let pending = saveChain[doc.url] else { return }
-        _ = try? await pending.task.value
+        try await pending.task.value
     }
 
     /// True when no work is pending for `url`. The engine's reconcile and
@@ -722,7 +749,7 @@ final class Clamshell {
 
         let mutated: Bool
         if let doc {
-            doc.replaceChildren(result.merged)
+            doc.replaceChildrenFromConflictResolution(result.merged)
             mutated = true
         } else {
             mutated = false
@@ -820,7 +847,7 @@ final class Clamshell {
     func inlineAndTrash(pageID: String, parent: Document) async throws {
         let target = url(for: pageID)
         guard FileManager.default.fileExists(atPath: target.path) else { return }
-        await flush(parent)
+        try await flush(parent)
         _ = try moveToTrash(at: target)
     }
 

@@ -46,7 +46,7 @@ struct ClamshellSavingTests {
 
         // Simulate typing: the editor's textBinding setter updates the model.
         let v1 = Block(id: id, kind: .paragraph(text: attr("hello world")))
-        doc.replaceChildren([v1])
+        doc.replaceChildrenFromSystemMutation([v1])
 
         // Editor's `commitLiveText` (blur, focus change, navigation, scenePhase,
         // mutate) opens a transaction whose pre→post diff fires onCommit.
@@ -124,7 +124,7 @@ struct ClamshellSavingTests {
                 to: doc
             )
         }
-        doc.replaceChildren([v1])
+        doc.replaceChildrenFromSystemMutation([v1])
         let t2 = Task { @MainActor in
             try await clamshell.commit(
                 .fromEditorOps([.remove(hash: v0.atomicHash),
@@ -132,7 +132,7 @@ struct ClamshellSavingTests {
                 to: doc
             )
         }
-        doc.replaceChildren([v2])
+        doc.replaceChildrenFromSystemMutation([v2])
         let t3 = Task { @MainActor in
             try await clamshell.commit(
                 .fromEditorOps([.remove(hash: v1.atomicHash),
@@ -144,7 +144,7 @@ struct ClamshellSavingTests {
         _ = try await t1.value
         _ = try await t2.value
         _ = try await t3.value
-        await clamshell.flush(doc)
+        try await clamshell.flush(doc)
 
         let mdText = try String(contentsOf: doc.url, encoding: .utf8)
         #expect(mdText.contains("abc"), "final .md reflects last commit")
@@ -174,8 +174,58 @@ struct ClamshellSavingTests {
         let block = Block.paragraph(text: attr("standalone"))
         let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
 
-        await clamshell.flush(doc)
+        try await clamshell.flush(doc)
         #expect(!FileManager.default.fileExists(atPath: doc.url.path),
                 "flush does not trigger a save on a quiescent URL")
+    }
+
+    @Test func openingSameURLTwiceSharesOneLiveDocument() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = clamshell.url(for: "p.md")
+        try "# Title\n\nbody\n".write(to: url, atomically: true, encoding: .utf8)
+
+        let first = try await clamshell.openPage(at: url) { _ in }
+        let second = try await clamshell.openPage(at: url) { _ in }
+
+        #expect(first.document === second.document)
+
+        try await clamshell.closePage(first)
+        try await clamshell.closePage(second)
+    }
+
+    @Test func sameURLHandlesSaveOneSharedDocumentShape() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = clamshell.url(for: "p.md")
+        try "# Title\n".write(to: url, atomically: true, encoding: .utf8)
+
+        let first = try await clamshell.openPage(at: url) { _ in }
+        let second = try await clamshell.openPage(at: url) { _ in }
+        let doc = first.document
+        #expect(doc === second.document)
+
+        let alpha = Block.paragraph(text: attr("alpha"))
+        doc.replaceChildrenFromSystemMutation(doc.children + [alpha])
+        try await clamshell.commit(
+            Commit(logEntries: Patch.adds(from: [alpha]).entries),
+            to: first.document
+        )
+
+        let beta = Block.paragraph(text: attr("beta"))
+        second.document.replaceChildrenFromSystemMutation(second.document.children + [beta])
+        try await clamshell.commit(
+            Commit(logEntries: Patch.adds(from: [beta]).entries),
+            to: second.document
+        )
+
+        let mdText = try String(contentsOf: url, encoding: .utf8)
+        #expect(mdText.contains("alpha"))
+        #expect(mdText.contains("beta"))
+
+        try await clamshell.closePage(first)
+        try await clamshell.closePage(second)
     }
 }

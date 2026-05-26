@@ -261,7 +261,7 @@ open page:
   linger.
 
 Both presenters fire the same idempotent wakeup. The 250ms debounce
-plus `await flush(doc)` at the top of `handlePresenterWakeup`
+plus `try await flush(doc)` at the top of `handlePresenterWakeup`
 coalesce bursts and serialise against any pending Mac saves.
 
 Log apply is awaited strictly before the file save fires either way
@@ -370,11 +370,12 @@ try await clamshell.commit(Commit.fromEditorOps(ops), to: open.document)
 
 // Force-flush any in-flight commits (blur, scenePhase background,
 // navigation away, shutdown). No-op if the chain is empty; never
-// triggers a save on its own.
-await clamshell.flush(open.document)
+// triggers a save on its own. Throws if the pending save failed.
+try await clamshell.flush(open.document)
 
-// Symmetric inverse of openPage: flush + tear down the presenter.
-await clamshell.closePage(open)
+// Symmetric inverse of openPage: drops this open handle, then flushes
+// and tears down the presenter when the final handle closes.
+try await clamshell.closePage(open)
 
 // Trash a page. If it was the home page, homeRelativePath gets cleared.
 // The page's .history/<rel>/ dir is moved alongside the .md.
@@ -402,7 +403,7 @@ existing instance and build a new one.
 | Path conversion | `relativePath(of:)`, `url(for:)`, `pageID(for:relativeTo:)` |
 | Read | `loadDocument(at:)` — async; seeds the iCloud disk-content ring buffer for the live-page path. `readBlocks(at:)` — async; one-off read that doesn't seed history (used by inline-expand). |
 | Page list (observable) | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:)` |
-| Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. Load + parse + install presenter on open (journal fold runs deferred in a background Task, fires `onEvent(.restored)` if anything was auto-spliced); flush + tear down on close. |
+| Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. Load + parse + install one presenter per live URL on first open (journal fold runs deferred in a background Task, fires `onEvent(.restored)` if anything was auto-spliced); later opens of the same URL share the live `Document` and add another event subscriber. Close drops one handle; the final close flushes and tears down. |
 | Write (all flows) | `commit(_:to:)` — the one durable write primitive. Applies the `Commit`'s log entries to the recovery log (when non-empty), then serializes and writes the `.md`. Awaited end-to-end: returns when the bytes are on disk. Concurrent calls for the same URL chain so they land in arrival order. Used by the editor host bridge, reconcile, manual restore, conflict-merge, and subpage append — each builds the appropriate `Commit` and awaits the same method. `flush(_:)` awaits any in-flight commit head without triggering work; for blur / scenePhase / navigate-away. `inlineAndTrash(pageID:parent:)` flushes the parent and trashes the named page in one durable sequence — used by inline-expand. |
 | Restore | `restoreBlocks(_:liveDoc:)` — the Recover-sheet entry point for both lost and purged blocks. (Paired with `restorePage(_:)` in the Trash group below, which restores a whole trashed page.) |
 | Create | `createPage(title:requestedPath:initialContent:)` |

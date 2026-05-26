@@ -81,6 +81,7 @@ public struct EditorView: View {
     /// drag-drop) all register against. Recreated implicitly when EditorView's identity
     /// resets; explicitly cleared on document switch via `.onChange(of: document.id)`.
     @State var undoController = DocumentUndoController()
+    @State var documentHookToken: UUID?
     @State var editorCommands = EditorCommands()
     /// Canonical source of row geometry: heights per block + prefix-sum
     /// offsets + the LazyVStack's origin in PageHoverCoordinateSpace. All
@@ -173,8 +174,7 @@ public struct EditorView: View {
                     spacingBefore: gap,
                     pinchGap: pinchExtraGap(forIndex: row.slot),
                     reorderGap: reorderDriftGap(at: row.slot, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint),
-                    isSourceDimmed: reorderSourceOpacity(for: row.id) < 1,
-                    accessibilityDropSlotID: "block-drop-slot-\(row.slot)"
+                    isSourceDimmed: reorderSourceOpacity(for: row.id) < 1
                 )
             }
             let trailingPinchGap = pinchExtraGap(forIndex: trailingSlot)
@@ -299,11 +299,20 @@ public struct EditorView: View {
                 installShiftTabMonitor()
                 #endif
             }
-            #if os(macOS)
             .onDisappear {
+                document.removeEditorHooks(documentHookToken)
+                documentHookToken = nil
+                if undoController.document === document {
+                    undoController.document = nil
+                }
+                if document.undoManager === undoController.undoManager {
+                    document.undoManager = nil
+                }
+                state.onStructureChange = nil
+                #if os(macOS)
                 removeShiftTabMonitor()
+                #endif
             }
-            #endif
             // Intercept inline `[text](path.md)` / `[text](https://…)` clicks
             // inside read-only `Text` rows. Editor classifies the URL via
             // `resolvePageID` — same hook used at render time — and routes
@@ -341,7 +350,7 @@ public struct EditorView: View {
             // which `handleModeChange` already wires to flush.
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
-                    Task { @MainActor [host, document] in await host.flush(document) }
+                    Task { @MainActor [host, document] in try? await host.flush(document) }
                 }
             }
             #endif
@@ -489,22 +498,15 @@ public struct EditorView: View {
             )
             : nil
 
-        BlockRow(
+        let rowModel = BlockRowModel(
             block: block,
-            state: state,
-            onBlockChange: { newBlock in binding.wrappedValue = newBlock },
-            onToggleTodo: { id in
-                mutate("Toggle Todo") {
-                    guard let current = document.find(id),
-                          case .todo(let text, let done) = current.kind else { return }
-                    document.mutate(id) { $0.kind = .todo(text: text, done: !done) }
-                }
-            },
             depth: depth,
-            editor: editing,
             isPageTitle: isPageTitleBlock(block),
             numberingIndex: numberingIndex,
             isSelected: isSelected,
+            isEditing: editing != nil,
+            isActiveEditor: editing?.isActive ?? false,
+            mentionActive: editing?.mentionActive ?? false,
             isExpanded: state.expandedToggles.contains(block.id) || state.expandedTemplates.contains(block.id),
             isDropTarget: state.dropOntoBlockID == block.id,
             isActionMenuTarget: isActionMenuTarget,
@@ -515,6 +517,19 @@ public struct EditorView: View {
             isSelectionHandleRow: isSelectionHandleRow(for: block.id),
             accessibilityID: accessibilityIdentifier(for: block),
             accessibilityLabelText: accessibilityLabel(for: block),
+            pageLookups: resolvePageLookups(for: block, host: host),
+            linkPreviews: relevantLinkPreviews
+        )
+        let rowActions = BlockRowActions(
+            editor: editing,
+            onBlockChange: { newBlock in binding.wrappedValue = newBlock },
+            onToggleTodo: { id in
+                mutate("Toggle Todo") {
+                    guard let current = document.find(id),
+                          case .todo(let text, let done) = current.kind else { return }
+                    document.mutate(id) { $0.kind = .todo(text: text, done: !done) }
+                }
+            },
             onClickAtPoint: { point in
                 transferFocus(to: .editor(block.id, initialCursor: .point(point)))
             },
@@ -534,8 +549,6 @@ public struct EditorView: View {
             onTemplateButtonPress: {
                 instantiateTemplateButton(blockID: block.id)
             },
-            pageLookups: resolvePageLookups(for: block, host: host),
-            linkPreviews: relevantLinkPreviews,
             onLinkPreviewLoaded: { url, preview in linkPreviews[url] = preview },
             host: host,
             onTapOutsideText: {
@@ -566,6 +579,7 @@ public struct EditorView: View {
             actionMenuContent: { AnyView(blockActionMenuContent(for: block.id)) },
             mentionMenuContent: { AnyView(mentionMenuContent()) }
         )
+        BlockRow(model: rowModel, state: state, actions: rowActions)
         .equatable()
     }
 
@@ -1054,7 +1068,7 @@ public struct EditorView: View {
             // too; re-grabbing every time would steal focus from menus and sheets.
             if wasEditing {
                 forcePageFocusGrab()
-                Task { @MainActor [host, document] in await host.flush(document) }
+                Task { @MainActor [host, document] in try? await host.flush(document) }
             }
         }
 

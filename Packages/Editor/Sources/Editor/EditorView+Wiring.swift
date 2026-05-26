@@ -162,13 +162,11 @@ extension EditorView {
     /// Wire the editor's per-document hooks onto `Document`. After this:
     ///   - `document.undoManager` is the controller's manager (so transactions
     ///     register inverses against it).
-    ///   - `document.preMutation` flushes any in-flight NSTextView text before
-    ///     a transaction snapshots.
-    ///   - `document.didCommitTransaction` revalidates `EditorState` against
-    ///     the new tree (after every forward, undo, or redo) and forwards the
-    ///     diff to the host.
-    ///   - `document.didReplaceChildren` revalidates `EditorState` against the
-    ///     new tree on bulk-replace (external-edit reload, conflict merge).
+    ///   - `document.didCommitTransaction` forwards the transaction diff to
+    ///     the host once per commit.
+    ///   - this view's installed editor hooks flush any in-flight NSTextView
+    ///     text before a transaction snapshots, then revalidate `EditorState`
+    ///     after transaction commits and bulk replacements.
     ///     Fresh parse → fresh BlockIDs, so without this `state.cursor` /
     ///     `state.selection` would silently break nav and delete.
     ///   - `undoController.document` points at this document, so the typing
@@ -176,10 +174,6 @@ extension EditorView {
     func installUndoApply() {
         document.undoManager = undoController.undoManager
         undoController.document = document
-
-        document.preMutation = { [weak undoController] in
-            undoController?.flushActiveText?()
-        }
 
         // Single hook for every transaction — forward, undo, or redo —
         // covering both halves of "edit happened": revalidate `EditorState`
@@ -192,20 +186,27 @@ extension EditorView {
         // cache — any forward/undo/redo can shift which blocks are visible.
         let layoutCache = self.layoutCache
         document.didCommitTransaction = { ops in
+            host.persistCommit(ops: ops, in: document)
+        }
+        document.removeEditorHooks(documentHookToken)
+        documentHookToken = document.installEditorHooks(Document.EditorHooks(
+            preMutation: { [weak undoController] in
+                undoController?.flushActiveText?()
+            },
+            didCommitTransaction: { ops in
             var validIDs: Set<BlockID> = []
             document.walk { block, _, _ in validIDs.insert(block.id) }
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
             layoutCache.invalidateStructure()
-            host.persistCommit(ops: ops, in: document)
-        }
-
-        document.didReplaceChildren = {
+            },
+            didReplaceChildren: {
             var validIDs: Set<BlockID> = []
             document.walk { block, _, _ in validIDs.insert(block.id) }
             Diag.mode.debug("document children replaced — revalidating state against \(validIDs.count, privacy: .public) blocks")
             state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
             layoutCache.invalidateStructure()
-        }
+            }
+        ))
 
         // Expand/collapse changes a block's visibility — drop the cached
         // visible-row layout so the next gesture tick rebuilds it.

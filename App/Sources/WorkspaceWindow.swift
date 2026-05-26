@@ -88,7 +88,13 @@ final class WorkspaceWindow {
         openPage = nil
         guard let url = topURL, let clamshell = workspace.clamshell else {
             if let outgoing, let priorClamshell = workspace.clamshell {
-                Task { await priorClamshell.closePage(outgoing) }
+                Task {
+                    do {
+                        try await priorClamshell.closePage(outgoing)
+                    } catch {
+                        workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
+                    }
+                }
             }
             return
         }
@@ -99,7 +105,11 @@ final class WorkspaceWindow {
             // otherwise drop the last keystroke.
             if let outgoing {
                 let drain = perfStart()
-                await clamshell.closePage(outgoing)
+                do {
+                    try await clamshell.closePage(outgoing)
+                } catch {
+                    workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
+                }
                 workspace.unregisterOpenURL(outgoing.document.url)
                 perfEnd(drain, "handlePathChange.drainOutgoing")
             }
@@ -111,7 +121,11 @@ final class WorkspaceWindow {
                 perfEnd(openT, "handlePathChange.openPage", "url=\(url.lastPathComponent)")
                 // The user may have navigated again while we were awaiting.
                 guard path.last ?? workspace.homeURL == url else {
-                    await clamshell.closePage(open)
+                    do {
+                        try await clamshell.closePage(open)
+                    } catch {
+                        workspace.banner = .saveFailed(page: open.document.title, error: error)
+                    }
                     return
                 }
                 openPage = open
@@ -143,7 +157,13 @@ final class WorkspaceWindow {
     /// state. Called by `ContentView` via `.onChange(of: workspace.workspaceURL)`.
     func reset() {
         if let outgoing = openPage, let clamshell = workspace.clamshell {
-            Task { await clamshell.closePage(outgoing) }
+            Task {
+                do {
+                    try await clamshell.closePage(outgoing)
+                } catch {
+                    workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
+                }
+            }
             workspace.unregisterOpenURL(outgoing.document.url)
         }
         openPage = nil
@@ -162,9 +182,9 @@ final class WorkspaceWindow {
 
     /// Returns `openDocument` iff its URL matches — used by `ContentView` to
     /// gate the EditorPage construction on "is this page loaded yet". External
-    /// reloads mutate the existing instance via `Document.replaceChildren`
-    /// rather than swapping, so once `EditorPage` is mounted the Document
-    /// reference is stable for its lifetime.
+    /// reloads mutate the existing instance via Document's named replacement
+    /// helpers rather than swapping, so once `EditorPage` is mounted the
+    /// Document reference is stable for its lifetime.
     func documentForPage(url: URL) -> Document? {
         openDocument?.url == url ? openDocument : nil
     }
@@ -188,7 +208,12 @@ final class WorkspaceWindow {
             // are durable, then close the page and drop the presenter so
             // the trash op below never races a save against a now-
             // trashed URL.
-            await clamshell.closePage(outgoing)
+            do {
+                try await clamshell.closePage(outgoing)
+            } catch {
+                workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
+                return false
+            }
             workspace.unregisterOpenURL(outgoing.document.url)
             openPage = nil
         }

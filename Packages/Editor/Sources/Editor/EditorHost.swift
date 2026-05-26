@@ -143,7 +143,7 @@ public protocol EditorHost: AnyObject {
     /// from scene-phase / navigation-away / close paths. The doc is
     /// passed explicitly (symmetric with `persistCommit(ops:in:)`) so
     /// the host doesn't have to infer "current doc" from its own state.
-    func flush(_ document: Document) async
+    func flush(_ document: Document) async throws
 
     /// Serialize blocks into a string the editor will write to the system
     /// pasteboard on copy/cut. Host chooses the format (markdown, plain text).

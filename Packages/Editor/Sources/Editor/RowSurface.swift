@@ -13,7 +13,6 @@ struct RowSurfaceRow<ID: Hashable>: Equatable {
     let pinchGap: CGFloat
     let reorderGap: CGFloat
     let isSourceDimmed: Bool
-    let accessibilityDropSlotID: String
 }
 
 /// Geometry needed for placing the floating reorder lift. The content itself

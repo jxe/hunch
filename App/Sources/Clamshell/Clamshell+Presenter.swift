@@ -97,8 +97,8 @@ extension Clamshell {
     /// restored subtrees splice into `document` in place and surface via
     /// `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
     struct OpenPage {
+        fileprivate let id: UUID
         let document: Document
-        let presenter: PresenterHandle
     }
 
     /// Load `url`, install the file presenter, and return immediately.
@@ -126,6 +126,13 @@ extension Clamshell {
         at url: URL,
         onEvent: @escaping @MainActor (PresenterEvent) -> Void
     ) async throws -> OpenPage {
+        let url = url.standardizedFileURL
+        let subscriberID = UUID()
+        if let live = livePages[url] {
+            live.subscribers[subscriberID] = onEvent
+            return OpenPage(id: subscriberID, document: live.document)
+        }
+
         let total = perfStart()
         // Fast path: read + parse off MainActor. Skip the journal fold —
         // it's deferred below.
@@ -142,8 +149,18 @@ extension Clamshell {
         let document = Document(url: url, children: blocks, modificationDate: mtime)
 
         let presT = perfStart()
-        let presenter = installPresenter(for: document, onEvent: onEvent)
+        let presenter = installPresenter(for: document) { [weak self] event in
+            self?.broadcastPresenterEvent(event, for: url)
+        }
         perfEnd(presT, "openPage.installPresenter", "url=\(url.lastPathComponent)")
+
+        livePages[url] = LivePage(
+            url: url,
+            document: document,
+            presenter: presenter,
+            firstSubscriberID: subscriberID,
+            onEvent: onEvent
+        )
 
         // Deferred reconcile. `reconcileLive` gates on `isQuiescent`; if
         // the user is mid-save when this runs, it returns nil and the
@@ -153,7 +170,10 @@ extension Clamshell {
             let deferredT = perfStart()
             do {
                 if let summary = try await self.reconcileLive(document), summary.didChange {
-                    onEvent(.restored(count: summary.restoredHashes.count))
+                    self.broadcastPresenterEvent(
+                        .restored(count: summary.restoredHashes.count),
+                        for: url
+                    )
                 }
                 perfEnd(deferredT, "openPage.deferredReconcile", "url=\(url.lastPathComponent)")
             } catch {
@@ -162,16 +182,36 @@ extension Clamshell {
         }
 
         perfEnd(total, "openPage.total", "url=\(url.lastPathComponent)")
-        return OpenPage(document: document, presenter: presenter)
+        return OpenPage(id: subscriberID, document: document)
     }
 
     /// Symmetric inverse of `openPage`: flush any pending writes for the
     /// document and tear down its file presenter. Idempotent on repeated
     /// calls with the same `OpenPage`.
     @MainActor
-    func closePage(_ open: OpenPage) async {
-        _ = await flush(open.document)
-        removePresenter(open.presenter)
+    func closePage(_ open: OpenPage) async throws {
+        let url = open.document.url.standardizedFileURL
+        guard let live = livePages[url], live.document === open.document else {
+            try await flush(open.document)
+            return
+        }
+        live.subscribers.removeValue(forKey: open.id)
+        guard live.subscribers.isEmpty else { return }
+        try await flush(open.document)
+        removePresenter(live.presenter)
+        livePages.removeValue(forKey: url)
+    }
+
+    func liveDocument(at url: URL) -> Document? {
+        livePages[url.standardizedFileURL]?.document
+    }
+
+    private func broadcastPresenterEvent(_ event: PresenterEvent, for url: URL) {
+        guard let live = livePages[url.standardizedFileURL] else { return }
+        let subscribers = Array(live.subscribers.values)
+        for subscriber in subscribers {
+            subscriber(event)
+        }
     }
 
     /// Internal wakeup handler. Runs the three filesystem-level phases —
@@ -194,7 +234,12 @@ extension Clamshell {
         // iOS's bytes land. Without this, a completed-save corpse in
         // saveChain leaves isQuiescent false for the rest of the session
         // and every subsequent wakeup self-vetoes.
-        await flush(doc)
+        do {
+            try await flush(doc)
+        } catch {
+            Diag.log.error("presenter flush failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            return .noteworthyNothing
+        }
 
         // 1. iCloud conflict alternates. When merged into the live doc,
         //    the post-write `didSave` already reseeds the host's mtime
@@ -223,13 +268,19 @@ extension Clamshell {
                 }
             case .stomp:
                 if isQuiescent(at: url) {
-                    Task { await self.flush(doc) }
+                    Task {
+                        do {
+                            try await self.flush(doc)
+                        } catch {
+                            Diag.log.error("stomp flush failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                        }
+                    }
                 }
             case .external:
                 // Quiescence is guaranteed by the upfront flush.
                 do {
                     let reloaded = try await loadDocument(at: url)
-                    doc.replaceChildren(reloaded.children)
+                    doc.replaceChildrenFromExternalReload(reloaded.children)
                     doc.modificationDate = reloaded.modificationDate
                     externallyReloaded = true
                 } catch {

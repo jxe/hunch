@@ -1,5 +1,31 @@
 import SwiftUI
 
+/// Pure render state for one block row. This is the only value `BlockRow`
+/// compares for `.equatable()` gating; callbacks, host references, and focus
+/// bindings live in `BlockRowActions`.
+struct BlockRowModel: Equatable {
+    let block: Block
+    let depth: Int
+    let isPageTitle: Bool
+    let numberingIndex: Int?
+    let isSelected: Bool
+    let isEditing: Bool
+    let isActiveEditor: Bool
+    let mentionActive: Bool
+    let isExpanded: Bool
+    let isDropTarget: Bool
+    let isActionMenuTarget: Bool
+    let isActionMenuPresented: Bool
+    let isPinching: Bool
+    let reorderSourceOpacity: Double
+    let isReorderingThisBlock: Bool
+    let isSelectionHandleRow: Bool
+    let accessibilityID: String
+    let accessibilityLabelText: String
+    let pageLookups: [String: PageLookup]
+    let linkPreviews: [URL: LinkPreview]
+}
+
 /// One block in the page editor — content + the full interactive modifier
 /// chain (gestures, popovers, drag handle, accessibility). Equatable so
 /// `.equatable()` in `EditorView.body` gates the *whole* row, not just the
@@ -15,11 +41,6 @@ import SwiftUI
 /// Used only here for the page editor. The reorder lift overlay uses a slim
 /// read-only sibling, `BlockRowPreview`, which strips every editor closure.
 struct BlockRow: View, Equatable {
-    /// Block content as a value. Mutations route through `onBlockChange` —
-    /// keeping the row free of `@Binding` lets `.equatable()` actually gate
-    /// `body` (DynamicProperty wrappers like `@Binding` reset per parent
-    /// re-render and force body to run regardless of `==`).
-    let block: Block
     /// Editor session state. Held as a plain `let` (NOT `@Bindable`) so it
     /// doesn't defeat `BlockRow`'s `.equatable()` gating. Read inside `body`
     /// for fields that should drive a *row-local* invalidation rather than
@@ -29,120 +50,12 @@ struct BlockRow: View, Equatable {
     /// `LazyVStack` layout untouched — a structural guard against the
     /// hover→write→invalidate→layout→hover-redispatch feedback loop.
     let state: EditorState
-    let onBlockChange: (Block) -> Void
-    /// Toggles the `done` state of a `.todo` block. Routed through the host's
-    /// mutate path (which computes a `BlockTreeDiff` and emits ops) instead of
-    /// the row's binding so the recovery journal sees the hash flip — a bare
-    /// `onBlockChange` would skip the diff and leave the prior hash `.alive`.
-    let onToggleTodo: (BlockID) -> Void
-    /// Depth of this block in the document tree. Replaces the old per-case
-    /// `indent` field — passed in by the visible-layout walk so the row
-    /// renders the right leading inset without consulting the model directly.
-    let depth: Int
-    let isPageTitle: Bool
-    let numberingIndex: Int?
-    let isSelected: Bool
-    /// nil → render this row read-only. Non-nil → swap in `BlockTextEditor`
-    /// for the text area and route key/autotransform/mention events through
-    /// these callbacks. At most one row per `EditorView` carries this non-nil
-    /// at a time (the row currently being edited).
-    let editor: TextEditing?
-    /// Toggle expansion is owned by the parent (EditorView) so the body blocks render as
-    /// regular siblings in the page's block loop. Ignored for non-toggle blocks.
-    let isExpanded: Bool
-    /// Drag-and-drop hovering this row as the "drop on parent" target — paints a
-    /// child-slot preview indicating the dragged content will be appended inside.
-    let isDropTarget: Bool
-    /// True when the block action popover (Cmd-/ menu) is targeting this row —
-    /// paints a ring around it so the popover's anchor block is unambiguous.
-    let isActionMenuTarget: Bool
-
-    /// Action-menu popover is currently presenting against this row.
-    let isActionMenuPresented: Bool
-    /// A page pinch gesture is in flight — disable iOS swipe affordances on
-    /// this row so the two gestures don't fight.
-    let isPinching: Bool
-    /// Opacity to apply to the row — used to dim the source row of an
-    /// in-flight reorder lift.
-    let reorderSourceOpacity: Double
-    /// True when this row is part of the in-flight reorder lift — surfaces
-    /// in accessibility as `reorder-source`.
-    let isReorderingThisBlock: Bool
-    /// True when this row is the multi-select drag-handle anchor (topmost
-    /// row in a multi-block selection). The hover-driven side of handle
-    /// visibility is read from `state` inside `body` so hover writes don't
-    /// invalidate `EditorView.body`.
-    let isSelectionHandleRow: Bool
-    let accessibilityID: String
-    let accessibilityLabelText: String
-
-    /// Render-relevant subset of `BlockRow`'s stored properties. Auto-derived
-    /// `Equatable` so the row's `==` is a one-liner instead of a 20-line
-    /// hand-written field-by-field check. Adding a new render-relevant
-    /// property to `BlockRow` requires adding it here too — but the compiler
-    /// catches the omission (the snapshot init fails to type-check), where
-    /// a hand-written `==` would silently keep returning `true`.
-    ///
-    /// Closures (`onClickAtPoint`, gesture/popover callbacks) deliberately
-    /// stay out of the snapshot. They're regenerated each render but read
-    /// live state at fire time, so excluding them from `==` is exactly what
-    /// lets `.equatable()` gating actually short-circuit. See the doc
-    /// comment on `BlockRow` for the full reasoning.
-    fileprivate struct EqualitySnapshot: Equatable {
-        let block: Block
-        let depth: Int
-        let isPageTitle: Bool
-        let numberingIndex: Int?
-        let isSelected: Bool
-        let isEditing: Bool                // (editor != nil)
-        let isActiveEditor: Bool           // editor?.isActive ?? false
-        let mentionActive: Bool            // editor?.mentionActive ?? false
-        let isExpanded: Bool
-        let isDropTarget: Bool
-        let isActionMenuTarget: Bool
-        let isActionMenuPresented: Bool
-        let isPinching: Bool
-        let reorderSourceOpacity: Double
-        let isReorderingThisBlock: Bool
-        let isSelectionHandleRow: Bool
-        let accessibilityID: String
-        let accessibilityLabelText: String
-        let pageLookups: [String: PageLookup]
-        let linkPreviews: [URL: LinkPreview]
-        // `state` is intentionally NOT in the snapshot — the reference is
-        // stable for the editor session, and the per-row reads of
-        // `state.hoveredBlock` / `state.hoveredHandle` inside `body` set up
-        // their own @Observable invalidation channel.
-    }
-
-    fileprivate var equalitySnapshot: EqualitySnapshot {
-        EqualitySnapshot(
-            block: block,
-            depth: depth,
-            isPageTitle: isPageTitle,
-            numberingIndex: numberingIndex,
-            isSelected: isSelected,
-            isEditing: editor != nil,
-            isActiveEditor: editor?.isActive ?? false,
-            mentionActive: editor?.mentionActive ?? false,
-            isExpanded: isExpanded,
-            isDropTarget: isDropTarget,
-            isActionMenuTarget: isActionMenuTarget,
-            isActionMenuPresented: isActionMenuPresented,
-            isPinching: isPinching,
-            reorderSourceOpacity: reorderSourceOpacity,
-            isReorderingThisBlock: isReorderingThisBlock,
-            isSelectionHandleRow: isSelectionHandleRow,
-            accessibilityID: accessibilityID,
-            accessibilityLabelText: accessibilityLabelText,
-            pageLookups: pageLookups,
-            linkPreviews: linkPreviews
-        )
-    }
+    let model: BlockRowModel
+    let actions: BlockRowActions
 
     nonisolated static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
         MainActor.assumeIsolated {
-            lhs.equalitySnapshot == rhs.equalitySnapshot
+            lhs.model == rhs.model
         }
     }
 
@@ -196,110 +109,44 @@ struct BlockRow: View, Equatable {
         }
     }
 
-    /// Called when the user clicks the read-only text area to enter edit
-    /// mode at a specific point (in editor-local coordinates).
-    let onClickAtPoint: (CGPoint) -> Void
-    /// Called when the toggle's chevron is tapped. No-op for non-toggle blocks.
-    let onToggleExpansion: () -> Void
-    let onTemplateButtonPress: () -> Void
-    /// Resolved existence + titles for every workspace-page reference this
-    /// row needs to render — the subpage's pageID for `.subpage` blocks,
-    /// plus every inline page-link URL inside `block.text` (classified by
-    /// the host's `resolvePageID`). Pre-resolved at the call site
-    /// so page renames / deletes invalidate the row's `Equatable` `==` (the
-    /// parent `lookupPage` closure isn't itself comparable). Inline-link
-    /// entries are keyed by `URL.absoluteString`; subpage entries by the
-    /// block's stored pageID.
-    let pageLookups: [String: PageLookup]
-
-    /// Subset of the host's link-preview cache relevant to this row. Filtered
-    /// at the call site to just the URLs in `block.text`, so the dict stays
-    /// small and Equatable comparisons are cheap. Async fetches still run
-    /// inside this row's `.task` and call `onLinkPreviewLoaded` to write back
-    /// to the host's cache.
-    let linkPreviews: [URL: LinkPreview]
-    let onLinkPreviewLoaded: (URL, LinkPreview) -> Void
-    /// The host. The row's `.task` calls `host.linkPreview(for:)` for any
-    /// uncached external URL in this block's text.
-    let host: EditorHost
-
-    let onTapOutsideText: () -> Void
-    let onActionMenuDismiss: () -> Void
-    let onMentionMenuDismiss: () -> Void
-    let onIOSDelete: () -> Void
-    let onIOSShowMenu: () -> Void
-    let actionMenuContent: () -> AnyView
-    let mentionMenuContent: () -> AnyView
-
-    init(
-        block: Block,
-        state: EditorState,
-        onBlockChange: @escaping (Block) -> Void,
-        onToggleTodo: @escaping (BlockID) -> Void,
-        depth: Int,
-        editor: TextEditing?,
-        isPageTitle: Bool,
-        numberingIndex: Int?,
-        isSelected: Bool,
-        isExpanded: Bool,
-        isDropTarget: Bool,
-        isActionMenuTarget: Bool,
-        isActionMenuPresented: Bool,
-        isPinching: Bool,
-        reorderSourceOpacity: Double,
-        isReorderingThisBlock: Bool,
-        isSelectionHandleRow: Bool,
-        accessibilityID: String,
-        accessibilityLabelText: String,
-        onClickAtPoint: @escaping (CGPoint) -> Void,
-        onToggleExpansion: @escaping () -> Void,
-        onTemplateButtonPress: @escaping () -> Void,
-        pageLookups: [String: PageLookup],
-        linkPreviews: [URL: LinkPreview],
-        onLinkPreviewLoaded: @escaping (URL, LinkPreview) -> Void,
-        host: EditorHost,
-        onTapOutsideText: @escaping () -> Void,
-        onActionMenuDismiss: @escaping () -> Void,
-        onMentionMenuDismiss: @escaping () -> Void,
-        onIOSDelete: @escaping () -> Void,
-        onIOSShowMenu: @escaping () -> Void,
-        actionMenuContent: @escaping () -> AnyView,
-        mentionMenuContent: @escaping () -> AnyView
-    ) {
-        self.block = block
+    init(model: BlockRowModel, state: EditorState, actions: BlockRowActions) {
+        self.model = model
         self.state = state
-        self.onBlockChange = onBlockChange
-        self.onToggleTodo = onToggleTodo
-        self.depth = depth
-        self.editor = editor
-        self.isPageTitle = isPageTitle
-        self.numberingIndex = numberingIndex
-        self.isSelected = isSelected
-        self.isExpanded = isExpanded
-        self.isDropTarget = isDropTarget
-        self.isActionMenuTarget = isActionMenuTarget
-        self.isActionMenuPresented = isActionMenuPresented
-        self.isPinching = isPinching
-        self.reorderSourceOpacity = reorderSourceOpacity
-        self.isReorderingThisBlock = isReorderingThisBlock
-        self.isSelectionHandleRow = isSelectionHandleRow
-        self.accessibilityID = accessibilityID
-        self.accessibilityLabelText = accessibilityLabelText
-        self.onClickAtPoint = onClickAtPoint
-        self.onToggleExpansion = onToggleExpansion
-        self.onTemplateButtonPress = onTemplateButtonPress
-        self.pageLookups = pageLookups
-        self.linkPreviews = linkPreviews
-        self.onLinkPreviewLoaded = onLinkPreviewLoaded
-        self.host = host
-        self.onTapOutsideText = onTapOutsideText
-        self.onActionMenuDismiss = onActionMenuDismiss
-        self.onMentionMenuDismiss = onMentionMenuDismiss
-        self.onIOSDelete = onIOSDelete
-        self.onIOSShowMenu = onIOSShowMenu
-        self.actionMenuContent = actionMenuContent
-        self.mentionMenuContent = mentionMenuContent
+        self.actions = actions
     }
+
+    var block: Block { model.block }
+    var depth: Int { model.depth }
+    var isPageTitle: Bool { model.isPageTitle }
+    var numberingIndex: Int? { model.numberingIndex }
+    var isSelected: Bool { model.isSelected }
+    var editor: TextEditing? { actions.editor }
+    var isExpanded: Bool { model.isExpanded }
+    var isDropTarget: Bool { model.isDropTarget }
+    var isActionMenuTarget: Bool { model.isActionMenuTarget }
+    var isActionMenuPresented: Bool { model.isActionMenuPresented }
+    var isPinching: Bool { model.isPinching }
+    var reorderSourceOpacity: Double { model.reorderSourceOpacity }
+    var isReorderingThisBlock: Bool { model.isReorderingThisBlock }
+    var isSelectionHandleRow: Bool { model.isSelectionHandleRow }
+    var accessibilityID: String { model.accessibilityID }
+    var accessibilityLabelText: String { model.accessibilityLabelText }
+    var pageLookups: [String: PageLookup] { model.pageLookups }
+    var linkPreviews: [URL: LinkPreview] { model.linkPreviews }
+    var onBlockChange: (Block) -> Void { actions.onBlockChange }
+    var onToggleTodo: (BlockID) -> Void { actions.onToggleTodo }
+    var onClickAtPoint: (CGPoint) -> Void { actions.onClickAtPoint }
+    var onToggleExpansion: () -> Void { actions.onToggleExpansion }
+    var onTemplateButtonPress: () -> Void { actions.onTemplateButtonPress }
+    var onLinkPreviewLoaded: (URL, LinkPreview) -> Void { actions.onLinkPreviewLoaded }
+    var host: EditorHost { actions.host }
+    var onTapOutsideText: () -> Void { actions.onTapOutsideText }
+    var onActionMenuDismiss: () -> Void { actions.onActionMenuDismiss }
+    var onMentionMenuDismiss: () -> Void { actions.onMentionMenuDismiss }
+    var onIOSDelete: () -> Void { actions.onIOSDelete }
+    var onIOSShowMenu: () -> Void { actions.onIOSShowMenu }
+    var actionMenuContent: () -> AnyView { actions.actionMenuContent }
+    var mentionMenuContent: () -> AnyView { actions.mentionMenuContent }
 
     /// Convenience: this row is in edit mode (its text area is hosting a
     /// `BlockTextEditor` rather than a read-only renderer).
@@ -730,6 +577,27 @@ struct BlockRow: View, Equatable {
             }
         }
     }
+}
+
+/// Non-equatable row dependencies and callbacks. These are regenerated from
+/// `EditorView` on each parent render and deliberately stay out of
+/// `BlockRowModel` so equality reflects only visible row state.
+struct BlockRowActions {
+    let editor: BlockRow.TextEditing?
+    let onBlockChange: (Block) -> Void
+    let onToggleTodo: (BlockID) -> Void
+    let onClickAtPoint: (CGPoint) -> Void
+    let onToggleExpansion: () -> Void
+    let onTemplateButtonPress: () -> Void
+    let onLinkPreviewLoaded: (URL, LinkPreview) -> Void
+    let host: EditorHost
+    let onTapOutsideText: () -> Void
+    let onActionMenuDismiss: () -> Void
+    let onMentionMenuDismiss: () -> Void
+    let onIOSDelete: () -> Void
+    let onIOSShowMenu: () -> Void
+    let actionMenuContent: () -> AnyView
+    let mentionMenuContent: () -> AnyView
 }
 
 /// Pre-resolve every workspace-page reference this row needs to render: the

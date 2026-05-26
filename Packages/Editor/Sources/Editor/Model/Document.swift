@@ -24,7 +24,8 @@ public struct DropPath: Hashable, Sendable {
 /// External mutations must funnel through `transaction(name:_:)` (or its
 /// primitives `mutate` / `setText` / `insertSubtree` / `replaceSubtree`),
 /// which fires `preMutation` and registers undo. For bulk non-undoable
-/// replacement (conflict resolution, reload), use `replaceChildren(_:)`.
+/// replacement (conflict resolution, reload), use one of the named system
+/// replacement methods.
 @Observable @MainActor
 public final class Document: @MainActor Identifiable {
     public let url: URL
@@ -67,12 +68,24 @@ public final class Document: @MainActor Identifiable {
     @ObservationIgnored
     public var didCommitTransaction: (([EditorOp]) -> Void)?
 
-    /// Editor-supplied hook fired after `replaceChildren(_:)` swaps the tree
+    /// Editor-supplied hook fired after a system replacement swaps the tree
     /// wholesale (external-edit reloads, conflict merges). Fresh parse →
     /// fresh BlockIDs, so the editor needs to revalidate `EditorState`
     /// against the new id set. Set by `EditorView` on mount.
     @ObservationIgnored
     public var didReplaceChildren: (() -> Void)?
+
+    @ObservationIgnored
+    private var editorHookSets: [UUID: EditorHooks] = [:]
+
+    @ObservationIgnored
+    private var transactionUndoManagerOverride: UndoManager?
+
+    struct EditorHooks {
+        var preMutation: () -> Void
+        var didCommitTransaction: ([EditorOp]) -> Void
+        var didReplaceChildren: () -> Void
+    }
 
     /// Coalesce window — same `coalesceKey` within this interval is folded into
     /// the previous transaction's undo entry (no new entry registered).
@@ -151,10 +164,14 @@ public final class Document: @MainActor Identifiable {
         // payloads.
         let before = children
         preMutation?()
+        for hooks in editorHookSets.values {
+            hooks.preMutation()
+        }
         change()
         enforceHeadingContainment()
         let ops = BlockTreeDiff.derive(pre: before, post: children)
-        if !shouldCoalesce, let undoManager {
+        let activeUndoManager = transactionUndoManagerOverride ?? undoManager
+        if !shouldCoalesce, let undoManager = activeUndoManager {
             // The inverse of any forward transaction is another transaction
             // that resets `children` to `before`. Routing through the same
             // entry point means undo, redo, and forward share one code path:
@@ -170,7 +187,34 @@ public final class Document: @MainActor Identifiable {
         }
         lastTransactionTime = now
         didCommitTransaction?(ops)
+        for hooks in editorHookSets.values {
+            hooks.didCommitTransaction(ops)
+        }
         return ops
+    }
+
+    @discardableResult
+    func transaction(
+        name: String,
+        coalesceKey: AnyHashable? = nil,
+        undoManager: UndoManager?,
+        _ change: () -> Void
+    ) -> [EditorOp] {
+        let prior = transactionUndoManagerOverride
+        transactionUndoManagerOverride = undoManager
+        defer { transactionUndoManagerOverride = prior }
+        return transaction(name: name, coalesceKey: coalesceKey, change)
+    }
+
+    func installEditorHooks(_ hooks: EditorHooks) -> UUID {
+        let id = UUID()
+        editorHookSets[id] = hooks
+        return id
+    }
+
+    func removeEditorHooks(_ id: UUID?) {
+        guard let id else { return }
+        editorHookSets.removeValue(forKey: id)
     }
 
     /// Break the coalesce window so the next transaction with a `coalesceKey`
@@ -204,11 +248,34 @@ public final class Document: @MainActor Identifiable {
     /// can revalidate selection / cursor against the new BlockID set, and
     /// breaks coalescing so the next user transaction starts a fresh undo
     /// entry (a disk-driven swap shouldn't fold into the prior burst).
-    public func replaceChildren(_ newChildren: [Block]) {
+    func replaceChildren(_ newChildren: [Block]) {
         children = newChildren
         lastTransactionKey = nil
         lastTransactionTime = nil
         didReplaceChildren?()
+        for hooks in editorHookSets.values {
+            hooks.didReplaceChildren()
+        }
+    }
+
+    /// Bulk-replace after an external writer changed the backing document.
+    /// Bypasses undo and transaction emission; the new parsed tree is the
+    /// authoritative disk state.
+    public func replaceChildrenFromExternalReload(_ newChildren: [Block]) {
+        replaceChildren(newChildren)
+    }
+
+    /// Bulk-replace after Clamshell merged iCloud conflict alternates.
+    /// Bypasses undo and transaction emission; the merged tree has already
+    /// been persisted through the Clamshell commit path.
+    public func replaceChildrenFromConflictResolution(_ newChildren: [Block]) {
+        replaceChildren(newChildren)
+    }
+
+    /// Bulk-replace after host-owned system work has already handled
+    /// persistence/logging separately. Prefer `transaction` for user actions.
+    public func replaceChildrenFromSystemMutation(_ newChildren: [Block]) {
+        replaceChildren(newChildren)
     }
 
     // MARK: - Generic preorder walkers
