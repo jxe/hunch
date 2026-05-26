@@ -125,3 +125,52 @@ final class HunchEditScrollUITests: XCTestCase {
             .joined(separator: "-")
     }
 }
+
+@MainActor
+final class HunchHomeToolbarUITests: XCTestCase {
+    private var app: XCUIApplication!
+
+    override func setUp() async throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--hunch-ui-testing-nav-toolbar"]
+        app.launch()
+    }
+
+    func testHomeToolbarSurvivesReturningFromChildPage() {
+        XCTAssertTrue(row(containing: "Child").waitForExistence(timeout: 3))
+        assertHomeToolbarVisible()
+
+        row(containing: "Child").tap()
+        XCTAssertTrue(row(containing: "Child body").waitForExistence(timeout: 3))
+
+        navigateBack()
+        XCTAssertTrue(row(containing: "Child").waitForExistence(timeout: 3))
+        assertHomeToolbarVisible()
+    }
+
+    private func assertHomeToolbarVisible(file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(app.buttons["Search Pages"].exists, "Expected Search Pages toolbar button", file: file, line: line)
+        XCTAssertTrue(app.buttons["Undo"].exists, "Expected Undo toolbar button", file: file, line: line)
+        XCTAssertTrue(app.buttons["Record Audio"].exists, "Expected Record Audio toolbar button", file: file, line: line)
+    }
+
+    private func navigateBack() {
+        let back = app.navigationBars.buttons["Back"]
+        if back.waitForExistence(timeout: 1) {
+            back.tap()
+        } else {
+            app.swipeRight()
+        }
+    }
+
+    private func row(containing text: String) -> XCUIElement {
+        app.descendants(matching: .any)["block-row-\(slug(text))"]
+    }
+
+    private func slug(_ text: String) -> String {
+        text.lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .joined(separator: "-")
+    }
+}

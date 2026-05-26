@@ -100,6 +100,10 @@ final class Workspace {
             installUITestWorkspace()
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--hunch-ui-testing-nav-toolbar") {
+            installNavToolbarUITestWorkspace()
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--hunch-ui-testing-tall-doc") {
             installTallDocUITestWorkspace()
             return
@@ -510,6 +514,38 @@ final class Workspace {
             try? clamshell.rescan()
         } catch {
             self.error = "Failed to install tall-doc UI test workspace: \(error.localizedDescription)"
+        }
+    }
+
+    private func installNavToolbarUITestWorkspace() {
+        do {
+            let root = FileManager.default
+                .temporaryDirectory
+                .appendingPathComponent("hunch-ui-tests", isDirectory: true)
+            try? FileManager.default.removeItem(at: root)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+            let homeURL = root.appendingPathComponent("home.md")
+            let homeSource = """
+            # Home
+
+            [Child](child.md)
+            """
+            try homeSource.write(to: homeURL, atomically: true, encoding: .utf8)
+
+            let childURL = root.appendingPathComponent("child.md")
+            let childSource = """
+            # Child
+
+            Child body
+            """
+            try childSource.write(to: childURL, atomically: true, encoding: .utf8)
+
+            let clamshell = mount(root: root)
+            clamshell.setHome(relativePath: "home.md")
+            try? clamshell.rescan()
+        } catch {
+            self.error = "Failed to install nav-toolbar UI test workspace: \(error.localizedDescription)"
         }
     }
 }

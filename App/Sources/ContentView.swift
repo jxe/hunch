@@ -113,18 +113,13 @@ struct ContentView: View {
     @ViewBuilder
     private var rootView: some View {
         if let homeURL = workspace.homeURL {
-            if let document = window.documentForPage(url: homeURL) {
-                EditorPage(
-                    url: homeURL,
-                    document: document,
-                    workspace: workspace,
-                    window: window
-                )
-            } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(NotionStyle.background)
-            }
+            EditorPage(
+                url: homeURL,
+                document: window.documentForPage(url: homeURL),
+                workspace: workspace,
+                window: window
+            )
+            .id(homeURL)
         } else {
             EmptyWorkspaceView(workspace: workspace, window: window)
         }
@@ -151,23 +146,17 @@ struct ContentView: View {
 
     @ViewBuilder
     private func pageDetail(for url: URL) -> some View {
-        if let document = window.documentForPage(url: url) {
-            // Wrap the editor in a per-URL view so SwiftUI's view-identity gives
-            // us a fresh EditorState (and undo controller, focus, etc.) each
-            // time the user navigates to a different document. The Editor
-            // contract is one EditorState per document; navigating to a new
-            // page mounts a new EditorPage with new state.
-            EditorPage(
-                url: url,
-                document: document,
-                workspace: workspace,
-                window: window
-            )
-        } else {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(NotionStyle.background)
-        }
+        // Wrap the editor in a per-URL view so SwiftUI's view-identity gives
+        // us a fresh EditorState (and undo controller, focus, etc.) each time
+        // the user navigates to a different document. Keep the shell mounted
+        // during loading so iOS does not drop the page toolbar.
+        EditorPage(
+            url: url,
+            document: window.documentForPage(url: url),
+            workspace: workspace,
+            window: window
+        )
+        .id(url)
     }
 }
 
@@ -178,7 +167,7 @@ struct ContentView: View {
 /// and is naturally keyed on `openDocument` (one active doc per window).
 private struct EditorPage: View {
     let url: URL
-    let document: Document
+    let document: Document?
     @Bindable var workspace: Workspace
     @Bindable var window: WorkspaceWindow
 
@@ -186,11 +175,19 @@ private struct EditorPage: View {
     @FocusedValue(\.documentUndoController) private var undoController
 
     var body: some View {
-        EditorView(
-            document: document,
-            state: editorState,
-            host: window
-        )
+        Group {
+            if let document {
+                EditorView(
+                    document: document,
+                    state: editorState,
+                    host: window
+                )
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(NotionStyle.background)
+            }
+        }
         .toolbar {
             #if os(iOS)
             ToolbarItem(placement: .primaryAction) {
