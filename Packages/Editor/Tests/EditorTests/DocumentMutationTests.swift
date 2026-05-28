@@ -350,6 +350,32 @@ struct DocumentMutationTests {
         #expect(doc.children[0].children.map(\.id) == [xID, aID, bID])
     }
 
+    @Test func slideSiblingsDownFromHeadingEndMovesToNextHeadingStart() {
+        // [heading A {x}, heading B {y}]
+        // Sliding x down should move it into B's body. If it exits to the
+        // root slot between A and B, heading-containment folds it back into A.
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            children: [
+                .heading(level: .h1, text: AttributedString("A"), children: [
+                    .bullet(text: AttributedString("x"))
+                ]),
+                .heading(level: .h1, text: AttributedString("B"), children: [
+                    .bullet(text: AttributedString("y"))
+                ])
+            ]
+        )
+        let headingAID = doc.children[0].id
+        let headingBID = doc.children[1].id
+        let xID = doc.children[0].children[0].id
+        let yID = doc.children[1].children[0].id
+
+        #expect(doc.slideSiblings([xID], by: 1))
+        #expect(doc.children.map(\.id) == [headingAID, headingBID])
+        #expect(doc.children[0].children.isEmpty)
+        #expect(doc.children[1].children.map(\.id) == [xID, yID])
+    }
+
     @Test func slideSiblingsDownBeforeToggleSkipsToggleSubtree() {
         // [bullet x, toggle Out {a, b}]
         // Slide-down x skips the whole toggle subtree instead of indenting into

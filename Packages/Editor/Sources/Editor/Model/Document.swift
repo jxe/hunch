@@ -747,7 +747,13 @@ public final class Document: @MainActor Identifiable {
                 let grandparentID = parent(of: parentID)
                 let outerSiblings: [Block] = grandparentID.flatMap(find)?.children ?? children
                 guard let parentIndex = outerSiblings.firstIndex(where: { $0.id == parentBlock.id }) else { return nil }
-                target = DropPath(parent: grandparentID, position: parentIndex + 1)
+                let nextOuterPosition = parentIndex + 1
+                if nextOuterPosition < outerSiblings.count,
+                   outerSiblings[nextOuterPosition].isHeading {
+                    target = DropPath(parent: outerSiblings[nextOuterPosition].id, position: 0)
+                } else {
+                    target = DropPath(parent: grandparentID, position: nextOuterPosition)
+                }
             } else {
                 let nextSibling = siblings[nextPosition]
                 if nextSibling.isHeading {
