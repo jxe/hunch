@@ -228,4 +228,55 @@ struct ClamshellSavingTests {
         try await clamshell.closePage(first)
         try await clamshell.closePage(second)
     }
+
+    @Test func cloudSyncTargetsUsePageAndThisDeviceLogLocations() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        let rootDoc = Document(url: clamshell.url(for: "Home.md"), children: [])
+        let rootTargets = clamshell.cloudSyncTargets(for: rootDoc)
+        #expect(rootTargets.map(\.kind) == [.page, .thisDeviceLog])
+        #expect(rootTargets[0].url == rootDoc.url.standardizedFileURL)
+        #expect(relativePath(rootTargets[1].url, under: root) == ".history/Home.md/\(DeviceID.current).jsonl")
+
+        let nestedDoc = Document(url: clamshell.url(for: "Projects/Ideas.md"), children: [])
+        let nestedTargets = clamshell.cloudSyncTargets(for: nestedDoc)
+        #expect(nestedTargets[0].url == nestedDoc.url.standardizedFileURL)
+        #expect(relativePath(nestedTargets[1].url, under: root) == ".history/Projects/Ideas.md/\(DeviceID.current).jsonl")
+    }
+
+    @Test func cloudSyncCombinedStatusDerivation() {
+        #expect(snapshotState([cloudItem(.synced), cloudItem(.synced, kind: .thisDeviceLog)]) == .synced)
+        #expect(snapshotState([cloudItem(.synced), cloudItem(.syncing, kind: .thisDeviceLog)]) == .syncing)
+        #expect(snapshotState([cloudItem(.synced), cloudItem(.waiting, kind: .thisDeviceLog)]) == .waiting)
+        #expect(snapshotState([cloudItem(.synced), cloudItem(.error, kind: .thisDeviceLog)]) == .error)
+        #expect(snapshotState([cloudItem(.local), cloudItem(.local, kind: .thisDeviceLog)]) == .local)
+        #expect(snapshotState([cloudItem(.synced), cloudItem(.missingNeutral, kind: .thisDeviceLog, exists: false)]) == .synced)
+    }
+
+    private func relativePath(_ url: URL, under root: URL) -> String {
+        String(url.standardizedFileURL.path.dropFirst(root.standardizedFileURL.path.count + 1))
+    }
+
+    private func cloudItem(
+        _ status: Clamshell.CloudSyncItemStatus,
+        kind: Clamshell.CloudSyncTargetKind = .page,
+        exists: Bool = true
+    ) -> Clamshell.CloudSyncItemSnapshot {
+        Clamshell.CloudSyncItemSnapshot(
+            target: Clamshell.CloudSyncTarget(
+                kind: kind,
+                url: URL(fileURLWithPath: "/tmp/\(kind.rawValue)"),
+                displayName: kind.rawValue
+            ),
+            exists: exists,
+            status: status,
+            detail: nil
+        )
+    }
+
+    private func snapshotState(_ items: [Clamshell.CloudSyncItemSnapshot]) -> Clamshell.CloudSyncState {
+        Clamshell.CloudSyncSnapshot(items: items).state
+    }
 }

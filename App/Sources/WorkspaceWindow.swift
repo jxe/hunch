@@ -21,10 +21,12 @@ final class WorkspaceWindow {
     /// it's been opened (`openPage`); `nil` between navigations and on
     /// workspaces without a home page set.
     private(set) var openDocument: Document?
+    private(set) var cloudSyncSnapshot: Clamshell.CloudSyncSnapshot?
 
     @ObservationIgnored private var navigationTask: Task<Void, Never>?
     @ObservationIgnored private var loadingTargetURL: URL?
     @ObservationIgnored private var navigationRequestID = 0
+    @ObservationIgnored private var cloudSyncPollingTask: Task<Void, Never>?
 
     private var openPage: Clamshell.OpenPage?
 
@@ -150,6 +152,8 @@ final class WorkspaceWindow {
                     return
                 }
                 setOpenPage(open)
+                refreshCloudSyncSnapshot()
+                startCloudSyncPolling(for: open.document)
                 workspace.registerOpenURL(url)
                 perfEnd(total, "handlePathChange.total", "url=\(url.lastPathComponent)")
                 // First successful openPage per mount triggers the deferred
@@ -216,6 +220,32 @@ final class WorkspaceWindow {
         openDocument?.url.standardizedFileURL == url.standardizedFileURL ? openDocument : nil
     }
 
+    // MARK: - iCloud sync snapshot
+
+    func refreshCloudSyncSnapshot() {
+        guard let doc = openDocument, let clamshell = workspace.clamshell else {
+            cloudSyncSnapshot = nil
+            return
+        }
+        cloudSyncSnapshot = clamshell.cloudSyncSnapshot(for: doc)
+    }
+
+    private func startCloudSyncPolling(for document: Document) {
+        cloudSyncPollingTask?.cancel()
+        cloudSyncPollingTask = Task { @MainActor [weak self, weak document] in
+            while !Task.isCancelled {
+                guard let self, let document, self.openDocument === document else { return }
+                self.refreshCloudSyncSnapshot()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    private func stopCloudSyncPolling() {
+        cloudSyncPollingTask?.cancel()
+        cloudSyncPollingTask = nil
+    }
+
     private func currentTargetURL() -> URL? {
         (path.last ?? workspace.homeURL)?.standardizedFileURL
     }
@@ -226,8 +256,10 @@ final class WorkspaceWindow {
     }
 
     private func clearOpenPage() {
+        stopCloudSyncPolling()
         openPage = nil
         openDocument = nil
+        cloudSyncSnapshot = nil
     }
 
     private func finishNavigationRequest(_ requestID: Int) {

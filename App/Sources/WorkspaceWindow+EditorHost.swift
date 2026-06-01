@@ -52,8 +52,13 @@ extension WorkspaceWindow: EditorHost {
         // subsequent `flush(_:)` calls (blur, nav, scenePhase) await
         // the chain head and so will await this task too.
         Task { @MainActor in
-            do { try await clamshell.commit(commit, to: document) }
-            catch { showSaveFailure(for: document, error: error) }
+            do {
+                try await clamshell.commit(commit, to: document)
+                if openDocument === document { refreshCloudSyncSnapshot() }
+            } catch {
+                showSaveFailure(for: document, error: error)
+                if openDocument === document { refreshCloudSyncSnapshot() }
+            }
         }
     }
 
@@ -61,8 +66,10 @@ extension WorkspaceWindow: EditorHost {
         guard let clamshell = workspace.clamshell else { return }
         do {
             try await clamshell.flush(document)
+            if openDocument === document { refreshCloudSyncSnapshot() }
         } catch {
             showSaveFailure(for: document, error: error)
+            if openDocument === document { refreshCloudSyncSnapshot() }
             throw error
         }
     }

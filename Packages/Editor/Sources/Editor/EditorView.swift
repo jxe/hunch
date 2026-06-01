@@ -32,6 +32,7 @@ public struct EditorView: View {
     /// lets `.equatable()` gating actually work for the row wrapper. See
     /// `EditorHost`.
     public let host: any EditorHost
+    public let pageFooter: AnyView?
 
     // View-shaped @State that doesn't move into EditorState because it's tied to
     // SwiftUI/UIKit lifecycle (FocusState must live on a View; row-frame cache
@@ -122,6 +123,19 @@ public struct EditorView: View {
         self.document = document
         self.state = state
         self.host = host
+        self.pageFooter = nil
+    }
+
+    public init<Footer: View>(
+        document: Document,
+        state: EditorState,
+        host: any EditorHost,
+        @ViewBuilder pageFooter: () -> Footer
+    ) {
+        self.document = document
+        self.state = state
+        self.host = host
+        self.pageFooter = AnyView(pageFooter())
     }
 
     public var body: some View {
@@ -239,6 +253,7 @@ public struct EditorView: View {
                 isIOSReorderEnabled: !pinchGestureActive,
                 isMacReorderEnabled: state.editingBlock == nil,
                 isPinchEnabled: state.editingBlock == nil,
+                footer: pageFooter,
                 actions: surfaceActions
             ) { id in
                 if let row = visibleRowByID[id] {

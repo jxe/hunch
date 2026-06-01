@@ -210,6 +210,151 @@ final class Clamshell {
         root.appendingPathComponent(relativePath).standardizedFileURL
     }
 
+    enum CloudSyncTargetKind: String, Sendable {
+        case page
+        case thisDeviceLog
+    }
+
+    struct CloudSyncTarget: Identifiable, Equatable, Sendable {
+        let kind: CloudSyncTargetKind
+        let url: URL
+        let displayName: String
+
+        var id: CloudSyncTargetKind { kind }
+    }
+
+    enum CloudSyncItemStatus: Equatable, Sendable {
+        case synced
+        case syncing
+        case waiting
+        case error
+        case local
+        case missingNeutral
+    }
+
+    enum CloudSyncState: Equatable, Sendable {
+        case synced
+        case syncing
+        case waiting
+        case error
+        case local
+    }
+
+    struct CloudSyncItemSnapshot: Identifiable, Equatable, Sendable {
+        let target: CloudSyncTarget
+        let exists: Bool
+        let status: CloudSyncItemStatus
+        let detail: String?
+
+        var id: CloudSyncTargetKind { target.kind }
+        var url: URL { target.url }
+    }
+
+    struct CloudSyncSnapshot: Equatable, Sendable {
+        let items: [CloudSyncItemSnapshot]
+        let state: CloudSyncState
+
+        init(items: [CloudSyncItemSnapshot]) {
+            self.items = items
+            self.state = Self.deriveState(from: items)
+        }
+
+        static func deriveState(from items: [CloudSyncItemSnapshot]) -> CloudSyncState {
+            let tracked = items.filter { $0.status != .missingNeutral }
+            guard !tracked.isEmpty else { return .local }
+
+            if tracked.contains(where: { $0.status == .error }) { return .error }
+            if tracked.contains(where: { $0.status == .syncing }) { return .syncing }
+            if tracked.contains(where: { $0.status == .waiting }) { return .waiting }
+            if tracked.allSatisfy({ $0.status == .synced }) { return .synced }
+            if tracked.allSatisfy({ $0.status == .local }) { return .local }
+
+            // Mixed iCloud/local coverage is neither fully uploaded nor wholly
+            // local, so surface it as pending rather than silently green.
+            return .waiting
+        }
+    }
+
+    func cloudSyncTargets(for doc: Document) -> [CloudSyncTarget] {
+        let pageURL = doc.url.standardizedFileURL
+        let relativePath = relativePath(of: pageURL)
+        let logURL = root
+            .appendingPathComponent(RecoveryLog.directoryName, isDirectory: true)
+            .appendingPathComponent(relativePath, isDirectory: true)
+            .appendingPathComponent("\(DeviceID.current).jsonl")
+            .standardizedFileURL
+
+        return [
+            CloudSyncTarget(kind: .page, url: pageURL, displayName: pageURL.lastPathComponent),
+            CloudSyncTarget(kind: .thisDeviceLog, url: logURL, displayName: "This device log")
+        ]
+    }
+
+    func cloudSyncSnapshot(for doc: Document) -> CloudSyncSnapshot {
+        CloudSyncSnapshot(items: cloudSyncTargets(for: doc).map { snapshot(for: $0) })
+    }
+
+    private func snapshot(for target: CloudSyncTarget) -> CloudSyncItemSnapshot {
+        let exists = FileManager.default.fileExists(atPath: target.url.path)
+        guard exists else {
+            if target.kind == .thisDeviceLog {
+                return CloudSyncItemSnapshot(
+                    target: target,
+                    exists: false,
+                    status: .missingNeutral,
+                    detail: "No local log yet"
+                )
+            }
+            return CloudSyncItemSnapshot(
+                target: target,
+                exists: false,
+                status: .error,
+                detail: "File missing"
+            )
+        }
+
+        do {
+            let values = try target.url.resourceValues(forKeys: [
+                .isUbiquitousItemKey,
+                .ubiquitousItemIsUploadedKey,
+                .ubiquitousItemIsUploadingKey,
+                .ubiquitousItemUploadingErrorKey,
+                .ubiquitousItemDownloadingErrorKey,
+                .ubiquitousItemIsExcludedFromSyncKey,
+                .ubiquitousItemHasUnresolvedConflictsKey
+            ])
+
+            guard values.isUbiquitousItem == true else {
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .local, detail: nil)
+            }
+
+            if values.ubiquitousItemIsExcludedFromSync == true {
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: "Excluded from iCloud sync")
+            }
+            if values.ubiquitousItemHasUnresolvedConflicts == true {
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: "Unresolved iCloud conflict")
+            }
+            if let error = values.ubiquitousItemUploadingError ?? values.ubiquitousItemDownloadingError {
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: error.localizedDescription)
+            }
+            if values.ubiquitousItemIsUploading == true {
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .syncing, detail: nil)
+            }
+            if values.ubiquitousItemIsUploaded == true {
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .synced, detail: nil)
+            }
+
+            return CloudSyncItemSnapshot(target: target, exists: true, status: .waiting, detail: nil)
+        } catch {
+            return CloudSyncItemSnapshot(
+                target: target,
+                exists: true,
+                status: .error,
+                detail: error.localizedDescription
+            )
+        }
+    }
+
     /// Classify a URL from an inline `[text](url)` link as an internal-page
     /// reference. Returns the workspace-relative pageID (path) when the URL
     /// names a `.md` file inside this Clamshell; nil for external schemes,

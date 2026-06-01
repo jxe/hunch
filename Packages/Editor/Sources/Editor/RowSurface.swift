@@ -65,6 +65,7 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
     let isIOSReorderEnabled: Bool
     let isMacReorderEnabled: Bool
     let isPinchEnabled: Bool
+    let footer: AnyView?
     let actions: RowSurfaceActions<ID>
     let rowContent: (ID) -> RowContent
     let liftContent: (ID, CGSize) -> LiftContent
@@ -89,6 +90,7 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
         isIOSReorderEnabled: Bool,
         isMacReorderEnabled: Bool,
         isPinchEnabled: Bool,
+        footer: AnyView? = nil,
         actions: RowSurfaceActions<ID>,
         @ViewBuilder rowContent: @escaping (ID) -> RowContent,
         @ViewBuilder liftContent: @escaping (ID, CGSize) -> LiftContent
@@ -106,6 +108,7 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
         self.isIOSReorderEnabled = isIOSReorderEnabled
         self.isMacReorderEnabled = isMacReorderEnabled
         self.isPinchEnabled = isPinchEnabled
+        self.footer = footer
         self.actions = actions
         self.rowContent = rowContent
         self.liftContent = liftContent
@@ -130,6 +133,9 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
                         .animation(.spring(response: 0.26, dampingFraction: 0.76), value: row.reorderGap)
                 }
                 trailingDropTarget
+                if let footer {
+                    footer
+                }
             }
             .onGeometryChange(for: CGRect.self) { proxy in
                 proxy.frame(in: .named(PageHoverCoordinateSpace.name))

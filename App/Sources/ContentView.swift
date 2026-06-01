@@ -85,7 +85,9 @@ struct ContentView: View {
             if new == nil { window.reset() }
         }
         .onChange(of: scenePhase) { _, new in
-            if new != .active, let doc = window.openDocument {
+            if new == .active {
+                window.refreshCloudSyncSnapshot()
+            } else if let doc = window.openDocument {
                 Task { try? await window.flush(doc) }
             }
         }
@@ -181,7 +183,11 @@ private struct EditorPage: View {
                     document: document,
                     state: editorState,
                     host: window
-                )
+                ) {
+                    if let snapshot = window.cloudSyncSnapshot {
+                        PageSyncFooter(snapshot: snapshot)
+                    }
+                }
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -228,6 +234,162 @@ private struct EditorPage: View {
             ToolbarItem(placement: .primaryAction) {
                 RecordingButton(editorState: editorState)
             }
+        }
+    }
+}
+
+private struct PageSyncFooter: View {
+    let snapshot: Clamshell.CloudSyncSnapshot
+    @State private var showingDetails = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button {
+                showingDetails.toggle()
+            } label: {
+                Label(statusTitle, systemImage: statusIcon)
+                    .font(NotionStyle.body(size: 11, weight: .medium))
+                    .foregroundStyle(statusTint)
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .popover(isPresented: $showingDetails, arrowEdge: .bottom) {
+                PageSyncPopover(snapshot: snapshot)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var statusTitle: String {
+        switch snapshot.state {
+        case .synced: return "iCloud synced"
+        case .syncing: return "Syncing"
+        case .waiting: return "Waiting for iCloud"
+        case .error: return "iCloud issue"
+        case .local: return "Local folder"
+        }
+    }
+
+    private var statusIcon: String {
+        switch snapshot.state {
+        case .synced: return "icloud"
+        case .syncing: return "arrow.triangle.2.circlepath"
+        case .waiting: return "icloud.and.arrow.up"
+        case .error: return "exclamationmark.icloud"
+        case .local: return "folder"
+        }
+    }
+
+    private var statusTint: Color {
+        switch snapshot.state {
+        case .synced: return .secondary
+        case .syncing: return .blue
+        case .waiting: return .orange
+        case .error: return .red
+        case .local: return NotionStyle.mutedForeground
+        }
+    }
+}
+
+private struct PageSyncPopover: View {
+    let snapshot: Clamshell.CloudSyncSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("iCloud Status")
+                .font(NotionStyle.body(size: 13, weight: .semibold))
+                .foregroundStyle(NotionStyle.foreground)
+
+            ForEach(snapshot.items) { item in
+                PageSyncRow(item: item)
+            }
+
+            #if os(macOS)
+            let revealable = snapshot.items.filter(\.exists)
+            if !revealable.isEmpty {
+                Divider()
+                HStack(spacing: 8) {
+                    ForEach(revealable) { item in
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                        } label: {
+                            Label(revealTitle(for: item), systemImage: "arrow.up.forward.app")
+                        }
+                    }
+                }
+            }
+            #endif
+        }
+        .padding(14)
+        .frame(minWidth: 260, alignment: .leading)
+    }
+
+    #if os(macOS)
+    private func revealTitle(for item: Clamshell.CloudSyncItemSnapshot) -> String {
+        switch item.target.kind {
+        case .page: return "Reveal Page"
+        case .thisDeviceLog: return "Reveal Log"
+        }
+    }
+    #endif
+}
+
+private struct PageSyncRow: View {
+    let item: Clamshell.CloudSyncItemSnapshot
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.target.displayName)
+                    .font(NotionStyle.body(size: 12, weight: .medium))
+                    .foregroundStyle(NotionStyle.foreground)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(detail)
+                    .font(NotionStyle.body(size: 11))
+                    .foregroundStyle(item.status == .error ? .red : NotionStyle.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var detail: String {
+        if let detail = item.detail { return detail }
+        switch item.status {
+        case .synced: return "Uploaded to iCloud"
+        case .syncing: return "Uploading"
+        case .waiting: return "Pending upload"
+        case .error: return "Needs attention"
+        case .local: return "Not in iCloud"
+        case .missingNeutral: return "No local log yet"
+        }
+    }
+
+    private var icon: String {
+        switch item.status {
+        case .synced: return "checkmark.circle"
+        case .syncing: return "arrow.triangle.2.circlepath"
+        case .waiting: return "clock"
+        case .error: return "exclamationmark.triangle"
+        case .local: return "folder"
+        case .missingNeutral: return "minus.circle"
+        }
+    }
+
+    private var tint: Color {
+        switch item.status {
+        case .synced: return .green
+        case .syncing: return .blue
+        case .waiting: return .orange
+        case .error: return .red
+        case .local, .missingNeutral: return NotionStyle.mutedForeground
         }
     }
 }
