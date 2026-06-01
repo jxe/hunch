@@ -245,6 +245,7 @@ final class Clamshell {
         let exists: Bool
         let status: CloudSyncItemStatus
         let detail: String?
+        let byteCount: Int64?
 
         var id: CloudSyncTargetKind { target.kind }
         var url: URL { target.url }
@@ -294,6 +295,11 @@ final class Clamshell {
         CloudSyncSnapshot(items: cloudSyncTargets(for: doc).map { snapshot(for: $0) })
     }
 
+    func compactThisDeviceLog(for doc: Document) async throws -> LogCompactionResult {
+        let relativePath = relativePath(of: doc.url)
+        return try await log.compactOwnLog(page: relativePath, mdMtime: doc.modificationDate)
+    }
+
     private func snapshot(for target: CloudSyncTarget) -> CloudSyncItemSnapshot {
         let exists = FileManager.default.fileExists(atPath: target.url.path)
         guard exists else {
@@ -302,19 +308,22 @@ final class Clamshell {
                     target: target,
                     exists: false,
                     status: .missingNeutral,
-                    detail: "No local log yet"
+                    detail: "No local log yet",
+                    byteCount: nil
                 )
             }
             return CloudSyncItemSnapshot(
                 target: target,
                 exists: false,
                 status: .error,
-                detail: "File missing"
+                detail: "File missing",
+                byteCount: nil
             )
         }
 
         do {
             let values = try target.url.resourceValues(forKeys: [
+                .fileSizeKey,
                 .isUbiquitousItemKey,
                 .ubiquitousItemIsUploadedKey,
                 .ubiquitousItemIsUploadingKey,
@@ -323,34 +332,36 @@ final class Clamshell {
                 .ubiquitousItemIsExcludedFromSyncKey,
                 .ubiquitousItemHasUnresolvedConflictsKey
             ])
+            let byteCount = values.fileSize.map(Int64.init)
 
             guard values.isUbiquitousItem == true else {
-                return CloudSyncItemSnapshot(target: target, exists: true, status: .local, detail: nil)
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .local, detail: nil, byteCount: byteCount)
             }
 
             if values.ubiquitousItemIsExcludedFromSync == true {
-                return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: "Excluded from iCloud sync")
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: "Excluded from iCloud sync", byteCount: byteCount)
             }
             if values.ubiquitousItemHasUnresolvedConflicts == true {
-                return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: "Unresolved iCloud conflict")
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: "Unresolved iCloud conflict", byteCount: byteCount)
             }
             if let error = values.ubiquitousItemUploadingError ?? values.ubiquitousItemDownloadingError {
-                return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: error.localizedDescription)
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: error.localizedDescription, byteCount: byteCount)
             }
             if values.ubiquitousItemIsUploading == true {
-                return CloudSyncItemSnapshot(target: target, exists: true, status: .syncing, detail: nil)
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .syncing, detail: nil, byteCount: byteCount)
             }
             if values.ubiquitousItemIsUploaded == true {
-                return CloudSyncItemSnapshot(target: target, exists: true, status: .synced, detail: nil)
+                return CloudSyncItemSnapshot(target: target, exists: true, status: .synced, detail: nil, byteCount: byteCount)
             }
 
-            return CloudSyncItemSnapshot(target: target, exists: true, status: .waiting, detail: nil)
+            return CloudSyncItemSnapshot(target: target, exists: true, status: .waiting, detail: nil, byteCount: byteCount)
         } catch {
             return CloudSyncItemSnapshot(
                 target: target,
                 exists: true,
                 status: .error,
-                detail: error.localizedDescription
+                detail: error.localizedDescription,
+                byteCount: nil
             )
         }
     }

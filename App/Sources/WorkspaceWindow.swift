@@ -22,6 +22,7 @@ final class WorkspaceWindow {
     /// workspaces without a home page set.
     private(set) var openDocument: Document?
     private(set) var cloudSyncSnapshot: Clamshell.CloudSyncSnapshot?
+    private(set) var isCompactingLog = false
 
     @ObservationIgnored private var navigationTask: Task<Void, Never>?
     @ObservationIgnored private var loadingTargetURL: URL?
@@ -228,6 +229,25 @@ final class WorkspaceWindow {
             return
         }
         cloudSyncSnapshot = clamshell.cloudSyncSnapshot(for: doc)
+    }
+
+    func compactCurrentPageLog() {
+        guard !isCompactingLog, let document = openDocument, let clamshell = workspace.clamshell else { return }
+        isCompactingLog = true
+        Task { @MainActor [weak self, document, clamshell] in
+            guard let self else { return }
+            defer {
+                self.isCompactingLog = false
+                self.refreshCloudSyncSnapshot()
+            }
+            do {
+                try await self.flush(document)
+                guard self.openDocument === document else { return }
+                _ = try await clamshell.compactThisDeviceLog(for: document)
+            } catch {
+                self.workspace.error = "Failed to compact log: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func startCloudSyncPolling(for document: Document) {

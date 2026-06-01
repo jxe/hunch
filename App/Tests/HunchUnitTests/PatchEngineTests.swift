@@ -630,6 +630,45 @@ struct PatchEngineTests {
         #expect(recon.inserts.isEmpty)
     }
 
+    @Test func autoRestoreDoesNotDuplicateNestedSubpageWithSamePageID() {
+        let logged = Block.subpage(title: "Old title", pageID: "Projects/Thing.md")
+        let live = Block.subpage(title: "Current title", pageID: "Projects/Thing.md")
+        let section = Block.heading(level: .h2, text: attr("Section"), children: [live])
+        let intent = PatchEngine.intent(from: journal(("dev-A", [addRecord(logged, counter: 1, t: 200)])))
+
+        let recon = PatchEngine.reconcile(
+            intent: intent,
+            doc: [section],
+            mdMtime: Date(timeIntervalSince1970: 100)
+        )
+
+        #expect(recon.inserts.isEmpty)
+        #expect(recon.toAppend.contains { $0.hash == live.atomicHash })
+    }
+
+    @MainActor
+    @Test func autoRestorePrunesSubpageAlreadyPresentInsideRestoredSection() {
+        let loggedSubpage = Block.subpage(title: "Old title", pageID: "Projects/Thing.md")
+        let liveSubpage = Block.subpage(title: "Current title", pageID: "Projects/Thing.md")
+        let lostSection = Block.heading(level: .h2, text: attr("Lost"), children: [loggedSubpage])
+        let currentSection = Block.heading(level: .h2, text: attr("Current"), children: [liveSubpage])
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            addRecord(lostSection, counter: 1, t: 200),
+            addRecord(loggedSubpage, parent: lostSection, counter: 2, t: 200),
+        ])))
+        let doc = Document(url: URL(fileURLWithPath: "/tmp/p.md"), children: [currentSection])
+
+        let recon = PatchEngine.reconcile(
+            intent: intent,
+            doc: doc.children,
+            mdMtime: Date(timeIntervalSince1970: 100)
+        )
+        PatchEngine.apply(recon, to: doc)
+
+        let subpages = collectSubpagePageIDs(doc.children)
+        #expect(subpages == ["Projects/Thing.md"])
+    }
+
     // MARK: - Engine removes (tombstoned-in-doc)
 
     /// `(tombstoned in journal, present in doc)` → engine emits a
@@ -677,6 +716,7 @@ struct PatchEngineTests {
         PatchEngine.apply(recon, to: doc)
 
         #expect(doc.children.map(\.atomicHash) == [child.atomicHash])
+        #expect(doc.children.first?.id == child.id)
     }
 
     @MainActor
@@ -699,6 +739,7 @@ struct PatchEngineTests {
         #expect(doc.children.count == 1)
         #expect(doc.children[0].atomicHash == newHeading.atomicHash)
         #expect(doc.children[0].children.map(\.atomicHash) == [child.atomicHash])
+        #expect(doc.children[0].children.first?.id == child.id)
     }
 
     @MainActor
@@ -796,5 +837,19 @@ struct PatchEngineTests {
 
         #expect(withCap.isEmpty, "purge older than the cap is excluded")
         #expect(noCap.count == 1, "nil cap returns everything")
+    }
+
+    private func collectSubpagePageIDs(_ blocks: [Block]) -> [String] {
+        var out: [String] = []
+        func walk(_ blocks: [Block]) {
+            for block in blocks {
+                if case .subpage(_, let pageID) = block.kind {
+                    out.append(pageID)
+                }
+                walk(block.children)
+            }
+        }
+        walk(blocks)
+        return out
     }
 }

@@ -389,12 +389,17 @@ enum PatchEngine {
         let effectiveLiveByHash = liveByHash.filter { hash, _ in
             !hashesRemovedWithSubtrees.contains(hash)
         }
+        let liveRestoreIdentities = restoreIdentities(doc)
 
         var aliveEntries: [LostBlock] = []
         for (hash, status) in intent.byHash {
             switch status {
             case .alive(let add):
                 guard effectiveLiveByHash[hash] == nil else { continue }
+                if let identity = restoreIdentity(fromMarkdown: add.markdown),
+                   liveRestoreIdentities.contains(identity) {
+                    continue
+                }
                 aliveEntries.append(LostBlock.adapt(
                     hash: hash,
                     parentHash: add.parent,
@@ -874,6 +879,38 @@ enum PatchEngine {
         return out
     }
 
+    private enum RestoreIdentity: Hashable {
+        case subpage(pageID: String)
+    }
+
+    private static func restoreIdentities(_ blocks: [Block]) -> Set<RestoreIdentity> {
+        var out: Set<RestoreIdentity> = []
+        func walk(_ blocks: [Block]) {
+            for block in blocks {
+                if let identity = restoreIdentity(from: block) {
+                    out.insert(identity)
+                }
+                walk(block.children)
+            }
+        }
+        walk(blocks)
+        return out
+    }
+
+    private static func restoreIdentity(fromMarkdown markdown: String) -> RestoreIdentity? {
+        guard let block = BlockParser.parse(markdown).first else { return nil }
+        return restoreIdentity(from: block)
+    }
+
+    private static func restoreIdentity(from block: Block) -> RestoreIdentity? {
+        switch block.kind {
+        case .subpage(_, let pageID):
+            return .subpage(pageID: pageID)
+        case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .code, .divider, .toggle, .templateButton, .image:
+            return nil
+        }
+    }
+
     private static func removedSubtreeHashes(removeIDs: [BlockID], in blocks: [Block]) -> Set<String> {
         guard !removeIDs.isEmpty else { return [] }
         let removeIDs = Set(removeIDs)
@@ -935,19 +972,32 @@ extension PatchEngine {
         guard !recon.inserts.isEmpty || !recon.removes.isEmpty else { return false }
         let removedIDs = Set(recon.removes.map(\.blockID))
         let restoredHashes = Set(recon.restoredHashes)
+        let preexistingRestoredHashes = restoredHashes.intersection(Set(liveHashes(doc.children).keys))
+        let nonPreexistingRestoredHashes = restoredHashes.subtracting(preexistingRestoredHashes)
         for remove in recon.removes {
             guard let block = doc.find(remove.blockID) else { continue }
-            if hasSurvivingDescendant(block, excludingIDs: removedIDs, excludingHashes: restoredHashes) {
+            if hasSurvivingDescendant(block, excludingIDs: removedIDs, excludingHashes: nonPreexistingRestoredHashes) {
                 _ = doc.removeBlockLiftingChildren(remove.blockID)
             } else {
                 _ = doc.removeSubtree(remove.blockID)
             }
         }
         for insert in recon.inserts {
+            let currentHashes = Set(liveHashes(doc.children).keys)
+            let duplicateHashes = insert.coveredHashes.intersection(currentHashes)
+            guard let subtree = insert.subtree.removingSubtrees(withHashes: duplicateHashes) else {
+                continue
+            }
             let siblings = insert.parent.flatMap(doc.find)?.children ?? doc.children
+            let position = dropPosition(
+                beforeFirstHashIn: duplicateHashes,
+                under: insert.parent,
+                fallback: siblings.count,
+                in: doc.children
+            )
             _ = doc.insertSubtrees(
-                [insert.subtree],
-                at: DropPath(parent: insert.parent, position: siblings.count)
+                [subtree],
+                at: DropPath(parent: insert.parent, position: position)
             )
         }
         doc.enforceHeadingContainment()
@@ -968,6 +1018,50 @@ extension PatchEngine {
             }
         }
         return false
+    }
+
+    private static func dropPosition(
+        beforeFirstHashIn hashes: Set<String>,
+        under parentID: BlockID?,
+        fallback: Int,
+        in rootBlocks: [Block]
+    ) -> Int {
+        guard !hashes.isEmpty else { return fallback }
+        let siblings: [Block]
+        if let parentID {
+            guard let parent = find(parentID, in: rootBlocks) else { return fallback }
+            siblings = parent.children
+        } else {
+            siblings = rootBlocks
+        }
+        for (index, block) in siblings.enumerated() {
+            if block.containsAnyAtomicHash(in: hashes) {
+                return index
+            }
+        }
+        return fallback
+    }
+
+    private static func find(_ id: BlockID, in blocks: [Block]) -> Block? {
+        for block in blocks {
+            if block.id == id { return block }
+            if let found = find(id, in: block.children) {
+                return found
+            }
+        }
+        return nil
+    }
+}
+
+private extension Block {
+    func removingSubtrees(withHashes hashes: Set<String>) -> Block? {
+        guard !hashes.contains(atomicHash) else { return nil }
+        return withChildren(children.compactMap { $0.removingSubtrees(withHashes: hashes) })
+    }
+
+    func containsAnyAtomicHash(in hashes: Set<String>) -> Bool {
+        if hashes.contains(atomicHash) { return true }
+        return children.contains { $0.containsAnyAtomicHash(in: hashes) }
     }
 }
 

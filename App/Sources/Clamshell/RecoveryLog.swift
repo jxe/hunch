@@ -2,6 +2,13 @@ import Foundation
 import CryptoKit
 import Editor
 
+struct LogCompactionResult: Equatable, Sendable {
+    let originalRecordCount: Int
+    let compactedRecordCount: Int
+    let originalByteCount: Int64
+    let compactedByteCount: Int64
+}
+
 /// Per-device per-page append-only JSONL log of every atomic block content
 /// this device has ever observed on a page, plus tombstones the user has
 /// raised against recovered entries. Replaces the per-block content pool —
@@ -37,6 +44,7 @@ import Editor
 actor RecoveryLog {
     static let directoryName = ".history"
     private static let logExtension = "jsonl"
+    private static let purgedSnapshotRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
 
     nonisolated private let workspaceRoot: URL
     nonisolated private let store: FileStore
@@ -276,6 +284,40 @@ actor RecoveryLog {
         saveWatermarks()
     }
 
+    func compactOwnLog(page rel: String, mdMtime: Date?, now: Date = Date()) throws -> LogCompactionResult {
+        let url = ourLogURL(for: rel)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return LogCompactionResult(
+                originalRecordCount: 0,
+                compactedRecordCount: 0,
+                originalByteCount: 0,
+                compactedByteCount: 0
+            )
+        }
+
+        let entries = readRawWires(at: url)
+        let originalBytes = Int64((try? Data(contentsOf: url).count) ?? 0)
+        let keptEntries = compactedRawWires(from: entries, now: now)
+        let compactedText = keptEntries.map { entry in
+            if let wire = entry.wire, Self.wireKind(wire) != nil {
+                return Self.encode(wire) ?? entry.raw
+            }
+            return entry.raw
+        }.joined(separator: "\n")
+        let finalText = compactedText.isEmpty ? "" : compactedText + "\n"
+        try replaceLog(with: finalText, at: url)
+
+        let compactedBytes = Int64(Data(finalText.utf8).count)
+        recordOwnSave(page: rel, mdMtime: mdMtime)
+        refreshNextCounterAfterRewrite(page: rel)
+        return LogCompactionResult(
+            originalRecordCount: entries.count,
+            compactedRecordCount: keptEntries.count,
+            originalByteCount: originalBytes,
+            compactedByteCount: compactedBytes
+        )
+    }
+
     // MARK: - Reconcile internals
 
     private func canTailWalk(old: [String: DeviceWatermark], new: [String: DeviceWatermark]) -> Bool {
@@ -424,6 +466,100 @@ actor RecoveryLog {
     }
 
     private enum WireKind { case add, observe, purge }
+
+    // MARK: - Compaction
+
+    private func compactedRawWires(from entries: [RawWire], now: Date) -> [RawWire] {
+        var keepIndexes: Set<Int> = []
+        var latestAuthoritative: [String: RawWire] = [:]
+        var latestSnapshot: [String: RawWire] = [:]
+        let expiredPurgeCutoff = now.timeIntervalSince1970 - Self.purgedSnapshotRetentionInterval
+
+        for entry in entries {
+            guard let wire = entry.wire, let kind = Self.wireKind(wire) else {
+                keepIndexes.insert(entry.index)
+                continue
+            }
+            switch kind {
+            case .add:
+                if let existing = latestAuthoritative[wire.h] {
+                    if Self.isStrictlyAfter(wire, than: existing.wire) {
+                        latestAuthoritative[wire.h] = entry
+                    }
+                } else {
+                    latestAuthoritative[wire.h] = entry
+                }
+                if let existing = latestSnapshot[wire.h] {
+                    if Self.isStrictlyAfter(wire, than: existing.wire) {
+                        latestSnapshot[wire.h] = entry
+                    }
+                } else {
+                    latestSnapshot[wire.h] = entry
+                }
+            case .observe:
+                if let existing = latestSnapshot[wire.h] {
+                    if Self.isStrictlyAfter(wire, than: existing.wire) {
+                        latestSnapshot[wire.h] = entry
+                    }
+                } else {
+                    latestSnapshot[wire.h] = entry
+                }
+            case .purge:
+                if let existing = latestAuthoritative[wire.h] {
+                    if Self.isStrictlyAfter(wire, than: existing.wire) {
+                        latestAuthoritative[wire.h] = entry
+                    }
+                } else {
+                    latestAuthoritative[wire.h] = entry
+                }
+            }
+        }
+
+        for entry in latestAuthoritative.values {
+            keepIndexes.insert(entry.index)
+        }
+        for (hash, entry) in latestSnapshot {
+            if let authoritative = latestAuthoritative[hash],
+               Self.isExpiredPurge(authoritative.wire, cutoff: expiredPurgeCutoff) {
+                continue
+            }
+            keepIndexes.insert(entry.index)
+        }
+        return entries.filter { keepIndexes.contains($0.index) }
+    }
+
+    private func refreshNextCounterAfterRewrite(page rel: String) {
+        let cached = nextCounter[rel] ?? 0
+        var maxObserved: UInt64 = 0
+        for url in deviceLogURLs(for: rel) {
+            for record in readRecords(at: url) {
+                if let c = record.c { maxObserved = max(maxObserved, c) }
+            }
+        }
+        nextCounter[rel] = max(cached, maxObserved + 1)
+    }
+
+    private nonisolated static func isStrictlyAfter(_ a: Wire?, than b: Wire?) -> Bool {
+        guard let a else { return false }
+        guard let b else { return true }
+        if let ac = a.c, let bc = b.c {
+            return ac > bc
+        }
+        if a.c != nil { return true }
+        if b.c != nil { return false }
+        return a.t > b.t
+    }
+
+    private nonisolated static func isExpiredPurge(_ wire: Wire?, cutoff: TimeInterval) -> Bool {
+        guard let wire, wireKind(wire) == .purge else { return false }
+        return wire.t < cutoff
+    }
+
+    private struct RawWire: Sendable {
+        let index: Int
+        let raw: String
+        let wire: Wire?
+    }
 
     // MARK: - Watermark persistence
 
@@ -581,6 +717,36 @@ actor RecoveryLog {
         }
         if let coordError { throw coordError }
         if let writeError { throw writeError }
+    }
+
+    private func replaceLog(with text: String, at url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let coordinator = NSFileCoordinator()
+        var coordError: NSError?
+        var writeError: Error?
+        coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &coordError) { coordinatedURL in
+            do {
+                try Data(text.utf8).write(to: coordinatedURL, options: .atomic)
+            } catch {
+                writeError = error
+            }
+        }
+        if let coordError { throw coordError }
+        if let writeError { throw writeError }
+    }
+
+    nonisolated private func readRawWires(at url: URL) -> [RawWire] {
+        guard let text = try? store.read(url) else { return [] }
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .enumerated()
+            .map { index, raw in
+                let line = String(raw)
+                return RawWire(index: index, raw: line, wire: Self.decodeWire(line))
+            }
     }
 
     nonisolated private func readRecords(at url: URL) -> [Wire] {

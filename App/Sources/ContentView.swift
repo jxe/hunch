@@ -185,7 +185,11 @@ private struct EditorPage: View {
                     host: window
                 ) {
                     if let snapshot = window.cloudSyncSnapshot {
-                        PageSyncFooter(snapshot: snapshot)
+                        PageSyncFooter(
+                            snapshot: snapshot,
+                            isCompactingLog: window.isCompactingLog,
+                            onCompactLog: { window.compactCurrentPageLog() }
+                        )
                     }
                 }
             } else {
@@ -240,6 +244,8 @@ private struct EditorPage: View {
 
 private struct PageSyncFooter: View {
     let snapshot: Clamshell.CloudSyncSnapshot
+    let isCompactingLog: Bool
+    let onCompactLog: () -> Void
     @State private var showingDetails = false
 
     var body: some View {
@@ -257,7 +263,11 @@ private struct PageSyncFooter: View {
             .padding(.vertical, 6)
             .contentShape(Rectangle())
             .popover(isPresented: $showingDetails, arrowEdge: .bottom) {
-                PageSyncPopover(snapshot: snapshot)
+                PageSyncPopover(
+                    snapshot: snapshot,
+                    isCompactingLog: isCompactingLog,
+                    onCompactLog: onCompactLog
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .center)
@@ -296,6 +306,8 @@ private struct PageSyncFooter: View {
 
 private struct PageSyncPopover: View {
     let snapshot: Clamshell.CloudSyncSnapshot
+    let isCompactingLog: Bool
+    let onCompactLog: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -309,22 +321,35 @@ private struct PageSyncPopover: View {
 
             #if os(macOS)
             let revealable = snapshot.items.filter(\.exists)
-            if !revealable.isEmpty {
+            let canCompactLog = snapshot.items.contains { $0.target.kind == .thisDeviceLog && $0.exists }
+            if !revealable.isEmpty || canCompactLog {
                 Divider()
-                HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                     ForEach(revealable) { item in
                         Button {
                             NSWorkspace.shared.activateFileViewerSelecting([item.url])
                         } label: {
                             Label(revealTitle(for: item), systemImage: "arrow.up.forward.app")
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if canCompactLog {
+                        Button {
+                            onCompactLog()
+                        } label: {
+                            Label(isCompactingLog ? "Compacting" : "Compact Log", systemImage: "arrow.down.left.and.arrow.up.right")
+                        }
+                        .disabled(isCompactingLog)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                .controlSize(.small)
             }
             #endif
         }
         .padding(14)
-        .frame(minWidth: 260, alignment: .leading)
+        .frame(minWidth: 280, idealWidth: 320, maxWidth: 360, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     #if os(macOS)
@@ -361,15 +386,21 @@ private struct PageSyncRow: View {
     }
 
     private var detail: String {
-        if let detail = item.detail { return detail }
-        switch item.status {
-        case .synced: return "Uploaded to iCloud"
-        case .syncing: return "Uploading"
-        case .waiting: return "Pending upload"
-        case .error: return "Needs attention"
-        case .local: return "Not in iCloud"
-        case .missingNeutral: return "No local log yet"
+        let status: String
+        if let detail = item.detail {
+            status = detail
+        } else {
+            status = switch item.status {
+            case .synced: "Uploaded to iCloud"
+            case .syncing: "Uploading"
+            case .waiting: "Pending upload"
+            case .error: "Needs attention"
+            case .local: "Not in iCloud"
+            case .missingNeutral: "No local log yet"
+            }
         }
+        guard let byteCount = item.byteCount else { return status }
+        return "\(status) · \(ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file))"
     }
 
     private var icon: String {

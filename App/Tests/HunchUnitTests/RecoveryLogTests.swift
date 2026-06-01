@@ -26,6 +26,15 @@ struct RecoveryLogTests {
         return text.split(separator: "\n", omittingEmptySubsequences: true).count
     }
 
+    private func counters(at url: URL) throws -> [UInt64] {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        return text.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line -> UInt64? in
+            guard let data = String(line).data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            return (obj["c"] as? UInt64) ?? (obj["c"] as? Int).flatMap { UInt64(exactly: $0) }
+        }
+    }
+
     // MARK: - Persistence
 
     @Test func firstRecordAppendsOnePerAtomicBlock() async throws {
@@ -63,6 +72,157 @@ struct RecoveryLogTests {
             Issue.record("expected alive intent after three duplicate adds")
             return
         }
+    }
+
+    @Test func compactOwnLogCollapsesDuplicateAdds() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("steady"))
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
+
+        let result = try await log.compactOwnLog(page: "p.md", mdMtime: nil)
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(result.originalRecordCount == 3)
+        #expect(result.compactedRecordCount == 1)
+        #expect(lineCount(at: url) == 1)
+
+        let intent = PatchEngine.intent(from: log.readJournal(page: "p.md"))
+        guard case .alive = intent.byHash[block.atomicHash] else {
+            Issue.record("expected duplicate adds to compact to one alive intent")
+            return
+        }
+    }
+
+    @Test func compactOwnLogPreservesTombstonedRecoveryState() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("deleted but recoverable"))
+        try await log.apply(Patch.adds(from: [block]), to: "p.md")
+        try await log.apply(Patch(entries: [.purge(hash: block.atomicHash)]), to: "p.md")
+
+        let result = try await log.compactOwnLog(page: "p.md", mdMtime: nil)
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(result.originalRecordCount == 2)
+        #expect(result.compactedRecordCount == 2)
+        #expect(lineCount(at: url) == 2)
+
+        let purged = await log.enumeratePurged(page: "p.md", since: nil)
+        #expect(purged.contains { $0.hash == block.atomicHash && $0.markdown.contains("deleted but recoverable") })
+    }
+
+    @Test func compactOwnLogDropsExpiredPurgedSnapshotButKeepsTombstone() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("old deleted payload"))
+        let h = block.atomicHash
+        let markdown = BlockSerializer.serializeAtomic(block)
+        let escaped = markdown
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let addLine = "{\"c\":1,\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":90}\n"
+        let purgeLine = "{\"c\":2,\"h\":\"\(h)\",\"m\":null,\"op\":\"purge\",\"p\":null,\"t\":100}\n"
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try (addLine + purgeLine).write(to: url, atomically: true, encoding: .utf8)
+
+        let result = try await log.compactOwnLog(
+            page: "p.md",
+            mdMtime: nil,
+            now: Date(timeIntervalSince1970: 100 + 31 * 24 * 60 * 60)
+        )
+        #expect(result.originalRecordCount == 2)
+        #expect(result.compactedRecordCount == 1)
+        #expect(lineCount(at: url) == 1)
+
+        let intent = PatchEngine.intent(from: log.readJournal(page: "p.md"))
+        if case .tombstoned(let latestAdd, _) = intent.byHash[h] {
+            if case .some = latestAdd {
+                Issue.record("expired purged snapshot should drop recoverable markdown")
+            }
+        } else {
+            Issue.record("expected old purge compaction to keep the tombstone")
+        }
+        let purged = await log.enumeratePurged(page: "p.md", since: nil)
+        #expect(!purged.contains { $0.hash == h })
+    }
+
+    @Test func compactOwnLogPreservesObserveOnlyState() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("observed elsewhere"))
+        try await log.apply(Patch.observations(from: [block]), to: "p.md")
+
+        let result = try await log.compactOwnLog(page: "p.md", mdMtime: nil)
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(result.originalRecordCount == 1)
+        #expect(result.compactedRecordCount == 1)
+        #expect(lineCount(at: url) == 1)
+
+        let intent = PatchEngine.intent(from: log.readJournal(page: "p.md"))
+        guard case .observed = intent.byHash[block.atomicHash] else {
+            Issue.record("expected observe-only hash to remain observed")
+            return
+        }
+    }
+
+    @Test func compactOwnLogKeepsLatestSnapshotPlusTombstone() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("moved then deleted"))
+        let h = block.atomicHash
+        let markdown = BlockSerializer.serializeAtomic(block)
+        try await log.apply(Patch(entries: [.add(hash: h, parent: "old-parent", markdown: markdown)]), to: "p.md")
+        try await log.apply(Patch(entries: [.observe(hash: h, parent: "new-parent", markdown: markdown)]), to: "p.md")
+        try await log.apply(Patch(entries: [.purge(hash: h)]), to: "p.md")
+
+        let result = try await log.compactOwnLog(page: "p.md", mdMtime: nil)
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(result.originalRecordCount == 3)
+        #expect(result.compactedRecordCount == 2)
+        #expect(lineCount(at: url) == 2)
+
+        let intent = PatchEngine.intent(from: log.readJournal(page: "p.md"))
+        if case .tombstoned = intent.byHash[h] {
+            #expect(intent.parent(of: h) == "new-parent")
+        } else {
+            Issue.record("expected compacted add + observe + purge to remain tombstoned")
+        }
+    }
+
+    @Test func compactOwnLogKeepsCountersMonotonicForSubsequentAppends() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let first = Block.paragraph(text: attr("first"))
+        try await log.apply(Patch.adds(from: [first]), to: "p.md")
+        try await log.apply(Patch.adds(from: [first]), to: "p.md")
+        _ = try await log.compactOwnLog(page: "p.md", mdMtime: nil)
+
+        let second = Block.paragraph(text: attr("second"))
+        try await log.apply(Patch.adds(from: [second]), to: "p.md")
+
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        let counters = try counters(at: url)
+        #expect(counters == [2, 3])
+        #expect(counters == counters.sorted())
+        #expect(Set(counters).count == counters.count)
     }
 
     @Test func nestedChildrenRecordTheirImmediateParent() async throws {

@@ -255,6 +255,32 @@ struct ClamshellSavingTests {
         #expect(snapshotState([cloudItem(.synced), cloudItem(.missingNeutral, kind: .thisDeviceLog, exists: false)]) == .synced)
     }
 
+    @Test func cloudSyncSnapshotIncludesFileSizesAndMissingLogHasNoSize() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        let block = Block.paragraph(text: attr("sized body"))
+        let doc = Document(url: clamshell.url(for: "Sized.md"), children: [block])
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+
+        let snapshot = clamshell.cloudSyncSnapshot(for: doc)
+        let pageItem = try #require(snapshot.items.first { $0.target.kind == .page })
+        let logItem = try #require(snapshot.items.first { $0.target.kind == .thisDeviceLog })
+        let pageBytes = Int64(try Data(contentsOf: doc.url).count)
+        let logBytes = Int64(try Data(contentsOf: logItem.url).count)
+        #expect(pageItem.byteCount == pageBytes)
+        #expect(logItem.byteCount == logBytes)
+        #expect(logBytes > 0)
+
+        let missingLogDoc = Document(url: clamshell.url(for: "NoLog.md"), children: [])
+        try "# No log\n".write(to: missingLogDoc.url, atomically: true, encoding: .utf8)
+        let missingSnapshot = clamshell.cloudSyncSnapshot(for: missingLogDoc)
+        let missingLogItem = try #require(missingSnapshot.items.first { $0.target.kind == .thisDeviceLog })
+        #expect(missingLogItem.status == .missingNeutral)
+        #expect(missingLogItem.byteCount == nil)
+    }
+
     private func relativePath(_ url: URL, under root: URL) -> String {
         String(url.standardizedFileURL.path.dropFirst(root.standardizedFileURL.path.count + 1))
     }
@@ -272,7 +298,8 @@ struct ClamshellSavingTests {
             ),
             exists: exists,
             status: status,
-            detail: nil
+            detail: nil,
+            byteCount: nil
         )
     }
 
