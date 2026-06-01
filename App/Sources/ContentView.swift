@@ -319,10 +319,17 @@ private struct PageSyncPopover: View {
                 PageSyncRow(item: item)
             }
 
+            if canCompactLog {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    compactLogButton
+                }
+                .controlSize(.small)
+            }
+
             #if os(macOS)
             let revealable = snapshot.items.filter(\.exists)
-            let canCompactLog = snapshot.items.contains { $0.target.kind == .thisDeviceLog && $0.exists }
-            if !revealable.isEmpty || canCompactLog {
+            if !revealable.isEmpty {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(revealable) { item in
@@ -333,15 +340,6 @@ private struct PageSyncPopover: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    if canCompactLog {
-                        Button {
-                            onCompactLog()
-                        } label: {
-                            Label(isCompactingLog ? "Compacting" : "Compact Log", systemImage: "arrow.down.left.and.arrow.up.right")
-                        }
-                        .disabled(isCompactingLog)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
                 }
                 .controlSize(.small)
             }
@@ -350,6 +348,20 @@ private struct PageSyncPopover: View {
         .padding(14)
         .frame(minWidth: 280, idealWidth: 320, maxWidth: 360, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var canCompactLog: Bool {
+        snapshot.items.contains { $0.target.kind == .thisDeviceLog && $0.exists }
+    }
+
+    private var compactLogButton: some View {
+        Button {
+            onCompactLog()
+        } label: {
+            Label(isCompactingLog ? "Compacting" : "Compact Log", systemImage: "arrow.down.left.and.arrow.up.right")
+        }
+        .disabled(isCompactingLog)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     #if os(macOS)
