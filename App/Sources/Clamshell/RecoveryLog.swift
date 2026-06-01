@@ -296,8 +296,9 @@ actor RecoveryLog {
         }
 
         let entries = readRawWires(at: url)
+        let pageEntries = readPageRawWires(page: rel)
         let originalBytes = Int64((try? Data(contentsOf: url).count) ?? 0)
-        let keptEntries = compactedRawWires(from: entries, now: now)
+        let keptEntries = compactedRawWires(from: entries, allPageEntries: pageEntries, now: now)
         let compactedText = keptEntries.map { entry in
             if let wire = entry.wire, Self.wireKind(wire) != nil {
                 return Self.encode(wire) ?? entry.raw
@@ -469,61 +470,73 @@ actor RecoveryLog {
 
     // MARK: - Compaction
 
-    private func compactedRawWires(from entries: [RawWire], now: Date) -> [RawWire] {
+    private func compactedRawWires(
+        from entries: [RawWire],
+        allPageEntries: [DeviceRawWire],
+        now: Date
+    ) -> [RawWire] {
         var keepIndexes: Set<Int> = []
-        var latestAuthoritative: [String: RawWire] = [:]
-        var latestSnapshot: [String: RawWire] = [:]
+        var latestAuthoritative: [String: DeviceRawWire] = [:]
+        var latestSnapshot: [String: DeviceRawWire] = [:]
         let expiredPurgeCutoff = now.timeIntervalSince1970 - Self.purgedSnapshotRetentionInterval
 
         for entry in entries {
-            guard let wire = entry.wire, let kind = Self.wireKind(wire) else {
+            guard let wire = entry.wire, Self.wireKind(wire) != nil else {
                 keepIndexes.insert(entry.index)
                 continue
             }
+        }
+
+        for deviceEntry in allPageEntries {
+            guard let wire = deviceEntry.entry.wire, let kind = Self.wireKind(wire) else { continue }
             switch kind {
             case .add:
                 if let existing = latestAuthoritative[wire.h] {
-                    if Self.isStrictlyAfter(wire, than: existing.wire) {
-                        latestAuthoritative[wire.h] = entry
+                    if Self.isStrictlyAfter(wire, on: deviceEntry.deviceID, than: existing.entry.wire, on: existing.deviceID) {
+                        latestAuthoritative[wire.h] = deviceEntry
                     }
                 } else {
-                    latestAuthoritative[wire.h] = entry
+                    latestAuthoritative[wire.h] = deviceEntry
                 }
                 if let existing = latestSnapshot[wire.h] {
-                    if Self.isStrictlyAfter(wire, than: existing.wire) {
-                        latestSnapshot[wire.h] = entry
+                    if Self.isStrictlyAfter(wire, on: deviceEntry.deviceID, than: existing.entry.wire, on: existing.deviceID) {
+                        latestSnapshot[wire.h] = deviceEntry
                     }
                 } else {
-                    latestSnapshot[wire.h] = entry
+                    latestSnapshot[wire.h] = deviceEntry
                 }
             case .observe:
                 if let existing = latestSnapshot[wire.h] {
-                    if Self.isStrictlyAfter(wire, than: existing.wire) {
-                        latestSnapshot[wire.h] = entry
+                    if Self.isStrictlyAfter(wire, on: deviceEntry.deviceID, than: existing.entry.wire, on: existing.deviceID) {
+                        latestSnapshot[wire.h] = deviceEntry
                     }
                 } else {
-                    latestSnapshot[wire.h] = entry
+                    latestSnapshot[wire.h] = deviceEntry
                 }
             case .purge:
                 if let existing = latestAuthoritative[wire.h] {
-                    if Self.isStrictlyAfter(wire, than: existing.wire) {
-                        latestAuthoritative[wire.h] = entry
+                    if Self.isStrictlyAfter(wire, on: deviceEntry.deviceID, than: existing.entry.wire, on: existing.deviceID) {
+                        latestAuthoritative[wire.h] = deviceEntry
                     }
                 } else {
-                    latestAuthoritative[wire.h] = entry
+                    latestAuthoritative[wire.h] = deviceEntry
                 }
             }
         }
 
         for entry in latestAuthoritative.values {
-            keepIndexes.insert(entry.index)
+            if entry.deviceID == deviceID {
+                keepIndexes.insert(entry.entry.index)
+            }
         }
         for (hash, entry) in latestSnapshot {
             if let authoritative = latestAuthoritative[hash],
-               Self.isExpiredPurge(authoritative.wire, cutoff: expiredPurgeCutoff) {
+               Self.isExpiredPurge(authoritative.entry.wire, cutoff: expiredPurgeCutoff) {
                 continue
             }
-            keepIndexes.insert(entry.index)
+            if entry.deviceID == deviceID {
+                keepIndexes.insert(entry.entry.index)
+            }
         }
         return entries.filter { keepIndexes.contains($0.index) }
     }
@@ -539,11 +552,24 @@ actor RecoveryLog {
         nextCounter[rel] = max(cached, maxObserved + 1)
     }
 
-    private nonisolated static func isStrictlyAfter(_ a: Wire?, than b: Wire?) -> Bool {
+    private func readPageRawWires(page rel: String) -> [DeviceRawWire] {
+        deviceLogURLs(for: rel).flatMap { url in
+            let id = url.deletingPathExtension().lastPathComponent
+            return readRawWires(at: url).map { DeviceRawWire(deviceID: id, entry: $0) }
+        }
+    }
+
+    private nonisolated static func isStrictlyAfter(
+        _ a: Wire?,
+        on aDevice: String,
+        than b: Wire?,
+        on bDevice: String
+    ) -> Bool {
         guard let a else { return false }
         guard let b else { return true }
         if let ac = a.c, let bc = b.c {
-            return ac > bc
+            if ac != bc { return ac > bc }
+            return aDevice > bDevice
         }
         if a.c != nil { return true }
         if b.c != nil { return false }
@@ -559,6 +585,11 @@ actor RecoveryLog {
         let index: Int
         let raw: String
         let wire: Wire?
+    }
+
+    private struct DeviceRawWire: Sendable {
+        let deviceID: String
+        let entry: RawWire
     }
 
     // MARK: - Watermark persistence

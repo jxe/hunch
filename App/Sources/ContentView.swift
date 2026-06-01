@@ -262,6 +262,17 @@ private struct PageSyncFooter: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .contentShape(Rectangle())
+            #if os(iOS)
+            .sheet(isPresented: $showingDetails) {
+                PageSyncPopover(
+                    snapshot: snapshot,
+                    isCompactingLog: isCompactingLog,
+                    onCompactLog: onCompactLog
+                )
+                .presentationDetents([.height(PageSyncPopover.iosSheetHeight(for: snapshot))])
+                .presentationDragIndicator(.visible)
+            }
+            #else
             .popover(isPresented: $showingDetails, arrowEdge: .bottom) {
                 PageSyncPopover(
                     snapshot: snapshot,
@@ -269,6 +280,7 @@ private struct PageSyncFooter: View {
                     onCompactLog: onCompactLog
                 )
             }
+            #endif
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }
@@ -350,7 +362,22 @@ private struct PageSyncPopover: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    #if os(iOS)
+    static func iosSheetHeight(for snapshot: Clamshell.CloudSyncSnapshot) -> CGFloat {
+        let titleHeight: CGFloat = 20
+        let rowHeight: CGFloat = 42
+        let verticalPadding: CGFloat = 42
+        let compactActionHeight: CGFloat = canCompactLog(in: snapshot) ? 50 : 0
+        let interItemSpacing = CGFloat(max(snapshot.items.count, 0)) * 12
+        return verticalPadding + titleHeight + interItemSpacing + CGFloat(snapshot.items.count) * rowHeight + compactActionHeight
+    }
+    #endif
+
     private var canCompactLog: Bool {
+        Self.canCompactLog(in: snapshot)
+    }
+
+    private static func canCompactLog(in snapshot: Clamshell.CloudSyncSnapshot) -> Bool {
         snapshot.items.contains { $0.target.kind == .thisDeviceLog && $0.exists }
     }
 

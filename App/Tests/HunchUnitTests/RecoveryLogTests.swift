@@ -35,6 +35,26 @@ struct RecoveryLogTests {
         }
     }
 
+    private func encodedWire(
+        op: String,
+        hash: String,
+        parent: String? = nil,
+        markdown: String? = nil,
+        t: TimeInterval,
+        counter: UInt64
+    ) throws -> String {
+        var object: [String: Any] = [
+            "c": counter,
+            "h": hash,
+            "op": op,
+            "t": t
+        ]
+        object["p"] = parent ?? NSNull()
+        object["m"] = markdown ?? NSNull()
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self) + "\n"
+    }
+
     // MARK: - Persistence
 
     @Test func firstRecordAppendsOnePerAtomicBlock() async throws {
@@ -95,6 +115,89 @@ struct RecoveryLogTests {
             Issue.record("expected duplicate adds to compact to one alive intent")
             return
         }
+    }
+
+    @Test func compactOwnLogDropsOwnAddWhenForeignNewerAddSupersedesIt() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let own = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+        let foreign = RecoveryLog(workspaceRoot: root, deviceID: "dev-B")
+
+        let block = Block.paragraph(text: attr("newer device owns this now"))
+        try await own.apply(Patch.adds(from: [block]), to: "p.md")
+        try await foreign.apply(Patch.adds(from: [block]), to: "p.md")
+
+        let result = try await own.compactOwnLog(page: "p.md", mdMtime: nil)
+        let ownURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(result.originalRecordCount == 1)
+        #expect(result.compactedRecordCount == 0)
+        #expect(lineCount(at: ownURL) == 0)
+
+        let intent = PatchEngine.intent(from: own.readJournal(page: "p.md"))
+        guard case .alive = intent.byHash[block.atomicHash] else {
+            Issue.record("foreign newer add should preserve alive intent after own compaction")
+            return
+        }
+    }
+
+    @Test func compactOwnLogKeepsOwnSnapshotNeededByForeignRecentPurge() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let own = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+        let foreign = RecoveryLog(workspaceRoot: root, deviceID: "dev-B")
+
+        let block = Block.paragraph(text: attr("recently deleted elsewhere"))
+        try await own.apply(Patch.adds(from: [block]), to: "p.md")
+        try await foreign.apply(Patch(entries: [.purge(hash: block.atomicHash)]), to: "p.md")
+
+        let result = try await own.compactOwnLog(page: "p.md", mdMtime: nil)
+        let ownURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        #expect(result.originalRecordCount == 1)
+        #expect(result.compactedRecordCount == 1)
+        #expect(lineCount(at: ownURL) == 1)
+
+        let purged = await own.enumeratePurged(page: "p.md", since: nil)
+        #expect(purged.contains { $0.hash == block.atomicHash && $0.markdown.contains("recently deleted elsewhere") })
+    }
+
+    @Test func compactOwnLogDropsOwnSnapshotForExpiredForeignPurge() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("old foreign delete"))
+        let h = block.atomicHash
+        let markdown = BlockSerializer.serializeAtomic(block)
+        let ownURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: ownURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try encodedWire(op: "add", hash: h, markdown: markdown, t: 90, counter: 1)
+            .write(to: ownURL, atomically: true, encoding: .utf8)
+        try encodedWire(op: "purge", hash: h, t: 100, counter: 2)
+            .write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let result = try await log.compactOwnLog(
+            page: "p.md",
+            mdMtime: nil,
+            now: Date(timeIntervalSince1970: 100 + 31 * 24 * 60 * 60)
+        )
+        #expect(result.originalRecordCount == 1)
+        #expect(result.compactedRecordCount == 0)
+        #expect(lineCount(at: ownURL) == 0)
+
+        let intent = PatchEngine.intent(from: log.readJournal(page: "p.md"))
+        if case .tombstoned(let latestAdd, _) = intent.byHash[h] {
+            if latestAdd != nil {
+                Issue.record("expired foreign-purge snapshot should be dropped from own log")
+            }
+        } else {
+            Issue.record("foreign purge should still keep the hash tombstoned")
+        }
+        let purged = await log.enumeratePurged(page: "p.md", since: nil)
+        #expect(!purged.contains { $0.hash == h })
     }
 
     @Test func compactOwnLogPreservesTombstonedRecoveryState() async throws {
