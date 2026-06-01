@@ -6,10 +6,13 @@ import Foundation
 /// journal, a `.remove` tombstones a hash whose block-id disappeared.
 ///
 /// Moves (same id, same hash, different parent or position) produce no op
-/// — moves are unmodeled by design. Typing inside a block produces no op
-/// either: typing goes through `Document.transaction` directly, not through
-/// the `mutate(_:_:)` wrapper, so no diff is computed during a keystroke
-/// burst.
+/// — moves are unmodeled by design. The exception is a stable child whose
+/// parent `BlockID` is unchanged but whose parent hash changed because the
+/// parent was turned into another kind; that emits a fresh insert for the
+/// child so recovery logs record the new parent hash. Typing inside a block
+/// produces no op either: typing goes through `Document.transaction`
+/// directly, not through the `mutate(_:_:)` wrapper, so no diff is computed
+/// during a keystroke burst.
 public enum EditorOp: Sendable, Equatable {
     /// A block whose `(id, hash)` pair was not present in pre. Covers two
     /// cases: a freshly created block (id is new), and a structurally
@@ -51,9 +54,13 @@ enum BlockTreeDiff {
     /// (id stable, hash stable — but tree position changed).
     static func derive(pre: [Block], post: [Block]) -> [EditorOp] {
         var preIDToHash: [BlockID: String] = [:]
-        collectIDHashes(pre, into: &preIDToHash)
+        var preIDToParentID: [BlockID: BlockID] = [:]
+        var preIDToParentHash: [BlockID: String] = [:]
+        collect(pre, parentID: nil, parentHash: nil, hashes: &preIDToHash, parentIDs: &preIDToParentID, parentHashes: &preIDToParentHash)
         var postIDToHash: [BlockID: String] = [:]
-        collectIDHashes(post, into: &postIDToHash)
+        var postIDToParentID: [BlockID: BlockID] = [:]
+        var postIDToParentHash: [BlockID: String] = [:]
+        collect(post, parentID: nil, parentHash: nil, hashes: &postIDToHash, parentIDs: &postIDToParentID, parentHashes: &postIDToParentHash)
 
         var ops: [EditorOp] = []
 
@@ -68,7 +75,11 @@ enum BlockTreeDiff {
         func walk(_ blocks: [Block], parentHash: String?) {
             for block in blocks {
                 let h = block.atomicHash
-                if preIDToHash[block.id] != h {
+                let parentRefChangedUnderSameParent =
+                    preIDToHash[block.id] == h &&
+                    preIDToParentID[block.id] == postIDToParentID[block.id] &&
+                    preIDToParentHash[block.id] != parentHash
+                if preIDToHash[block.id] != h || parentRefChangedUnderSameParent {
                     ops.append(.insert(hash: h, parent: parentHash, block: block))
                 }
                 walk(block.children, parentHash: h)
@@ -78,10 +89,31 @@ enum BlockTreeDiff {
         return ops
     }
 
-    private static func collectIDHashes(_ blocks: [Block], into out: inout [BlockID: String]) {
+    private static func collect(
+        _ blocks: [Block],
+        parentID: BlockID?,
+        parentHash: String?,
+        hashes: inout [BlockID: String],
+        parentIDs: inout [BlockID: BlockID],
+        parentHashes: inout [BlockID: String]
+    ) {
         for block in blocks {
-            out[block.id] = block.atomicHash
-            collectIDHashes(block.children, into: &out)
+            let hash = block.atomicHash
+            hashes[block.id] = hash
+            if let parentID {
+                parentIDs[block.id] = parentID
+            }
+            if let parentHash {
+                parentHashes[block.id] = parentHash
+            }
+            collect(
+                block.children,
+                parentID: block.id,
+                parentHash: hash,
+                hashes: &hashes,
+                parentIDs: &parentIDs,
+                parentHashes: &parentHashes
+            )
         }
     }
 }

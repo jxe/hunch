@@ -743,7 +743,7 @@ final class Clamshell {
 
         let merged = Document(url: url, children: result.merged)
         let mergeCommit = Commit(
-            logEntries: Patch.adds(from: merged.children).entries
+            logEntries: Patch.observations(from: merged.children).entries
         )
         try await commit(mergeCommit, to: merged)
 

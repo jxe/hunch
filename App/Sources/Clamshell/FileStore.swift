@@ -42,8 +42,9 @@ struct FileStore: Sendable {
             guard values.isRegularFile == true else { continue }
             let mtime = values.contentModificationDate ?? .distantPast
             let title = url.deletingPathExtension().lastPathComponent
-            let relPath = relativePath(of: url, under: root)
-            entries.append(WorkspaceEntry(url: url, relativePath: relPath, title: title, modificationDate: mtime))
+            let fileURL = url.standardizedFileURL
+            let relPath = relativePath(of: fileURL, under: root)
+            entries.append(WorkspaceEntry(url: fileURL, relativePath: relPath, title: title, modificationDate: mtime))
         }
         entries.sort { $0.modificationDate > $1.modificationDate }
         return entries

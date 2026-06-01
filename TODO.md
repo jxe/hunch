@@ -1,8 +1,6 @@
 # TODO
 
-Unordered list of work that's on deck but not in flight. Each section
-should stand alone: goal, current state, constraints. Priority is not
-encoded by ordering.
+Unordered list of work that seems in scope.
 
 ---
 
@@ -61,22 +59,6 @@ indent, outdent, Turn-into to convert several blocks at once or fold an
 indented list into a toggle).
 
 Also: the iOS swipe actions could go full-bleed.
-
----
-
-## Round-corner inline code chip rendering
-
-Replace flat `.backgroundColor` on inline `code` runs (and `style` tags
-generally) with a custom `TextRenderer` that paints a 3pt rounded
-background per run.
-
----
-
-## Auto-generated page filenames carry a UUID
-
-Currently, new pages with no user-supplied title land as `Untitled.md`,
-`Untitled 2.md`, etc. Replace the numeric disambiguator with a short
-UUID slug — easier to grep, harder to collide across devices.
 
 ---
 

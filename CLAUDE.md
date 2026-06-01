@@ -52,9 +52,10 @@ user-picked workspace folder.
     blocks). Only `add`/`purge` drive `.alive`/`.tombstoned` intent;
     `observe` produces `.observed` (recoverable via Recover sheet but
     not auto-restore-eligible). **`PatchEngine.reconcile` takes an
-    `mdMtime` parameter** and uses it to gate both auto-restore inserts
-    (skip if `add.t < mdMtime` — trust the .md) and auto-removes (skip
-    if `purge.t < mdMtime` — likely an external re-add). Engine emits
+    `mdMtime` parameter** and uses it only to gate auto-removes (skip if
+    `purge.t < mdMtime` — likely an external re-add). Add-backed missing
+    hashes auto-restore regardless of `.md` mtime unless already live in
+    the doc or explicitly purged. Engine emits
     `removes` for tombstoned-but-still-in-doc subtrees so doc converges
     to the journal when peer purges arrive after the user's stale-state.
     The journal fold uses a watermark fast path

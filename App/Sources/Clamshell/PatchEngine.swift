@@ -156,7 +156,16 @@ struct Patch: Sendable {
     /// each child's recorded `parent` already exists in the log.
     static func adds(from blocks: [Block]) -> Patch {
         var out: [Entry] = []
-        walk(blocks, parent: nil, into: &out)
+        walk(blocks, parent: nil, op: .add, into: &out)
+        return Patch(entries: out)
+    }
+
+    /// Walk a block tree preorder and emit one `.observe` entry per block.
+    /// Used when this device sees content from a merge or external source
+    /// but should not claim authorship over those hashes.
+    static func observations(from blocks: [Block]) -> Patch {
+        var out: [Entry] = []
+        walk(blocks, parent: nil, op: .observe, into: &out)
         return Patch(entries: out)
     }
 
@@ -174,11 +183,19 @@ struct Patch: Sendable {
         })
     }
 
-    private static func walk(_ blocks: [Block], parent: String?, into out: inout [Entry]) {
+    private static func walk(_ blocks: [Block], parent: String?, op: Op, into out: inout [Entry]) {
         for block in blocks {
             let h = block.atomicHash
-            out.append(.add(hash: h, parent: parent, markdown: BlockSerializer.serializeAtomic(block)))
-            walk(block.children, parent: h, into: &out)
+            let markdown = BlockSerializer.serializeAtomic(block)
+            switch op {
+            case .add:
+                out.append(.add(hash: h, parent: parent, markdown: markdown))
+            case .observe:
+                out.append(.observe(hash: h, parent: parent, markdown: markdown))
+            case .purge:
+                out.append(.purge(hash: h))
+            }
+            walk(block.children, parent: h, op: op, into: &out)
         }
     }
 }
@@ -341,40 +358,22 @@ enum PatchEngine {
     /// auto-insert. That's the whole point of the `observe` op: see a
     /// foreign-authored block, journal a snapshot, don't take ownership.
     ///
-    /// `mdMtime` gates auto-restore for `.alive` hashes too. If the latest
-    /// `add` is older than the `.md`'s mtime, the `.md` has had a chance
-    /// to intentionally drop the block (e.g. a foreign device deleted it
-    /// and synced the `.md` before its purge log) — trust the `.md` and
-    /// skip restore. If the latest `add` is newer (e.g. log apply
-    /// succeeded but save crashed before writing `.md`), the journal
-    /// genuinely knows something the `.md` doesn't — restore. Pass `nil`
-    /// to disable the gate (used by tests and manual recover paths).
+    /// `mdMtime` gates tombstoned removes only. Missing `.alive` hashes are
+    /// restored regardless of timestamp: without an explicit purge, a newer
+    /// `.md` write might just be an unrelated local edit that raced ahead of
+    /// a delayed peer log. Existing live hashes are still filtered by hash so
+    /// auto-restore does not duplicate blocks already present in the doc.
     static func reconcile(
         intent: IntentState,
         doc: [Block],
         mdMtime: Date? = nil
     ) -> Reconciliation {
-        let liveByHash = liveHashes(doc)
         let toAppend = unloggedObservations(doc: doc, intent: intent)
 
-        var aliveEntries: [LostBlock] = []
+        let liveByHash = liveHashes(doc)
         var removes: [Remove] = []
         for (hash, status) in intent.byHash {
-            switch status {
-            case .alive(let add):
-                guard liveByHash[hash] == nil else { continue }
-                if let mdMtime, add.recordedAt < mdMtime {
-                    // `.md` is newer than the journal record. Trust the `.md`.
-                    continue
-                }
-                aliveEntries.append(LostBlock.adapt(
-                    hash: hash,
-                    parentHash: add.parent,
-                    markdown: add.markdown,
-                    source: "",
-                    recordedAt: add.recordedAt
-                ))
-            case .tombstoned(_, let purgedAt):
+            if case .tombstoned(_, let purgedAt) = status {
                 guard let blockID = liveByHash[hash] else { continue }
                 if let mdMtime, purgedAt < mdMtime {
                     // `.md` is newer than the purge — likely an external
@@ -383,7 +382,27 @@ enum PatchEngine {
                     continue
                 }
                 removes.append(Remove(hash: hash, blockID: blockID))
-            case .observed:
+            }
+        }
+
+        let hashesRemovedWithSubtrees = removedSubtreeHashes(removeIDs: removes.map(\.blockID), in: doc)
+        let effectiveLiveByHash = liveByHash.filter { hash, _ in
+            !hashesRemovedWithSubtrees.contains(hash)
+        }
+
+        var aliveEntries: [LostBlock] = []
+        for (hash, status) in intent.byHash {
+            switch status {
+            case .alive(let add):
+                guard effectiveLiveByHash[hash] == nil else { continue }
+                aliveEntries.append(LostBlock.adapt(
+                    hash: hash,
+                    parentHash: add.parent,
+                    markdown: add.markdown,
+                    source: "",
+                    recordedAt: add.recordedAt
+                ))
+            case .tombstoned, .observed:
                 // `observe` is non-authoritative: it neither restores nor
                 // removes. The snapshot is just a recorded sighting.
                 continue
@@ -450,7 +469,7 @@ enum PatchEngine {
             let parentID = resolveLiveAncestor(
                 startingParentHash: root.lost.parentHash,
                 intent: intent,
-                liveByHash: liveByHash
+                liveByHash: effectiveLiveByHash
             )
             inserts.append(Insert(
                 subtree: root.block.withFreshIDs(),
@@ -855,6 +874,29 @@ enum PatchEngine {
         return out
     }
 
+    private static func removedSubtreeHashes(removeIDs: [BlockID], in blocks: [Block]) -> Set<String> {
+        guard !removeIDs.isEmpty else { return [] }
+        let removeIDs = Set(removeIDs)
+        var out: Set<String> = []
+        func collect(_ block: Block) {
+            out.insert(block.atomicHash)
+            for child in block.children {
+                collect(child)
+            }
+        }
+        func walk(_ blocks: [Block]) {
+            for block in blocks {
+                if removeIDs.contains(block.id) {
+                    collect(block)
+                } else {
+                    walk(block.children)
+                }
+            }
+        }
+        walk(blocks)
+        return out
+    }
+
     /// Walk the recorded-parent chain (via `intent`) until a hash is found
     /// that's live in `doc`. Returns that block's `BlockID`; `nil` = top-level
     /// (chain exhausted without a live hit).
@@ -891,8 +933,15 @@ extension PatchEngine {
     @discardableResult
     static func apply(_ recon: Reconciliation, to doc: Document) -> Bool {
         guard !recon.inserts.isEmpty || !recon.removes.isEmpty else { return false }
+        let removedIDs = Set(recon.removes.map(\.blockID))
+        let restoredHashes = Set(recon.restoredHashes)
         for remove in recon.removes {
-            _ = doc.removeSubtree(remove.blockID)
+            guard let block = doc.find(remove.blockID) else { continue }
+            if hasSurvivingDescendant(block, excludingIDs: removedIDs, excludingHashes: restoredHashes) {
+                _ = doc.removeBlockLiftingChildren(remove.blockID)
+            } else {
+                _ = doc.removeSubtree(remove.blockID)
+            }
         }
         for insert in recon.inserts {
             let siblings = insert.parent.flatMap(doc.find)?.children ?? doc.children
@@ -903,6 +952,22 @@ extension PatchEngine {
         }
         doc.enforceHeadingContainment()
         return true
+    }
+
+    private static func hasSurvivingDescendant(
+        _ block: Block,
+        excludingIDs removedIDs: Set<BlockID>,
+        excludingHashes restoredHashes: Set<String>
+    ) -> Bool {
+        for child in block.children {
+            let childWillBeRemovedOrRestored =
+                removedIDs.contains(child.id) || restoredHashes.contains(child.atomicHash)
+            if !childWillBeRemovedOrRestored ||
+                hasSurvivingDescendant(child, excludingIDs: removedIDs, excludingHashes: restoredHashes) {
+                return true
+            }
+        }
+        return false
     }
 }
 

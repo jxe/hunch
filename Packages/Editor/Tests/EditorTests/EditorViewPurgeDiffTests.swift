@@ -66,6 +66,33 @@ struct EditorViewPurgeDiffTests {
         ])
     }
 
+    @Test func deriveRefreshesChildParentHashWhenContainerKindChanges() {
+        // A heading-to-heading Turn Into changes the container hash but keeps
+        // the body blocks' IDs and content stable. The child needs a fresh
+        // insert record anyway so peer devices learn its latest parent hash.
+        let parentID = BlockID()
+        let child = block("body")
+        let before = Block(
+            id: parentID,
+            kind: .heading(level: .h3, text: AttributedString("Section")),
+            children: [child]
+        )
+        let after = Block(
+            id: parentID,
+            kind: .heading(level: .h2, text: AttributedString("Section")),
+            children: [child]
+        )
+
+        let ops = BlockTreeDiff.derive(pre: [before], post: [after])
+        let inserts = ops.compactMap { op -> (String, String?)? in
+            if case .insert(let h, let p, _) = op { return (h, p) }
+            return nil
+        }
+
+        #expect(inserts.contains { $0.0 == after.atomicHash && $0.1 == nil })
+        #expect(inserts.contains { $0.0 == child.atomicHash && $0.1 == after.atomicHash })
+    }
+
     @Test func deriveSkipsUnchangedIdHashPairs() {
         // Move or reorder: same id, same hash, different position. No ops.
         let a = block("a")

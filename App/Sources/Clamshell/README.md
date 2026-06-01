@@ -116,9 +116,12 @@ A `Patch` is a batch of `add` / `purge` / `observe` entries (see
 [PatchEngine.swift](PatchEngine.swift)). Static factories project from
 the three callers' natural shapes onto the unified type:
 
-- `Patch.adds(from blocks: [Block])` — full-doc walks (used by
-  conflict-merge writes and the subpage-append host bridge). Emits
-  `add`.
+- `Patch.adds(from blocks: [Block])` — full-doc walks for content this
+  device is claiming as authored, such as the subpage-append host
+  bridge. Emits `add`.
+- `Patch.observations(from blocks: [Block])` — full-doc walks for
+  merged or externally observed content this device should snapshot but
+  not claim as authored, such as conflict-merge writes. Emits `observe`.
 - `Patch.from(ops: [EditorOp])` — editor structural diffs. Emits
   `add` / `purge`.
 - `Patch.Entry.observe(hash:parent:markdown:)` — used by reconcile
@@ -194,29 +197,32 @@ routes through the per-URL save chain.
 
 #### The mtime gate
 
-The engine takes the `.md` modification date as a parameter. For
-each candidate insert and remove, it compares the corresponding
-record's timestamp against `mdMtime`:
+The engine takes the `.md` modification date as a parameter. It uses
+that timestamp conservatively for delete propagation, but not for
+add-backed auto-restore:
 
-- **Insert suppression**: if `add.recordedAt < mdMtime`, skip the
-  restore. The `.md` had a chance to intentionally drop the block
-  (e.g. a foreign device deleted it and synced the `.md` before its
-  purge log). Trust the more recent piece of disk evidence.
+- **Insert / auto-restore**: if the log says a hash is alive and the
+  hash is missing from the doc, restore it regardless of whether the
+  `.md` mtime is newer than the add. Without an explicit purge, a newer
+  `.md` write might be an unrelated local edit that raced ahead of a
+  delayed peer log. Live hashes are still filtered out, so this does not
+  duplicate blocks already present in the doc.
 - **Remove suppression**: if `purge.recordedAt < mdMtime`, skip the
   remove. The `.md` was written *after* the purge — likely an
   external `vim` edit re-added the block. Don't strip user content
   out from under them.
-- **Crash recovery / eager restore**: if `add.recordedAt > mdMtime`,
-  the journal knows something the `.md` doesn't (log apply succeeded
-  but save crashed, or a foreign log arrived before its `.md`) → do
-  restore.
-- Pass `nil` to disable the gate (used by tests and manual recover
-  paths where the caller has full control).
+- **Crash recovery / eager restore**: if the journal knows something
+  the `.md` doesn't (log apply succeeded but save crashed, or a foreign
+  log arrived before its `.md`), this falls out of the same insert rule:
+  add-backed missing hashes restore.
+- Pass `nil` to disable the remove gate (used by tests and manual
+  recover paths where the caller has full control).
 
-The gate is small but load-bearing: it's how Clamshell handles the
-narrow window between a peer's `.md` and `.jsonl` arriving via
-iCloud. Without it, "Mac authored X, phone deletes X, phone's `.md`
-syncs first" would briefly resurrect X on Mac.
+The remaining remove gate is small but load-bearing: it prevents a
+stale purge from deleting content that the newer `.md` has reintroduced.
+For missing add-backed blocks, Clamshell deliberately accepts the other
+tradeoff: if a peer's deletion `.md` arrives before its purge log, the
+block may briefly reappear until the explicit purge catches up.
 
 The contract:
 
@@ -451,9 +457,10 @@ device-hash cache short-circuiting duplicates: callers either filter
 upstream (the editor's `BlockTreeDiff` only emits ops for structural
 changes; reconcile's `unloggedObservations` filters against journal
 intent) or accept a small amount of log bloat (full-doc-walk commits
-from conflict-merge or closed-page restore). Intent is unchanged —
-duplicate `add`s for the same hash resolve to the same alive intent at
-read time, so chattier logs are correctness-equivalent.
+from conflict-merge or closed-page restore). Intent is unchanged for
+duplicates of the same op: duplicate `add`s for the same hash resolve
+to the same alive intent, and duplicate `observe`s preserve snapshots
+without claiming liveness.
 
 **Log durable before file durable.** Every `commit(_:to:)` runs
 log apply + file write inside a single Task, log first. At any point

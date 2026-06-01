@@ -542,6 +542,25 @@ struct PatchEngineTests {
         #expect(purged.first?.hash == x.atomicHash)
     }
 
+    /// Even a high-counter observation from conflict merge is not
+    /// authoritative. A peer purge still decides liveness, which prevents
+    /// stale iCloud alternates from being re-alived by the device that merged
+    /// them.
+    @Test func highCounterObserveDoesNotOverrideAuthoritativePurge() {
+        let x = Block.paragraph(text: attr("X"))
+        let intent = PatchEngine.intent(from: journal(
+            ("dev-A", [addRecord(x, counter: 1), purgeRecord(x, counter: 2)]),
+            ("dev-B", [observeRecord(x, counter: 99)])
+        ))
+
+        guard case .tombstoned = intent.byHash[x.atomicHash] else {
+            Issue.record("expected peer purge to keep hash tombstoned, got \(String(describing: intent.byHash[x.atomicHash]))")
+            return
+        }
+        let recon = PatchEngine.reconcile(intent: intent, doc: [])
+        #expect(recon.inserts.isEmpty)
+    }
+
     /// `observed` hashes don't show up in `lostEntries` — they're not
     /// eligible for auto-restore so they shouldn't be advertised as
     /// "lost" either.
@@ -565,13 +584,12 @@ struct PatchEngineTests {
         #expect(recon.inserts.isEmpty)
     }
 
-    // MARK: - mtime gate on auto-restore
+    // MARK: - auto-restore and mtime
 
-    /// Latest `add` is OLDER than the `.md` mtime → the `.md` has had a
-    /// chance to intentionally drop the block (e.g. a foreign device
-    /// deleted it and synced the `.md` before its purge log). Trust the
-    /// `.md` and don't auto-restore.
-    @Test func autoRestoreSuppressedWhenAddOlderThanMd() {
+    /// Latest `add` is OLDER than the `.md` mtime but has no matching purge.
+    /// Restore anyway: a newer local `.md` save can be an unrelated edit that
+    /// raced ahead of a delayed peer log.
+    @Test func autoRestoreFiresWhenAddOlderThanMdWithoutPurge() {
         let x = Block.paragraph(text: attr("X"))
         let addT: TimeInterval = 100
         let mdMtime = Date(timeIntervalSince1970: 200)
@@ -580,8 +598,8 @@ struct PatchEngineTests {
         let gated = PatchEngine.reconcile(intent: intent, doc: [], mdMtime: mdMtime)
         let ungated = PatchEngine.reconcile(intent: intent, doc: [], mdMtime: nil)
 
-        #expect(gated.inserts.isEmpty, ".md is newer than the add → trust .md, skip restore")
-        #expect(ungated.inserts.count == 1, "without the gate, the engine restores")
+        #expect(gated.inserts.count == 1, "no purge → restore even when .md is newer than the add")
+        #expect(ungated.inserts.count == 1)
     }
 
     /// Latest `add` is NEWER than the `.md` mtime → crash-recovery shape.
@@ -598,14 +616,18 @@ struct PatchEngineTests {
         #expect(recon.inserts.count == 1, "add is newer than .md → restore")
     }
 
-    /// `mdMtime: nil` disables the gate (used by tests and manual
-    /// recover paths).
-    @Test func nilMdMtimeDisablesGate() {
+    /// Already-live hashes do not produce inserts, even when another device's
+    /// add record is newer. This is the duplicate guard for auto-restore.
+    @Test func autoRestoreDoesNotDuplicateLiveHash() {
         let x = Block.paragraph(text: attr("X"))
-        let intent = PatchEngine.intent(from: journal(("dev-A", [addRecord(x, counter: 1, t: 1)])))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [addRecord(x, counter: 1, t: 200)])))
 
-        let recon = PatchEngine.reconcile(intent: intent, doc: [], mdMtime: nil)
-        #expect(recon.inserts.count == 1)
+        let recon = PatchEngine.reconcile(
+            intent: intent,
+            doc: [x],
+            mdMtime: Date(timeIntervalSince1970: 100)
+        )
+        #expect(recon.inserts.isEmpty)
     }
 
     // MARK: - Engine removes (tombstoned-in-doc)
@@ -629,6 +651,72 @@ struct PatchEngineTests {
         #expect(remove.hash == x.atomicHash)
         #expect(remove.blockID == x.id)
         #expect(recon.didChange)
+    }
+
+    /// If only a container is tombstoned, applying the remove must not take
+    /// still-alive descendants with it. This is the remote-device shape of
+    /// turning a heading into another heading level: the old heading hash is
+    /// purged, the replacement heading is added, and the body blocks keep
+    /// their existing hashes.
+    @MainActor
+    @Test func applyingContainerRemoveLiftsAliveChildren() throws {
+        let child = Block.paragraph(text: attr("Body"))
+        let oldHeading = Block.heading(level: .h3, text: attr("Section"), children: [child])
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            addRecord(oldHeading, counter: 1, t: 100),
+            addRecord(child, parent: oldHeading, counter: 2, t: 100),
+            purgeRecord(oldHeading, counter: 3, t: 200),
+        ])))
+        let doc = Document(url: URL(fileURLWithPath: "/tmp/p.md"), children: [oldHeading])
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
+        #expect(recon.removes.count == 1)
+        #expect(recon.inserts.count == 1)
+        #expect(recon.restoredHashes == [child.atomicHash])
+
+        PatchEngine.apply(recon, to: doc)
+
+        #expect(doc.children.map(\.atomicHash) == [child.atomicHash])
+    }
+
+    @MainActor
+    @Test func headingReplacementRestoresBodyUnderNewHeading() throws {
+        let child = Block.paragraph(text: attr("Body"))
+        let oldHeading = Block.heading(level: .h3, text: attr("Section"), children: [child])
+        let newHeading = Block.heading(level: .h2, text: attr("Section"))
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            addRecord(oldHeading, counter: 1, t: 100),
+            addRecord(child, parent: oldHeading, counter: 2, t: 100),
+            purgeRecord(oldHeading, counter: 3, t: 200),
+            addRecord(newHeading, counter: 4, t: 200),
+            addRecord(child, parent: newHeading, counter: 5, t: 200),
+        ])))
+        let doc = Document(url: URL(fileURLWithPath: "/tmp/p.md"), children: [oldHeading])
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
+        PatchEngine.apply(recon, to: doc)
+
+        #expect(doc.children.count == 1)
+        #expect(doc.children[0].atomicHash == newHeading.atomicHash)
+        #expect(doc.children[0].children.map(\.atomicHash) == [child.atomicHash])
+    }
+
+    @MainActor
+    @Test func applyingContainerRemoveDropsTombstonedChildrenToo() throws {
+        let child = Block.paragraph(text: attr("Body"))
+        let oldHeading = Block.heading(level: .h3, text: attr("Section"), children: [child])
+        let intent = PatchEngine.intent(from: journal(("dev-A", [
+            addRecord(oldHeading, counter: 1, t: 100),
+            addRecord(child, parent: oldHeading, counter: 2, t: 100),
+            purgeRecord(oldHeading, counter: 3, t: 200),
+            purgeRecord(child, counter: 4, t: 200),
+        ])))
+        let doc = Document(url: URL(fileURLWithPath: "/tmp/p.md"), children: [oldHeading])
+
+        let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
+        PatchEngine.apply(recon, to: doc)
+
+        #expect(doc.children.isEmpty)
     }
 
     /// Tombstoned-not-in-doc → no remove (nothing to strip; already gone).

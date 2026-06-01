@@ -567,6 +567,51 @@ struct RecoveryLogTests {
                 "higher counter wins regardless of past wall-clock t")
     }
 
+    /// Regression for the iPhone → Mac delayed-log case: the Mac may save
+    /// `p.md` after the phone-authored add, then receive the phone's `.jsonl`
+    /// later. The tail reconcile should still restore the add-backed block
+    /// because no purge says it was intentionally deleted.
+    @Test func tailReconcileRestoresForeignAddOlderThanMdMtime() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let local = Block.paragraph(text: attr("local edit"))
+        try await log.apply(Patch.adds(from: [local]), to: "p.md")
+
+        let mdMtime = Date(timeIntervalSince1970: 200)
+        let initial = await log.reconcileAgainst(page: "p.md", doc: [local], mdMtime: mdMtime)
+        switch initial {
+        case .folded(let recon, _):
+            #expect(recon.inserts.isEmpty)
+        case .skipped:
+            Issue.record("first reconcile should establish a watermark via full fold")
+        }
+
+        let foreign = Block.paragraph(text: attr("from phone"))
+        let h = foreign.atomicHash
+        let m = BlockSerializer.serializeAtomic(foreign)
+        let escaped = m
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let line = "{\"c\":9999,\"h\":\"\(h)\",\"m\":\"\(escaped)\",\"op\":\"add\",\"p\":null,\"t\":100}\n"
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: foreignURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try line.write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let outcome = await log.reconcileAgainst(page: "p.md", doc: [local], mdMtime: mdMtime)
+        guard case .folded(let recon, .tail) = outcome else {
+            Issue.record("expected tail fold after foreign log growth, got \(outcome)")
+            return
+        }
+        #expect(recon.inserts.count == 1)
+        #expect(recon.restoredHashes == [h])
+    }
+
     /// A foreign device's record that lands on disk after our initial counter
     /// hydration must still raise our next-mint above the foreign max. Without
     /// the per-call foreign rescan, our `nextCounter[rel]` cache strands us

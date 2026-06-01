@@ -20,7 +20,11 @@ final class WorkspaceWindow {
     /// Document currently rendered by `EditorPage`. Owned-by-clamshell once
     /// it's been opened (`openPage`); `nil` between navigations and on
     /// workspaces without a home page set.
-    var openDocument: Document? { openPage?.document }
+    private(set) var openDocument: Document?
+
+    @ObservationIgnored private var navigationTask: Task<Void, Never>?
+    @ObservationIgnored private var loadingTargetURL: URL?
+    @ObservationIgnored private var navigationRequestID = 0
 
     private var openPage: Clamshell.OpenPage?
 
@@ -82,23 +86,37 @@ final class WorkspaceWindow {
     /// any lost subtrees, and installs the file presenter. Banner-worthy
     /// reconcile outcomes are surfaced via `postReconcileBanner`.
     func handlePathChange() {
-        let topURL = path.last ?? workspace.homeURL
-        if openDocument?.url == topURL { return }
+        let topURL = currentTargetURL()
+        if let topURL, openDocument?.url.standardizedFileURL == topURL { return }
+        if navigationTask != nil, loadingTargetURL == topURL { return }
+
+        navigationTask?.cancel()
+        navigationRequestID += 1
+        let requestID = navigationRequestID
+        loadingTargetURL = topURL
+
         let outgoing = openPage
-        openPage = nil
+        clearOpenPage()
         guard let url = topURL, let clamshell = workspace.clamshell else {
             if let outgoing, let priorClamshell = workspace.clamshell {
-                Task {
+                navigationTask = Task { @MainActor [weak self, outgoing, priorClamshell, requestID] in
+                    guard let self else { return }
+                    defer { self.finishNavigationRequest(requestID) }
                     do {
                         try await priorClamshell.closePage(outgoing)
                     } catch {
                         workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
                     }
+                    workspace.unregisterOpenURL(outgoing.document.url)
                 }
+            } else {
+                finishNavigationRequest(requestID)
             }
             return
         }
-        Task { @MainActor in
+        navigationTask = Task { @MainActor [weak self, outgoing, url, clamshell, requestID] in
+            guard let self else { return }
+            defer { self.finishNavigationRequest(requestID) }
             let total = perfStart()
             // Drain the outgoing doc's flush before loading the next — a
             // force-quit between path change and flush completion would
@@ -113,6 +131,7 @@ final class WorkspaceWindow {
                 workspace.unregisterOpenURL(outgoing.document.url)
                 perfEnd(drain, "handlePathChange.drainOutgoing")
             }
+            guard !Task.isCancelled, self.navigationRequestID == requestID else { return }
             do {
                 let openT = perfStart()
                 let open = try await clamshell.openPage(at: url) { [weak self] event in
@@ -120,7 +139,9 @@ final class WorkspaceWindow {
                 }
                 perfEnd(openT, "handlePathChange.openPage", "url=\(url.lastPathComponent)")
                 // The user may have navigated again while we were awaiting.
-                guard path.last ?? workspace.homeURL == url else {
+                guard !Task.isCancelled,
+                      self.navigationRequestID == requestID,
+                      currentTargetURL() == url else {
                     do {
                         try await clamshell.closePage(open)
                     } catch {
@@ -128,7 +149,7 @@ final class WorkspaceWindow {
                     }
                     return
                 }
-                openPage = open
+                setOpenPage(open)
                 workspace.registerOpenURL(url)
                 perfEnd(total, "handlePathChange.total", "url=\(url.lastPathComponent)")
                 // First successful openPage per mount triggers the deferred
@@ -136,7 +157,9 @@ final class WorkspaceWindow {
                 // the 49× NSFileVersion sweep until the editor is visible.
                 workspace.scheduleConflictSweepIfNeeded()
             } catch {
-                workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
+                if !Task.isCancelled, self.navigationRequestID == requestID {
+                    workspace.error = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -156,6 +179,10 @@ final class WorkspaceWindow {
     /// Workspace was dropped (switchWorkspace, etc.). Clear all per-window
     /// state. Called by `ContentView` via `.onChange(of: workspace.workspaceURL)`.
     func reset() {
+        navigationTask?.cancel()
+        navigationTask = nil
+        loadingTargetURL = nil
+        navigationRequestID += 1
         if let outgoing = openPage, let clamshell = workspace.clamshell {
             Task {
                 do {
@@ -166,7 +193,7 @@ final class WorkspaceWindow {
             }
             workspace.unregisterOpenURL(outgoing.document.url)
         }
-        openPage = nil
+        clearOpenPage()
         path = []
     }
 
@@ -186,7 +213,27 @@ final class WorkspaceWindow {
     /// helpers rather than swapping, so once `EditorPage` is mounted the
     /// Document reference is stable for its lifetime.
     func documentForPage(url: URL) -> Document? {
-        openDocument?.url == url ? openDocument : nil
+        openDocument?.url.standardizedFileURL == url.standardizedFileURL ? openDocument : nil
+    }
+
+    private func currentTargetURL() -> URL? {
+        (path.last ?? workspace.homeURL)?.standardizedFileURL
+    }
+
+    private func setOpenPage(_ open: Clamshell.OpenPage) {
+        openPage = open
+        openDocument = open.document
+    }
+
+    private func clearOpenPage() {
+        openPage = nil
+        openDocument = nil
+    }
+
+    private func finishNavigationRequest(_ requestID: Int) {
+        guard navigationRequestID == requestID else { return }
+        loadingTargetURL = nil
+        navigationTask = nil
     }
 
     // The save lifecycle (commit-time atomic save, per-URL Task chain,
@@ -215,7 +262,7 @@ final class WorkspaceWindow {
                 return false
             }
             workspace.unregisterOpenURL(outgoing.document.url)
-            openPage = nil
+            clearOpenPage()
         }
         path.removeAll { $0 == entry.url }
         do {

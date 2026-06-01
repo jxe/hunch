@@ -165,7 +165,7 @@ extension Clamshell {
         // Deferred reconcile. `reconcileLive` gates on `isQuiescent`; if
         // the user is mid-save when this runs, it returns nil and the
         // next presenter wakeup (after the save completes) retries.
-        Task { @MainActor [weak self, weak document] in
+        Task(priority: .utility) { @MainActor [weak self, weak document] in
             guard let self, let document else { return }
             let deferredT = perfStart()
             do {

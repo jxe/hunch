@@ -20,7 +20,7 @@ import Editor
 //     branch where the journal might not yet know about every block in
 //     `doc`).
 //   - Conflict merge: built by `Clamshell.resolveConflictVersions` as a
-//     full-doc add-walk on the merged tree.
+//     full-doc observe-walk on the merged tree.
 
 /// One unit of durable work for a single page.
 ///

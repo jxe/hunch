@@ -36,6 +36,9 @@ struct ContentView: View {
                 .onChange(of: window.path, initial: true) { _, _ in
                     window.handlePathChange()
                 }
+                .onChange(of: workspace.homeURL, initial: true) { _, _ in
+                    window.handlePathChange()
+                }
                 .sheet(isPresented: $window.showSearch) {
                     SearchSheet(
                         workspace: workspace,
@@ -115,7 +118,6 @@ struct ContentView: View {
         if let homeURL = workspace.homeURL {
             EditorPage(
                 url: homeURL,
-                document: window.documentForPage(url: homeURL),
                 workspace: workspace,
                 window: window
             )
@@ -152,7 +154,6 @@ struct ContentView: View {
         // during loading so iOS does not drop the page toolbar.
         EditorPage(
             url: url,
-            document: window.documentForPage(url: url),
             workspace: workspace,
             window: window
         )
@@ -167,7 +168,6 @@ struct ContentView: View {
 /// and is naturally keyed on `openDocument` (one active doc per window).
 private struct EditorPage: View {
     let url: URL
-    let document: Document?
     @Bindable var workspace: Workspace
     @Bindable var window: WorkspaceWindow
 
@@ -176,7 +176,7 @@ private struct EditorPage: View {
 
     var body: some View {
         Group {
-            if let document {
+            if let document = window.documentForPage(url: url) {
                 EditorView(
                     document: document,
                     state: editorState,
