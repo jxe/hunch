@@ -210,7 +210,9 @@ actor RecoveryLog {
     func reconcileAgainst(
         page rel: String,
         doc: [Block],
-        mdMtime: Date?
+        mdMtime: Date?,
+        trustedFrontier: [String: UInt64]? = nil,
+        allowJournalMutations: Bool = true
     ) -> ReconcileOutcome {
         loadWatermarksIfNeeded()
         let dir = pageDir(rel: rel)
@@ -240,17 +242,25 @@ actor RecoveryLog {
                 doc: doc,
                 mdMtime: mdMtime,
                 oldStats: w.devices,
-                newStats: currentStats
+                newStats: currentStats,
+                trustedFrontier: trustedFrontier,
+                allowJournalMutations: allowJournalMutations
             )
-            pageWatermarks?[rel] = PageWatermark(mdMtime: mdMtimeT, devices: currentStats)
+            pageWatermarks?[rel] = PageWatermark(mdMtime: mdMtimeT, devices: currentStats, frontier: maxCounterFrontier(page: rel))
             saveWatermarks()
             return .folded(recon, mode: .tail)
         }
 
         // Full path: no watermark, or `.md` changed, or a foreign log
         // shrunk / vanished (cache invalid for that device).
-        let recon = fullFold(rel: rel, doc: doc, mdMtime: mdMtime)
-        pageWatermarks?[rel] = PageWatermark(mdMtime: mdMtimeT, devices: currentStats)
+        let recon = fullFold(
+            rel: rel,
+            doc: doc,
+            mdMtime: mdMtime,
+            trustedFrontier: trustedFrontier,
+            allowJournalMutations: allowJournalMutations
+        )
+        pageWatermarks?[rel] = PageWatermark(mdMtime: mdMtimeT, devices: currentStats, frontier: maxCounterFrontier(page: rel))
         saveWatermarks()
         return .folded(recon, mode: .full)
     }
@@ -277,14 +287,33 @@ actor RecoveryLog {
                 mtime: mtime.timeIntervalSince1970
             )
         }
+        var frontier = pageWatermarks?[rel]?.frontier ?? [:]
+        if let ownMax = maxCounter(in: ourURL) {
+            frontier[deviceID] = ownMax
+        }
         pageWatermarks?[rel] = PageWatermark(
             mdMtime: mdMtime?.timeIntervalSince1970,
-            devices: devices
+            devices: devices,
+            frontier: frontier
         )
         saveWatermarks()
     }
 
-    func compactOwnLog(page rel: String, mdMtime: Date?, now: Date = Date()) throws -> LogCompactionResult {
+    func frontierForStampAfterOwnSave(page rel: String) -> [String: UInt64] {
+        loadWatermarksIfNeeded()
+        var frontier = pageWatermarks?[rel]?.frontier ?? [:]
+        if let ownMax = maxCounter(in: ourLogURL(for: rel)) {
+            frontier[deviceID] = ownMax
+        }
+        return frontier
+    }
+
+    func compactOwnLog(
+        page rel: String,
+        mdMtime: Date?,
+        trustedFrontier: [String: UInt64]? = nil,
+        now: Date = Date()
+    ) throws -> LogCompactionResult {
         let url = ourLogURL(for: rel)
         guard FileManager.default.fileExists(atPath: url.path) else {
             return LogCompactionResult(
@@ -298,7 +327,12 @@ actor RecoveryLog {
         let entries = readRawWires(at: url)
         let pageEntries = readPageRawWires(page: rel)
         let originalBytes = Int64((try? Data(contentsOf: url).count) ?? 0)
-        let keptEntries = compactedRawWires(from: entries, allPageEntries: pageEntries, now: now)
+        let keptEntries = compactedRawWires(
+            from: entries,
+            allPageEntries: pageEntries,
+            trustedFrontier: trustedFrontier,
+            now: now
+        )
         let compactedText = keptEntries.map { entry in
             if let wire = entry.wire, Self.wireKind(wire) != nil {
                 return Self.encode(wire) ?? entry.raw
@@ -350,7 +384,9 @@ actor RecoveryLog {
         doc: [Block],
         mdMtime: Date?,
         oldStats: [String: DeviceWatermark],
-        newStats: [String: DeviceWatermark]
+        newStats: [String: DeviceWatermark],
+        trustedFrontier: [String: UInt64]?,
+        allowJournalMutations: Bool
     ) -> PatchEngine.Reconciliation {
         let docHashes = Self.collectAtomicHashes(doc)
         var addsByHash: [String: IntentState.AddSnapshot] = [:]
@@ -379,7 +415,9 @@ actor RecoveryLog {
                         addsByHash[wire.h] = IntentState.AddSnapshot(
                             parent: wire.p,
                             markdown: markdown,
-                            recordedAt: Date(timeIntervalSince1970: wire.t)
+                            recordedAt: Date(timeIntervalSince1970: wire.t),
+                            counter: wire.c,
+                            deviceID: deviceID
                         )
                         observesByHash.removeValue(forKey: wire.h)
                         purgedHashes.remove(wire.h)
@@ -389,7 +427,9 @@ actor RecoveryLog {
                         observesByHash[wire.h] = IntentState.AddSnapshot(
                             parent: wire.p,
                             markdown: markdown,
-                            recordedAt: Date(timeIntervalSince1970: wire.t)
+                            recordedAt: Date(timeIntervalSince1970: wire.t),
+                            counter: wire.c,
+                            deviceID: deviceID
                         )
                     }
                 case .purge:
@@ -421,13 +461,31 @@ actor RecoveryLog {
             byHash[hash] = .alive(latestAdd: dummy)
         }
         let intent = IntentState(byHash: byHash)
-        return PatchEngine.reconcile(intent: intent, doc: doc, mdMtime: mdMtime)
+        return PatchEngine.reconcile(
+            intent: intent,
+            doc: doc,
+            mdMtime: mdMtime,
+            trustedFrontier: trustedFrontier,
+            allowJournalMutations: allowJournalMutations
+        )
     }
 
-    private func fullFold(rel: String, doc: [Block], mdMtime: Date?) -> PatchEngine.Reconciliation {
+    private func fullFold(
+        rel: String,
+        doc: [Block],
+        mdMtime: Date?,
+        trustedFrontier: [String: UInt64]?,
+        allowJournalMutations: Bool
+    ) -> PatchEngine.Reconciliation {
         let journal = readJournal(page: rel)
         let intent = PatchEngine.intent(from: journal)
-        return PatchEngine.reconcile(intent: intent, doc: doc, mdMtime: mdMtime)
+        return PatchEngine.reconcile(
+            intent: intent,
+            doc: doc,
+            mdMtime: mdMtime,
+            trustedFrontier: trustedFrontier,
+            allowJournalMutations: allowJournalMutations
+        )
     }
 
     private func currentDeviceStats(rel: String) -> [String: DeviceWatermark] {
@@ -443,6 +501,26 @@ actor RecoveryLog {
             )
         }
         return out
+    }
+
+    private func maxCounterFrontier(page rel: String) -> [String: UInt64] {
+        var out: [String: UInt64] = [:]
+        for url in deviceLogURLs(for: rel) {
+            let id = url.deletingPathExtension().lastPathComponent
+            if let max = maxCounter(in: url) {
+                out[id] = max
+            }
+        }
+        return out
+    }
+
+    private func maxCounter(in url: URL) -> UInt64? {
+        var maxObserved: UInt64?
+        for record in readRecords(at: url) {
+            guard let c = record.c else { continue }
+            maxObserved = max(maxObserved ?? 0, c)
+        }
+        return maxObserved
     }
 
     private nonisolated static func collectAtomicHashes(_ blocks: [Block]) -> Set<String> {
@@ -473,6 +551,7 @@ actor RecoveryLog {
     private func compactedRawWires(
         from entries: [RawWire],
         allPageEntries: [DeviceRawWire],
+        trustedFrontier: [String: UInt64]?,
         now: Date
     ) -> [RawWire] {
         var keepIndexes: Set<Int> = []
@@ -525,6 +604,16 @@ actor RecoveryLog {
         }
 
         for entry in latestAuthoritative.values {
+            if entry.deviceID == deviceID,
+               Self.isPrunableExpiredPurge(
+                entry.entry.wire,
+                deviceID: entry.deviceID,
+                trustedFrontier: trustedFrontier,
+                allPageEntries: allPageEntries,
+                cutoff: expiredPurgeCutoff
+               ) {
+                continue
+            }
             if entry.deviceID == deviceID {
                 keepIndexes.insert(entry.entry.index)
             }
@@ -579,6 +668,33 @@ actor RecoveryLog {
     private nonisolated static func isExpiredPurge(_ wire: Wire?, cutoff: TimeInterval) -> Bool {
         guard let wire, wireKind(wire) == .purge else { return false }
         return wire.t < cutoff
+    }
+
+    private nonisolated static func isPrunableExpiredPurge(
+        _ wire: Wire?,
+        deviceID: String,
+        trustedFrontier: [String: UInt64]?,
+        allPageEntries: [DeviceRawWire],
+        cutoff: TimeInterval
+    ) -> Bool {
+        guard let wire,
+              wireKind(wire) == .purge,
+              isExpiredPurge(wire, cutoff: cutoff),
+              let purgeCounter = wire.c,
+              let trustedFrontier,
+              (trustedFrontier[deviceID] ?? 0) >= purgeCounter else {
+            return false
+        }
+
+        var maxByDevice: [String: UInt64] = [:]
+        for entry in allPageEntries {
+            guard let c = entry.entry.wire?.c else { return false }
+            maxByDevice[entry.deviceID] = max(maxByDevice[entry.deviceID] ?? 0, c)
+        }
+        for (id, maxCounter) in maxByDevice {
+            guard (trustedFrontier[id] ?? 0) >= maxCounter else { return false }
+        }
+        return true
     }
 
     private struct RawWire: Sendable {
@@ -639,20 +755,20 @@ actor RecoveryLog {
     /// Lost-block entries for one page: hashes whose latest record is an
     /// `add` and aren't currently alive in the page's `.md`. Sorted by
     /// `recordedAt` descending.
-    func enumerate(page rel: String) -> [LostBlock] {
+    func enumerate(page rel: String, trustedFrontier: [String: UInt64]? = nil) -> [LostBlock] {
         let journal = readJournal(page: rel)
         let intent = PatchEngine.intent(from: journal)
         let live = liveAtomicHashes(forPage: rel)
-        return intent.lostEntries(notIn: live, source: rel)
+        return intent.lostEntries(notIn: live, source: rel, trustedFrontier: trustedFrontier)
     }
 
     /// Lost blocks for every page that has ever produced log activity.
-    func enumerateAll() -> [LostBlock] {
+    func enumerateAll(trustedFrontier: @Sendable (String) -> [String: UInt64]? = { _ in nil }) -> [LostBlock] {
         let historyRoot = historyRootURL()
         guard FileManager.default.fileExists(atPath: historyRoot.path) else { return [] }
         var out: [LostBlock] = []
         for rel in pageRelsUnder(historyRoot) {
-            out.append(contentsOf: enumerate(page: rel))
+            out.append(contentsOf: enumerate(page: rel, trustedFrontier: trustedFrontier(rel)))
         }
         return out.sorted { $0.recordedAt > $1.recordedAt }
     }
@@ -830,7 +946,7 @@ actor RecoveryLog {
         guard FileManager.default.fileExists(atPath: url.path),
               let raw = try? store.read(url) else { return [] }
         var out: Set<String> = []
-        Self.collectAtomicHashes(BlockParser.parse(raw), into: &out)
+        Self.collectAtomicHashes(ClamshellPageEnvelope.parse(raw).blocks, into: &out)
         return out
     }
 
@@ -850,6 +966,7 @@ actor RecoveryLog {
     fileprivate struct PageWatermark: Codable, Sendable {
         let mdMtime: TimeInterval?
         let devices: [String: DeviceWatermark]
+        let frontier: [String: UInt64]?
     }
 
     fileprivate struct DeviceWatermark: Codable, Sendable, Equatable {

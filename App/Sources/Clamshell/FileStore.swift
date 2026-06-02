@@ -85,7 +85,7 @@ struct FileStore: Sendable {
     /// cold-cache read would otherwise stall the main thread for ~1s/file.
     func loadDocumentTitle(at url: URL) throws -> String {
         let source = try read(url)
-        let blocks = BlockParser.parse(source)
+        let blocks = ClamshellPageEnvelope.parse(source).blocks
         let fallbackTitle = url.deletingPathExtension().lastPathComponent
         return Document.deriveTitle(from: blocks, fallback: fallbackTitle)
     }

@@ -79,10 +79,13 @@ extension Clamshell {
         let foldT = perfStart()
         let docChildren = doc.children
         let mdMtime = doc.modificationDate
+        let inputs = reconcileInputs(for: doc)
         let outcome = await log.reconcileAgainst(
             page: rel,
             doc: docChildren,
-            mdMtime: mdMtime
+            mdMtime: mdMtime,
+            trustedFrontier: inputs.trustedFrontier,
+            allowJournalMutations: inputs.allowJournalMutations
         )
         switch outcome {
         case .skipped:

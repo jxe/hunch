@@ -1,5 +1,156 @@
 import Foundation
+import CryptoKit
 import Editor
+
+enum ClamshellPageEnvelope {
+    static let frontmatterKey = "clamshell"
+
+    struct Stamp: Codable, Equatable, Sendable {
+        let v: Int
+        let bodyHash: String
+        let logFrontier: [String: UInt64]
+
+        init(bodyHash: String, logFrontier: [String: UInt64]) {
+            self.v = 1
+            self.bodyHash = bodyHash
+            self.logFrontier = logFrontier
+        }
+    }
+
+    enum StampTrust: Equatable, Sendable {
+        case none
+        case trusted([String: UInt64])
+        case invalid
+
+        var trustedFrontier: [String: UInt64]? {
+            if case .trusted(let frontier) = self { return frontier }
+            return nil
+        }
+    }
+
+    struct Parsed: Sendable {
+        let body: String
+        let blocks: [Block]
+        let frontmatterLines: [String]?
+        let stampTrust: StampTrust
+    }
+
+    static func parse(_ source: String) -> Parsed {
+        let split = splitFrontmatter(source)
+        let blocks = BlockParser.parse(split.body)
+        let trust = stampTrust(from: split.frontmatterLines, canonicalBody: BlockSerializer.serialize(blocks))
+        return Parsed(body: split.body, blocks: blocks, frontmatterLines: split.frontmatterLines, stampTrust: trust)
+    }
+
+    static func bodyHash(for body: String) -> String {
+        let digest = SHA256.hash(data: Data(body.utf8))
+        return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func serialize(
+        blocks: [Block],
+        existingFrontmatterLines: [String]?,
+        logFrontier: [String: UInt64],
+        resolvingSubpageTitle titleForPath: (String) -> String? = { _ in nil }
+    ) -> String {
+        let body = BlockSerializer.serialize(blocks, resolvingSubpageTitle: titleForPath)
+        let stamp = Stamp(bodyHash: bodyHash(for: body), logFrontier: logFrontier)
+        let stampLine = "\(frontmatterKey): \(encodeStamp(stamp))"
+        let lines = replacingClamshellLine(in: existingFrontmatterLines ?? [], with: stampLine)
+        guard !lines.isEmpty else { return body }
+        return "---\n" + lines.joined(separator: "\n") + "\n---\n" + body
+    }
+
+    private static func splitFrontmatter(_ source: String) -> (frontmatterLines: [String]?, body: String) {
+        guard source.hasPrefix("---\n") || source.hasPrefix("---\r\n") else {
+            return (nil, source)
+        }
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+        guard !lines.isEmpty, lines[0].trimmingCharacters(in: .whitespacesAndNewlines) == "---" else {
+            return (nil, source)
+        }
+        for i in 1..<lines.count {
+            if lines[i].trimmingCharacters(in: .whitespacesAndNewlines) == "---" {
+                let frontmatter = lines[1..<i].map { String($0).trimmingSuffix("\r") }
+                let bodyStart = source.index(afterLine: i + 1)
+                return (frontmatter, String(source[bodyStart...]))
+            }
+        }
+        return (nil, source)
+    }
+
+    private static func stampTrust(from frontmatterLines: [String]?, canonicalBody: String) -> StampTrust {
+        guard let frontmatterLines else { return .none }
+        guard let rawValue = clamshellValue(in: frontmatterLines) else { return .none }
+        guard let stamp = decodeStamp(rawValue),
+              stamp.v == 1,
+              stamp.bodyHash == bodyHash(for: canonicalBody) else {
+            return .invalid
+        }
+        return .trusted(stamp.logFrontier)
+    }
+
+    private static func clamshellValue(in lines: [String]) -> String? {
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("\(frontmatterKey):") else { continue }
+            return String(trimmed.dropFirst(frontmatterKey.count + 1)).trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    private static func encodeStamp(_ stamp: Stamp) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(stamp),
+              let text = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return text
+    }
+
+    private static func decodeStamp(_ text: String) -> Stamp? {
+        try? JSONDecoder().decode(Stamp.self, from: Data(text.utf8))
+    }
+
+    private static func replacingClamshellLine(in lines: [String], with replacement: String) -> [String] {
+        var out: [String] = []
+        var didInsert = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("\(frontmatterKey):") else {
+                out.append(line)
+                continue
+            }
+            if !didInsert {
+                out.append(replacement)
+                didInsert = true
+            }
+        }
+        if !didInsert {
+            out.append(replacement)
+        }
+        return out
+    }
+}
+
+private extension String {
+    func trimmingSuffix(_ suffix: String) -> String {
+        hasSuffix(suffix) ? String(dropLast(suffix.count)) : self
+    }
+
+    func index(afterLine lineCount: Int) -> Index {
+        var index = startIndex
+        var remaining = lineCount
+        while remaining > 0, index < endIndex {
+            if self[index] == "\n" {
+                remaining -= 1
+            }
+            index = self.index(after: index)
+        }
+        return index
+    }
+}
 
 enum BlockSerializer {
     /// Serialize a tree of blocks to markdown. The tree's depth is recursively

@@ -210,6 +210,22 @@ struct IntentState: Sendable {
         let parent: String?
         let markdown: String
         let recordedAt: Date
+        let counter: UInt64?
+        let deviceID: String?
+
+        init(
+            parent: String?,
+            markdown: String,
+            recordedAt: Date,
+            counter: UInt64? = nil,
+            deviceID: String? = nil
+        ) {
+            self.parent = parent
+            self.markdown = markdown
+            self.recordedAt = recordedAt
+            self.counter = counter
+            self.deviceID = deviceID
+        }
     }
 
     enum Status: Sendable {
@@ -325,7 +341,7 @@ enum PatchEngine {
         var byHash: [String: IntentState.Status] = [:]
         let allHashes = Set(latestAuthoritative.keys).union(hasObserve)
         for hash in allHashes {
-            let snapshot = latestSnapshot[hash].flatMap { Self.addSnapshot(from: $0.record) }
+            let snapshot = latestSnapshot[hash].flatMap { Self.addSnapshot(from: $0.record, on: $0.deviceID) }
             if let auth = latestAuthoritative[hash] {
                 switch auth.record {
                 case .add:
@@ -366,9 +382,15 @@ enum PatchEngine {
     static func reconcile(
         intent: IntentState,
         doc: [Block],
-        mdMtime: Date? = nil
+        mdMtime: Date? = nil,
+        trustedFrontier: [String: UInt64]? = nil,
+        allowJournalMutations: Bool = true
     ) -> Reconciliation {
         let toAppend = unloggedObservations(doc: doc, intent: intent)
+
+        guard allowJournalMutations else {
+            return Reconciliation(inserts: [], restoredHashes: [], toAppend: toAppend)
+        }
 
         let liveByHash = liveHashes(doc)
         var removes: [Remove] = []
@@ -396,6 +418,7 @@ enum PatchEngine {
             switch status {
             case .alive(let add):
                 guard effectiveLiveByHash[hash] == nil else { continue }
+                if isAbsorbed(add, by: trustedFrontier) { continue }
                 if let identity = restoreIdentity(fromMarkdown: add.markdown),
                    liveRestoreIdentities.contains(identity) {
                     continue
@@ -490,6 +513,13 @@ enum PatchEngine {
             toAppend: toAppend,
             unrestorable: unrestorable
         )
+    }
+
+    private static func isAbsorbed(_ add: IntentState.AddSnapshot, by frontier: [String: UInt64]?) -> Bool {
+        guard let frontier,
+              let deviceID = add.deviceID,
+              let counter = add.counter else { return false }
+        return (frontier[deviceID] ?? 0) >= counter
     }
 
     /// Short, log-friendly label for a block kind. Just the case name —
@@ -850,14 +880,16 @@ enum PatchEngine {
         return a.t > b.t
     }
 
-    private static func addSnapshot(from record: LogRecord) -> IntentState.AddSnapshot? {
+    private static func addSnapshot(from record: LogRecord, on deviceID: String) -> IntentState.AddSnapshot? {
         switch record {
         case .add(_, _, let parent, let markdown, let t),
              .observe(_, _, let parent, let markdown, let t):
             return IntentState.AddSnapshot(
                 parent: parent,
                 markdown: markdown,
-                recordedAt: Date(timeIntervalSince1970: t)
+                recordedAt: Date(timeIntervalSince1970: t),
+                counter: record.counter,
+                deviceID: deviceID
             )
         case .purge:
             return nil
@@ -1221,10 +1253,19 @@ extension IntentState {
     /// `LostBlock` entries for the Recover sheet: hashes whose latest record
     /// is an `add` and aren't currently alive in the page's `.md`. Sorted by
     /// `recordedAt` descending.
-    func lostEntries(notIn liveHashes: Set<String>, source: String) -> [LostBlock] {
+    func lostEntries(
+        notIn liveHashes: Set<String>,
+        source: String,
+        trustedFrontier: [String: UInt64]? = nil
+    ) -> [LostBlock] {
         var out: [LostBlock] = []
         for (hash, status) in byHash {
             guard case .alive(let add) = status, !liveHashes.contains(hash) else { continue }
+            if let deviceID = add.deviceID,
+               let counter = add.counter,
+               (trustedFrontier?[deviceID] ?? 0) >= counter {
+                continue
+            }
             out.append(LostBlock.adapt(
                 hash: hash,
                 parentHash: add.parent,

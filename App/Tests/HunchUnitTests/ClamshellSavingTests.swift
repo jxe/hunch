@@ -99,6 +99,7 @@ struct ClamshellSavingTests {
         #expect(FileManager.default.fileExists(atPath: doc.url.path), "empty log entries should still save the .md")
         let mdText = try String(contentsOf: doc.url, encoding: .utf8)
         #expect(mdText.contains("body"))
+        #expect(ClamshellPageEnvelope.parse(mdText).stampTrust == .trusted([:]))
     }
 
     /// A burst of commits for the same URL chain — each waits for the
@@ -305,5 +306,83 @@ struct ClamshellSavingTests {
 
     private func snapshotState(_ items: [Clamshell.CloudSyncItemSnapshot]) -> Clamshell.CloudSyncState {
         Clamshell.CloudSyncSnapshot(items: items).state
+    }
+}
+
+@Suite("Clamshell frontmatter envelope")
+struct ClamshellFrontmatterTests {
+    private func attr(_ s: String) -> AttributedString { AttributedString(s) }
+
+    @Test func unstampedMarkdownParsesAndSerializesWithTrustedStamp() throws {
+        let source = "# Title\n\nBody\n"
+        let parsed = ClamshellPageEnvelope.parse(source)
+
+        #expect(parsed.frontmatterLines == nil)
+        #expect(parsed.stampTrust == .none)
+        #expect(parsed.blocks.count == 1)
+
+        let serialized = ClamshellPageEnvelope.serialize(
+            blocks: parsed.blocks,
+            existingFrontmatterLines: parsed.frontmatterLines,
+            logFrontier: ["dev-A": 42]
+        )
+        let reparsed = ClamshellPageEnvelope.parse(serialized)
+        #expect(BlockSerializer.serialize(reparsed.blocks) == BlockSerializer.serialize(parsed.blocks))
+        #expect(reparsed.stampTrust == .trusted(["dev-A": 42]))
+        #expect(serialized.contains("clamshell: {\"bodyHash\":\"sha256:"))
+        #expect(serialized.contains("\"logFrontier\":{\"dev-A\":42}"))
+    }
+
+    @Test func userFrontmatterIsPreservedWhileClamshellIsInsertedAndUpdated() throws {
+        let blocks: [Block] = [
+            .heading(level: .h1, text: attr("Project")),
+            .paragraph(text: attr("notes"))
+        ]
+        let source = """
+        ---
+        title: Project
+        clamshell: {"v":1,"bodyHash":"sha256:not-it","logFrontier":{"old":1}}
+        tags: [draft, sync]
+        ---
+        # Project
+
+        notes
+        """
+        let parsed = ClamshellPageEnvelope.parse(source)
+
+        let serialized = ClamshellPageEnvelope.serialize(
+            blocks: blocks,
+            existingFrontmatterLines: parsed.frontmatterLines,
+            logFrontier: ["dev-A": 7, "dev-B": 9]
+        )
+        let clamshellLineCount = serialized
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("clamshell:") }
+            .count
+
+        #expect(serialized.contains("title: Project"))
+        #expect(serialized.contains("tags: [draft, sync]"))
+        #expect(clamshellLineCount == 1)
+        #expect(!serialized.contains("sha256:not-it"))
+        #expect(ClamshellPageEnvelope.parse(serialized).stampTrust == .trusted(["dev-A": 7, "dev-B": 9]))
+    }
+
+    @Test func malformedOrBodyMismatchedStampIsUntrusted() throws {
+        let valid = ClamshellPageEnvelope.serialize(
+            blocks: [.paragraph(text: attr("original"))],
+            existingFrontmatterLines: nil,
+            logFrontier: ["dev-A": 1]
+        )
+        let editedBody = valid.replacingOccurrences(of: "original", with: "externally edited")
+        let malformed = """
+        ---
+        clamshell: definitely-not-json
+        ---
+        original
+        """
+
+        #expect(ClamshellPageEnvelope.parse(valid).stampTrust == .trusted(["dev-A": 1]))
+        #expect(ClamshellPageEnvelope.parse(editedBody).stampTrust == .invalid)
+        #expect(ClamshellPageEnvelope.parse(malformed).stampTrust == .invalid)
     }
 }

@@ -55,6 +55,24 @@ struct RecoveryLogTests {
         return String(decoding: data, as: UTF8.self) + "\n"
     }
 
+    private func encodedLegacyWire(
+        op: String,
+        hash: String,
+        parent: String? = nil,
+        markdown: String? = nil,
+        t: TimeInterval
+    ) throws -> String {
+        var object: [String: Any] = [
+            "h": hash,
+            "op": op,
+            "t": t
+        ]
+        object["p"] = parent ?? NSNull()
+        object["m"] = markdown ?? NSNull()
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self) + "\n"
+    }
+
     // MARK: - Persistence
 
     @Test func firstRecordAppendsOnePerAtomicBlock() async throws {
@@ -259,6 +277,104 @@ struct RecoveryLogTests {
         }
         let purged = await log.enumeratePurged(page: "p.md", since: nil)
         #expect(!purged.contains { $0.hash == h })
+    }
+
+    @Test func compactOwnLogPrunesExpiredTombstoneWhenStampedFrontierCoversKnownDevices() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("known deleted"))
+        let h = block.atomicHash
+        let markdown = BlockSerializer.serializeAtomic(block)
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try (
+            encodedWire(op: "add", hash: h, markdown: markdown, t: 90, counter: 1) +
+            encodedWire(op: "purge", hash: h, t: 100, counter: 2)
+        ).write(to: url, atomically: true, encoding: .utf8)
+
+        // V1 is known-device scoped: a valid stamp that covers every
+        // currently present log proves the visible journal has absorbed the
+        // tombstone, but it cannot speak for a never-before-seen offline
+        // device that may arrive later.
+        let result = try await log.compactOwnLog(
+            page: "p.md",
+            mdMtime: nil,
+            trustedFrontier: ["dev-A": 2],
+            now: Date(timeIntervalSince1970: 100 + 31 * 24 * 60 * 60)
+        )
+        #expect(result.originalRecordCount == 2)
+        #expect(result.compactedRecordCount == 0)
+        #expect(lineCount(at: url) == 0)
+    }
+
+    @Test func compactOwnLogKeepsExpiredTombstoneWhenKnownDeviceHasUnfrontieredRecord() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let deleted = Block.paragraph(text: attr("not safe yet"))
+        let other = Block.paragraph(text: attr("new foreign tail"))
+        let h = deleted.atomicHash
+        let ownURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: ownURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try (
+            encodedWire(op: "add", hash: h, markdown: BlockSerializer.serializeAtomic(deleted), t: 90, counter: 1) +
+            encodedWire(op: "purge", hash: h, t: 100, counter: 2)
+        ).write(to: ownURL, atomically: true, encoding: .utf8)
+        try encodedWire(
+            op: "add",
+            hash: other.atomicHash,
+            markdown: BlockSerializer.serializeAtomic(other),
+            t: 110,
+            counter: 3
+        ).write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let result = try await log.compactOwnLog(
+            page: "p.md",
+            mdMtime: nil,
+            trustedFrontier: ["dev-A": 2, "dev-B": 2],
+            now: Date(timeIntervalSince1970: 100 + 31 * 24 * 60 * 60)
+        )
+        #expect(result.originalRecordCount == 2)
+        #expect(result.compactedRecordCount == 1)
+        #expect(lineCount(at: ownURL) == 1)
+    }
+
+    @Test func compactOwnLogKeepsExpiredTombstoneForLegacyNilCounterLog() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("legacy tombstone"))
+        let h = block.atomicHash
+        let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try (
+            encodedLegacyWire(op: "add", hash: h, markdown: BlockSerializer.serializeAtomic(block), t: 90) +
+            encodedLegacyWire(op: "purge", hash: h, t: 100)
+        ).write(to: url, atomically: true, encoding: .utf8)
+
+        let result = try await log.compactOwnLog(
+            page: "p.md",
+            mdMtime: nil,
+            trustedFrontier: ["dev-A": 999],
+            now: Date(timeIntervalSince1970: 100 + 31 * 24 * 60 * 60)
+        )
+        #expect(result.originalRecordCount == 2)
+        #expect(result.compactedRecordCount == 1)
+        #expect(lineCount(at: url) == 1)
     }
 
     @Test func compactOwnLogPreservesObserveOnlyState() async throws {
@@ -873,6 +989,142 @@ struct RecoveryLogTests {
         }
         #expect(recon.inserts.count == 1)
         #expect(recon.restoredHashes == [h])
+    }
+
+    @Test func legacyUnstampedReconcileRestoresMissingForeignAdd() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let foreign = Block.paragraph(text: attr("legacy restore"))
+        let h = foreign.atomicHash
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: foreignURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try encodedWire(
+            op: "add",
+            hash: h,
+            markdown: BlockSerializer.serializeAtomic(foreign),
+            t: 100,
+            counter: 10
+        ).write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let outcome = await log.reconcileAgainst(page: "p.md", doc: [], mdMtime: nil)
+        guard case .folded(let recon, .full) = outcome else {
+            Issue.record("expected full fold for unstamped legacy page, got \(outcome)")
+            return
+        }
+        #expect(recon.inserts.count == 1)
+        #expect(recon.restoredHashes == [h])
+    }
+
+    @Test func stampedFrontierRestoresForeignAddAfterFrontier() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let foreign = Block.paragraph(text: attr("late log tail"))
+        let h = foreign.atomicHash
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: foreignURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try encodedWire(
+            op: "add",
+            hash: h,
+            markdown: BlockSerializer.serializeAtomic(foreign),
+            t: 100,
+            counter: 11
+        ).write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let outcome = await log.reconcileAgainst(
+            page: "p.md",
+            doc: [],
+            mdMtime: nil,
+            trustedFrontier: ["dev-B": 10]
+        )
+        guard case .folded(let recon, .full) = outcome else {
+            Issue.record("expected full fold for stamped page, got \(outcome)")
+            return
+        }
+        #expect(recon.inserts.count == 1)
+        #expect(recon.restoredHashes == [h])
+    }
+
+    @Test func stampedFrontierSuppressesForeignAddAtOrBeforeFrontier() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let foreign = Block.paragraph(text: attr("already absorbed"))
+        let h = foreign.atomicHash
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: foreignURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try encodedWire(
+            op: "add",
+            hash: h,
+            markdown: BlockSerializer.serializeAtomic(foreign),
+            t: 100,
+            counter: 10
+        ).write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let frontier: [String: UInt64] = ["dev-B": 10]
+        let outcome = await log.reconcileAgainst(
+            page: "p.md",
+            doc: [],
+            mdMtime: nil,
+            trustedFrontier: frontier
+        )
+        guard case .folded(let recon, .full) = outcome else {
+            Issue.record("expected full fold for stamped page, got \(outcome)")
+            return
+        }
+        #expect(recon.inserts.isEmpty)
+        #expect(recon.restoredHashes.isEmpty)
+        let lost = await log.enumerate(page: "p.md", trustedFrontier: frontier)
+        #expect(!lost.contains(where: { $0.hash == h }))
+    }
+
+    @Test func invalidStampedReconcileSuppressesRestoreButRecordsObservations() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let local = Block.paragraph(text: attr("external survivor"))
+        let foreign = Block.paragraph(text: attr("do not restore on invalid stamp"))
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: foreignURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try encodedWire(
+            op: "add",
+            hash: foreign.atomicHash,
+            markdown: BlockSerializer.serializeAtomic(foreign),
+            t: 100,
+            counter: 10
+        ).write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let outcome = await log.reconcileAgainst(
+            page: "p.md",
+            doc: [local],
+            mdMtime: nil,
+            trustedFrontier: nil,
+            allowJournalMutations: false
+        )
+        guard case .folded(let recon, .full) = outcome else {
+            Issue.record("expected full fold for invalid stamped page, got \(outcome)")
+            return
+        }
+        #expect(recon.inserts.isEmpty)
+        #expect(recon.restoredHashes.isEmpty)
+        #expect(recon.toAppend.map(\.hash) == [local.atomicHash])
     }
 
     /// A foreign device's record that lands on disk after our initial counter

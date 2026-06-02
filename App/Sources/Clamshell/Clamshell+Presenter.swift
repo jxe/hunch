@@ -138,15 +138,16 @@ extension Clamshell {
         // it's deferred below.
         let readT = perfStart()
         let files = self.files
-        let (raw, blocks): (String, [Block]) = try await Task.detached(priority: .userInitiated) { [files, url] in
+        let (raw, parsed): (String, ClamshellPageEnvelope.Parsed) = try await Task.detached(priority: .userInitiated) { [files, url] in
             let raw = try files.read(url)
-            let blocks = BlockParser.parse(raw)
-            return (raw, blocks)
+            let parsed = ClamshellPageEnvelope.parse(raw)
+            return (raw, parsed)
         }.value
-        perfEnd(readT, "openPage.read+parse", "url=\(url.lastPathComponent) bytes=\(raw.utf8.count) blocks=\(blocks.count)")
+        perfEnd(readT, "openPage.read+parse", "url=\(url.lastPathComponent) bytes=\(raw.utf8.count) blocks=\(parsed.blocks.count)")
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         recordDiskContent(raw, at: url)
-        let document = Document(url: url, children: blocks, modificationDate: mtime)
+        rememberEnvelope(parsed, for: url)
+        let document = Document(url: url, children: parsed.blocks, modificationDate: mtime)
 
         let presT = perfStart()
         let presenter = installPresenter(for: document) { [weak self] event in

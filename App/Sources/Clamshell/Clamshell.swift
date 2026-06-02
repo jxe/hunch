@@ -92,6 +92,12 @@ final class Clamshell {
     /// would fire another fetch.
     @ObservationIgnored private var pendingTitleWarms: Set<URL> = []
 
+    /// User frontmatter + Clamshell stamp trust for pages we've loaded in
+    /// this process. `Editor.Document` remains pure block content; Clamshell
+    /// reattaches/updates the envelope only when it writes markdown.
+    @ObservationIgnored private var pageFrontmatter: [URL: [String]?] = [:]
+    @ObservationIgnored private var pageStampTrust: [URL: ClamshellPageEnvelope.StampTrust] = [:]
+
     /// Per-URL save chain head. Each `commit(_:to:)` spawns a Task that
     /// awaits the previous chain entry for that URL before running its own
     /// log apply + .md write, so concurrent commits land in order. The
@@ -297,7 +303,11 @@ final class Clamshell {
 
     func compactThisDeviceLog(for doc: Document) async throws -> LogCompactionResult {
         let relativePath = relativePath(of: doc.url)
-        return try await log.compactOwnLog(page: relativePath, mdMtime: doc.modificationDate)
+        return try await log.compactOwnLog(
+            page: relativePath,
+            mdMtime: doc.modificationDate,
+            trustedFrontier: trustedFrontierForPage(at: doc.url)
+        )
     }
 
     private func snapshot(for target: CloudSyncTarget) -> CloudSyncItemSnapshot {
@@ -507,10 +517,11 @@ final class Clamshell {
         let raw: String = try await Task.detached(priority: .userInitiated) {
             try files.read(url)
         }.value
-        let blocks = BlockParser.parse(raw)
+        let parsed = ClamshellPageEnvelope.parse(raw)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         recordDiskContent(raw, at: url)
-        return Document(url: url, children: blocks, modificationDate: mtime)
+        rememberEnvelope(parsed, for: url)
+        return Document(url: url, children: parsed.blocks, modificationDate: mtime)
     }
 
     /// One-shot read of `url`'s blocks for callers that won't open an editor
@@ -524,7 +535,7 @@ final class Clamshell {
         let raw: String = try await Task.detached(priority: .userInitiated) {
             try files.read(url)
         }.value
-        return BlockParser.parse(raw)
+        return ClamshellPageEnvelope.parse(raw).blocks
     }
 
     // MARK: - Title cache
@@ -713,7 +724,8 @@ final class Clamshell {
             if !logEntries.isEmpty {
                 try await self.log.apply(Patch(entries: logEntries), to: rel)
             }
-            _ = try await self.save(entry.doc)
+            let frontier = await self.log.frontierForStampAfterOwnSave(page: rel)
+            _ = try await self.save(entry.doc, logFrontier: frontier)
             self.postSaveBookkeeping(entry.doc)
         }
         saveChain[url] = entry
@@ -749,6 +761,47 @@ final class Clamshell {
         saveChain[url] == nil
     }
 
+    func rememberEnvelope(_ parsed: ClamshellPageEnvelope.Parsed, for url: URL) {
+        let key = url.standardizedFileURL
+        pageFrontmatter[key] = parsed.frontmatterLines
+        pageStampTrust[key] = parsed.stampTrust
+    }
+
+    private func frontmatterForSave(at url: URL) -> [String]? {
+        pageFrontmatter[url.standardizedFileURL] ?? nil
+    }
+
+    private func currentStampTrustForPage(at url: URL) -> ClamshellPageEnvelope.StampTrust? {
+        let key = url.standardizedFileURL
+        guard let raw = try? files.read(key) else {
+            pageStampTrust.removeValue(forKey: key)
+            return nil
+        }
+        let parsed = ClamshellPageEnvelope.parse(raw)
+        rememberEnvelope(parsed, for: key)
+        return parsed.stampTrust
+    }
+
+    private func trustedFrontierForPage(at url: URL) -> [String: UInt64]? {
+        currentStampTrustForPage(at: url)?.trustedFrontier
+    }
+
+    private func trustedFrontierForPage(relativePath: String) -> [String: UInt64]? {
+        let url = self.url(for: relativePath).standardizedFileURL
+        return trustedFrontierForPage(at: url)
+    }
+
+    func reconcileInputs(for doc: Document) -> (trustedFrontier: [String: UInt64]?, allowJournalMutations: Bool) {
+        switch currentStampTrustForPage(at: doc.url) {
+        case .trusted(let frontier):
+            return (frontier, true)
+        case .invalid:
+            return (nil, false)
+        case .some(.none), nil:
+            return (nil, true)
+        }
+    }
+
     /// The actual on-disk write. Serializes `document.children` and writes
     /// the bytes through `FileStore` (which wraps `NSFileCoordinator` to
     /// avoid racing with iCloud sync). Does NOT touch the recovery log —
@@ -764,21 +817,26 @@ final class Clamshell {
     /// the very UI a typing/move burst is trying to drive.
     @MainActor
     @discardableResult
-    private func save(_ document: Document) async throws -> String {
+    private func save(_ document: Document, logFrontier: [String: UInt64]) async throws -> String {
         let children = document.children
         let url = document.url
         let titleMap = buildSubpageTitleMap(referencedBy: children)
         let files = self.files
+        let frontmatter = frontmatterForSave(at: url)
 
         let newText = try await Task.detached(priority: .userInitiated) {
-            let text = BlockSerializer.serialize(children, resolvingSubpageTitle: { rel in
-                titleMap[rel]
-            })
+            let text = ClamshellPageEnvelope.serialize(
+                blocks: children,
+                existingFrontmatterLines: frontmatter,
+                logFrontier: logFrontier,
+                resolvingSubpageTitle: { rel in titleMap[rel] }
+            )
             try files.write(text, to: url)
             return text
         }.value
 
         recordDiskContent(newText, at: url)
+        rememberEnvelope(ClamshellPageEnvelope.parse(newText), for: url)
         return newText
     }
 
@@ -870,7 +928,7 @@ final class Clamshell {
         var alternateBlockLists: [[Block]] = []
         for version in alternates {
             guard let text = Clamshell.readCoordinated(version.url) else { continue }
-            alternateBlockLists.append(BlockParser.parse(text))
+            alternateBlockLists.append(ClamshellPageEnvelope.parse(text).blocks)
         }
 
         let survivorBlocks: [Block]
@@ -878,7 +936,7 @@ final class Clamshell {
             survivorBlocks = doc.children
         } else {
             let raw = try files.read(url)
-            survivorBlocks = BlockParser.parse(raw)
+            survivorBlocks = ClamshellPageEnvelope.parse(raw).blocks
         }
 
         let rel = relativePath(of: url)
@@ -957,13 +1015,15 @@ final class Clamshell {
         let parent = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         guard !FileManager.default.fileExists(atPath: url.path) else { return path }
-        let body: String
+        let blocks: [Block]
         if let initialContent {
-            body = "# \(title)\n\n" + BlockSerializer.serialize(initialContent)
+            blocks = [.heading(level: .h1, text: AttributedString(title), children: initialContent)]
         } else {
-            body = "# \(title)\n"
+            blocks = [.heading(level: .h1, text: AttributedString(title))]
         }
+        let body = ClamshellPageEnvelope.serialize(blocks: blocks, existingFrontmatterLines: nil, logFrontier: [:])
         try body.write(to: url, atomically: true, encoding: .utf8)
+        rememberEnvelope(ClamshellPageEnvelope.parse(body), for: url)
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
         titleCache[url] = CachedTitle(title: title, modificationDate: mtime)
         try? rescan()
@@ -1057,7 +1117,7 @@ final class Clamshell {
     func listLostBlocks(filter: LostBlocksFilter = .all) async -> [LostBlock] {
         switch filter {
         case .page(let rel):
-            return await log.enumerate(page: rel)
+            return await log.enumerate(page: rel, trustedFrontier: trustedFrontierForPage(relativePath: rel))
         case .all:
             return await log.enumerateAll()
         }
