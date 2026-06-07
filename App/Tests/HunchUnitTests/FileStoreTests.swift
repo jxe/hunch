@@ -71,6 +71,35 @@ struct FileStoreTests {
         #expect(entries.map(\.relativePath) == ["keep.md"])
     }
 
+    @Test func localWritableAvailabilityAcceptsLocalWritableFiles() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("console-local-writable-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let page = dir.appendingPathComponent("page.md")
+        try "# Page".write(to: page, atomically: true, encoding: .utf8)
+
+        let store = FileStore()
+        #expect(store.isLocallyWritable(page))
+        try store.requireLocallyWritable(page)
+    }
+
+    @Test func localWritableAvailabilityRejectsMissingFiles() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("console-missing-writable-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let page = dir.appendingPathComponent("missing.md")
+        let store = FileStore()
+
+        #expect(!store.isLocallyWritable(page))
+        #expect(throws: FileStoreError.self) {
+            try store.requireLocallyWritable(page)
+        }
+    }
+
     @Test func moveToTrashPreservesRelativePathAndUniquesCollisions() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("console-trash-move-\(UUID().uuidString)", isDirectory: true)

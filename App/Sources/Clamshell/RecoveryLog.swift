@@ -862,7 +862,16 @@ actor RecoveryLog {
                 writeError = error
             }
         }
-        if let coordError { throw coordError }
+        if let coordError {
+            do {
+                try store.requireLocallyWritable(url)
+                try appendLinesDirect(text, to: url)
+            } catch FileStoreError.unavailableOffline {
+                throw FileStoreError.unavailableOffline(url)
+            } catch {
+                throw coordError
+            }
+        }
         if let writeError { throw writeError }
     }
 
@@ -876,13 +885,33 @@ actor RecoveryLog {
         var writeError: Error?
         coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &coordError) { coordinatedURL in
             do {
-                try Data(text.utf8).write(to: coordinatedURL, options: .atomic)
+                try replaceLogDirect(with: text, at: coordinatedURL)
             } catch {
                 writeError = error
             }
         }
-        if let coordError { throw coordError }
+        if let coordError {
+            do {
+                try store.requireLocallyWritable(url)
+                try replaceLogDirect(with: text, at: url)
+            } catch FileStoreError.unavailableOffline {
+                throw FileStoreError.unavailableOffline(url)
+            } catch {
+                throw coordError
+            }
+        }
         if let writeError { throw writeError }
+    }
+
+    private func appendLinesDirect(_ text: String, to url: URL) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(text.utf8))
+    }
+
+    private func replaceLogDirect(with text: String, at url: URL) throws {
+        try Data(text.utf8).write(to: url, options: .atomic)
     }
 
     nonisolated private func readRawWires(at url: URL) -> [RawWire] {

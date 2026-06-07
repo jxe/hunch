@@ -60,6 +60,24 @@ final class Clamshell {
         case page(relativePath: String)
     }
 
+    enum PageFilter: Sendable, Equatable {
+        case locallyAvailableForWrite
+    }
+
+    enum AppendBlocksError: Error, LocalizedError {
+        case empty
+        case pageMissing(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .empty:
+                return "No blocks to move."
+            case .pageMissing(let pageID):
+                return "Couldn't find destination page \(pageID)."
+            }
+        }
+    }
+
     @ObservationIgnored nonisolated let files: FileStore
     @ObservationIgnored nonisolated let trash: TrashStore
     @ObservationIgnored nonisolated let log: RecoveryLog
@@ -475,10 +493,18 @@ final class Clamshell {
     /// query returns the full pool in mtime-descending order.
     /// `excluding` omits a specific URL — typically the currently-open
     /// document (move-to / mention / jump-to). Pass nil to include it.
-    func pages(matching query: String, excluding: URL? = nil) -> [MentionItem] {
+    func pages(matching query: String, excluding: URL? = nil, filter: PageFilter? = nil) -> [MentionItem] {
         let q = query.lowercased()
         let pool = entries
             .filter { $0.url != excluding }
+            .filter { entry in
+                switch filter {
+                case nil:
+                    return true
+                case .some(.locallyAvailableForWrite):
+                    return files.isLocallyWritable(entry.url)
+                }
+            }
             .sorted { $0.modificationDate > $1.modificationDate }
         let chosen: [WorkspaceEntry]
         if q.isEmpty {
@@ -503,6 +529,27 @@ final class Clamshell {
                 isHome: entry.relativePath == home
             )
         }
+    }
+
+    func appendBlocks(_ blocks: [Block], toPage pageID: String) async throws {
+        guard !blocks.isEmpty else { throw AppendBlocksError.empty }
+        let target = url(for: pageID)
+        guard FileManager.default.fileExists(atPath: target.path) else {
+            throw AppendBlocksError.pageMissing(pageID)
+        }
+        try files.requireLocallyWritable(target)
+
+        if let live = liveDocument(at: target) {
+            live.replaceChildrenFromSystemMutation(live.children + blocks)
+            let appendCommit = Commit(logEntries: Patch.adds(from: blocks).entries)
+            try await commit(appendCommit, to: live)
+            return
+        }
+
+        let doc = try await loadDocument(at: target)
+        doc.replaceChildrenFromSystemMutation(doc.children + blocks)
+        let appendCommit = Commit(logEntries: Patch.adds(from: blocks).entries)
+        try await commit(appendCommit, to: doc)
     }
 
     /// Read + parse the `.md` at `url` and return a live `Document` ready to

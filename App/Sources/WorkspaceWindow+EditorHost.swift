@@ -133,29 +133,8 @@ extension WorkspaceWindow: EditorHost {
 
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
-        let target = clamshell.url(for: pageID)
         do {
-            if let live = clamshell.liveDocument(at: target) {
-                live.replaceChildrenFromSystemMutation(live.children + blocks)
-                let appendCommit = Commit(logEntries: Patch.adds(from: blocks).entries)
-                try await clamshell.commit(appendCommit, to: live)
-                return true
-            }
-
-            let doc = try await clamshell.loadDocument(at: target)
-            doc.transaction(name: "Append to subpage") {
-                doc.insertSubtrees(blocks, at: DropPath(parent: nil, position: doc.children.count))
-            }
-            let appendCommit = Commit(logEntries: Patch.adds(from: blocks).entries)
-            try await clamshell.commit(appendCommit, to: doc)
-            // Multi-window splice: if this window has the subpage open,
-            // copy the appended children into the live instance rather
-            // than swapping doc identity — keeps editor state references
-            // stable.
-            if let live = openDocument, live.url == target, live !== doc {
-                live.replaceChildrenFromSystemMutation(doc.children)
-                live.modificationDate = doc.modificationDate
-            }
+            try await clamshell.appendBlocks(blocks, toPage: pageID)
             return true
         } catch {
             workspace.error = "Failed to move blocks into \(pageID): \(error.localizedDescription)"

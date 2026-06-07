@@ -1,11 +1,27 @@
 import Foundation
 import Editor
 
-enum FileStoreError: Error {
+enum FileStoreError: Error, LocalizedError {
     case readFailed(URL, underlying: Error)
     case writeFailed(URL, underlying: Error)
     case scanFailed(URL, underlying: Error)
     case moveFailed(URL, underlying: Error)
+    case unavailableOffline(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .readFailed(let url, let underlying):
+            return "Couldn't read \(url.lastPathComponent): \(underlying.localizedDescription)"
+        case .writeFailed(let url, let underlying):
+            return "Couldn't write \(url.lastPathComponent): \(underlying.localizedDescription)"
+        case .scanFailed(let url, let underlying):
+            return "Couldn't scan \(url.lastPathComponent): \(underlying.localizedDescription)"
+        case .moveFailed(let url, let underlying):
+            return "Couldn't move \(url.lastPathComponent): \(underlying.localizedDescription)"
+        case .unavailableOffline(let url):
+            return "\(url.lastPathComponent) isn't available on this device."
+        }
+    }
 }
 
 struct FileStore: Sendable {
@@ -64,19 +80,71 @@ struct FileStore: Sendable {
         }
     }
 
+    func isLocallyWritable(_ url: URL) -> Bool {
+        (try? requireLocallyWritable(url)) != nil
+    }
+
+    func requireLocallyWritable(_ url: URL) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else {
+            throw FileStoreError.unavailableOffline(url)
+        }
+        guard fm.isWritableFile(atPath: url.path) else {
+            throw FileStoreError.writeFailed(
+                url,
+                underlying: CocoaError(.fileWriteNoPermission)
+            )
+        }
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey
+        ]
+        let values = try url.resourceValues(forKeys: keys)
+        guard values.isRegularFile != false else {
+            throw FileStoreError.unavailableOffline(url)
+        }
+        guard values.isUbiquitousItem == true else { return }
+        switch values.ubiquitousItemDownloadingStatus {
+        case .current, .downloaded:
+            return
+        default:
+            throw FileStoreError.unavailableOffline(url)
+        }
+    }
+
     func write(_ contents: String, to url: URL) throws {
         let coordinator = NSFileCoordinator()
         var coordError: NSError?
         var writeError: Error?
         coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordError) { coordinatedURL in
             do {
-                try contents.data(using: .utf8)?.write(to: coordinatedURL, options: [.atomic])
+                try writeAtomic(contents, to: coordinatedURL)
             } catch {
                 writeError = error
             }
         }
-        if let coordError { throw FileStoreError.writeFailed(url, underlying: coordError) }
-        if let writeError { throw FileStoreError.writeFailed(url, underlying: writeError) }
+        if let coordError {
+            try writeDirectIfLocal(contents, to: url, coordinatorError: coordError)
+        }
+        if let writeError {
+            throw FileStoreError.writeFailed(url, underlying: writeError)
+        }
+    }
+
+    private func writeDirectIfLocal(_ contents: String, to url: URL, coordinatorError: Error) throws {
+        do {
+            try requireLocallyWritable(url)
+            try writeAtomic(contents, to: url)
+        } catch FileStoreError.unavailableOffline {
+            throw FileStoreError.unavailableOffline(url)
+        } catch {
+            throw FileStoreError.writeFailed(url, underlying: coordinatorError)
+        }
+    }
+
+    private func writeAtomic(_ contents: String, to url: URL) throws {
+        try Data(contents.utf8).write(to: url, options: [.atomic])
     }
 
     /// Read + parse + title-derive — all nonisolated. The body touches only

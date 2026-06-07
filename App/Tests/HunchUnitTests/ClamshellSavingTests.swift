@@ -230,6 +230,84 @@ struct ClamshellSavingTests {
         try await clamshell.closePage(second)
     }
 
+    @Test func pagesFilterReturnsOnlyLocallyWritablePages() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        let writable = clamshell.url(for: "Writable.md")
+        let locked = clamshell.url(for: "Locked.md")
+        try "# Writable\n".write(to: writable, atomically: true, encoding: .utf8)
+        try "# Locked\n".write(to: locked, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o444)],
+            ofItemAtPath: locked.path
+        )
+
+        try clamshell.rescan()
+
+        let all = Set(clamshell.pages(matching: "").map(\.id))
+        #expect(all == ["Writable.md", "Locked.md"])
+
+        let writableOnly = clamshell.pages(
+            matching: "",
+            filter: .locallyAvailableForWrite
+        ).map(\.id)
+        #expect(writableOnly == ["Writable.md"])
+    }
+
+    @Test func appendBlocksWritesClosedDestinationPage() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        let targetURL = clamshell.url(for: "Target.md")
+        try "# Target\n".write(to: targetURL, atomically: true, encoding: .utf8)
+
+        let moved = Block.paragraph(text: attr("moved body"))
+        try await clamshell.appendBlocks([moved], toPage: "Target.md")
+
+        let mdText = try String(contentsOf: targetURL, encoding: .utf8)
+        #expect(mdText.contains("Target"))
+        #expect(mdText.contains("moved body"))
+        let intent = PatchEngine.intent(from: clamshell.log.readJournal(page: "Target.md"))
+        if case .alive = intent.byHash[moved.atomicHash] {} else {
+            Issue.record("moved block should be alive in destination journal")
+        }
+    }
+
+    @Test func appendBlocksMutatesLiveDestinationPage() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        let targetURL = clamshell.url(for: "Target.md")
+        try "# Target\n".write(to: targetURL, atomically: true, encoding: .utf8)
+        let open = try await clamshell.openPage(at: targetURL) { _ in }
+
+        let moved = Block.paragraph(text: attr("live moved body"))
+        try await clamshell.appendBlocks([moved], toPage: "Target.md")
+
+        #expect(open.document.children.contains { $0.id == moved.id })
+        let mdText = try String(contentsOf: targetURL, encoding: .utf8)
+        #expect(mdText.contains("live moved body"))
+
+        try await clamshell.closePage(open)
+    }
+
+    @Test func appendBlocksThrowsBeforeCreatingMissingDestination() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        let moved = Block.paragraph(text: attr("should not move"))
+
+        await #expect(throws: Clamshell.AppendBlocksError.self) {
+            try await clamshell.appendBlocks([moved], toPage: "Missing.md")
+        }
+        #expect(!FileManager.default.fileExists(atPath: clamshell.url(for: "Missing.md").path))
+    }
+
     @Test func cloudSyncTargetsUsePageAndThisDeviceLogLocations() async throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
