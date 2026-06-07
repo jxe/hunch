@@ -73,7 +73,7 @@ enum BlockTurnInto: CaseIterable {
         case .bullet: return "list.bullet"
         case .numbered: return "list.number"
         case .todo: return "checkmark.square"
-        case .toggle: return "chevron.right"
+        case .toggle: return "arrowtriangle.right.fill"
         case .template: return "plus.square.on.square"
         case .heading1: return "h.square"
         case .heading2: return "h.square"
@@ -191,10 +191,9 @@ extension EditorView {
                 existing.kind = replacement.kind
             }
         }
-        if target == .toggle {
-            state.expandedToggles.insert(blockID)
-        } else {
-            state.expandedToggles.remove(blockID)
+        state.expandedToggles.remove(blockID)
+        if target != .template {
+            state.expandedTemplates.remove(blockID)
         }
         return .handled
     }
@@ -257,12 +256,10 @@ extension EditorView {
                     document.replaceSubtree(blockID, with: [replacement] + loaded)
                 }
             }
-            if target == .toggle {
-                state.expandedToggles.insert(blockID)
-            } else if target == .template {
+            state.expandedToggles.remove(blockID)
+            if target == .template {
                 state.expandedTemplates.insert(blockID)
             } else {
-                state.expandedToggles.remove(blockID)
                 state.expandedTemplates.remove(blockID)
             }
             if !(await host.inlineAndTrashPage(path)) {

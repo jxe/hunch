@@ -466,12 +466,6 @@ extension EditorView {
         mutate("Move Block") {
             document.moveSubtrees(ids, to: target)
         }
-        // Auto-expand the parent so the user can see the result.
-        switch parent.kind {
-        case .toggle: state.expandedToggles.insert(parent.id)
-        case .templateButton: state.expandedTemplates.insert(parent.id)
-        default: break
-        }
         if let id = cursorTarget {
             setCursor(id)
         }
@@ -508,11 +502,6 @@ extension EditorView {
         guard !copies.isEmpty else { return }
         mutate(copies.count > 1 ? "Duplicate Blocks" : "Duplicate Block") {
             document.insertSubtrees(copies, at: target)
-        }
-        switch parent.kind {
-        case .toggle: state.expandedToggles.insert(parent.id)
-        case .templateButton: state.expandedTemplates.insert(parent.id)
-        default: break
         }
         selectAfterCopy(copies)
     }

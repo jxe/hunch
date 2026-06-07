@@ -417,7 +417,7 @@ struct BlockRow: View, Equatable {
 
     private func toggleRow() -> some View {
         HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-            Image(systemName: "chevron.right")
+            Image(systemName: "arrowtriangle.right.fill")
                 .font(.system(size: NotionStyle.chevronSize, weight: .medium))
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 .foregroundStyle(NotionStyle.foreground)
@@ -875,7 +875,7 @@ struct BlockRowPreview: View, Equatable {
 
         case .toggle:
             HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-                Image(systemName: "chevron.right")
+                Image(systemName: "arrowtriangle.right.fill")
                     .font(.system(size: NotionStyle.chevronSize, weight: .medium))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .foregroundStyle(NotionStyle.foreground)

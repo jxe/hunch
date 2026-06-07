@@ -248,8 +248,7 @@ public struct PinchPreviewState: Equatable, Sendable {
 /// Resolved drop target. `insertAt(DropPath)` is the between-rows form (parent
 /// id + position in that parent's children list). `asLastChildOf` is a
 /// distinct case because the UX is different — drop highlight lives on the
-/// parent row, the chevron auto-expands. `intoSubpage` is a cross-document
-/// move into a `.subpage`.
+/// parent row. `intoSubpage` is a cross-document move into a `.subpage`.
 public enum DropTarget: Equatable, Sendable {
     case insertAt(DropPath)
     case asLastChildOf(BlockID)

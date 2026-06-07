@@ -1388,10 +1388,9 @@ public struct EditorView: View {
     }
 
     /// Expand any closed toggle/templateButton ancestors so every id in `ids` is
-    /// visible. Called after nav-mode structural mutations (Tab, Option-arrows,
-    /// Cmd-/ Indent) that can land a selected block inside a collapsed container —
-    /// without this, the selection is preserved by id but invisible to the user.
-    /// Mirrors the auto-expand the drag-drop `asChildrenOf` paths already do.
+    /// visible. Called after explicit indent/outdent commands that can land a
+    /// selected block inside a collapsed container — without this, the selection
+    /// is preserved by id but invisible to the user.
     /// Iterates: each pass expands one closed ancestor per still-hidden id; nested
     /// containers converge in O(depth).
     func revealHiddenBlocks(_ ids: Set<BlockID>) {
@@ -1615,7 +1614,6 @@ public struct EditorView: View {
             _ = document.slideSiblings(Set(roots), by: delta)
         }
         Diag.navkey.debug("slideSiblings ids=\(ids.count, privacy: .public) roots=\(roots.count, privacy: .public) delta=\(delta, privacy: .public) moved=true")
-        revealHiddenBlocks(ids)
     }
 
     /// Delete every block in the current selection. No-op if the selection
@@ -2088,7 +2086,7 @@ public struct EditorView: View {
     /// `apply(to:)` returns the new block(s); we splice via `document.replace` and refocus
     /// on the block at `transform.focusReplacementIndex` (which is the fresh paragraph for
     /// divider/codeFence and the transformed block otherwise).
-    private func applyAutotransform(_ transform: BlockTransform, remainingText: AttributedString, blockID: BlockID) {
+    func applyAutotransform(_ transform: BlockTransform, remainingText: AttributedString, blockID: BlockID) {
         guard let source = document.find(blockID) else { return }
         let replacements = transform.apply(to: remainingText)
         guard !replacements.isEmpty else { return }
@@ -2103,13 +2101,6 @@ public struct EditorView: View {
         }
         mutate("Format Block") {
             document.replaceSubtree(blockID, with: firstReplacementWithChildren)
-        }
-        if transform == .toggle {
-            for replacement in firstReplacementWithChildren {
-                if case .toggle = replacement.kind {
-                    state.expandedToggles.insert(replacement.id)
-                }
-            }
         }
         let focusTarget = firstReplacementWithChildren[transform.focusReplacementIndex]
         DispatchQueue.main.async {
