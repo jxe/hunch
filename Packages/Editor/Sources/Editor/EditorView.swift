@@ -1713,24 +1713,14 @@ public struct EditorView: View {
         _ = indentBlocks(state.selection, by: delta)
     }
 
-    /// Bulk indent/outdent. All-or-nothing: every subtree-root must be legal
-    /// before the transaction starts. Indent runs top-down; outdent runs
-    /// bottom-up so siblings leaving the same parent keep their visible order.
+    /// Bulk indent/outdent. All-or-nothing: selected subtree-roots must form a
+    /// contiguous sibling slab that can move together to one destination.
     @discardableResult
     func indentBlocks(_ ids: some Sequence<BlockID>, by delta: Int) -> Bool {
         let selected = Set(ids)
-        let roots = document.selectionSubtreeRoots(selected)
-        guard !roots.isEmpty else { return false }
-        guard canChangeIndent(ids: roots, by: delta) else { return false }
+        guard let plan = indentPlan(ids: Array(selected), by: delta) else { return false }
         mutate(delta > 0 ? "Indent" : "Outdent") {
-            let ordered = delta < 0 ? Array(roots.reversed()) : roots
-            for id in ordered {
-                if delta > 0 {
-                    document.indent(id)
-                } else if delta < 0 {
-                    document.outdent(id)
-                }
-            }
+            document.moveSubtrees(plan.roots, to: plan.target)
         }
         revealHiddenBlocks(selected)
         return true
@@ -2258,16 +2248,53 @@ public struct EditorView: View {
         return .handled
     }
 
-    /// Multi-block indent/outdent validity. All-or-nothing: every subtree-root
-    /// in `ids` must be permitted, otherwise the op is rejected.
-    func canChangeIndent(ids: [BlockID], by delta: Int) -> Bool {
-        guard !ids.isEmpty else { return false }
+    private struct IndentPlan {
+        let roots: [BlockID]
+        let target: DropPath
+    }
+
+    /// Resolve Tab / Shift-Tab for a single selected subtree or a contiguous
+    /// sibling slab. Mixed-parent and non-contiguous selections are rejected
+    /// rather than partially moved.
+    private func indentPlan(ids: [BlockID], by delta: Int) -> IndentPlan? {
         let roots = document.selectionSubtreeRoots(Set(ids))
+        guard !roots.isEmpty, delta != 0 else { return nil }
+
+        let parentID = document.parent(of: roots[0])
+        guard roots.allSatisfy({ document.parent(of: $0) == parentID }) else { return nil }
+
+        let siblings: [Block] = parentID.flatMap(document.find)?.children ?? document.children
+        let positions = roots.compactMap { id in siblings.firstIndex { $0.id == id } }.sorted()
+        guard positions.count == roots.count,
+              let first = positions.first,
+              let last = positions.last,
+              positions == Array(first...last)
+        else { return nil }
+
+        let target: DropPath
         if delta > 0 {
-            return roots.allSatisfy { document.canIndent($0) }
-        } else if delta < 0 {
-            return roots.allSatisfy { document.canOutdent($0) }
+            guard first > 0 else { return nil }
+            let previousSibling = siblings[first - 1]
+            target = DropPath(parent: previousSibling.id, position: previousSibling.children.count)
+        } else {
+            guard let parentID,
+                  let parentBlock = document.find(parentID),
+                  !parentBlock.isHeading
+            else { return nil }
+
+            let grandparentID = document.parent(of: parentID)
+            let outerSiblings: [Block] = grandparentID.flatMap(document.find)?.children ?? document.children
+            guard let parentIndex = outerSiblings.firstIndex(where: { $0.id == parentID }) else { return nil }
+            target = DropPath(parent: grandparentID, position: parentIndex + 1)
         }
-        return false
+
+        guard document.canDrop(ids: roots, to: target) else { return nil }
+        return IndentPlan(roots: roots, target: target)
+    }
+
+    /// Multi-block indent/outdent validity. Mirrors `indentBlocks` exactly so
+    /// menu enablement and keyboard execution agree.
+    func canChangeIndent(ids: [BlockID], by delta: Int) -> Bool {
+        indentPlan(ids: ids, by: delta) != nil
     }
 }
