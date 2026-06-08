@@ -323,6 +323,21 @@ class RowSurfaceLayoutCache<ID: Hashable> {
         indexAtY(pageY).map { orderedIDs[$0] }
     }
 
+    /// Find the row whose leading gutter contains `point`.
+    ///
+    /// macOS page-level reorder gestures are mounted on the stable scroll
+    /// container, not on recyclable row views. This helper keeps that gesture
+    /// scoped to the visual drag-handle strip instead of letting any row-body
+    /// vertical drag become a reorder/autoscroll.
+    func blockIDAtHandlePoint(_ point: CGPoint, gutterWidth: CGFloat) -> ID? {
+        guard let id = blockIDAtY(point.y),
+              let frame = frame(of: id)
+        else { return nil }
+        let handleLeft = frame.minX - gutterWidth
+        guard point.x >= handleLeft, point.x < frame.minX else { return nil }
+        return id
+    }
+
     /// "Nearest" semantics: prefer the row whose y-extent contains the point,
     /// fall back to the row whose midY is closest. Mirrors the outgoing
     /// `nearestRowID(to:in:)` helper — same hit-test the macOS hover and

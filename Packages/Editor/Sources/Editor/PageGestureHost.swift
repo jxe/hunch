@@ -16,19 +16,21 @@ import SwiftUI
 ///
 /// `.simultaneousGesture` with minimumDistance: 4 means a click-without-drag
 /// goes through inner gestures (the text content's cursor positioner) while
-/// a click-and-drag past 4pt starts reorder. Same arbitration the old per-
-/// row `.macRowReorder` modifier provided.
+/// a click-and-drag from the leading gutter starts reorder. Same arbitration
+/// the old per-row `.macRowReorder` modifier provided, without letting row-body
+/// vertical drags become reorder/autoscroll.
 ///
 /// Hit-testing routes through `BlockLayoutCache`: `value.startLocation`
-/// (page coords) → `cache.nearestBlockID(toY:)` → that's the source block.
-/// Drag-tick → `cache.indexAtY(_:)` resolves the drop slot through the
-/// same offsets table, answering for off-screen rows too.
+/// (page coords) → `cache.blockIDAtHandlePoint(_:gutterWidth:)` → that's the
+/// source block. Drag-tick → `cache.indexAtY(_:)` resolves the drop slot
+/// through the same offsets table, answering for off-screen rows too.
 extension View {
     /// macOS-only page-level drag-reorder. iOS uses the existing
     /// `iosPageReorder` UIKit bridge.
     @ViewBuilder
     func macPageDragReorder<ID: Hashable>(
         layoutCache: RowSurfaceLayoutCache<ID>,
+        gutterWidth: CGFloat,
         isReorderEnabled: Bool,
         onBegan: @escaping (ID, _ location: CGPoint, _ anchor: CGPoint) -> Void,
         onChanged: @escaping (_ location: CGPoint, _ anchor: CGPoint) -> Void,
@@ -38,6 +40,7 @@ extension View {
         self.modifier(
             MacPageDragReorder(
                 layoutCache: layoutCache,
+                gutterWidth: gutterWidth,
                 isReorderEnabled: isReorderEnabled,
                 onBegan: onBegan,
                 onChanged: onChanged,
@@ -58,6 +61,7 @@ extension View {
 /// firing `onChanged` callbacks with that block id throughout.
 private struct MacPageDragReorder<ID: Hashable>: ViewModifier {
     let layoutCache: RowSurfaceLayoutCache<ID>
+    let gutterWidth: CGFloat
     let isReorderEnabled: Bool
     let onBegan: (ID, CGPoint, CGPoint) -> Void
     let onChanged: (CGPoint, CGPoint) -> Void
@@ -83,7 +87,10 @@ private struct MacPageDragReorder<ID: Hashable>: ViewModifier {
                         // First .onChanged after threshold crossed. Hit-test
                         // the original mouse-down point (startLocation) to
                         // identify the source block.
-                        guard let id = layoutCache.nearestBlockID(toY: value.startLocation.y) else {
+                        guard let id = layoutCache.blockIDAtHandlePoint(
+                            value.startLocation,
+                            gutterWidth: gutterWidth
+                        ) else {
                             return
                         }
                         activeBlockID = id

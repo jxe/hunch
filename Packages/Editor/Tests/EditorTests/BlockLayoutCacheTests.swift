@@ -44,6 +44,21 @@ struct RowSurfaceLayoutCacheTests {
         #expect(cache.frame(of: "row") == CGRect(x: 24, y: 100, width: 320, height: 50))
     }
 
+    @Test func handleHitTestingIsScopedToLeadingGutter() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["row"])
+        cache.setHeight(50, for: "row")
+        cache.contentOriginX = 24
+        cache.contentOriginY = 100
+        cache.contentWidth = 320
+
+        #expect(cache.blockIDAtHandlePoint(CGPoint(x: -4, y: 120), gutterWidth: 28) == "row")
+        #expect(cache.blockIDAtHandlePoint(CGPoint(x: 23.9, y: 120), gutterWidth: 28) == "row")
+        #expect(cache.blockIDAtHandlePoint(CGPoint(x: 24, y: 120), gutterWidth: 28) == nil)
+        #expect(cache.blockIDAtHandlePoint(CGPoint(x: -4, y: 99), gutterWidth: 28) == nil)
+        #expect(cache.blockIDAtHandlePoint(CGPoint(x: -5, y: 120), gutterWidth: 28) == nil)
+    }
+
     @Test func unmeasuredRowsDoNotProduceFrames() {
         let cache = RowSurfaceLayoutCache<String>()
         cache.updateOrder(["measured", "unmeasured"])

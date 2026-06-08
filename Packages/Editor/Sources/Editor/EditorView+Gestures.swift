@@ -2,6 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 // Gesture / interaction plumbing for EditorView: cross-platform View
@@ -130,6 +132,7 @@ extension View {
     func macScrollMetrics(_ metrics: PageScrollMetrics) -> some View {
         #if os(macOS)
         self
+            .background(MacScrollControllerReader())
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, new in
                 metrics.contentOffsetY = new
             }
@@ -184,6 +187,73 @@ extension View {
         #endif
     }
 }
+
+#if os(macOS)
+@MainActor
+final class MacPageScrollController {
+    static let shared = MacPageScrollController()
+
+    weak var scrollView: NSScrollView?
+
+    @discardableResult
+    func scroll(toY y: CGFloat) -> Bool {
+        guard let scrollView else { return false }
+        let clipView = scrollView.contentView
+        let documentHeight = scrollView.documentView?.bounds.height ?? 0
+        let maxOffset = max(0, documentHeight - clipView.bounds.height)
+        let clampedY = min(maxOffset, max(0, y))
+        clipView.scroll(to: NSPoint(x: clipView.bounds.origin.x, y: clampedY))
+        scrollView.reflectScrolledClipView(clipView)
+        return true
+    }
+}
+
+private struct MacScrollControllerReader: NSViewRepresentable {
+    func makeNSView(context: Context) -> ReaderView {
+        ReaderView()
+    }
+
+    func updateNSView(_ nsView: ReaderView, context: Context) {
+        nsView.installIfNeeded()
+    }
+
+    @MainActor
+    final class ReaderView: NSView {
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            installDeferred()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            installDeferred()
+        }
+
+        func installIfNeeded() {
+            guard let scrollView = nearestScrollView() else { return }
+            MacPageScrollController.shared.scrollView = scrollView
+        }
+
+        private func installDeferred() {
+            installIfNeeded()
+            DispatchQueue.main.async { [weak self] in
+                self?.installIfNeeded()
+            }
+        }
+
+        private func nearestScrollView() -> NSScrollView? {
+            var current = superview
+            while let view = current {
+                if let scrollView = view as? NSScrollView {
+                    return scrollView
+                }
+                current = view.superview
+            }
+            return nil
+        }
+    }
+}
+#endif
 
 // MARK: - Shared platform-neutral helpers
 

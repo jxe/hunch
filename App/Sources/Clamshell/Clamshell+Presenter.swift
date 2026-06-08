@@ -1,6 +1,55 @@
 import Foundation
 import Editor
 
+@MainActor
+private final class PresenterWakeupDebouncer {
+    private let delay: Duration
+    private let action: @MainActor () async -> Void
+    private var task: Task<Void, Never>?
+    private var isRunning = false
+    private var rerunAfterCurrent = false
+
+    init(
+        delay: Duration = .milliseconds(250),
+        action: @escaping @MainActor () async -> Void
+    ) {
+        self.delay = delay
+        self.action = action
+    }
+
+    func schedule() {
+        if isRunning {
+            rerunAfterCurrent = true
+            return
+        }
+        task?.cancel()
+        task = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: self?.delay ?? .milliseconds(250))
+            } catch {
+                return
+            }
+            await self?.drain()
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        rerunAfterCurrent = false
+    }
+
+    private func drain() async {
+        task = nil
+        isRunning = true
+        repeat {
+            rerunAfterCurrent = false
+            await action()
+        } while rerunAfterCurrent
+        isRunning = false
+    }
+}
+
 /// File-presenter watch over a Document's URL. Owns the NSFilePresenter
 /// lifecycle, the wakeup debounce, conflict-version merging, disk-content
 /// classification (echo / stomp / external), and reconcile-against-log.
@@ -50,9 +99,15 @@ extension Clamshell {
     final class PresenterHandle {
         fileprivate let document: DocumentFilePresenter
         fileprivate let history: DocumentHistoryPresenter
-        fileprivate init(document: DocumentFilePresenter, history: DocumentHistoryPresenter) {
+        fileprivate let debouncer: PresenterWakeupDebouncer
+        fileprivate init(
+            document: DocumentFilePresenter,
+            history: DocumentHistoryPresenter,
+            debouncer: PresenterWakeupDebouncer
+        ) {
             self.document = document
             self.history = history
+            self.debouncer = debouncer
         }
     }
 
@@ -65,11 +120,14 @@ extension Clamshell {
         for doc: Document,
         onEvent: @escaping @MainActor (PresenterEvent) -> Void
     ) -> PresenterHandle {
-        let fire: @Sendable () -> Void = { [weak self, weak doc] in
+        let debouncer = PresenterWakeupDebouncer { [weak self, weak doc] in
+            guard let self, let doc else { return }
+            let event = await self.handlePresenterWakeup(for: doc)
+            onEvent(event)
+        }
+        let fire: @Sendable () -> Void = { [weak debouncer] in
             Task { @MainActor in
-                guard let self, let doc else { return }
-                let event = await self.handlePresenterWakeup(for: doc)
-                onEvent(event)
+                debouncer?.schedule()
             }
         }
         let documentPresenter = DocumentFilePresenter(url: doc.url, onChange: fire)
@@ -82,11 +140,16 @@ extension Clamshell {
         let historyPresenter = DocumentHistoryPresenter(directory: historyDir, onChange: fire)
         NSFileCoordinator.addFilePresenter(historyPresenter)
 
-        return PresenterHandle(document: documentPresenter, history: historyPresenter)
+        return PresenterHandle(
+            document: documentPresenter,
+            history: historyPresenter,
+            debouncer: debouncer
+        )
     }
 
     /// Tear down previously-installed presenters. Idempotent.
     private func removePresenter(_ handle: PresenterHandle) {
+        handle.debouncer.cancel()
         NSFileCoordinator.removeFilePresenter(handle.document)
         NSFileCoordinator.removeFilePresenter(handle.history)
     }
@@ -224,8 +287,6 @@ extension Clamshell {
     /// moved. Priority for the returned event: conflictMerged > restored
     /// > externallyReloaded > noteworthyNothing.
     private func handlePresenterWakeup(for doc: Document) async -> PresenterEvent {
-        try? await Task.sleep(for: .milliseconds(250))
-        guard !Task.isCancelled else { return .noteworthyNothing }
         let url = doc.url
 
         // Drain any pending save so doc.children, the journal, and .md

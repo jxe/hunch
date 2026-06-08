@@ -46,9 +46,9 @@ Only UIKit-level `require(toFail:)` lets pan and long-press coexist correctly.
 
 ## macOS
 
-**Gesture** — `DragGesture(minimumDistance: 4, coordinateSpace: .named(PageHoverCoordinateSpace.name))` attached as a `simultaneousGesture` on both the gutter `DragHandle` and the row body. The 4pt threshold is what lets the row-body drag coexist with click-to-edit: a click without movement enters edit mode via `.onTapGesture`; movement past 4pt starts a drag instead. The gesture is gated off while `isEditing` is true so the editor's own selection drag isn't shadowed.
+**Gesture** — `DragGesture(minimumDistance: 4, coordinateSpace: .named(PageHoverCoordinateSpace.name))` attached as a page-level `simultaneousGesture` by [PageGestureHost.swift](../Packages/Editor/Sources/Editor/PageGestureHost.swift). The 4pt threshold lets click-without-drag flow through to text cursor positioning, while movement that started in the leading gutter begins reorder. The gesture is gated off while `isEditing` is true so the editor's own selection drag isn't shadowed.
 
-The handle is normally only hit-testable while the row is hovered. **During an active drag the handle's hit-testing is forced on for the source row**, even though `hoveredBlock` shifts to whichever row the cursor is currently over. Without this, SwiftUI silently cancels the in-flight gesture (no `.onEnded` fires) the moment `allowsHitTesting(false)` flips on the still-tracking view, leaving the lift stuck on screen with no recovery. See `isMacDraggingFromRow(_:)` in [EditorView+Reorder.swift](../Packages/Editor/Sources/Editor/EditorView+Reorder.swift).
+The handle itself is visual-only on macOS; the page-level gesture hit-tests `value.startLocation` against `BlockLayoutCache.blockIDAtHandlePoint(_:gutterWidth:)`. That keeps the gesture mounted on the stable scroll container (so LazyVStack recycling cannot cancel it mid-drag) without letting row-body vertical drags become reorder/autoscroll.
 
 **Source frame freeze + anchor** — same pattern as iOS: `tickReorderLift` captures `sourceFrame`, `sourceIndex`, `sourceEndIndex`, and `touchOffset` once on the first event, then only updates `location`. `touchOffset` uses `value.startLocation` here (no long-press, so it's where the click landed). Because the click typically lands in the gutter (left of `sourceFrame.minX`), `touchOffset.width` is negative — the cursor floats just left of the lift's leading edge throughout the drag, exactly as it sat against the gutter at click time.
 
@@ -88,4 +88,4 @@ Worth doing when next touching this code:
 - Don't reintroduce `.dropDestination` / `isTargeted` callbacks for the slot indicator. The page-level resolver against frozen frames is the fix; per-slot drop targets cause the buzzing pattern.
 - Don't apply animations to the drop end. Wrapping `dropHoverIndex = nil`, `lift = nil`, and `moveBlocks(...)` in `Transaction(animation: nil, disablesAnimations: true)` is what keeps the post-drop reflow from springing.
 - Don't recompute `touchOffset` against live `rowFrames[id]` — the source row's frame shifts during the drag (drift gap, document edits) and the lift will drift away from the cursor.
-- Don't gate the source row's drag-source view on hover state alone during an in-flight drag (macOS) — the in-flight check has to keep the gesture-bearing view hit-testable.
+- Don't scope macOS reorder to row views inside the `LazyVStack`; keep the gesture on the page container and use layout-cache hit-testing to decide whether the drag began in the handle gutter.

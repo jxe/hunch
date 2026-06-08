@@ -24,6 +24,17 @@ struct RowSurfaceLift<ID: Hashable>: Equatable {
     let location: CGPoint
 }
 
+private struct RowSurfaceOrder<ID: Hashable>: Equatable {
+    let ids: [ID]
+    let topGaps: [ID: CGFloat]
+
+    init(rows: [RowSurfaceRow<ID>]) {
+        self.ids = rows.map(\.id)
+        self.topGaps = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.reorderGap) })
+            .compactMapValues { $0 > 0 ? $0 : nil }
+    }
+}
+
 /// One stable action boundary for `RowSurface`. Rows store no callbacks; the
 /// surface maps gestures/hit-tests to IDs and coordinates, then calls these
 /// top-level closures.
@@ -75,6 +86,7 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
     @State private var reorderAutoScrollTask: Task<Void, Never>?
     @State private var reorderAutoScrollVelocity: CGFloat = 0
     @State private var activeReorderLocation: CGPoint?
+    @State private var hoveredRowID: ID?
 
     init(
         rows: [RowSurfaceRow<ID>],
@@ -115,8 +127,7 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
     }
 
     var body: some View {
-        let rowReorderGaps = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.reorderGap) })
-        let _ = layoutCache.updateOrder(rows.map(\.id), topGaps: rowReorderGaps)
+        let rowOrder = RowSurfaceOrder(rows: rows)
 
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
@@ -199,6 +210,7 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
         #if os(macOS)
         .macPageDragReorder(
             layoutCache: layoutCache,
+            gutterWidth: gutterWidth,
             isReorderEnabled: isMacReorderEnabled,
             onBegan: { id, location, anchor in
                 activeReorderLocation = location
@@ -219,9 +231,9 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
         .onContinuousHover { phase in
             switch phase {
             case .active(let location):
-                actions.onHover(layoutCache.blockIDAtY(location.y))
+                updateHover(layoutCache.blockIDAtY(location.y))
             case .ended:
-                actions.onHover(nil)
+                updateHover(nil)
             }
         }
         #endif
@@ -232,8 +244,15 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
             liftOverlay
         }
         .onDisappear {
+            updateHover(nil)
             stopPinchAutoScroll()
             stopReorderAutoScroll()
+        }
+        .onAppear {
+            applyRowOrder(rowOrder)
+        }
+        .onChange(of: rowOrder) { _, newValue in
+            applyRowOrder(newValue)
         }
     }
 
@@ -277,6 +296,16 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
             }
         }
         actions.onTapBelowRows(point)
+    }
+
+    private func applyRowOrder(_ order: RowSurfaceOrder<ID>) {
+        layoutCache.updateOrder(order.ids, topGaps: order.topGaps)
+    }
+
+    private func updateHover(_ id: ID?) {
+        guard hoveredRowID != id else { return }
+        hoveredRowID = id
+        actions.onHover(id)
     }
 
     private func updatePinchAutoScroll(for location: CGPoint) {
@@ -369,6 +398,10 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
         guard abs(nextOffset - scrollMetrics.contentOffsetY) > 0.5 else { return }
         #if os(iOS)
         PageScrollController.shared.scroll(toY: nextOffset)
+        #elseif os(macOS)
+        if !MacPageScrollController.shared.scroll(toY: nextOffset) {
+            scrollPosition.scrollTo(point: CGPoint(x: 0, y: nextOffset))
+        }
         #else
         scrollPosition.scrollTo(point: CGPoint(x: 0, y: nextOffset))
         #endif
