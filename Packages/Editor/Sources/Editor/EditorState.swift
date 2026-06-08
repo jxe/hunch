@@ -325,19 +325,19 @@ extension EditorState {
     /// Collapse selection to a single block in nav mode. The next Shift-extend
     /// will pivot off this block. Clears any in-flight gesture.
     func setCursor(_ id: BlockID) {
-        sessionState = .navigating(Selection(blocks: [id], anchor: id, cursor: id), gesture: nil)
+        setSessionStateIfChanged(.navigating(Selection(blocks: [id], anchor: id, cursor: id), gesture: nil))
     }
 
     /// Drop to nav mode with no cursor / empty selection. Clears any in-flight gesture.
     func clearCursor() {
-        sessionState = .navigating(Selection(), gesture: nil)
+        setSessionStateIfChanged(.navigating(Selection(), gesture: nil))
     }
 
     /// Set a multi-block nav-mode selection. The caller is responsible for
     /// ensuring `blocks` is contiguous in document order and `cursor ∈ blocks`.
     /// Clears any in-flight gesture.
     func setNavSelection(blocks: Set<BlockID>, anchor: BlockID, cursor: BlockID) {
-        sessionState = .navigating(Selection(blocks: blocks, anchor: anchor, cursor: cursor), gesture: nil)
+        setSessionStateIfChanged(.navigating(Selection(blocks: blocks, anchor: anchor, cursor: cursor), gesture: nil))
     }
 
     /// Select the row a reorder gesture started from before the lift is built.
@@ -348,12 +348,12 @@ extension EditorState {
         guard case .navigating(let sel, _) = sessionState else { return }
         if sel.blocks.count > 1, sel.blocks.contains(id) {
             let anchor = sel.anchor.flatMap { sel.blocks.contains($0) ? $0 : nil } ?? id
-            sessionState = .navigating(
+            setSessionStateIfChanged(.navigating(
                 Selection(blocks: sel.blocks, anchor: anchor, cursor: id),
                 gesture: nil
-            )
+            ))
         } else {
-            sessionState = .navigating(Selection(blocks: [id], anchor: id, cursor: id), gesture: nil)
+            setSessionStateIfChanged(.navigating(Selection(blocks: [id], anchor: id, cursor: id), gesture: nil))
         }
     }
 
@@ -368,13 +368,13 @@ extension EditorState {
     /// to end. The pending-cursor channel is rewritten on every call so a target
     /// from a previous edit session can't leak into the next mount.
     func enterEditMode(on id: BlockID, initialCursor: InitialCursorTarget? = nil) {
-        sessionState = .editing(id, overlay: nil)
+        setSessionStateIfChanged(.editing(id, overlay: nil))
         pendingInitialCursor = initialCursor
     }
 
     /// Drop edit mode AND any selection — page is unfocused entirely.
     func exitEditModeWithoutCursor() {
-        sessionState = .navigating(Selection(), gesture: nil)
+        setSessionStateIfChanged(.navigating(Selection(), gesture: nil))
         pendingInitialCursor = nil
     }
 
@@ -405,19 +405,19 @@ extension EditorState {
     /// No-op if not in edit mode, or if the menu's blockID doesn't match.
     func setMentionMenu(_ menu: MentionMenuState) {
         guard case .editing(let id, _) = sessionState, id == menu.blockID else { return }
-        sessionState = .editing(id, overlay: .mention(menu))
+        setSessionStateIfChanged(.editing(id, overlay: .mention(menu)))
     }
 
     /// Close the mention popover without exiting edit mode.
     func closeMentionMenu() {
         guard case .editing(let id, .mention) = sessionState else { return }
-        sessionState = .editing(id, overlay: nil)
+        setSessionStateIfChanged(.editing(id, overlay: nil))
     }
 
     /// Close the mention popover only if it's attached to a specific block.
     func closeMentionMenu(forBlockID blockID: BlockID) {
         if case .editing(let id, .mention(let m)) = sessionState, m.blockID == blockID {
-            sessionState = .editing(id, overlay: nil)
+            setSessionStateIfChanged(.editing(id, overlay: nil))
         }
     }
 }
@@ -430,9 +430,9 @@ extension EditorState {
     func setReorderLift(_ lift: ReorderLift?) {
         guard case .navigating(let sel, let currentGesture) = sessionState else { return }
         if let lift {
-            sessionState = .navigating(sel, gesture: .reordering(lift))
+            setSessionStateIfChanged(.navigating(sel, gesture: .reordering(lift)))
         } else if case .reordering = currentGesture {
-            sessionState = .navigating(sel, gesture: nil)
+            setSessionStateIfChanged(.navigating(sel, gesture: nil))
         }
     }
 
@@ -442,9 +442,9 @@ extension EditorState {
     func setPinchPreview(_ preview: PinchPreviewState?) {
         guard case .navigating(let sel, let currentGesture) = sessionState else { return }
         if let preview {
-            sessionState = .navigating(sel, gesture: .pinchOpening(preview))
+            setSessionStateIfChanged(.navigating(sel, gesture: .pinchOpening(preview)))
         } else if case .pinchOpening = currentGesture {
-            sessionState = .navigating(sel, gesture: nil)
+            setSessionStateIfChanged(.navigating(sel, gesture: nil))
         }
     }
 }
@@ -478,6 +478,15 @@ extension EditorState {
         // even when the value is identical, and `revalidate` fires after every
         // `Document.transaction`. An unguarded write here primes a body-eval
         // for every mutation including ones that didn't change the selection.
+        setSessionStateIfChanged(next)
+    }
+
+    /// `@Observable` emits invalidation on every setter call, even when the
+    /// assigned value is identical. Centralize the equality guard so state
+    /// transitions that converge through multiple paths in one event (for
+    /// example delete -> transaction revalidation -> explicit cursor repair)
+    /// don't dirty SwiftUI's graph twice for the same logical state.
+    private func setSessionStateIfChanged(_ next: SessionState) {
         if sessionState != next { sessionState = next }
     }
 }
