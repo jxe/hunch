@@ -59,28 +59,21 @@ private final class PresenterWakeupDebouncer {
 /// workspace rescan, title cache refresh).
 @MainActor
 extension Clamshell {
-    /// What happened to the page during a presenter wakeup. Always
-    /// preceded by Clamshell doing the filesystem-level work in place
-    /// (conflict merge, content reload, journal reconcile). The host
-    /// reacts only with UI/workspace bookkeeping.
+    /// A noteworthy outcome of a presenter wakeup (or the deferred
+    /// open-page reconcile). Always preceded by Clamshell doing the
+    /// filesystem-level work in place — conflict merge, content reload,
+    /// journal reconcile; the host reacts only with UI bookkeeping
+    /// (banners). Non-noteworthy wakeups (echo, stomp re-save, external
+    /// reload, nothing at all) don't emit an event: Clamshell handles
+    /// them internally and `@Observable` re-renders cover the UI.
     enum PresenterEvent: Sendable {
-        /// Presenter woke up but no page-content change was significant.
-        /// Sibling files may have changed — host typically rescans the
-        /// workspace.
-        case noteworthyNothing
-
-        /// External writer rewrote this page; Clamshell swapped the doc's
-        /// children + modificationDate in place. Host refreshes title
-        /// cache for the doc and rescans the workspace.
-        case externallyReloaded
-
-        /// iCloud conflict alternates merged into the live doc in place.
-        /// `salvaged` blocks were pulled from alternates; host shows a
-        /// banner when count > 0.
+        /// iCloud conflict alternates merged into the live doc in place,
+        /// salvaging `salvaged` blocks (> 0 by construction —
+        /// `resolveConflictVersions` reports `.none` otherwise).
         case conflictMerged(salvaged: Int)
 
         /// Auto-restore from the recovery-log journal landed `count`
-        /// blocks in the live doc. Host shows a banner.
+        /// blocks in the live doc.
         case restored(count: Int)
     }
 
@@ -122,8 +115,9 @@ extension Clamshell {
     ) -> PresenterHandle {
         let debouncer = PresenterWakeupDebouncer { [weak self, weak doc] in
             guard let self, let doc else { return }
-            let event = await self.handlePresenterWakeup(for: doc)
-            onEvent(event)
+            if let event = await self.handlePresenterWakeup(for: doc) {
+                onEvent(event)
+            }
         }
         let fire: @Sendable () -> Void = { [weak debouncer] in
             Task { @MainActor in
@@ -180,10 +174,12 @@ extension Clamshell {
     /// banner — same UX as iCloud delivering a foreign device's writes
     /// mid-session.
     ///
-    /// `onEvent` fires after every presenter wakeup AND once after the
-    /// deferred-reconcile background Task completes (only if it
-    /// restored anything). Filesystem-level work is already done by the
-    /// time the callback runs.
+    /// `onEvent` fires only for noteworthy outcomes — a conflict merge or
+    /// a journal restore that mutated the live doc — whether from a
+    /// presenter wakeup or the deferred-reconcile background Task.
+    /// Filesystem-level work is already done by the time the callback
+    /// runs; non-noteworthy wakeups are handled internally and emit
+    /// nothing.
     @MainActor
     func openPage(
         at url: URL,
@@ -200,12 +196,7 @@ extension Clamshell {
         // Fast path: read + parse off MainActor. Skip the journal fold —
         // it's deferred below.
         let readT = perfStart()
-        let files = self.files
-        let (raw, parsed): (String, ClamshellPageEnvelope.Parsed) = try await Task.detached(priority: .userInitiated) { [files, url] in
-            let raw = try files.read(url)
-            let parsed = ClamshellPageEnvelope.parse(raw)
-            return (raw, parsed)
-        }.value
+        let (raw, parsed) = try await readEnvelope(at: url)
         perfEnd(readT, "openPage.read+parse", "url=\(url.lastPathComponent) bytes=\(raw.utf8.count) blocks=\(parsed.blocks.count)")
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         recordDiskContent(raw, at: url)
@@ -270,6 +261,20 @@ extension Clamshell {
         livePages[url.standardizedFileURL]?.document
     }
 
+    /// Terminal teardown: await every pending save, then tear down any
+    /// remaining live pages (presenters removed, registry cleared). The
+    /// owner must hold a strong reference to this Clamshell until drain
+    /// returns — the save-chain work captures `self` weakly, so disposing
+    /// before drain can silently drop pending commits. See
+    /// `Workspace.switchWorkspace()` for the canonical call site.
+    func drain() async {
+        await drainSaveChain()
+        for live in livePages.values {
+            removePresenter(live.presenter)
+        }
+        livePages.removeAll()
+    }
+
     private func broadcastPresenterEvent(_ event: PresenterEvent, for url: URL) {
         guard let live = livePages[url.standardizedFileURL] else { return }
         let subscribers = Array(live.subscribers.values)
@@ -280,27 +285,25 @@ extension Clamshell {
 
     /// Internal wakeup handler. Runs the three filesystem-level phases —
     /// conflict-version merge, disk-content classification, reconcile
-    /// against journal — and returns one event for the host. iCloud
+    /// against journal — and returns one event for the host, or nil when
+    /// nothing noteworthy happened. iCloud
     /// often delivers the `.md` and a sibling `.history/<rel>/<other-
     /// device>.jsonl` in the same burst; running reconcile on every
     /// wakeup catches the second case even when the `.md` hash hasn't
-    /// moved. Priority for the returned event: conflictMerged > restored
-    /// > externallyReloaded > noteworthyNothing.
-    private func handlePresenterWakeup(for doc: Document) async -> PresenterEvent {
+    /// moved. Priority for the returned event: conflictMerged > restored.
+    private func handlePresenterWakeup(for doc: Document) async -> PresenterEvent? {
         let url = doc.url
 
         // Drain any pending save so doc.children, the journal, and .md
         // are coherent before we classify or reconcile. Cheap when
-        // nothing is in flight (awaits a completed Task and clears the
-        // saveChain entry); essential when Mac is actively editing as
-        // iOS's bytes land. Without this, a completed-save corpse in
-        // saveChain leaves isQuiescent false for the rest of the session
-        // and every subsequent wakeup self-vetoes.
+        // nothing is in flight (chain entries self-clean on completion,
+        // so this is a no-op on a settled page); essential when Mac is
+        // actively editing as iOS's bytes land.
         do {
             try await flush(doc)
         } catch {
             Diag.log.error("presenter flush failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            return .noteworthyNothing
+            return nil
         }
 
         // 1. iCloud conflict alternates. When merged into the live doc,
@@ -318,8 +321,9 @@ extension Clamshell {
 
         // 2. echo / stomp / external. Skipped when conflict merge
         //    already rewrote the doc — that path supersedes any
-        //    classification of the prior disk state.
-        var externallyReloaded = false
+        //    classification of the prior disk state. External reloads
+        //    swap the doc's children in place; no event — @Observable
+        //    re-renders carry the new content to the UI.
         if conflictSalvaged == nil {
             switch classifyDiskContent(at: url, expectingModificationDate: doc.modificationDate) {
             case .unchanged, .unreadable:
@@ -344,7 +348,6 @@ extension Clamshell {
                     let reloaded = try await loadDocument(at: url)
                     doc.replaceChildrenFromExternalReload(reloaded.children)
                     doc.modificationDate = reloaded.modificationDate
-                    externallyReloaded = true
                 } catch {
                     Diag.merge.error("presenter reload failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 }
@@ -370,10 +373,7 @@ extension Clamshell {
         if restoredCount > 0 {
             return .restored(count: restoredCount)
         }
-        if externallyReloaded {
-            return .externallyReloaded
-        }
-        return .noteworthyNothing
+        return nil
     }
 }
 

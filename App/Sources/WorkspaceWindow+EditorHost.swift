@@ -11,26 +11,23 @@ import Editor
 extension WorkspaceWindow: EditorHost {
     // — Workspace-scoped forwarders —
 
-    func suggestPages(_ query: String) -> [MentionItem] {
-        workspace.clamshell?.pages(matching: query, excluding: openDocument?.url) ?? []
+    func suggestPages(_ query: String, in document: Document) -> [MentionItem] {
+        guard let clamshell = workspace.clamshell else { return [] }
+        let home = clamshell.homeRelativePath
+        return clamshell.pages(matching: query, excluding: document.url)
+            .map { $0.asMentionItem(homeRelativePath: home) }
     }
 
     func lookupPage(_ pageID: String) -> PageLookup {
         workspace.clamshell?.lookupPage(pageID) ?? .missing
     }
 
-    func resolvePageID(from url: URL) -> String? {
-        workspace.clamshell?.pageID(for: url, relativeTo: openDocument?.url)
+    func resolvePageID(from url: URL, in document: Document) -> String? {
+        workspace.clamshell?.pageID(for: url, relativeTo: document.url)
     }
 
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
-        guard let clamshell = workspace.clamshell else { return nil }
-        do {
-            return try clamshell.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
-        } catch {
-            workspace.error = "Failed to create page: \(error.localizedDescription)"
-            return nil
-        }
+    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? {
+        workspace.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
     }
 
     func loadPageBlocks(_ pageID: String) async -> [Block]? {
@@ -46,31 +43,29 @@ extension WorkspaceWindow: EditorHost {
 
     func persistCommit(ops: [EditorOp], in document: Document) {
         guard let clamshell = workspace.clamshell else { return }
-        let commit = Commit.fromEditorOps(ops)
         // Editor's `didCommitTransaction` is sync (typing path can't
-        // await). Spawn a Task that awaits durability; the host's
-        // subsequent `flush(_:)` calls (blur, nav, scenePhase) await
-        // the chain head and so will await this task too.
+        // await). The enqueue is synchronous too, so the save chain
+        // reflects this commit before we return — `flush(_:)` callers
+        // (blur, nav, scenePhase) can never observe false quiescence.
+        // The Task only awaits durability for the failure banner.
+        let task = clamshell.enqueueCommit(.fromEditorOps(ops), to: document)
         Task { @MainActor in
+            defer { if openDocument === document { refreshCloudSyncSnapshot() } }
             do {
-                try await clamshell.commit(commit, to: document)
-                if openDocument === document { refreshCloudSyncSnapshot() }
+                try await task.value
             } catch {
                 showSaveFailure(for: document, error: error)
-                if openDocument === document { refreshCloudSyncSnapshot() }
             }
         }
     }
 
-    func flush(_ document: Document) async throws {
+    func flush(_ document: Document) async {
         guard let clamshell = workspace.clamshell else { return }
+        defer { if openDocument === document { refreshCloudSyncSnapshot() } }
         do {
             try await clamshell.flush(document)
-            if openDocument === document { refreshCloudSyncSnapshot() }
         } catch {
             showSaveFailure(for: document, error: error)
-            if openDocument === document { refreshCloudSyncSnapshot() }
-            throw error
         }
     }
 
@@ -120,8 +115,8 @@ extension WorkspaceWindow: EditorHost {
         openSubpage(relativePath: pageID)
     }
 
-    func inlineAndTrashPage(_ pageID: String) async -> Bool {
-        guard let clamshell = workspace.clamshell, let parent = openDocument else { return false }
+    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {
+        guard let clamshell = workspace.clamshell else { return false }
         do {
             try await clamshell.inlineAndTrash(pageID: pageID, parent: parent)
             return true

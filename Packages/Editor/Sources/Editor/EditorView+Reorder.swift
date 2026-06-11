@@ -55,7 +55,7 @@ extension EditorView {
             BlockRowPreview(
                 block: lift.block,
                 depth: 0,
-                pageLookups: resolvePageLookups(for: lift.block, host: host)
+                pageLookups: resolvePageLookups(for: lift.block, host: host, in: document)
             )
             .frame(width: size.width, height: size.height, alignment: .leading)
             .overlay(alignment: .topLeading) {

@@ -614,14 +614,14 @@ struct BlockRowActions {
 /// matches against `run.link.absoluteString`); subpage entries are keyed by
 /// the block's stored pageID.
 @MainActor
-func resolvePageLookups(for block: Block, host: EditorHost) -> [String: PageLookup] {
+func resolvePageLookups(for block: Block, host: EditorHost, in document: Document) -> [String: PageLookup] {
     var result: [String: PageLookup] = [:]
     if case .subpage(_, let pageID) = block.kind {
         result[pageID] = host.lookupPage(pageID)
     }
     for run in block.text.runs {
         guard let url = run.link, !isExternalLinkURL(url) else { continue }
-        guard let pageID = host.resolvePageID(from: url) else { continue }
+        guard let pageID = host.resolvePageID(from: url, in: document) else { continue }
         let key = url.absoluteString
         if result[key] == nil {
             result[key] = host.lookupPage(pageID)

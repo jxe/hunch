@@ -69,7 +69,7 @@ Type these at the start of a paragraph; they fire on the trailing space:
 Enter triggers (on an empty-tail row): `---` → divider, ` ``` ` → code fence.
 
 **@-mention popover**
-Type `@` followed by a query. The host's `suggestPages(_:)` returns up
+Type `@` followed by a query. The host's `suggestPages(_:in:)` returns up
 to 8 `MentionItem`s. ↑/↓ navigates, Return inserts a subpage block,
 Esc dismisses.
 
@@ -78,7 +78,7 @@ Cmd-/ in nav mode (on a single block) opens a 3-column grid: H1/H2/H3,
 Bullet/Numbered/To-do, Text/Toggle/Page/Divider/Template. Each has a
 keyboard shortcut while the menu is open. On a subpage block, "Turn Into
 anything-but-page" inlines the child page's content (`loadPageBlocks(_:)`) and
-trashes the source file (`inlineAndTrashPage(_:)`).
+trashes the source file (`inlineAndTrashPage(_:parent:)`).
 
 **Pinch-to-insert** (trackpad / touchscreen)
 Spread fingers between two rows to open a gap. Past threshold, releases
@@ -99,14 +99,16 @@ needed. Cross-app drag falls through to the pasteboard codecs.
   child page on its navigation stack.
 - Inline `[text](url)` clicks in read-only rows go through the editor's
   `OpenURLAction` interceptor: the editor classifies the URL via
-  `host.resolvePageID(from:)` (its own host-owned classifier — same hook
+  `host.resolvePageID(from:in:)` (its own host-owned classifier — same hook
   used at render time for inline-link decoration). Internal hits dispatch
   to `host.openPage(pageID:)`; external URLs fall through to the system
   handler via `OpenURLAction.systemAction`.
-- Cmd-K on a paragraph that is a single internal-page link, or @-mention
-  commit, creates a subpage block via `createPage`. The editor consults
-  `host.resolvePageID` to decide whether the link's URL names an internal
-  page; it never inspects the URL itself.
+- Cmd-K / Turn Into → Page on a paragraph creates a subpage block via
+  `createPage` (async — the editor spawns a Task and splices the subpage
+  row after the host returns the new id). The editor consults
+  `host.resolvePageID` to decide whether an existing link's URL names an
+  internal page; it never inspects the URL itself. @-mention commit only
+  references pages that already exist — it never calls `createPage`.
 - Drop blocks onto a subpage row → editor calls `appendToPage` to move
   them into the child page.
 
@@ -139,18 +141,18 @@ import Editor
 
 @MainActor
 final class MyHost: EditorHost {
-    func suggestPages(_ query: String) -> [MentionItem] { [] }
+    func suggestPages(_ query: String, in document: Document) -> [MentionItem] { [] }
     func openPage(pageID: String) {}
     func lookupPage(_ pageID: String) -> PageLookup { .missing }
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? { nil }
+    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? { nil }
     func loadPageBlocks(_ pageID: String) async -> [Block]? { nil }
-    func resolvePageID(from url: URL) -> String? { nil }
-    func inlineAndTrashPage(_ pageID: String) async -> Bool { false }
+    func resolvePageID(from url: URL, in document: Document) -> String? { nil }
+    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool { false }
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
     func persistCommit(ops: [EditorOp], in document: Document) {}
-    func flush(_ document: Document) async throws {}
+    func flush(_ document: Document) async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
     func saveImages(_ items: [PastedImage]) -> [String] { [] }
@@ -246,7 +248,7 @@ public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
 - **`Block.subpage`'s `pageID: String`** is opaque to the editor —
   whatever identifier the host uses (relative path, UUID, database key).
   The editor echoes it back unchanged in `openPage(pageID:)`,
-  `loadPageBlocks(_:)`, `inlineAndTrashPage(_:)`, `appendToPage(_:_:)`.
+  `loadPageBlocks(_:)`, `inlineAndTrashPage(_:parent:)`, `appendToPage(_:_:)`.
 - **`Block.subpage`'s `title: String`** is a fallback hint. The editor
   prefers the title from `host.lookupPage(pageID)` when the host has it
   cached; falls back to this when the host returns `.present(title: nil)`.
@@ -403,13 +405,13 @@ stubbed out for early integration.
 
 | Method | Signature | When it fires | Return semantics |
 |--------|-----------|---------------|------------------|
-| `suggestPages` | `(_ query: String) -> [MentionItem]` | While the @-mention popover is visible, on every render. The query is whatever the user has typed after `@`. | Up to 8 items shown; host owns ranking/filtering. Empty array shows "No matching pages". |
+| `suggestPages` | `(_ query: String, in: Document) -> [MentionItem]` | While the @-mention popover is visible, on every render. The query is whatever the user has typed after `@`. | Up to 8 items shown; host owns ranking/filtering. Empty array shows "No matching pages". |
 | `lookupPage` | `(_ pageID: String) -> PageLookup` | Whenever a subpage row needs to know if its target exists and what to display (rendering a `.subpage` block, an inline page link, an @-mention popover row). | `.missing` renders broken-link style and disables tap-to-navigate; `.present(title: nil)` falls back to the cached `title` on the Block / MentionItem; `.present(title: "…")` shows the resolved title. |
-| `resolvePageID` | `(_ url: URL) -> String?` | Classifies an inline-link URL as an internal page reference. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide subpage-creation vs link-toggling), and at the `OpenURLAction` interceptor (to decide internal-nav vs `.systemAction`). One classifier governs all three sites. | Return the host's pageID for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
+| `resolvePageID` | `(_ url: URL, in: Document) -> String?` | Classifies an inline-link URL as an internal page reference. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide subpage-creation vs link-toggling), and at the `OpenURLAction` interceptor (to decide internal-nav vs `.systemAction`). One classifier governs all three sites. | Return the host's pageID for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
 | `openPage` | `(pageID: String) -> Void` | User taps a subpage row, or clicks an inline `[text](url)` link the editor already classified as internal via `resolvePageID`. | Host pushes the page on its navigation stack. External URLs never reach this method — the OpenURLAction site routes them to `.systemAction`. |
-| `createPage` | `(title: String, requestedPath: String?, initialContent: [Block]?) -> String?` | Cmd-K on a paragraph that's a single link, @-mention "create new" path, or Turn Into → Page. `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |
+| `createPage` | `(title: String, requestedPath: String?, initialContent: [Block]?) async -> String?` | Cmd-K on a paragraph that's a single link, or Turn Into → Page (the @-mention flow never creates pages). `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |
 | `loadPageBlocks` | `(_ pageID: String) async -> [Block]?` | First step of Turn Into a non-page block on a subpage row. Async so the host can read off MainActor. Paired with `inlineAndTrashPage(_:)`. | Host returns the child page's blocks. nil makes the action a no-op. |
-| `inlineAndTrashPage` | `(_ pageID: String) async -> Bool` | Second step of Turn Into a non-page block on a subpage row: after the editor inlined the loaded blocks into the parent, ask the host to flush+trash the source. Async so the parent's save lands before the source goes away. | true = file trashed; false = abort (editor surfaces an orphan warning). |
+| `inlineAndTrashPage` | `(_ pageID: String, parent: Document) async -> Bool` | Second step of Turn Into a non-page block on a subpage row: after the editor inlined the loaded blocks into the parent, ask the host to flush+trash the source. Async so the parent's save lands before the source goes away. | true = file trashed; false = abort (editor surfaces an orphan warning). |
 | `appendToPage` | `(_ pageID: String, _ blocks: [Block]) async -> Bool` | User drops blocks onto a subpage row. Async so the host can sequence log-then-file durability before returning. | true = host wrote them (proceed with local removal). false = no-op. |
 | `moveDestination` | `(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination?` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, returns the user's `MoveDestination` (`.page` or `.block`) or nil to cancel. | Async — editor `await`s the picker result at the call site. |
 | `navigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |

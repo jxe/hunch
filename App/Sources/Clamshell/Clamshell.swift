@@ -90,7 +90,9 @@ final class Clamshell {
     /// Latest `files.scan()` result. Titles here are filename-derived
     /// fallbacks; the live title overlay lives in `titleCache`.
     /// Use `entries` for the user-facing list — it merges these.
-    private var scanResult: [WorkspaceEntry] = []
+    private var scanResult: [WorkspaceEntry] = [] {
+        didSet { invalidateEntriesCache() }
+    }
 
     private struct CachedTitle {
         var title: String
@@ -103,7 +105,24 @@ final class Clamshell {
     /// `lookupPage` cache misses — never eagerly on rescan, because on
     /// iCloud each cold-cache read costs ~1s and 50× that would block the
     /// home page open for the better part of a minute.
-    private var titleCache: [URL: CachedTitle] = [:]
+    private var titleCache: [URL: CachedTitle] = [:] {
+        didSet { invalidateEntriesCache() }
+    }
+
+    /// Derived cache for `entries` / `entry(at:)` — the merged overlay
+    /// array used to be rebuilt on every access (and `entry(at:)` did a
+    /// linear scan per call; `buildSubpageTitleMap` calls it once per
+    /// subpage block on every save). `@ObservationIgnored` because these
+    /// are pure functions of `scanResult` + `titleCache`, which are the
+    /// tracked properties; every mutation flows through their setters, so
+    /// the `didSet`s above cover all invalidation points.
+    @ObservationIgnored private var entriesCache: [WorkspaceEntry]?
+    @ObservationIgnored private var entryIndex: [String: WorkspaceEntry]?
+
+    private func invalidateEntriesCache() {
+        entriesCache = nil
+        entryIndex = nil
+    }
 
     /// Dedupe set for in-flight title warm tasks. Without this, every
     /// SwiftUI re-render that calls `lookupPage` for a cold-cache URL
@@ -116,43 +135,15 @@ final class Clamshell {
     @ObservationIgnored private var pageFrontmatter: [URL: [String]?] = [:]
     @ObservationIgnored private var pageStampTrust: [URL: ClamshellPageEnvelope.StampTrust] = [:]
 
-    /// Per-URL save chain head. Each `commit(_:to:)` spawns a Task that
-    /// awaits the previous chain entry for that URL before running its own
-    /// log apply + .md write, so concurrent commits land in order. The
-    /// chain head is the *latest* enqueued task; `commit` awaits its own
-    /// task before returning, so callers get durability-on-return. The
-    /// `id` lets a finishing commit recognize whether it's still the head
-    /// (newer commit may have replaced it) and only clear its own slot.
-    /// Absent ⇒ no work pending (i.e. `isQuiescent(at:)`).
-    ///
-    /// Why a hand-rolled chain rather than `actor PageWriter`: actor
-    /// reentrancy lets a second `commit` start during the first's `await
-    /// log.apply` suspension, which could let its `files.write` interleave
-    /// with the first's — breaking the per-commit "log before file"
-    /// ordering at the filesystem level. The chain's explicit
-    /// `await previous?.value` forecloses that.
-    ///
-    /// `pendingLogEntries` is mutable so an arriving `commit` whose
-    /// predecessor hasn't started yet can fold its work in instead of
-    /// chaining another full save. The task body snapshots the field
-    /// after flipping `started` on MainActor — no other MainActor work
-    /// can interleave between those two statements, so the read is
-    /// race-free.
-    @MainActor
-    private final class ChainEntry {
-        let id: UUID
-        let doc: Document
-        var pendingLogEntries: [Patch.Entry]
-        var started: Bool = false
-        var task: Task<Void, Error>!
-
-        init(id: UUID, doc: Document, pendingLogEntries: [Patch.Entry]) {
-            self.id = id
-            self.doc = doc
-            self.pendingLogEntries = pendingLogEntries
-        }
-    }
-    @ObservationIgnored private var saveChain: [URL: ChainEntry] = [:]
+    /// Per-URL ordered save chain (see `SaveChain` for the coalescing +
+    /// ordering rules). Assigned at the end of `init` — the work body is
+    /// one chained task per commit: log entries strictly before the `.md`
+    /// write, so the "log durable before file durable" invariant is
+    /// structural. `[weak self]` because the chain belongs to this
+    /// Clamshell; liveness across pending work is guaranteed by `drain()`
+    /// — the owner holds the Clamshell strongly until drain returns, so
+    /// the weak no-op path is unreachable in practice.
+    @ObservationIgnored private var chain: SaveChain!
 
     @MainActor
     final class LivePage {
@@ -215,6 +206,17 @@ final class Clamshell {
         perfEnd(probeT, "Clamshell.init.probeBlocksDir")
         if blocksExists {
             try? FileManager.default.removeItem(at: blocksDir)
+        }
+
+        self.chain = SaveChain { [weak self] doc, logEntries in
+            guard let self else { return }
+            let rel = self.relativePath(of: doc.url)
+            if !logEntries.isEmpty {
+                try await self.log.apply(Patch(entries: logEntries), to: rel)
+            }
+            let frontier = await self.log.frontierForStampAfterOwnSave(page: rel)
+            _ = try await self.save(doc, logFrontier: frontier)
+            self.postSaveBookkeeping(doc)
         }
         perfEnd(total, "Clamshell.init")
     }
@@ -433,9 +435,15 @@ final class Clamshell {
     /// not at scan time, so entries for un-warmed pages carry the
     /// filename-derived fallback title.
     var entries: [WorkspaceEntry] {
-        scanResult.map { entry in
+        // Read the tracked properties FIRST so Observation registers
+        // access even on a cache hit — skip this and SwiftUI stops
+        // re-rendering after the first cached read. Load-bearing.
+        let scan = scanResult
+        let titles = titleCache
+        if let entriesCache { return entriesCache }
+        let merged = scan.map { entry in
             let title: String
-            if let cached = titleCache[entry.url], cached.modificationDate == entry.modificationDate {
+            if let cached = titles[entry.url], cached.modificationDate == entry.modificationDate {
                 title = cached.title
             } else {
                 title = entry.title
@@ -447,6 +455,9 @@ final class Clamshell {
                 modificationDate: entry.modificationDate
             )
         }
+        entriesCache = merged
+        entryIndex = Dictionary(merged.map { ($0.relativePath, $0) }, uniquingKeysWith: { first, _ in first })
+        return merged
     }
 
     /// Walk the workspace folder and refresh `entries`. Idempotent — safe
@@ -466,8 +477,11 @@ final class Clamshell {
 
     /// Look up the `WorkspaceEntry` for a workspace-relative path, with the
     /// live title overlay applied. Returns nil when no scanned page matches.
+    /// Indexed — touching `entries` first populates the cache and registers
+    /// the Observation access.
     func entry(at relativePath: String) -> WorkspaceEntry? {
-        entries.first { $0.relativePath == relativePath }
+        _ = entries
+        return entryIndex?[relativePath]
     }
 
     /// Existence + cached title for a `*.md` page id. `.missing` when the
@@ -493,7 +507,10 @@ final class Clamshell {
     /// query returns the full pool in mtime-descending order.
     /// `excluding` omits a specific URL — typically the currently-open
     /// document (move-to / mention / jump-to). Pass nil to include it.
-    func pages(matching query: String, excluding: URL? = nil, filter: PageFilter? = nil) -> [MentionItem] {
+    /// Returns ranked `WorkspaceEntry`s — translation into the editor's
+    /// `MentionItem` happens at the app boundary
+    /// (`WorkspaceEntry.asMentionItem(homeRelativePath:)`).
+    func pages(matching query: String, excluding: URL? = nil, filter: PageFilter? = nil) -> [WorkspaceEntry] {
         let q = query.lowercased()
         let pool = entries
             .filter { $0.url != excluding }
@@ -506,29 +523,17 @@ final class Clamshell {
                 }
             }
             .sorted { $0.modificationDate > $1.modificationDate }
-        let chosen: [WorkspaceEntry]
         if q.isEmpty {
-            chosen = pool
-        } else {
-            let ranked = pool.compactMap { entry -> (WorkspaceEntry, Int)? in
-                let title = entry.title.lowercased()
-                if title.hasPrefix(q) { return (entry, 0) }
-                if title.contains(q) { return (entry, 1) }
-                if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
-                return nil
-            }
-            chosen = ranked.sorted { $0.1 < $1.1 }.map(\.0)
+            return pool
         }
-        let home = homeRelativePath
-        return chosen.map { entry in
-            let subtitle = entry.relativePath != entry.title + ".md" ? entry.relativePath : nil
-            return MentionItem(
-                id: entry.relativePath,
-                title: entry.title,
-                subtitle: subtitle,
-                isHome: entry.relativePath == home
-            )
+        let ranked = pool.compactMap { entry -> (WorkspaceEntry, Int)? in
+            let title = entry.title.lowercased()
+            if title.hasPrefix(q) { return (entry, 0) }
+            if title.contains(q) { return (entry, 1) }
+            if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
+            return nil
         }
+        return ranked.sorted { $0.1 < $1.1 }.map(\.0)
     }
 
     func appendBlocks(_ blocks: [Block], toPage pageID: String) async throws {
@@ -539,17 +544,27 @@ final class Clamshell {
         }
         try files.requireLocallyWritable(target)
 
+        let doc: Document
         if let live = liveDocument(at: target) {
-            live.replaceChildrenFromSystemMutation(live.children + blocks)
-            let appendCommit = Commit(logEntries: Patch.adds(from: blocks).entries)
-            try await commit(appendCommit, to: live)
-            return
+            doc = live
+        } else {
+            doc = try await loadDocument(at: target)
         }
-
-        let doc = try await loadDocument(at: target)
         doc.replaceChildrenFromSystemMutation(doc.children + blocks)
-        let appendCommit = Commit(logEntries: Patch.adds(from: blocks).entries)
-        try await commit(appendCommit, to: doc)
+        try await commit(Commit(logEntries: Patch.adds(from: blocks).entries), to: doc)
+    }
+
+    /// Engine-internal single read path: read **and parse** inside one
+    /// detached task so neither lands on MainActor (the parse alone is
+    /// tens of ms for large docs). Every load flavor — `loadDocument`,
+    /// `readBlocks`, `openPage` — funnels through here; they differ only
+    /// in what bookkeeping they seed afterwards.
+    nonisolated func readEnvelope(at url: URL) async throws -> (raw: String, parsed: ClamshellPageEnvelope.Parsed) {
+        let files = self.files
+        return try await Task.detached(priority: .userInitiated) {
+            let raw = try files.read(url)
+            return (raw, ClamshellPageEnvelope.parse(raw))
+        }.value
     }
 
     /// Read + parse the `.md` at `url` and return a live `Document` ready to
@@ -560,11 +575,7 @@ final class Clamshell {
     /// misclassify as `.echo`. Disk read + parse run off-MainActor; hops back
     /// only to touch the ring buffer and build the `Document`.
     func loadDocument(at url: URL) async throws -> Document {
-        let files = self.files
-        let raw: String = try await Task.detached(priority: .userInitiated) {
-            try files.read(url)
-        }.value
-        let parsed = ClamshellPageEnvelope.parse(raw)
+        let (raw, parsed) = try await readEnvelope(at: url)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         recordDiskContent(raw, at: url)
         rememberEnvelope(parsed, for: url)
@@ -576,13 +587,8 @@ final class Clamshell {
     /// subpage's body, splices it into the parent, then trashes the source).
     /// Does **not** seed the disk-content ring buffer — seeding from a stale
     /// non-session read can later misclassify a presenter wakeup as `.echo`.
-    /// Disk read + parse run off-MainActor.
     func readBlocks(at url: URL) async throws -> [Block] {
-        let files = self.files
-        let raw: String = try await Task.detached(priority: .userInitiated) {
-            try files.read(url)
-        }.value
-        return ClamshellPageEnvelope.parse(raw).blocks
+        try await readEnvelope(at: url).parsed.blocks
     }
 
     // MARK: - Title cache
@@ -700,96 +706,47 @@ final class Clamshell {
 
     // MARK: - Pages: write
     //
-    // Save model is commit-time atomic: every `commit(_:to:)` applies its
-    // log entries to the recovery log and writes the .md file as one
-    // awaited sequence, log strictly before file. Concurrent calls for the
-    // same URL are chained on `saveChain[url]` — each spawned Task awaits
-    // the previous before its own log + .md write, so a fast burst of
-    // commits (typing → focus blur → navigation) lands in order, and the
-    // top-level `await` in `commit` propagates errors back to the caller.
-    // When a new commit arrives and the tail's task hasn't started its
-    // body yet, the new commit's log entries are folded into the tail and
-    // the new caller awaits the tail — N rapid presses collapse into one
-    // serialize + one .md write. No debounce, no separate per-op log
-    // task: every `Document.transaction` (typing via `commitLiveText`,
-    // structural via `mutate(_:_:)`, undo, redo) emits its pre→post diff
-    // through `Document.didCommitTransaction` → host bridge →
-    // `commit(_:to:)`.
+    // Save model is commit-time atomic: every commit applies its log
+    // entries to the recovery log and writes the .md file as one chained
+    // task, log strictly before file. `enqueueCommit(_:to:)` installs the
+    // chain entry *synchronously* and returns the task; `commit(_:to:)`
+    // awaits it. Concurrent commits for the same URL chain in order (see
+    // `SaveChain`), so a fast burst (typing → focus blur → navigation)
+    // lands in order; rapid commits whose predecessor hasn't started yet
+    // coalesce into one serialize + one .md write. No debounce, no
+    // separate per-op log task: every `Document.transaction` (typing via
+    // `commitLiveText`, structural via `mutate(_:_:)`, undo, redo) emits
+    // its pre→post diff through `Document.didCommitTransaction` → host
+    // bridge → `enqueueCommit(_:to:)`.
     //
     // Heavy lifting hops off MainActor: serialize + `NSFileCoordinator`
     // write run on a detached task at `.userInitiated` so they don't
     // contend with the UI work the edit burst is driving. See `save(_:)`.
 
-    /// Persist a commit for `doc`. Awaits durability end-to-end: log
-    /// entries (if any) are applied to the recovery log strictly before
-    /// `.md` is serialized and written. Concurrent commits for the same
-    /// URL chain on `saveChain[url]` — each new task awaits the previous
-    /// before its own work, so a typing burst → blur → navigate sequence
-    /// lands in order. The caller's `await` returns only after this
-    /// commit's bytes are on disk; errors propagate.
+    /// Synchronously enqueue a commit for `doc` and return its task
+    /// without awaiting. The chain entry is installed before this
+    /// returns — `flush(_:)` / `isQuiescent(at:)` see the commit
+    /// immediately, with no gap for a fire-and-forget caller (the
+    /// editor's typing path) to fall through. Await the returned task
+    /// for durability + errors; failures are logged either way.
     ///
     /// Caller is responsible for the in-memory state of `doc.children`:
     /// editor mutations go through `Document.transaction` (which fires
     /// `didCommitTransaction` → host bridge → here); reconcile mutates
-    /// via `PatchEngine.apply` before calling `commit`; conflict merge
-    /// builds a fresh `Document` with the merged tree.
-    @MainActor
+    /// via `PatchEngine.apply` before committing; conflict merge builds
+    /// a fresh `Document` with the merged tree.
+    @discardableResult
+    func enqueueCommit(_ commit: Commit, to doc: Document) -> Task<Void, Error> {
+        chain.enqueue(commit.logEntries, for: doc)
+    }
+
+    /// Persist a commit for `doc`, awaiting durability end-to-end: log
+    /// entries (if any) are applied to the recovery log strictly before
+    /// the `.md` is serialized and written. Concurrent commits for the
+    /// same URL chain in order; the `await` returns only after this
+    /// commit's bytes are on disk, and errors propagate.
     func commit(_ commit: Commit, to doc: Document) async throws {
-        let url = doc.url
-        let rel = relativePath(of: url)
-
-        // Coalesce: if the tail's task hasn't started its body yet (still
-        // suspended awaiting its predecessor), fold this commit's log
-        // entries into it instead of spawning a second full save. The
-        // tail's body re-reads `pendingLogEntries` when it starts, so the
-        // merged entries land in one log apply + one .md write. Awaiting
-        // the tail's task value gives us the same durability guarantee
-        // the original caller had. Only coalesce on the same Document
-        // instance — a fresh Document for the same URL (e.g. conflict
-        // merge) needs its own commit so its block snapshot is the one
-        // serialized.
-        if let tail = saveChain[url], !tail.started, tail.doc === doc {
-            tail.pendingLogEntries.append(contentsOf: commit.logEntries)
-            try await tail.task.value
-            // Cleanup is owned by the originating commit call — don't
-            // touch saveChain here.
-            return
-        }
-
-        let previous = saveChain[url]?.task
-        let id = UUID()
-        let entry = ChainEntry(id: id, doc: doc, pendingLogEntries: commit.logEntries)
-        entry.task = Task<Void, Error> { @MainActor [weak self, weak entry] in
-            _ = try? await previous?.value
-            guard let self, let entry else { return }
-            // From here on, no more coalescing into this entry: subsequent
-            // commits will spawn their own chained task. Snapshot the
-            // merged log entries on the same MainActor tick (no
-            // suspension between `started = true` and the read).
-            entry.started = true
-            let logEntries = entry.pendingLogEntries
-            if !logEntries.isEmpty {
-                try await self.log.apply(Patch(entries: logEntries), to: rel)
-            }
-            let frontier = await self.log.frontierForStampAfterOwnSave(page: rel)
-            _ = try await self.save(entry.doc, logFrontier: frontier)
-            self.postSaveBookkeeping(entry.doc)
-        }
-        saveChain[url] = entry
-        do {
-            try await entry.task.value
-            // Only clear the slot when we're still the head — a newer commit
-            // may have replaced us mid-flight; that one owns the cleanup.
-            if saveChain[url]?.id == id {
-                saveChain.removeValue(forKey: url)
-            }
-        } catch {
-            if saveChain[url]?.id == id {
-                saveChain.removeValue(forKey: url)
-            }
-            Diag.log.error("commit failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            throw error
-        }
+        try await enqueueCommit(commit, to: doc).value
     }
 
     /// Await durability of any commits already in flight for `doc`. Does
@@ -797,15 +754,21 @@ final class Clamshell {
     /// navigation / blur / scenePhase / close to make sure the bytes for
     /// the just-fired commit are on disk before the editor unmounts.
     func flush(_ doc: Document) async throws {
-        guard let pending = saveChain[doc.url] else { return }
-        try await pending.task.value
+        guard let pending = chain.pendingTask(for: doc.url) else { return }
+        try await pending.value
     }
 
     /// True when no work is pending for `url`. The engine's reconcile and
     /// presenter paths gate on this — they assume
     /// `doc.children == parsed(.md)`, which is only true on a settled page.
     func isQuiescent(at url: URL) -> Bool {
-        saveChain[url] == nil
+        chain.isQuiescent(at: url)
+    }
+
+    /// Engine-internal: await every pending save across all URLs. Part of
+    /// `drain()` (Clamshell+Presenter.swift) — use that for teardown.
+    func drainSaveChain() async {
+        await chain.drainAll()
     }
 
     func rememberEnvelope(_ parsed: ClamshellPageEnvelope.Parsed, for url: URL) {
@@ -911,9 +874,8 @@ final class Clamshell {
 
     /// Post-save hygiene: refresh the document's mtime from disk, update
     /// the title cache, refresh the reconcile watermark, and rescan the
-    /// workspace if the entries surface needs it. Called from every
-    /// successful save path (chain task via `enqueueSave`,
-    /// `writeClosedPage(_:patch:)`, `append(_:toPage:)`).
+    /// workspace if the entries surface needs it. Runs at the end of
+    /// every successful chain task (i.e. every commit).
     @MainActor
     private func postSaveBookkeeping(_ document: Document) {
         document.modificationDate = (try? document.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
@@ -1069,7 +1031,9 @@ final class Clamshell {
             blocks = [.heading(level: .h1, text: AttributedString(title))]
         }
         let body = ClamshellPageEnvelope.serialize(blocks: blocks, existingFrontmatterLines: nil, logFrontier: [:])
-        try body.write(to: url, atomically: true, encoding: .utf8)
+        // Coordinated write like every other .md — an uncoordinated write
+        // can race iCloud sync on cloud-hosted workspaces.
+        try files.write(body, to: url)
         rememberEnvelope(ClamshellPageEnvelope.parse(body), for: url)
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
         titleCache[url] = CachedTitle(title: title, modificationDate: mtime)
@@ -1198,7 +1162,7 @@ final class Clamshell {
     /// is visible (Notion / Obsidian convention) so the same file opens cleanly
     /// in any other markdown app.
     ///
-    /// One-shot, content-immutable writes — no need to chain through `saveChain`.
+    /// One-shot, content-immutable writes — no need to go through the save chain.
     nonisolated func writeImage(_ image: PastedImage) throws -> String {
         let safeExt = sanitizeImageExtension(image.ext)
         let filename = pastedImageFilename(ext: safeExt)

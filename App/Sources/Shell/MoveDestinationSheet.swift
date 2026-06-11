@@ -57,11 +57,13 @@ struct MoveDestinationSheet: View {
     }
 
     private var pages: [MentionItem] {
-        workspace.clamshell?.pages(
+        guard let clamshell = workspace.clamshell else { return [] }
+        let home = clamshell.homeRelativePath
+        return clamshell.pages(
             matching: query,
             excluding: excluding,
             filter: .locallyAvailableForWrite
-        ) ?? []
+        ).map { $0.asMentionItem(homeRelativePath: home) }
     }
 
     /// Cursor traversal order (excludes the "Show more" disclosure row — that

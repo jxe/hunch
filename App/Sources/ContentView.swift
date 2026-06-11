@@ -88,7 +88,7 @@ struct ContentView: View {
             if new == .active {
                 window.refreshCloudSyncSnapshot()
             } else if let doc = window.openDocument {
-                Task { try? await window.flush(doc) }
+                Task { await window.flush(doc) }
             }
         }
         .alert("Error", isPresented: errorBinding) {
@@ -619,7 +619,10 @@ private struct SearchSheet: View {
     @State private var cursor: MentionItem.ID?
 
     private var items: [MentionItem] {
-        workspace.clamshell?.pages(matching: query, excluding: excluding) ?? []
+        guard let clamshell = workspace.clamshell else { return [] }
+        let home = clamshell.homeRelativePath
+        return clamshell.pages(matching: query, excluding: excluding)
+            .map { $0.asMentionItem(homeRelativePath: home) }
     }
 
     var body: some View {

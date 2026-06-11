@@ -149,13 +149,13 @@ private final class TestHost: EditorHost {
         self.loadedPageBlocks = loadedPageBlocks
     }
 
-    func suggestPages(_ query: String) -> [MentionItem] { [] }
+    func suggestPages(_ query: String, in document: Document) -> [MentionItem] { [] }
     func openPage(pageID: String) {}
     func lookupPage(_ pageID: String) -> PageLookup { .present(title: nil) }
-    func resolvePageID(from url: URL) -> String? { nil }
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? { nil }
+    func resolvePageID(from url: URL, in document: Document) -> String? { nil }
+    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? { nil }
     func loadPageBlocks(_ pageID: String) async -> [Block]? { loadedPageBlocks }
-    func inlineAndTrashPage(_ pageID: String) async -> Bool {
+    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {
         didInlineAndTrashPage = true
         return true
     }
@@ -163,7 +163,7 @@ private final class TestHost: EditorHost {
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
     func persistCommit(ops: [EditorOp], in document: Document) {}
-    func flush(_ document: Document) async throws {}
+    func flush(_ document: Document) async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
     func saveImages(_ items: [PastedImage]) -> [String] { [] }

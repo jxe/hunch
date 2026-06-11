@@ -246,13 +246,13 @@ struct ClamshellSavingTests {
 
         try clamshell.rescan()
 
-        let all = Set(clamshell.pages(matching: "").map(\.id))
+        let all = Set(clamshell.pages(matching: "").map(\.relativePath))
         #expect(all == ["Writable.md", "Locked.md"])
 
         let writableOnly = clamshell.pages(
             matching: "",
             filter: .locallyAvailableForWrite
-        ).map(\.id)
+        ).map(\.relativePath)
         #expect(writableOnly == ["Writable.md"])
     }
 

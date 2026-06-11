@@ -19,8 +19,9 @@ final class WorkspaceWindow {
 
     /// Document currently rendered by `EditorPage`. Owned-by-clamshell once
     /// it's been opened (`openPage`); `nil` between navigations and on
-    /// workspaces without a home page set.
-    private(set) var openDocument: Document?
+    /// workspaces without a home page set. Computed from `openPage` (a
+    /// tracked stored property) so the two can't drift.
+    var openDocument: Document? { openPage?.document }
     private(set) var cloudSyncSnapshot: Clamshell.CloudSyncSnapshot?
     private(set) var isCompactingLog = false
 
@@ -172,17 +173,18 @@ final class WorkspaceWindow {
     private func handlePresenterEvent(_ event: Clamshell.PresenterEvent) {
         guard let doc = openDocument else { return }
         switch event {
-        case .conflictMerged(let salvaged) where salvaged > 0:
+        case .conflictMerged(let salvaged):
             workspace.banner = .merged(salvaged: salvaged, into: doc.title)
         case .restored(let count):
             workspace.banner = .restored(count: count, into: doc.title)
-        case .externallyReloaded, .conflictMerged, .noteworthyNothing:
-            break
         }
     }
 
     /// Workspace was dropped (switchWorkspace, etc.). Clear all per-window
     /// state. Called by `ContentView` via `.onChange(of: workspace.workspaceURL)`.
+    /// When that fires the clamshell is already nil, so the closePage branch
+    /// below is skipped — durability is backstopped by `Clamshell.drain()`,
+    /// which `switchWorkspace` awaits before releasing the outgoing instance.
     func reset() {
         navigationTask?.cancel()
         navigationTask = nil
@@ -241,7 +243,9 @@ final class WorkspaceWindow {
                 self.refreshCloudSyncSnapshot()
             }
             do {
-                try await self.flush(document)
+                // Direct clamshell flush (throwing) — compaction must abort
+                // on a failed flush; the host's EditorHost.flush swallows.
+                try await clamshell.flush(document)
                 guard self.openDocument === document else { return }
                 _ = try await clamshell.compactThisDeviceLog(for: document)
             } catch {
@@ -272,13 +276,11 @@ final class WorkspaceWindow {
 
     private func setOpenPage(_ open: Clamshell.OpenPage) {
         openPage = open
-        openDocument = open.document
     }
 
     private func clearOpenPage() {
         stopCloudSyncPolling()
         openPage = nil
-        openDocument = nil
         cloudSyncSnapshot = nil
     }
 
@@ -288,14 +290,15 @@ final class WorkspaceWindow {
         navigationTask = nil
     }
 
-    // The save lifecycle (commit-time atomic save, per-URL Task chain,
+    // The save lifecycle (commit-time atomic save, per-URL SaveChain,
     // post-save bookkeeping) lives on `Clamshell`. The host's
-    // `EditorHost.persistCommit` conformance spawns a Task that calls
-    // `clamshell.commit(.fromEditorOps(ops), to: doc)` at every
-    // edit-session commit point, and `clamshell.flush(_:)` awaits the
-    // chain on blur / scenePhase / navigation away. Clamshell keeps the
-    // title cache + entries in sync internally; the host doesn't thread
-    // anything through it.
+    // `EditorHost.persistCommit` conformance calls
+    // `clamshell.enqueueCommit(.fromEditorOps(ops), to: doc)`
+    // synchronously at every edit-session commit point (so the chain is
+    // never blind to a just-fired commit), and `clamshell.flush(_:)`
+    // awaits the chain on blur / scenePhase / navigation away. Clamshell
+    // keeps the title cache + entries in sync internally; the host
+    // doesn't thread anything through it.
 
     // MARK: - Trash & restore (per-window)
 

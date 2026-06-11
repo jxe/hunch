@@ -12,7 +12,7 @@ extension EditorView {
         // Snapshot match candidates once per trigger change. Body renders and
         // keyboard handlers read from `menu.matches` instead of re-querying
         // the host on every pass.
-        let matches = Array(host.suggestPages(trigger.query).prefix(8))
+        let matches = Array(host.suggestPages(trigger.query, in: document).prefix(8))
         if var existing = state.mentionMenu, existing.blockID == blockID {
             existing.trigger = trigger
             existing.matches = matches

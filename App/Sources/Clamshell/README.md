@@ -86,8 +86,8 @@ Two flavours: **authoritative** (`add`, `purge`) and **tentative**
   removal. The editor's `mutate(_:_:)` derives a pre→post `[EditorOp]`
   diff via `BlockTreeDiff.derive(_:_:)` and fires
   `host.persistCommit(ops:in:)` (the editor-facing `EditorHost`
-  protocol method); the host bridges that to `Clamshell.commit(_:to:)`,
-  which projects the batch onto
+  protocol method); the host bridges that to
+  `Clamshell.enqueueCommit(_:to:)`, which projects the batch onto
   a `Patch` (inserts → `.add`, removes → `.purge`) and routes it to
   `RecoveryLog.apply(_:to:)` for one ordered append with sequential
   counters. Authoritative — drives `.tombstoned` and triggers engine
@@ -357,21 +357,24 @@ try clamshell.rescan()
 // after openPage returns — `.restored` fires later if anything was
 // auto-spliced. `.conflictMerged` fires from presenter wakeups when
 // iCloud delivers a sibling-version conflict.
+// `onEvent` fires only for noteworthy outcomes — non-noteworthy
+// wakeups (echo, external reload, nothing) are handled internally.
 let open = try await clamshell.openPage(at: url) { event in
     switch event {
     case .restored(let n): // show "Restored N blocks..." banner
     case .conflictMerged(let n): // show "Merged N blocks..." banner
-    case .externallyReloaded, .noteworthyNothing: break
     }
 }
 
 // Editor-driven write — commit-time atomic save. Non-empty log entries
 // are applied to the recovery log; then the .md is serialized and
 // written. Calls for the same URL chain so concurrent commits land in
-// order. The top-level `await` returns when this commit is durable —
-// the host bridge wraps this in a Task for the editor's sync hook.
-// Empty log entries still save the .md (used by reconcile/restore
-// paths after they splice into a live doc).
+// order. `enqueueCommit` installs the chain entry *synchronously* and
+// returns the task (the host's sync persistCommit hook uses it, so
+// flush can never observe false quiescence); `commit` is
+// enqueue-then-await for callers that want durability inline. Empty
+// log entries still save the .md (used by reconcile/restore paths
+// after they splice into a live doc).
 try await clamshell.commit(Commit.fromEditorOps(ops), to: open.document)
 
 // Force-flush any in-flight commits (blur, scenePhase background,
@@ -408,9 +411,9 @@ existing instance and build a new one.
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)`, `pageID(for:relativeTo:)` |
 | Read | `loadDocument(at:)` — async; seeds the iCloud disk-content ring buffer for the live-page path. `readBlocks(at:)` — async; one-off read that doesn't seed history (used by inline-expand). |
-| Page list (observable) | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:)` |
+| Page list (observable) | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:filter:)` — returns ranked `WorkspaceEntry`s; the app boundary maps to `MentionItem` via `WorkspaceEntry.asMentionItem(homeRelativePath:)` |
 | Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. Load + parse + install one presenter per live URL on first open (journal fold runs deferred in a background Task, fires `onEvent(.restored)` if anything was auto-spliced); later opens of the same URL share the live `Document` and add another event subscriber. Close drops one handle; the final close flushes and tears down. |
-| Write (all flows) | `commit(_:to:)` — the one durable write primitive. Applies the `Commit`'s log entries to the recovery log (when non-empty), then serializes and writes the `.md`. Awaited end-to-end: returns when the bytes are on disk. Concurrent calls for the same URL chain so they land in arrival order. Used by the editor host bridge, reconcile, manual restore, conflict-merge, and subpage append — each builds the appropriate `Commit` and awaits the same method. `flush(_:)` awaits any in-flight commit head without triggering work; for blur / scenePhase / navigate-away. `inlineAndTrash(pageID:parent:)` flushes the parent and trashes the named page in one durable sequence — used by inline-expand. |
+| Write (all flows) | `enqueueCommit(_:to:)` — synchronously installs a `SaveChain` entry (log entries before `.md` write, one chained task per commit) and returns the task; used by the host's sync `persistCommit` hook. `commit(_:to:)` — enqueue + await: returns when the bytes are on disk. Concurrent calls for the same URL chain so they land in arrival order; reconcile, manual restore, conflict-merge, and subpage append each build the appropriate `Commit` and await it. `flush(_:)` awaits any in-flight commit head without triggering work; for blur / scenePhase / navigate-away. `drain()` — terminal teardown: awaits every pending save and tears down live pages; owner holds the Clamshell strongly until it returns. `inlineAndTrash(pageID:parent:)` flushes the parent and trashes the named page in one durable sequence — used by inline-expand. |
 | Restore | `restoreBlocks(_:liveDoc:)` — the Recover-sheet entry point for both lost and purged blocks. (Paired with `restorePage(_:)` in the Trash group below, which restores a whole trashed page.) |
 | Create | `createPage(title:requestedPath:initialContent:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
@@ -467,11 +470,12 @@ log apply + file write inside a single Task, log first. At any point
 a crash can happen, the log is at-or-ahead of the file → reconcile
 heals on next open. The editor's `EditorHost.persistCommit` protocol
 method stays synchronous (typing path can't await) — the host bridge
-wraps it in a Task that calls `Clamshell.commit(_:to:)` and awaits
-its durability; only the chained Task pays the I/O. The Task is
-reachable via `flush(_:)`, which awaits the chain head so blur /
-scenePhase / nav-away callbacks land bytes on disk before the editor
-unmounts.
+calls `Clamshell.enqueueCommit(_:to:)`, which installs the chain
+entry before returning, then awaits the returned task only for the
+failure banner; only the chained Task pays the I/O. Because the
+enqueue is synchronous, `flush(_:)` (which awaits the chain head)
+can never miss a just-fired commit — blur / scenePhase / nav-away
+callbacks land bytes on disk before the editor unmounts.
 
 **Cross-device merging happens on read, not write.** Each device only
 ever writes its own `<device-id>.jsonl`. Other devices' files are read
@@ -508,16 +512,19 @@ again automatically without any log mutation.
 `.history/<rel>/` directory moves alongside the `.md`, so trash +
 restore is a page-bundle operation.
 
-**One write API: `commit(_:to:)` + `flush(_:)`.** Every durable write
-— editor commit, reconcile catch-up, manual restore, conflict-merge,
-subpage append — projects to a `Commit` and goes through
-`Clamshell.commit(_:to:)`. The method is async-throws: log entries
-land in the recovery log first, the `.md` is serialized and written
-second, both inside one chained Task. Concurrent calls for the same
-URL chain so a typing burst → blur → navigate sequence lands in
-order, and the caller's `await` returns when this commit's bytes are
-durable. `flush(_:)` awaits the chain head without triggering work —
-for blur, scenePhase backgrounding, navigation-away, app shutdown.
+**One write API: `enqueueCommit(_:to:)` / `commit(_:to:)` +
+`flush(_:)`.** Every durable write — editor commit, reconcile
+catch-up, manual restore, conflict-merge, subpage append — projects
+to a `Commit`. `enqueueCommit` synchronously installs a `SaveChain`
+entry and returns its task; `commit` is enqueue-then-await. Log
+entries land in the recovery log first, the `.md` is serialized and
+written second, both inside one chained Task. Concurrent calls for
+the same URL chain so a typing burst → blur → navigate sequence lands
+in order. `flush(_:)` awaits the chain head without triggering work —
+for blur, scenePhase backgrounding, navigation-away. `drain()` is the
+terminal teardown: awaits every pending save across all URLs and
+tears down remaining live pages; the owner must hold the Clamshell
+strongly until it returns (see `Workspace.switchWorkspace`).
 Post-save bookkeeping (mtime refresh, title cache, page rescan) fires
 internally on every successful commit.
 
@@ -526,10 +533,11 @@ internally on every successful commit.
 `BlockTreeDiff.derive(_:_:)` and fires
 `Document.didCommitTransaction`, which the editor wires to
 `EditorHost.persistCommit(ops:in:)`. The host's adapter projects the
-ops onto a `Commit.fromEditorOps(ops)` (inserts → `.add`, removes →
-`.purge`) and spawns a Task that calls `Clamshell.commit(_:to:)` —
-the editor's sync hook surface is preserved, durability is awaited
-inside the spawned Task. Typing goes through the same path:
+ops onto a `Commit.fromEditorOps(ops)` and calls
+`Clamshell.enqueueCommit(_:to:)` synchronously (inserts → `.add`,
+removes → `.purge`) — the editor's sync hook surface is preserved,
+and durability is awaited in a follow-up Task only for the failure
+banner. Typing goes through the same path:
 `commitLiveText` opens a `transaction(name:"Type", coalesceKey:)` and
 the resulting diff flows through the same hook. Undo and redo fire it
 too with the (inverted) diff so the journal stays symmetric. No
@@ -577,9 +585,10 @@ tombstone from the union.
 reads, and asset I/O are `nonisolated`. The underlying stores are
 actors (`RecoveryLog`, `TrashStore`) or stateless `Sendable`
 (`FileStore`); call them from background tasks freely. Per-URL save
-ordering during a live editor session is handled by `saveChain` (a
-plain `[URL: Task]` dictionary on Clamshell), not a queueing actor —
-the chain inherits the surrounding MainActor isolation.
+ordering during a live editor session is handled by `SaveChain` (a
+MainActor class owning a `[URL: entry]` chain — see SaveChain.swift),
+not a queueing actor — the chain inherits the surrounding MainActor
+isolation, which is what makes its synchronous enqueue possible.
 
 `PatchEngine` is pure — no actors, no I/O. `reconcile` and the
 helpers are `@MainActor` only because they hand back / accept `Block`
@@ -597,11 +606,13 @@ append" — `NSFileCoordinator` handles that.
 
 - [Clamshell.swift](Clamshell.swift) — the umbrella API. Orchestrates
   reads/writes, hands the engine its inputs, applies the engine's
-  outputs. Also owns the per-URL save chain: `commit(_:to:)`
-  (commit-time atomic log + .md write, awaited end-to-end) and
-  `flush(_:)` (await chain head without triggering work). Engine-
-  internal in-place saves (reconcile auto-restore) project to a
-  `Commit` with no log entries and go through the same primitive.
+  outputs. The per-URL save chain lives in
+  [SaveChain.swift](SaveChain.swift): `enqueueCommit(_:to:)`
+  (synchronous chain install, returns the task), `commit(_:to:)`
+  (enqueue + await), `flush(_:)` (await chain head without triggering
+  work), `drain()` (terminal teardown). Engine-internal in-place saves
+  (reconcile auto-restore) project to a `Commit` with no log entries
+  and go through the same primitive.
 - [Commit.swift](Commit.swift) — the `Commit` value type that
   unifies every durable write (editor commit, reconcile catch-up,
   manual restore, conflict-merge, subpage append). One Commit = log

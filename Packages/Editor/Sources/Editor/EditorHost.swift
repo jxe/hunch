@@ -36,8 +36,10 @@ extension PageLookup {
 @MainActor
 public protocol EditorHost: AnyObject {
     /// `@`-mention candidates for the given query string. Editor renders up to
-    /// the first 8 results; host owns filtering/ranking.
-    func suggestPages(_ query: String) -> [MentionItem]
+    /// the first 8 results; host owns filtering/ranking. `document` is the
+    /// page the mention is being typed into — hosts typically exclude it
+    /// from the candidate pool.
+    func suggestPages(_ query: String, in document: Document) -> [MentionItem]
 
     /// Navigate to the workspace page identified by `pageID`. Called from
     /// subpage-row taps and from the OpenURLAction interceptor after the
@@ -58,9 +60,9 @@ public protocol EditorHost: AnyObject {
     /// UUIDs, database keys — so this is the single hook the editor uses
     /// at render time (inline-link decoration) and at Cmd-K-on-link time
     /// (subpage creation from an existing link) to decide whether a URL
-    /// names an internal page. Resolves relative URLs against whichever
-    /// page is currently mounted in this host.
-    func resolvePageID(from url: URL) -> String?
+    /// names an internal page. Relative URLs resolve against `document` —
+    /// the page whose text contains the link.
+    func resolvePageID(from url: URL, in document: Document) -> String?
 
     /// Persist a new page. `initialContent` is the body the editor wants the
     /// new page to start with (descendants of the source block); the host
@@ -68,8 +70,10 @@ public protocol EditorHost: AnyObject {
     /// as-is when non-nil (used by the editor for deterministic-id cases like
     /// redo / preserved-id mention create); pass nil to let the host derive a
     /// slug from `title`. Returns the host-assigned page id, or nil if
-    /// creation failed.
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) -> String?
+    /// creation failed. Async because the host does file I/O (and possibly
+    /// a workspace rescan); the editor awaits inside a Task spawned from
+    /// the key-handler.
+    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String?
 
     /// Load the page at `pageID` and return its blocks. Nil → couldn't load,
     /// the calling action becomes a no-op. Async because the host reads off
@@ -80,13 +84,15 @@ public protocol EditorHost: AnyObject {
     func loadPageBlocks(_ pageID: String) async -> [Block]?
 
     /// Companion to `loadPageBlocks(_:)`: after the editor has inlined the
-    /// loaded blocks into the parent document, the host flushes the parent
-    /// (so the inline is durable on disk) and then moves the source page to
+    /// loaded blocks into `parent`, the host flushes `parent` (so the
+    /// inline is durable on disk) and then moves the source page to
     /// Trash. Returns `true` if the host trashed the file. Async so the
     /// inline-then-trash sequence runs in real order — the parent's save
     /// must land before the source goes away, or a crash window could leave
-    /// the file gone and the inlined copy unpersisted.
-    func inlineAndTrashPage(_ pageID: String) async -> Bool
+    /// the file gone and the inlined copy unpersisted. `parent` is passed
+    /// explicitly (not inferred from the host's "current page") because the
+    /// user may have navigated away between the splice and this call.
+    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool
 
     /// Append blocks to the end of the page at `pageID`. Returns `true` on
     /// success. Used by drop-on-subpage to move dragged blocks into a child page.
@@ -143,7 +149,9 @@ public protocol EditorHost: AnyObject {
     /// from scene-phase / navigation-away / close paths. The doc is
     /// passed explicitly (symmetric with `persistCommit(ops:in:)`) so
     /// the host doesn't have to infer "current doc" from its own state.
-    func flush(_ document: Document) async throws
+    /// Non-throwing: the host owns error surfacing (banner, retry) —
+    /// the editor has nothing useful to do with a flush failure.
+    func flush(_ document: Document) async
 
     /// Serialize blocks into a string the editor will write to the system
     /// pasteboard on copy/cut. Host chooses the format (markdown, plain text).

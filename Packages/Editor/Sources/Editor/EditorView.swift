@@ -335,8 +335,8 @@ public struct EditorView: View {
             // to the system browser via `.systemAction`. Live-NSTextView
             // link taps are still owned by the underlying view's click
             // handling — this only catches read-only body text.
-            .environment(\.openURL, OpenURLAction { [host] url in
-                guard let pageID = host.resolvePageID(from: url) else { return .systemAction }
+            .environment(\.openURL, OpenURLAction { [host, document] url in
+                guard let pageID = host.resolvePageID(from: url, in: document) else { return .systemAction }
                 host.openPage(pageID: pageID)
                 return .handled
             })
@@ -365,7 +365,7 @@ public struct EditorView: View {
             // which `handleModeChange` already wires to flush.
             .onChange(of: editorFocused) { old, new in
                 if new == nil && old != nil {
-                    Task { @MainActor [host, document] in try? await host.flush(document) }
+                    Task { @MainActor [host, document] in await host.flush(document) }
                 }
             }
             #endif
@@ -532,7 +532,7 @@ public struct EditorView: View {
             isSelectionHandleRow: isSelectionHandleRow(for: block.id),
             accessibilityID: accessibilityIdentifier(for: block),
             accessibilityLabelText: accessibilityLabel(for: block),
-            pageLookups: resolvePageLookups(for: block, host: host),
+            pageLookups: resolvePageLookups(for: block, host: host, in: document),
             linkPreviews: relevantLinkPreviews
         )
         let rowActions = BlockRowActions(
@@ -1083,7 +1083,7 @@ public struct EditorView: View {
             // too; re-grabbing every time would steal focus from menus and sheets.
             if wasEditing {
                 forcePageFocusGrab()
-                Task { @MainActor [host, document] in try? await host.flush(document) }
+                Task { @MainActor [host, document] in await host.flush(document) }
             }
         }
 

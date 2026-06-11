@@ -125,15 +125,20 @@ extension EditorView {
         // editor just hands over the body blocks (or nil when empty).
         let initialContent: [Block]? = block.children.isEmpty ? nil : block.children
 
-        guard let pageID = host.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
-        else { return .ignored }
-
-        mutate("Create Subpage") {
-            document.replaceSubtree(blockID, with: [
-                .subpage(title: title, pageID: pageID, id: blockID)
-            ])
-        }
-        DispatchQueue.main.async {
+        // createPage is async (file I/O on the host side) — same pattern as
+        // convertSubpage: spawn a Task so the key handler returns
+        // immediately, and report .handled optimistically (a failed
+        // creation eats the keypress rather than falling through).
+        Task { @MainActor in
+            guard let pageID = await host.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
+            else { return }
+            // The block may have moved out from under us during the await.
+            guard document.find(blockID) != nil else { return }
+            mutate("Create Subpage") {
+                document.replaceSubtree(blockID, with: [
+                    .subpage(title: title, pageID: pageID, id: blockID)
+                ])
+            }
             transferFocus(to: .nav(cursor: blockID))
         }
         return .handled
@@ -262,7 +267,7 @@ extension EditorView {
             } else {
                 state.expandedTemplates.remove(blockID)
             }
-            if !(await host.inlineAndTrashPage(path)) {
+            if !(await host.inlineAndTrashPage(path, parent: document)) {
                 Diag.subpage.error("convertSubpage: inlineAndTrashPage failed after mutation — orphan file at \(path, privacy: .public)")
             }
         }
@@ -592,7 +597,7 @@ extension EditorView {
         for run in text.runs {
             let segment = String(text[run.range].characters)
             if let link = run.link {
-                guard let pageID = host.resolvePageID(from: link) else { return nil }
+                guard let pageID = host.resolvePageID(from: link, in: document) else { return nil }
                 if let existing = linkPageID, existing != pageID {
                     return nil
                 }

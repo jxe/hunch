@@ -17,6 +17,21 @@ struct WorkspaceEntry: Identifiable, Sendable, Hashable {
     }
 }
 
+extension WorkspaceEntry {
+    /// App-boundary translation into the Editor's picker row type. The
+    /// storage layer (`Clamshell.pages(matching:)`) returns ranked
+    /// `WorkspaceEntry`s; the consumers map here so the editor's UI type
+    /// never leaks below the host surface.
+    func asMentionItem(homeRelativePath: String?) -> MentionItem {
+        MentionItem(
+            id: relativePath,
+            title: title,
+            subtitle: relativePath != title + ".md" ? relativePath : nil,
+            isHome: relativePath == homeRelativePath
+        )
+    }
+}
+
 /// Shared workspace state — one per app instance, mounted as `@State` at the
 /// `App` level. Owns the open `Clamshell` and the app-level UI surface
 /// (error alert, transient banner). The page list, title cache, and
@@ -241,12 +256,24 @@ final class Workspace {
     /// Drop the currently bookmarked workspace. Open windows observe
     /// `workspaceURL == nil` and reset their navigation state to empty;
     /// see `WorkspaceWindow` reactions.
+    ///
+    /// Disposal of the outgoing Clamshell is deferred: published state
+    /// clears synchronously for the UI, but the strong reference (and the
+    /// security scope its coordinated writes need) is held inside a Task
+    /// until `drain()` returns — dropping it earlier could silently lose
+    /// in-flight commits.
     func switchWorkspace() {
         WorkspaceBookmark.clear()
-        releaseWorkspaceAccess()
+        let outgoing = clamshell
+        let outgoingAccessURL = accessedWorkspaceURL
+        accessedWorkspaceURL = nil
         workspaceURL = nil
         openURLCounts = [:]
         clamshell = nil
+        Task { @MainActor in
+            await outgoing?.drain()
+            outgoingAccessURL?.stopAccessingSecurityScopedResource()
+        }
     }
 
     /// Reread the workspace from disk. `includeConflictSweep: false` (default)
