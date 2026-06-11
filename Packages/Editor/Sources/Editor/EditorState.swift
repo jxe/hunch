@@ -36,6 +36,20 @@ public final class EditorState {
     /// "seek to end".
     internal(set) var pendingInitialCursor: InitialCursorTarget? = nil
 
+    /// Set when `revalidate` repaired the selection (the cursor / editing block
+    /// vanished from the document, so it fell back to another block — often the
+    /// document's first block). Consumed by `handleModeChange` to skip the
+    /// ensure-cursor-visible autoscroll: a repaired selection is not user
+    /// navigation, and scrolling to the fallback yanks the viewport to the top.
+    @ObservationIgnored
+    private(set) var selectionWasRepaired = false
+
+    /// Read-and-clear the repair flag. Called once per `handleModeChange`.
+    func consumeSelectionRepairFlag() -> Bool {
+        defer { selectionWasRepaired = false }
+        return selectionWasRepaired
+    }
+
     // Hover — visible across all modes/gestures, drives drag-handle reveal.
     //
     // Set ONLY via `setHoveredBlock` / `setHoveredHandle`: those setters no-op
@@ -474,6 +488,9 @@ extension EditorState {
                 next = .navigating(Selection(), gesture: nil)
             }
         }
+        // Any change `revalidate` makes is a repair (the prior cursor/editing
+        // block vanished) — flag it so `handleModeChange` skips the autoscroll.
+        if next != sessionState { selectionWasRepaired = true }
         // Guard the same-value write — @Observable invalidates on every set,
         // even when the value is identical, and `revalidate` fires after every
         // `Document.transaction`. An unguarded write here primes a body-eval

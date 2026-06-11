@@ -1087,8 +1087,16 @@ public struct EditorView: View {
             }
         }
 
+        // Consume unconditionally (on every platform) so the flag can't go
+        // stale on iOS. A selection repaired by `revalidate` is not user
+        // navigation — don't autoscroll to the fallback cursor.
+        let selectionWasRepaired = state.consumeSelectionRepairFlag()
         #if os(macOS)
-        ensureCursorVisible()
+        if !selectionWasRepaired {
+            ensureCursorVisible()
+        }
+        #else
+        _ = selectionWasRepaired
         #endif
     }
 
@@ -1102,11 +1110,22 @@ public struct EditorView: View {
     ///
     /// `layoutCache.frame(of:)` returns synthetic frames in
     /// `PageHoverCoordinateSpace` — `frame.minY` is the row's offset from the
-    /// viewport top, so we can compare directly against `[topInset,
-    /// viewportH-bottomInset]`. When the cursor's row hasn't yet been measured
-    /// (LazyVStack hasn't materialized it), we fall back to
-    /// `scrollPosition.scrollTo(id:)`, which SwiftUI resolves by walking the
-    /// content forward until the id is reached.
+    /// viewport top, so we can decide visibility by comparing directly against
+    /// `[topInset, viewportH-bottomInset]`. That check reads a *single* geometry
+    /// source (the LazyVStack's `onGeometryChange`-fed origin) plus the stable
+    /// viewport insets, so it stays self-consistent.
+    ///
+    /// The actual scroll is delegated to `scrollPosition.scrollTo(id:)`, which
+    /// SwiftUI resolves atomically against the `.scrollTargetLayout()` on the row
+    /// stack. We deliberately do NOT compute a target offset from
+    /// `contentOffsetY` + `frame.minY`: those are two independently-updated
+    /// geometry channels, and `offset + (frame.minY - edge)` is only correct when
+    /// both are sampled at the same scroll position (the offset terms cancel). A
+    /// programmatic scroll makes one channel lag the other by a frame, breaking
+    /// the cancellation; because the error fed back into the next computation, the
+    /// viewport oscillated between the right place and a wrong one on alternating
+    /// arrow presses. Letting SwiftUI own the offset removes both the second
+    /// source and the feedback loop.
     func ensureCursorVisible() {
         guard case .navigating(let sel, _) = state.sessionState, let cursor = sel.cursor else { return }
         let viewportH = scrollMetrics.viewportHeight
@@ -1114,22 +1133,20 @@ public struct EditorView: View {
         let visibleTop = scrollMetrics.topInset
         let visibleBottom = viewportH - scrollMetrics.bottomInset
         guard let frame = layoutCache.frame(of: cursor) else {
-            scrollPosition.scrollTo(id: cursor, anchor: nil)
+            // Unmeasured (off-screen, not yet materialized) — direction unknown,
+            // so center the target.
+            scrollPosition.scrollTo(id: cursor, anchor: .center)
             return
         }
         if frame.minY >= visibleTop && frame.maxY <= visibleBottom {
             return
         }
-        let currentOffset = scrollMetrics.contentOffsetY
-        let targetOffset: CGFloat
-        if frame.minY < visibleTop {
-            targetOffset = currentOffset + (frame.minY - visibleTop)
-        } else {
-            targetOffset = currentOffset + (frame.maxY - visibleBottom)
-        }
-        let maxOffset = max(0, scrollMetrics.contentHeight - viewportH)
-        let clamped = max(0, min(maxOffset, targetOffset))
-        scrollPosition.scrollTo(point: CGPoint(x: 0, y: clamped))
+        // Align to whichever edge the row overran — flush to the top when it sits
+        // above the viewport, flush to the bottom when below. For a row just past
+        // the edge this is the minimal scroll; for a far jump it brings the row to
+        // the nearer edge.
+        let anchor: UnitPoint = frame.minY < visibleTop ? .top : .bottom
+        scrollPosition.scrollTo(id: cursor, anchor: anchor)
     }
     #endif
 
@@ -2072,33 +2089,47 @@ public struct EditorView: View {
     }
 
 
-    /// Replace the block whose row's editor just fired an autotransform. The transform's
-    /// `apply(to:)` returns the new block(s); we splice via `document.replace` and refocus
-    /// on the block at `transform.focusReplacementIndex` (which is the fresh paragraph for
-    /// divider/codeFence and the transformed block otherwise).
+    /// Reshape the block whose row's editor just fired an autotransform. The
+    /// transform's `apply(to:)` returns the new block(s). Single-block transforms
+    /// (heading/bullet/numbered/todo/quote/toggle) mutate `kind` in place so the
+    /// BlockID and children survive — a fresh ID would make the post-transaction
+    /// `revalidate` snap the selection (and viewport) to the top of the document.
+    /// Multi-block transforms (divider/codeFence) splice via `replaceSubtree` and
+    /// refocus on `transform.focusReplacementIndex` (the trailing fresh paragraph).
     func applyAutotransform(_ transform: BlockTransform, remainingText: AttributedString, blockID: BlockID) {
-        guard let source = document.find(blockID) else { return }
+        guard document.find(blockID) != nil else { return }
         let replacements = transform.apply(to: remainingText)
         guard !replacements.isEmpty else { return }
-        // For `> ` (toggle) on a row with children, the new toggle inherits
-        // the source's children as its body so they don't vanish.
-        let firstReplacementWithChildren: [Block]
-        if transform == .toggle, !source.children.isEmpty, var first = replacements.first {
-            first.children = source.children
-            firstReplacementWithChildren = [first] + replacements.dropFirst()
+
+        let focusID: BlockID
+        let focusKind: BlockKind
+        if replacements.count == 1, let replacement = replacements.first {
+            // Single-block transforms (heading/bullet/numbered/todo/quote/toggle):
+            // mutate `kind` in place so the BlockID — and any children (the
+            // toggle case) — survive. A fresh ID would make the post-transaction
+            // `revalidate` think the editing block vanished and snap the
+            // selection (and the viewport) to the top of the document.
+            mutate("Format Block") {
+                document.mutate(blockID) { $0.kind = replacement.kind }
+            }
+            focusID = blockID
+            focusKind = replacement.kind
         } else {
-            firstReplacementWithChildren = replacements
+            // divider / codeFence produce two blocks (transform + fresh
+            // paragraph for the cursor); splice the subtree as before.
+            mutate("Format Block") {
+                document.replaceSubtree(blockID, with: replacements)
+            }
+            let focusTarget = replacements[transform.focusReplacementIndex]
+            focusID = focusTarget.id
+            focusKind = focusTarget.kind
         }
-        mutate("Format Block") {
-            document.replaceSubtree(blockID, with: firstReplacementWithChildren)
-        }
-        let focusTarget = firstReplacementWithChildren[transform.focusReplacementIndex]
         DispatchQueue.main.async {
-            switch focusTarget.kind {
+            switch focusKind {
             case .code, .divider, .subpage:
-                transferFocus(to: .nav(cursor: focusTarget.id))
+                transferFocus(to: .nav(cursor: focusID))
             default:
-                transferFocus(to: .editor(focusTarget.id, initialCursor: nil))
+                transferFocus(to: .editor(focusID, initialCursor: nil))
             }
         }
     }

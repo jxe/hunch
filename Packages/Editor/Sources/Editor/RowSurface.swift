@@ -148,6 +148,13 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
                     footer
                 }
             }
+            // Associate each row's `BlockID` (the ForEach id) with its laid-out
+            // view so `scrollPosition.scrollTo(id:)` can resolve a target that
+            // hasn't been measured into the layout cache yet — i.e. a cursor
+            // that nav walked onto an off-screen, not-yet-materialized block.
+            // Without this the id-scroll fallback in `ensureCursorVisible` is a
+            // no-op/jump.
+            .scrollTargetLayout()
             .onGeometryChange(for: CGRect.self) { proxy in
                 proxy.frame(in: .named(PageHoverCoordinateSpace.name))
             } action: { rect in

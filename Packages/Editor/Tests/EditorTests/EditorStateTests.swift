@@ -46,4 +46,30 @@ struct EditorStateTests {
         #expect(state.anchor == second)
         #expect(state.cursor == second)
     }
+
+    @Test func revalidateFlagsRepairWhenCursorVanishes() {
+        let state = EditorState()
+        let gone = BlockID()
+        let survivor = BlockID()
+
+        state.setCursor(gone)
+        state.revalidate(against: [survivor], fallbackCursor: survivor)
+
+        #expect(state.cursor == survivor)
+        #expect(state.consumeSelectionRepairFlag() == true)
+        // Consuming clears it.
+        #expect(state.consumeSelectionRepairFlag() == false)
+    }
+
+    @Test func revalidateLeavesValidSelectionUnflagged() {
+        let state = EditorState()
+        let here = BlockID()
+        let other = BlockID()
+
+        state.setCursor(here)
+        state.revalidate(against: [here, other], fallbackCursor: other)
+
+        #expect(state.cursor == here)
+        #expect(state.consumeSelectionRepairFlag() == false)
+    }
 }
