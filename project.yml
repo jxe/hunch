@@ -46,6 +46,7 @@ targets:
         CFBundleShortVersionString: "0.1"
         CFBundleVersion: "1"
         LSApplicationCategoryType: public.app-category.productivity
+        LSMultipleInstancesProhibited: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations~iphone:
           - UIInterfaceOrientationPortrait
@@ -62,6 +63,10 @@ targets:
         NSMicrophoneUsageDescription: Hunch records audio so it can append a transcript to the current page.
         NSSpeechRecognitionUsageDescription: Hunch transcribes recorded audio so it can append the text to the current page.
         UIBackgroundModes: [audio]
+        UIApplicationShortcutItems:
+          - UIApplicationShortcutItemType: org.nxhx.Hunch.appIcon
+            UIApplicationShortcutItemTitle: Change Icon
+            UIApplicationShortcutItemIconType: UIApplicationShortcutIconTypeCompose
         ITSAppUsesNonExemptEncryption: false
         CFBundleIcons:
           CFBundlePrimaryIcon:

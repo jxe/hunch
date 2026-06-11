@@ -16,7 +16,6 @@
 		262D29CF7CAA3118EBB12F92 /* HunchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDE9175735C2BEE33F669B6 /* HunchApp.swift */; };
 		28079476106E8077FB2A7D8E /* WorkspaceRelativeLinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2197087185758C1F3392D4B /* WorkspaceRelativeLinkTests.swift */; };
 		28B96A7AB8E61A25A5E9E91D /* VoiceRecordingLaunchRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73FA877A12A327BB5FA77D83 /* VoiceRecordingLaunchRequest.swift */; };
-		2966F7F590F63D578BB4674E /* ShakeDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA7B388CCCFE28B2760B9BFB /* ShakeDetector.swift */; };
 		2A56AD20C0BCB86D2C72CAF5 /* DeviceID.swift in Sources */ = {isa = PBXBuildFile; fileRef = B408352065605E2F3259DD3B /* DeviceID.swift */; };
 		2A718D64E6CE612FC1A8A92F /* BannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F11150420DF76AAA0F96008 /* BannerView.swift */; };
 		2DDE3790C2DDE5C9BDF6468C /* SaveChain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A4A6429D21E232E62749F3D /* SaveChain.swift */; };
@@ -124,7 +123,6 @@
 		9A4A6429D21E232E62749F3D /* SaveChain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaveChain.swift; sourceTree = "<group>"; };
 		9CAB768C1FCE7C688962A0B3 /* RecoveryLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryLog.swift; sourceTree = "<group>"; };
 		9D5DCC509F521050F7038C36 /* Editor */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Editor; path = Packages/Editor; sourceTree = SOURCE_ROOT; };
-		AA7B388CCCFE28B2760B9BFB /* ShakeDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShakeDetector.swift; sourceTree = "<group>"; };
 		AD818E80A31A592762987ECC /* ClamshellImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClamshellImageTests.swift; sourceTree = "<group>"; };
 		ADBD47A7CADD0F953053FE59 /* Diag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diag.swift; sourceTree = "<group>"; };
 		B215D52D128FC5C1D8D785B4 /* ClamshellSavingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClamshellSavingTests.swift; sourceTree = "<group>"; };
@@ -195,7 +193,6 @@
 				30B9606FCEB304E70DF4845C /* MoveDestinationSheet.swift */,
 				3403F91704D1B3970E4EB908 /* PagePickerView.swift */,
 				8C71A9C43C1D37F3712FE704 /* RecoveryView.swift */,
-				AA7B388CCCFE28B2760B9BFB /* ShakeDetector.swift */,
 			);
 			path = Shell;
 			sourceTree = "<group>";
@@ -498,7 +495,6 @@
 				A209C9DB2C9E2206FB82F4A8 /* RecoveryView.swift in Sources */,
 				2DDE3790C2DDE5C9BDF6468C /* SaveChain.swift in Sources */,
 				382589D6413C8E77B08C0CED /* Serializer.swift in Sources */,
-				2966F7F590F63D578BB4674E /* ShakeDetector.swift in Sources */,
 				CB53208075BF30FCC290AF1D /* TrashStore.swift in Sources */,
 				08925AC1A04AD08FF0C8383B /* VoiceRecordingIntents.swift in Sources */,
 				28B96A7AB8E61A25A5E9E91D /* VoiceRecordingLaunchRequest.swift in Sources */,

@@ -1,23 +1,36 @@
 import SwiftUI
 import Editor
+#if os(iOS)
+import UIKit
+#endif
 #if os(macOS)
 import AppKit
+import Darwin
 #endif
 
 @main
 struct HunchApp: App {
     @State private var workspace = Workspace()
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(HunchAppDelegate.self) private var appDelegate
+    @State private var quickActions = QuickActionRouter.shared
+    #endif
 
     init() {
-        FontRegistration.registerInter()
         #if os(macOS)
+        SingleInstanceGuard.activateExistingInstanceAndExitIfNeeded()
         EscapeKeyMonitor.install()
         #endif
+        FontRegistration.registerInter()
     }
 
     var body: some Scene {
         WindowGroup {
+            #if os(iOS)
+            ContentView(workspace: workspace, quickActions: quickActions)
+            #else
             ContentView(workspace: workspace)
+            #endif
         }
         #if os(macOS)
         .windowStyle(.titleBar)
@@ -67,7 +80,91 @@ struct HunchApp: App {
     }
 }
 
+#if os(iOS)
+@MainActor
+@Observable
+final class QuickActionRouter {
+    static let shared = QuickActionRouter()
+
+    private var hasPendingIconPickerRequest = false
+    private(set) var iconPickerRequestID = 0
+
+    func requestIconPicker() {
+        hasPendingIconPickerRequest = true
+        iconPickerRequestID += 1
+    }
+
+    func consumeIconPickerRequest() -> Bool {
+        guard hasPendingIconPickerRequest else { return false }
+        hasPendingIconPickerRequest = false
+        return true
+    }
+}
+
+@MainActor
+private enum HunchQuickAction {
+    static let appIconType = "org.nxhx.Hunch.appIcon"
+
+    static func handle(_ shortcutItem: UIApplicationShortcutItem) -> Bool {
+        guard shortcutItem.type == appIconType else { return false }
+        QuickActionRouter.shared.requestIconPicker()
+        return true
+    }
+}
+
+@MainActor
+final class HunchAppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        if let shortcutItem = options.shortcutItem {
+            _ = HunchQuickAction.handle(shortcutItem)
+        }
+
+        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = HunchSceneDelegate.self
+        return configuration
+    }
+
+    func application(
+        _ application: UIApplication,
+        performActionFor shortcutItem: UIApplicationShortcutItem,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        completionHandler(HunchQuickAction.handle(shortcutItem))
+    }
+}
+
+@MainActor
+final class HunchSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func windowScene(
+        _ windowScene: UIWindowScene,
+        performActionFor shortcutItem: UIApplicationShortcutItem,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        completionHandler(HunchQuickAction.handle(shortcutItem))
+    }
+}
+#endif
+
 #if os(macOS)
+@MainActor
+private enum SingleInstanceGuard {
+    static func activateExistingInstanceAndExitIfNeeded() {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let existing = NSWorkspace.shared.runningApplications.first {
+            $0.processIdentifier != currentPID && $0.bundleIdentifier == bundleIdentifier
+        }
+
+        guard let existing else { return }
+        existing.activate(options: [.activateAllWindows])
+        exit(0)
+    }
+}
+
 @MainActor
 private enum EscapeKeyMonitor {
     private static var monitor: Any?

@@ -10,13 +10,22 @@ struct ContentView: View {
     @State private var window: WorkspaceWindow
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
+    @Bindable var quickActions: QuickActionRouter
     @State private var showIconPicker = false
     #endif
 
+    #if os(iOS)
+    init(workspace: Workspace, quickActions: QuickActionRouter) {
+        self.workspace = workspace
+        self.quickActions = quickActions
+        _window = State(initialValue: WorkspaceWindow(workspace: workspace))
+    }
+    #else
     init(workspace: Workspace) {
         self.workspace = workspace
         _window = State(initialValue: WorkspaceWindow(workspace: workspace))
     }
+    #endif
 
     var body: some View {
         Group {
@@ -108,7 +117,11 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: workspace.banner?.id)
         #if os(iOS)
-        .onShake { showIconPicker = true }
+        .onChange(of: quickActions.iconPickerRequestID, initial: true) { _, _ in
+            if quickActions.consumeIconPickerRequest() {
+                showIconPicker = true
+            }
+        }
         .sheet(isPresented: $showIconPicker) { IconPickerView() }
         #endif
     }
