@@ -30,7 +30,9 @@ private struct RowSurfaceOrder<ID: Hashable>: Equatable {
 
     init(rows: [RowSurfaceRow<ID>]) {
         self.ids = rows.map(\.id)
-        self.topGaps = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.reorderGap) })
+        self.topGaps = Dictionary(uniqueKeysWithValues: rows.map { row in
+            (row.id, row.spacingBefore + row.pinchGap + row.reorderGap)
+        })
             .compactMapValues { $0 > 0 ? $0 : nil }
     }
 }
@@ -133,13 +135,12 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(rows, id: \.id) { row in
                     rowContent(row.id)
-                        .padding(.top, row.spacingBefore + row.pinchGap)
                         .onGeometryChange(for: CGFloat.self) { proxy in
                             proxy.size.height
                         } action: { newHeight in
                             layoutCache.setHeight(newHeight, for: row.id)
                         }
-                        .padding(.top, row.reorderGap)
+                        .padding(.top, row.spacingBefore + row.pinchGap + row.reorderGap)
                         .opacity(row.isSourceDimmed ? 0.12 : 1)
                         .animation(.spring(response: 0.26, dampingFraction: 0.76), value: row.reorderGap)
                 }

@@ -221,8 +221,9 @@ class RowSurfaceLayoutCache<ID: Hashable> {
     private(set) var offsets: [CGFloat] = [0]
 
     /// Extra layout space rendered before a row but not owned by the row
-    /// itself. Reorder uses this for the visible drop gap: hit-testing inside
-    /// that gap must not behave as though it were hovering over the row below.
+    /// itself. Row spacing, pinch gaps, and reorder gaps live here so
+    /// hit-testing inside those gaps does not behave as though it were
+    /// hovering over the row below.
     private(set) var topGaps: [ID: CGFloat] = [:]
 
     /// Cached row extents in document-local coordinates. These mirror

@@ -18,7 +18,7 @@ What's **deliberately not** in the design: shadows, card treatments, rotation, p
 
 Both platforms resolve the candidate insertion index the same way: `ReorderDropResolver.insertionIndex(forY:rowFrames:previousIndex:hysteresis:)` ([ReorderDropResolver.swift](../Packages/Editor/Sources/Editor/ReorderDropResolver.swift)).
 
-It maps the pointer's y-coordinate to a slot by counting how many rows have a midY above it, with a 10pt hysteresis band so a pointer hovering near a row boundary doesn't oscillate between two slots. `rowFrames` is held in a `RowFramesStore` populated from each row's geometry, so dimensions track wrapping/edits.
+It maps the pointer's y-coordinate to a slot by counting how many rows have a midY above it, with a 10pt hysteresis band so a pointer hovering near a row boundary doesn't oscillate between two slots. Row geometry is held in `RowSurfaceLayoutCache`: row body heights are measured directly, while before-row spacing, pinch gaps, and reorder gaps are modeled as empty top gaps outside the row frame. That keeps a finger hovering in blank space from resolving as though it were over the row below.
 
 Earlier iterations used per-slot `.dropDestination` / `isTargeted` callbacks — those produced a "buzzing" pattern where opening a gap shifted hit-testing, which closed the gap, which shifted hit-testing back. The page-level resolver against frozen frames is what fixed it.
 
