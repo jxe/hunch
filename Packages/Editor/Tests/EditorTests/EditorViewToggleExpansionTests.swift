@@ -138,12 +138,35 @@ struct EditorViewToggleExpansionTests {
         #expect(doc.children[0].children.map(\.id) == [child.id])
         #expect(state.expandedToggles.contains(toggle.id))
     }
+
+    @Test func crossPageMoveCollapsesCoveredToggleDescendants() async {
+        let toggle = Block.toggle(
+            title: AttributedString("Details"),
+            children: [.paragraph(text: AttributedString("child"))]
+        )
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            children: [toggle]
+        )
+        let host = TestHost()
+        let editor = EditorView(document: doc, state: EditorState(), host: host)
+        editor.installUndoApply()
+
+        await editor.moveBlocks(ids: [toggle.id, toggle.children[0].id], intoSubpagePath: "target.md")
+
+        #expect(host.appendedPageID == "target.md")
+        #expect(host.appendedBlocks.map(\.id) == [toggle.id])
+        #expect(host.appendedBlocks.first?.children.map(\.id) == [toggle.children[0].id])
+        #expect(doc.children.isEmpty)
+    }
 }
 
 @MainActor
 private final class TestHost: EditorHost {
     var loadedPageBlocks: [Block]?
     var didInlineAndTrashPage = false
+    var appendedPageID: String?
+    var appendedBlocks: [Block] = []
 
     init(loadedPageBlocks: [Block]? = nil) {
         self.loadedPageBlocks = loadedPageBlocks
@@ -159,7 +182,11 @@ private final class TestHost: EditorHost {
         didInlineAndTrashPage = true
         return true
     }
-    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool { true }
+    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool {
+        appendedPageID = pageID
+        appendedBlocks = blocks
+        return true
+    }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
     func persistCommit(ops: [EditorOp], in document: Document) {}

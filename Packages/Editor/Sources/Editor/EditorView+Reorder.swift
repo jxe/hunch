@@ -518,7 +518,8 @@ extension EditorView {
     /// remove them from this document. Tree shape and relative nesting are
     /// preserved verbatim — the destination receives the subtrees as-is.
     func moveBlocks(ids: [BlockID], intoSubpagePath path: String) async {
-        let ordered = ids.sorted { (a, b) in
+        let roots = document.selectionSubtreeRoots(Set(ids))
+        let ordered = roots.sorted { (a, b) in
             (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
         }
         let movingBlocks = ordered.compactMap { document.find($0) }
