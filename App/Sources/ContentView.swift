@@ -49,7 +49,7 @@ struct ContentView: View {
                     window.handlePathChange()
                 }
                 .sheet(isPresented: $window.showSearch) {
-                    SearchSheet(
+                    PageSearchSheet(
                         workspace: workspace,
                         excluding: nil,
                         onActivate: { item in
@@ -613,62 +613,6 @@ private struct NewWorkspaceNameSheet: View {
     }
 }
 #endif
-
-/// Unified search sheet. Used both for navigation (set-home / move-to-trash
-/// rows enabled, activate pushes via the caller's `onActivate`) and for the
-/// block-move destination picker (set-home / move-to-trash absent, activate
-/// completes the move). The sheet itself is mode-agnostic; the caller wires
-/// the appropriate callbacks.
-private struct SearchSheet: View {
-    let workspace: Workspace
-    let excluding: URL?
-    var title: String = "Search"
-    let onActivate: (MentionItem) -> Void
-    var onSetHome: ((MentionItem) -> Void)? = nil
-    var onMoveToTrash: ((MentionItem) -> Void)? = nil
-    let onClose: () -> Void
-
-    @State private var query: String = ""
-    @State private var cursor: MentionItem.ID?
-
-    private var items: [MentionItem] {
-        guard let clamshell = workspace.clamshell else { return [] }
-        let home = clamshell.homeRelativePath
-        return clamshell.pages(matching: query, excluding: excluding)
-            .map { $0.asMentionItem(homeRelativePath: home) }
-    }
-
-    var body: some View {
-        NavigationStack {
-            PagePickerView(
-                items: items,
-                selection: $cursor,
-                onActivate: onActivate,
-                onSetHome: onSetHome,
-                onMoveToTrash: onMoveToTrash
-            )
-            .onAppear {
-                if cursor == nil { cursor = items.first?.id }
-            }
-            .onChange(of: query) { _, _ in
-                cursor = items.first?.id
-            }
-            .navigationTitle(title)
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .searchable(text: $query, placement: .automatic, prompt: "Search pages")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onClose)
-                }
-            }
-        }
-        #if os(macOS)
-        .frame(minWidth: 360, minHeight: 480)
-        #endif
-    }
-}
 
 /// Shown as the NavigationStack root when no workspace home page is set.
 /// Two ways forward: search the workspace for an existing page (which can
