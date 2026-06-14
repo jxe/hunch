@@ -72,4 +72,17 @@ struct EditorStateTests {
         #expect(state.cursor == here)
         #expect(state.consumeSelectionRepairFlag() == false)
     }
+
+    @Test func sessionStateReportsActiveTransientGesture() {
+        let id = BlockID()
+        let selection = Selection(blocks: [id], anchor: id, cursor: id)
+
+        #expect(SessionState.navigating(selection, gesture: nil).hasActiveGesture == false)
+        #expect(SessionState.editing(id, overlay: nil).hasActiveGesture == false)
+        #expect(
+            SessionState
+                .navigating(selection, gesture: .pinchOpening(PinchPreviewState(insertIndex: 0, gapHeight: 10)))
+                .hasActiveGesture == true
+        )
+    }
 }

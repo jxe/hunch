@@ -142,6 +142,13 @@ public enum SessionState: Equatable, Sendable {
     case editing(BlockID, overlay: Overlay?)
 }
 
+extension SessionState {
+    var hasActiveGesture: Bool {
+        if case .navigating(_, .some) = self { return true }
+        return false
+    }
+}
+
 public enum Overlay: Equatable, Sendable {
     /// @-mention popover open on the editing block.
     case mention(MentionMenuState)

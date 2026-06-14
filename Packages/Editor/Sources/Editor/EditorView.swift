@@ -1092,7 +1092,12 @@ public struct EditorView: View {
         // navigation — don't autoscroll to the fallback cursor.
         let selectionWasRepaired = state.consumeSelectionRepairFlag()
         #if os(macOS)
-        if !selectionWasRepaired {
+        // Reorder/pinch ticks also flow through sessionState. During those
+        // gestures the nav cursor still points at the source row; keeping it
+        // visible would fight user-driven scroll and snap the viewport back
+        // toward the drag origin.
+        let gestureInvolved = oldState.hasActiveGesture || newState.hasActiveGesture
+        if !selectionWasRepaired && !gestureInvolved {
             ensureCursorVisible()
         }
         #else
