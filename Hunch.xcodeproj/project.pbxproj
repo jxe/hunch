@@ -34,6 +34,7 @@
 		71C3633279FDAFCA2127A43A /* BlockFingerprintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBE1F6088D2A2F400DBB4939 /* BlockFingerprintTests.swift */; };
 		77ABC90E5643B5559553AE1B /* Clamshell+Reconcile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 454E8E145765A1A4C9633C3E /* Clamshell+Reconcile.swift */; };
 		7C8E5BD992CE032FCAC3E4E9 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 60D4D0042A0050D48AF58979 /* Markdown */; };
+		7FF0EDC4A536B3064B16AD54 /* LinkGraphTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC4602BCAEEEC006F066DDF /* LinkGraphTests.swift */; };
 		83407D2B20E40C8CC73BB9AB /* TrashStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D433D497F5377461A70E47E /* TrashStoreTests.swift */; };
 		8BF2EE5945E6943556B74272 /* BannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2F06B0B8E466E1C833D3F5C /* BannerTests.swift */; };
 		9245A5F0D515374FE64FBFD4 /* WelcomeContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADBC532DB9A1E9EF1B3F9FA /* WelcomeContent.swift */; };
@@ -46,6 +47,7 @@
 		A06FF8BB852C843545B1DA64 /* RoundTripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAC5EF536498D40451D461DD /* RoundTripTests.swift */; };
 		A209C9DB2C9E2206FB82F4A8 /* RecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C71A9C43C1D37F3712FE704 /* RecoveryView.swift */; };
 		A4418A73643A27D33B0888AE /* LinkPreviewService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03A95B584DA472A6EEE3FB22 /* LinkPreviewService.swift */; };
+		A73814C6D355D5D9F6CF43B4 /* LinkGraph.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E8B84ACE57ECE78B4F007B /* LinkGraph.swift */; };
 		ABB5134C045387553C506B47 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 5ECE6A64919F54162EC5473A /* README.md */; };
 		B155E1F04AA089441F43D8EA /* PagePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3403F91704D1B3970E4EB908 /* PagePickerView.swift */; };
 		B214E534A8B480A5919D8D97 /* PatchEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46F2C79D34F79309A525B503 /* PatchEngineTests.swift */; };
@@ -122,6 +124,7 @@
 		96271E52824BE5EEEB780B51 /* LostBlockForestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LostBlockForestTests.swift; sourceTree = "<group>"; };
 		9A4A6429D21E232E62749F3D /* SaveChain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaveChain.swift; sourceTree = "<group>"; };
 		9CAB768C1FCE7C688962A0B3 /* RecoveryLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryLog.swift; sourceTree = "<group>"; };
+		9CC4602BCAEEEC006F066DDF /* LinkGraphTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkGraphTests.swift; sourceTree = "<group>"; };
 		9D5DCC509F521050F7038C36 /* Editor */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Editor; path = Packages/Editor; sourceTree = SOURCE_ROOT; };
 		AD818E80A31A592762987ECC /* ClamshellImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClamshellImageTests.swift; sourceTree = "<group>"; };
 		ADBD47A7CADD0F953053FE59 /* Diag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diag.swift; sourceTree = "<group>"; };
@@ -135,6 +138,7 @@
 		C4608B6FE43942A156484E8F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C60B591D585995CB7097A0DC /* InterVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = InterVariable.ttf; sourceTree = "<group>"; };
 		CAD5ADE397DACEA1B4A26BE8 /* Hunch.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Hunch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2E8B84ACE57ECE78B4F007B /* LinkGraph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkGraph.swift; sourceTree = "<group>"; };
 		D954BA2A1FAF2CB0B575371F /* HunchUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HunchUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DBE1F6088D2A2F400DBB4939 /* BlockFingerprintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockFingerprintTests.swift; sourceTree = "<group>"; };
 		E013E1FDA4330D76E480B5C4 /* PageSpeechRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageSpeechRecorder.swift; sourceTree = "<group>"; };
@@ -206,6 +210,7 @@
 				79DB0566167E7D1467B9E11F /* Commit.swift */,
 				B408352065605E2F3259DD3B /* DeviceID.swift */,
 				C40C5869BF914FA61B2FEC5D /* FileStore.swift */,
+				D2E8B84ACE57ECE78B4F007B /* LinkGraph.swift */,
 				944DA3136290A9A3124F0973 /* Parser.swift */,
 				3881660767B8810ABB8A96AC /* PatchEngine.swift */,
 				5ECE6A64919F54162EC5473A /* README.md */,
@@ -246,6 +251,7 @@
 				B215D52D128FC5C1D8D785B4 /* ClamshellSavingTests.swift */,
 				27594EFFCF6AEDC2FDDF749E /* ConflictMergerTests.swift */,
 				0C720F60C39E316833209F75 /* FileStoreTests.swift */,
+				9CC4602BCAEEEC006F066DDF /* LinkGraphTests.swift */,
 				96271E52824BE5EEEB780B51 /* LostBlockForestTests.swift */,
 				46F2C79D34F79309A525B503 /* PatchEngineTests.swift */,
 				19C92BF27537F62FADF06872 /* RecoveryLogTests.swift */,
@@ -482,6 +488,7 @@
 				3EEA45994B20513A94C2EF04 /* FontRegistration.swift in Sources */,
 				262D29CF7CAA3118EBB12F92 /* HunchApp.swift in Sources */,
 				2F2ACA505AE4ACE8ED0B81FB /* IconPickerView.swift in Sources */,
+				A73814C6D355D5D9F6CF43B4 /* LinkGraph.swift in Sources */,
 				A015923C1B74E1431EC063D0 /* LinkPreviewCache.swift in Sources */,
 				30F45AD870C81C647DAE2BB5 /* LinkPreviewFetcher.swift in Sources */,
 				A4418A73643A27D33B0888AE /* LinkPreviewService.swift in Sources */,
@@ -527,6 +534,7 @@
 				1D34E25E041903E821F8836D /* ClamshellSavingTests.swift in Sources */,
 				DED5F3333AF106B7B03733CE /* ConflictMergerTests.swift in Sources */,
 				998D86BA0C67125C47E336D7 /* FileStoreTests.swift in Sources */,
+				7FF0EDC4A536B3064B16AD54 /* LinkGraphTests.swift in Sources */,
 				70F8DA5DE6D0F5034B49EC88 /* LostBlockForestTests.swift in Sources */,
 				B214E534A8B480A5919D8D97 /* PatchEngineTests.swift in Sources */,
 				E28792EC216EA90AF7FBC30C /* RecoveryLogTests.swift in Sources */,

@@ -197,12 +197,15 @@ private struct EditorPage: View {
                     state: editorState,
                     host: window
                 ) {
-                    if let snapshot = window.cloudSyncSnapshot {
-                        PageSyncFooter(
-                            snapshot: snapshot,
-                            isCompactingLog: window.isCompactingLog,
-                            onCompactLog: { window.compactCurrentPageLog() }
-                        )
+                    VStack(spacing: 0) {
+                        BacklinksFooter(workspace: workspace, window: window, url: url)
+                        if let snapshot = window.cloudSyncSnapshot {
+                            PageSyncFooter(
+                                snapshot: snapshot,
+                                isCompactingLog: window.isCompactingLog,
+                                onCompactLog: { window.compactCurrentPageLog() }
+                            )
+                        }
                     }
                 }
             } else {
@@ -252,6 +255,58 @@ private struct EditorPage: View {
                 RecordingButton(editorState: editorState)
             }
         }
+    }
+}
+
+/// "Linked from" list shown below the page content — the pages that link to
+/// this one. Pure host UI reading `Clamshell.linkGraph` (no editor changes);
+/// reactive via `@Observable`, so it fills in when the graph build/patch lands
+/// and updates as links change. Calling `linkGraphOrBuild()` in `body` warms
+/// the graph in the background whenever a page opens.
+private struct BacklinksFooter: View {
+    @Bindable var workspace: Workspace
+    @Bindable var window: WorkspaceWindow
+    let url: URL
+
+    var body: some View {
+        let backlinks: [String] = {
+            guard let clamshell = workspace.clamshell,
+                  let graph = clamshell.linkGraphOrBuild() else { return [] }
+            return graph.backlinks(of: clamshell.relativePath(of: url))
+        }()
+        if !backlinks.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Linked from")
+                    .font(NotionStyle.body(size: 11, weight: .semibold))
+                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .textCase(.uppercase)
+                ForEach(backlinks, id: \.self) { pageID in
+                    Button {
+                        window.openSubpage(relativePath: pageID)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc.text")
+                                .font(.system(size: 12))
+                                .foregroundStyle(NotionStyle.mutedForeground)
+                            Text(title(for: pageID))
+                                .font(NotionStyle.body(size: 14))
+                                .foregroundStyle(NotionStyle.foreground)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 24)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func title(for pageID: String) -> String {
+        workspace.clamshell?.entry(at: pageID)?.title ?? pageID
     }
 }
 

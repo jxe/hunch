@@ -129,6 +129,16 @@ final class Clamshell {
     /// would fire another fetch.
     @ObservationIgnored private var pendingTitleWarms: Set<URL> = []
 
+    /// Derived backlinks + orphan-reachability graph over the workspace.
+    /// `nil` means "not built yet / invalidated"; a lazy off-main build (or an
+    /// in-memory save patch) lands the value here. Tracked, so the search-row
+    /// orphan badge and the per-page backlinks footer re-render when it lands.
+    /// Mirrors the title-cache warm: deduped on `isBuildingLinkGraph`,
+    /// generation-guarded so an invalidation mid-build drops the stale result.
+    private(set) var linkGraph: LinkGraph?
+    @ObservationIgnored private var isBuildingLinkGraph = false
+    @ObservationIgnored private var linkGraphBuildGeneration = 0
+
     /// User frontmatter + Clamshell stamp trust for pages we've loaded in
     /// this process. `Editor.Document` remains pure block content; Clamshell
     /// reattaches/updates the envelope only when it writes markdown.
@@ -473,6 +483,7 @@ final class Clamshell {
         let result = try files.scan(workspaceRoot: root)
         perfEnd(scanT, "Clamshell.rescan.scan", "count=\(result.count)")
         scanResult = result
+        invalidateLinkGraph()
     }
 
     /// Look up the `WorkspaceEntry` for a workspace-relative path, with the
@@ -635,6 +646,77 @@ final class Clamshell {
     /// at the same path starts fresh.
     private func forgetTitle(at url: URL) {
         titleCache.removeValue(forKey: url)
+    }
+
+    /// Bulk-seed the title cache from titles derived during a full read pass
+    /// (the link-graph build parses every page anyway, so this warms every
+    /// title in one background pass instead of lazily one row at a time).
+    /// mtime-guarded like `requestTitleWarm`: re-stat each file and only store
+    /// when it hasn't changed since the read, so a concurrent save's fresher
+    /// title is never clobbered. One coalesced assignment to limit churn.
+    func applyWarmedTitles(_ warmed: [(url: URL, title: String, mtime: Date?)]) {
+        var updated = titleCache
+        var changed = false
+        for entry in warmed {
+            let currentMtime = try? entry.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            guard currentMtime == entry.mtime else { continue }
+            let cached = updated[entry.url]
+            if cached?.title == entry.title, cached?.modificationDate == entry.mtime { continue }
+            updated[entry.url] = CachedTitle(title: entry.title, modificationDate: entry.mtime)
+            changed = true
+        }
+        if changed { titleCache = updated }
+    }
+
+    // MARK: - Link graph
+
+    /// Cached graph if present; otherwise kick a deduped off-main build whose
+    /// result lands on the tracked `linkGraph`. Call this from a SwiftUI body so
+    /// the `linkGraph` read registers Observation and the surface re-renders when
+    /// the build completes. Returns nil until the first build lands — a nil graph
+    /// just means "no badges/backlinks yet," never blocks the surface.
+    @discardableResult
+    func linkGraphOrBuild() -> LinkGraph? {
+        if let linkGraph { return linkGraph }
+        guard !isBuildingLinkGraph else { return nil }
+        isBuildingLinkGraph = true
+        let generation = linkGraphBuildGeneration
+        Task { [weak self] in
+            guard let self else { return }
+            let built = await self.buildLinkGraph()
+            self.isBuildingLinkGraph = false
+            if self.linkGraphBuildGeneration == generation {
+                self.linkGraph = built
+            } else {
+                // Invalidated mid-build — rebuild against the current state so we
+                // converge instead of stranding `linkGraph` at nil.
+                _ = self.linkGraphOrBuild()
+            }
+        }
+        return nil
+    }
+
+    /// Drop the cached graph and bump the generation so any in-flight build
+    /// discards its result. Called on `rescan()` (page-set change).
+    private func invalidateLinkGraph() {
+        linkGraphBuildGeneration += 1
+        linkGraph = nil
+    }
+
+    /// Patch the cached graph for a just-saved page from its in-memory blocks —
+    /// no disk read, no full rebuild. Skips when the graph isn't built yet (a
+    /// lazy build picks up the new state) or when the page's outbound links are
+    /// unchanged (the common keystroke case). Called from `postSaveBookkeeping`.
+    private func refreshLinkGraph(forSaved document: Document) {
+        guard let current = linkGraph else { return }
+        let rel = relativePath(of: document.url)
+        let classify: @Sendable (URL, URL) -> String? = { [self] url, base in
+            self.pageID(for: url, relativeTo: base)
+        }
+        let targets = outboundLinks(in: document.children, pageURL: document.url, classify: classify)
+            .intersection(current.allPageIDs)
+        guard targets != (current.outbound[rel] ?? []) else { return }
+        linkGraph = current.replacingOutbound(of: rel, with: targets, home: homeRelativePath)
     }
 
 
@@ -895,6 +977,11 @@ final class Clamshell {
             // re-render through the entries computed.
             try? rescan()
         }
+        // Patch the link graph from the saved page's in-memory blocks (cheap,
+        // no disk read). When `titleChanged` already invalidated via rescan,
+        // this no-ops; otherwise it keeps backlinks/orphans current after a
+        // link edit without a full re-read.
+        refreshLinkGraph(forSaved: document)
     }
 
 

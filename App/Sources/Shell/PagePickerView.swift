@@ -23,6 +23,9 @@ struct NativePickerItem: Identifiable, Hashable {
     let title: String
     let subtitle: String?
     let glyph: Glyph
+    /// Optional SF Symbol shown as a muted trailing accessory (e.g. an orphan
+    /// warning). Generic so the picker stays reusable; most callers pass nil.
+    let trailingSymbol: String?
     let typeSelectText: String
 
     init(
@@ -30,12 +33,14 @@ struct NativePickerItem: Identifiable, Hashable {
         title: String,
         subtitle: String? = nil,
         glyph: Glyph,
+        trailingSymbol: String? = nil,
         typeSelectText: String? = nil
     ) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
         self.glyph = glyph
+        self.trailingSymbol = trailingSymbol
         self.typeSelectText = typeSelectText ?? [title, subtitle].compactMap(\.self).joined(separator: " ")
     }
 }
@@ -151,7 +156,14 @@ struct PageSearchSheet: View {
     let onClose: () -> Void
 
     var body: some View {
-        NativeSearchablePicker(
+        // Read (and warm) the link graph in `body` so Observation registers and
+        // the picker re-renders when the async build lands; the graph value is
+        // then captured by the `sections` closure below. Nil → no badges yet.
+        // Also touch `entries` so a background title warm (which the same build
+        // performs) re-renders the open list with corrected titles.
+        let graph = workspace.clamshell?.linkGraphOrBuild()
+        _ = workspace.clamshell?.entries
+        return NativeSearchablePicker(
             title: title,
             searchPrompt: "Search pages",
             emptyTitle: "No matching pages",
@@ -161,11 +173,13 @@ struct PageSearchSheet: View {
                 let items = clamshell.pages(matching: query, excluding: excluding)
                     .map { entry in
                         let item = entry.asMentionItem(homeRelativePath: home)
+                        let isOrphan = graph?.isOrphan(entry.relativePath) ?? false
                         return NativePickerItem(
                             id: .page(item.id),
                             title: item.title,
                             subtitle: item.subtitle,
-                            glyph: .page(isHome: item.isHome)
+                            glyph: .page(isHome: item.isHome),
+                            trailingSymbol: isOrphan ? "exclamationmark.triangle.fill" : nil
                         )
                     }
                 return [NativePickerSection(title: nil, items: items)]
@@ -347,6 +361,7 @@ private final class MacNativeSearchablePickerController: NSViewController, NSTab
         tableView.onReturn = { [weak self] in self?.activateSelection() }
         tableView.onCancel = { [weak self] in self?.close() }
         tableView.onFocusSearch = { [weak self] in self?.view.window?.makeFirstResponder(self?.searchField) }
+        tableView.contextMenuForRow = { [weak self] row in self?.menu(forRow: row) }
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("destination"))
         column.resizingMask = .autoresizingMask
@@ -538,10 +553,15 @@ private final class MacNativeSearchablePickerController: NSViewController, NSTab
         }
     }
 
-    func tableView(_ tableView: NSTableView, menuForRows rows: IndexSet) -> NSMenu? {
-        guard let row = rows.first, let item = item(at: row) else { return nil }
+    /// Build the right-click / control-click menu for `row`. Invoked from the
+    /// table's `menu(for:)` override (NOT a delegate callback — `NSTableView`
+    /// has no `menuForRows:`, which is why the menu never appeared). Selects the
+    /// clicked row so the menu's target is unambiguous.
+    fileprivate func menu(forRow row: Int) -> NSMenu? {
+        guard let item = item(at: row) else { return nil }
         let actions = makeContextActions(item)
         guard !actions.isEmpty else { return nil }
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         let menu = NSMenu()
         for action in actions {
             let menuItem = NSMenuItem(title: action.title, action: #selector(performContextAction(_:)), keyEquivalent: "")
@@ -571,6 +591,14 @@ private final class PickerNSTableView: NSTableView {
     var onReturn: (() -> Void)?
     var onCancel: (() -> Void)?
     var onFocusSearch: (() -> Void)?
+    var contextMenuForRow: ((Int) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = row(at: point)
+        guard row >= 0 else { return nil }
+        return contextMenuForRow?(row)
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
@@ -620,15 +648,34 @@ private final class MacPickerCellView: NSTableCellView {
         addSubview(icon)
         addSubview(textStack)
 
-        NSLayoutConstraint.activate([
+        var constraints: [NSLayoutConstraint] = [
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 24),
 
             textStack.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 7),
-            textStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             textStack.centerYAnchor.constraint(equalTo: centerYAnchor)
-        ])
+        ]
+
+        if let symbol = item.trailingSymbol {
+            let accessory = NSImageView(image: NSImage(
+                systemSymbolName: symbol,
+                accessibilityDescription: nil
+            ) ?? NSImage())
+            accessory.symbolConfiguration = .init(pointSize: 12, weight: .regular)
+            accessory.contentTintColor = .systemOrange
+            accessory.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(accessory)
+            constraints += [
+                accessory.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+                accessory.centerYAnchor.constraint(equalTo: centerYAnchor),
+                textStack.trailingAnchor.constraint(lessThanOrEqualTo: accessory.leadingAnchor, constant: -8)
+            ]
+        } else {
+            constraints.append(textStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10))
+        }
+
+        NSLayoutConstraint.activate(constraints)
     }
 
     @available(*, unavailable)
@@ -1000,6 +1047,14 @@ private final class IOSNativeSearchablePickerController: UITableViewController, 
         config.secondaryTextProperties.color = .secondaryLabel
         cell.contentConfiguration = config
         cell.accessoryType = .none
+        if let symbol = item.trailingSymbol {
+            let accessory = UIImageView(image: UIImage(systemName: symbol))
+            accessory.tintColor = .systemOrange
+            accessory.sizeToFit()
+            cell.accessoryView = accessory
+        } else {
+            cell.accessoryView = nil
+        }
         cell.selectionStyle = .default
         return cell
     }
