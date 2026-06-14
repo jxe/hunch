@@ -139,6 +139,15 @@ final class Clamshell {
     @ObservationIgnored private var isBuildingLinkGraph = false
     @ObservationIgnored private var linkGraphBuildGeneration = 0
 
+    /// Persistent per-page `(mtime, title, outbound targets)` mirror, loaded
+    /// from `UserDefaults` at init and rewritten after each full
+    /// `buildLinkGraph`. Lets a launch reuse titles + links for pages whose
+    /// mtime is unchanged, skipping their (expensive on iCloud) content reads —
+    /// the same mtime-keyed fast-path the reconcile watermark uses, but for the
+    /// link graph. Per-install (never travels with the folder).
+    @ObservationIgnored private var linkCacheEntries: [String: LinkCacheEntry] = [:]
+    @ObservationIgnored private let linkCacheDefaultsKey: String
+
     /// User frontmatter + Clamshell stamp trust for pages we've loaded in
     /// this process. `Editor.Document` remains pure block content; Clamshell
     /// reattaches/updates the envelope only when it writes markdown.
@@ -190,6 +199,10 @@ final class Clamshell {
         self.trash = TrashStore(workspaceRoot: root)
         self.log = RecoveryLog(workspaceRoot: root, store: files)
 
+        let cacheHash = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8))
+            .prefix(8).map { String(format: "%02x", $0) }.joined()
+        self.linkCacheDefaultsKey = "hunch.linkCache.\(cacheHash)"
+
         let metadataURL = Clamshell.metadataURL(forRoot: root)
         let metaT = perfStart()
         let metadata = Clamshell.readMetadata(at: metadataURL)
@@ -228,6 +241,12 @@ final class Clamshell {
             _ = try await self.save(doc, logFrontier: frontier)
             self.postSaveBookkeeping(doc)
         }
+
+        // Seed titles from the persisted link cache so they're correct on the
+        // first frame (the entries-merge mtime guard rejects any stale entry).
+        self.linkCacheEntries = Clamshell.loadPersistedLinkCache(key: linkCacheDefaultsKey)
+        seedTitleCacheFromLinkCache()
+
         perfEnd(total, "Clamshell.init")
     }
 
@@ -654,7 +673,7 @@ final class Clamshell {
     /// mtime-guarded like `requestTitleWarm`: re-stat each file and only store
     /// when it hasn't changed since the read, so a concurrent save's fresher
     /// title is never clobbered. One coalesced assignment to limit churn.
-    func applyWarmedTitles(_ warmed: [(url: URL, title: String, mtime: Date?)]) {
+    func applyWarmedTitles(_ warmed: [(url: URL, title: String, mtime: Date)]) {
         var updated = titleCache
         var changed = false
         for entry in warmed {
@@ -666,6 +685,41 @@ final class Clamshell {
             changed = true
         }
         if changed { titleCache = updated }
+    }
+
+    // MARK: - Link cache (persistent, per-install)
+
+    private static func loadPersistedLinkCache(key: String) -> [String: LinkCacheEntry] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([String: LinkCacheEntry].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    /// The in-memory mirror of the persisted link cache. Read by
+    /// `buildLinkGraph` to reuse unchanged pages.
+    func cachedLinkEntries() -> [String: LinkCacheEntry] { linkCacheEntries }
+
+    /// Replace the cache (memory + `UserDefaults`) after a full build. The new
+    /// map is the current page set, so pages that vanished drop out.
+    func storeLinkEntries(_ entries: [String: LinkCacheEntry]) {
+        linkCacheEntries = entries
+        if let data = try? JSONEncoder().encode(entries) {
+            UserDefaults.standard.set(data, forKey: linkCacheDefaultsKey)
+        }
+    }
+
+    /// Seed the title cache from the persisted link cache so titles are correct
+    /// on launch with no content reads. The entries-merge mtime guard rejects
+    /// any entry whose page changed since it was cached, so a stale seed
+    /// self-heals on the next build.
+    private func seedTitleCacheFromLinkCache() {
+        guard !linkCacheEntries.isEmpty else { return }
+        var seeded = titleCache
+        for (pageID, entry) in linkCacheEntries {
+            seeded[url(for: pageID)] = CachedTitle(title: entry.title, modificationDate: entry.mtime)
+        }
+        titleCache = seeded
     }
 
     // MARK: - Link graph

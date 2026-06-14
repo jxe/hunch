@@ -115,67 +115,92 @@ nonisolated func outboundLinks(
     return targets
 }
 
+/// Persisted per-page derivation: the page's mtime at cache time plus the title
+/// and outbound link targets derived from that revision. Lets a launch skip the
+/// content read for any page whose mtime is unchanged. Stored per-install in
+/// `UserDefaults` (never travels with the folder — cross-device staleness).
+struct LinkCacheEntry: Codable, Sendable {
+    let mtime: Date
+    let title: String
+    let targets: [String]
+}
+
 /// One page's contribution to a graph build: its outbound link targets plus the
 /// title derived from the same parse (so the build doubles as a bulk title warm
-/// — the read+parse I/O is paid once).
+/// — the read+parse I/O is paid once, or skipped entirely on a cache hit).
 private struct PageScan: Sendable {
     let rel: String
     let url: URL
     let targets: Set<String>
     let title: String
-    let mtime: Date?
+    let mtime: Date
 }
 
 extension Clamshell {
-    /// Read every page off-main, extract its outbound links, assemble the graph,
-    /// and bulk-warm the title cache from the same parse. Snapshots the page set
-    /// + home on MainActor up front; the per-page read+parse fans out through a
-    /// bounded `TaskGroup` (the iCloud cold-read cost dominates, so we cap
-    /// in-flight work rather than stampede). Uses `readEnvelope` (the non-seeding
-    /// read core) so a stray read never poisons the disk-content ring buffer that
-    /// presenter-wakeup classification relies on.
+    /// Build the graph and bulk-warm titles, reusing the persistent cache for
+    /// pages whose mtime is unchanged so only changed/new pages are content-read
+    /// (the iCloud cold-read cost dominates). Snapshots the page set + home on
+    /// MainActor up front; the per-page read+parse for the *stale* pages fans out
+    /// through a bounded `TaskGroup`. Uses `readEnvelope` (the non-seeding read
+    /// core) so a stray read never poisons the disk-content ring buffer that
+    /// presenter-wakeup classification relies on. Rewrites the cache at the end.
     func buildLinkGraph() async -> LinkGraph {
-        let pages = entries.map { (rel: $0.relativePath, url: $0.url) }
+        let pages = entries.map { (rel: $0.relativePath, url: $0.url, mtime: $0.modificationDate) }
         let allPageIDs = Set(pages.map(\.rel))
         let home = homeRelativePath
+        let cached = cachedLinkEntries()
         let classify: @Sendable (URL, URL) -> String? = { [self] url, base in
             self.pageID(for: url, relativeTo: base)
         }
 
+        // Reuse cached title + links where the mtime matches; content-read the rest.
+        var scans: [PageScan] = []
+        var stale: [(rel: String, url: URL, mtime: Date)] = []
+        for page in pages {
+            if let hit = cached[page.rel], hit.mtime == page.mtime {
+                scans.append(PageScan(rel: page.rel, url: page.url, targets: Set(hit.targets), title: hit.title, mtime: page.mtime))
+            } else {
+                stale.append(page)
+            }
+        }
+
         let limit = 8
-        let scans = await withTaskGroup(of: PageScan.self) { group -> [PageScan] in
+        let readScans = await withTaskGroup(of: PageScan.self) { group -> [PageScan] in
             var next = 0
-            func submit(_ page: (rel: String, url: URL)) {
+            func submit(_ page: (rel: String, url: URL, mtime: Date)) {
                 group.addTask {
                     let blocks = (try? await self.readEnvelope(at: page.url))?.parsed.blocks ?? []
                     let title = Document.deriveTitle(
                         from: blocks,
                         fallback: page.url.deletingPathExtension().lastPathComponent
                     )
-                    let mtime = try? page.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
                     return PageScan(
                         rel: page.rel,
                         url: page.url,
                         targets: outboundLinks(in: blocks, pageURL: page.url, classify: classify),
                         title: title,
-                        mtime: mtime
+                        mtime: page.mtime
                     )
                 }
             }
-            while next < pages.count, next < limit {
-                submit(pages[next]); next += 1
+            while next < stale.count, next < limit {
+                submit(stale[next]); next += 1
             }
             var results: [PageScan] = []
             while let result = await group.next() {
                 results.append(result)
-                if next < pages.count {
-                    submit(pages[next]); next += 1
+                if next < stale.count {
+                    submit(stale[next]); next += 1
                 }
             }
             return results
         }
+        scans.append(contentsOf: readScans)
 
         applyWarmedTitles(scans.map { (url: $0.url, title: $0.title, mtime: $0.mtime) })
+        storeLinkEntries(Dictionary(uniqueKeysWithValues: scans.map {
+            ($0.rel, LinkCacheEntry(mtime: $0.mtime, title: $0.title, targets: Array($0.targets)))
+        }))
 
         var outbound: [String: Set<String>] = [:]
         for scan in scans {
