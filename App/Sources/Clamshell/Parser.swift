@@ -443,7 +443,7 @@ enum BlockParser {
         for inline in inlines {
             result.append(renderInline(inline, attributes: AttributeContainer()))
         }
-        return result
+        return autoLinkBareURLs(in: result)
     }
 
     private static func renderInline(_ inline: any InlineMarkup, attributes: AttributeContainer) -> AttributedString {

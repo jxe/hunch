@@ -60,6 +60,21 @@ struct RoundTripTests {
         assertIdempotent("[Other Page](other.md)\n")
     }
 
+    @Test func bareExternalURLLoadsAsInlineLink() {
+        let blocks = BlockParser.parse("Visit https://example.com/docs today.\n")
+        #expect(blocks.count == 1)
+        guard case .paragraph(let text) = blocks[0].kind else {
+            Issue.record("expected paragraph")
+            return
+        }
+
+        let linkedRuns = text.runs.filter { $0.link?.absoluteString == "https://example.com/docs" }
+        #expect(linkedRuns.count == 1)
+        if let run = linkedRuns.first {
+            #expect(String(text[run.range].characters) == "https://example.com/docs")
+        }
+    }
+
     /// Regression: a bold run that includes its trailing whitespace must
     /// serialize with the whitespace OUTSIDE the `**` delimiters, otherwise
     /// CommonMark won't recognize the closing `**` as right-flanking and the

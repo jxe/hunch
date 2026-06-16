@@ -148,7 +148,7 @@ enum InlineMarksBridge {
             }
             result.append(piece)
         }
-        return result
+        return autoLinkBareURLs(in: result)
     }
 
     /// Strip every attribute that doesn't round-trip to markdown (bold/italic/code/

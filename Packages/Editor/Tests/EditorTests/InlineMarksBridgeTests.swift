@@ -103,4 +103,23 @@ struct InlineMarksBridgeSanitizeTests {
         let fg = attrs[.foregroundColor] as? PlatformColor
         #expect(fg == NotionStyle.platformLinkForeground)
     }
+
+    @Test func bareHTTPURLBecomesLinkAttribute() {
+        let linked = autoLinkBareURLs(in: AttributedString("visit https://example.com/docs now"))
+        let linkedRuns = linked.runs.filter { $0.link?.absoluteString == "https://example.com/docs" }
+        #expect(linkedRuns.count == 1)
+        if let run = linkedRuns.first {
+            #expect(String(linked[run.range].characters) == "https://example.com/docs")
+        }
+    }
+
+    @Test func bareURLInsideInlineCodeIsNotLinked() {
+        var code = AttributeContainer()
+        code.inlineCode = true
+        var text = AttributedString("https://example.com")
+        text.mergeAttributes(code)
+
+        let linked = autoLinkBareURLs(in: text)
+        #expect(linked.runs.allSatisfy { $0.link == nil })
+    }
 }
