@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-bundle_id="com.joeedelman.console"
+bundle_id="org.nxhx.Hunch"
 
 if [[ $# -ne 1 ]]; then
   echo "usage: $0 <fixture-name>"

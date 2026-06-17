@@ -422,6 +422,7 @@ struct BlockRow: View, Equatable {
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 .foregroundStyle(NotionStyle.foreground)
                 .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                .offset(x: NotionStyle.markerCenteringOffset(markerWidth: NotionStyle.chevronSize))
                 .alignmentGuide(.firstTextBaseline) { dimensions in
                     dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
                 }

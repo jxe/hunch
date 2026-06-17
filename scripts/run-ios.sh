@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-bundle_id="com.joeedelman.console"
+bundle_id="org.nxhx.Hunch"
 
 # Pick the newest built simulator .app — same trick as run.sh: timestamp the
 # binary, not the .app directory (the directory mtime lags its contents).

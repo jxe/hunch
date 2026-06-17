@@ -34,7 +34,6 @@ cp "$src" /tmp/console-fixture/everything.md
 echo "fixture: $1"
 
 # Relaunch the most recently built Hunch.app with the fixture workspace.
-pkill -f "com.joeedelman.console" 2>/dev/null || true
 pkill -x Hunch 2>/dev/null || true
 sleep 1
 app="$(ls -td ~/Library/Developer/Xcode/DerivedData/Hunch-*/Build/Products/Debug/Hunch.app 2>/dev/null | head -1)"

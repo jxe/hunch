@@ -18,23 +18,21 @@ v1 scope: add/edit/remove tags only — no filter/sort/group views.
 
 ## Inline link clicks inside the active TextEditor
 
-**Status:** the read-only path is done — inline `[text](url)` taps in
-non-edit rows route through `EditorHost.didActivateLink` and push onto
-the navigation stack. Edit-mode is not wired: when a link sits inside
-the active `BlockTextEditor`, NSTextView (macOS) and UITextView (iOS)
-own the click.
+When a link sits inside the active `BlockTextEditor`, NSTextView
+(macOS) and UITextView (iOS) own the click. Route those active-editor
+link taps through the same URL classification path used by rendered
+rows: internal pages should push onto the navigation stack, external
+URLs should fall through to the system handler.
 
 **Surfaces to extend:**
 - macOS — implement `textView(_:clickedOnLink:at:)` in
   `MacBlockTextEditor.Coordinator`
   ([Packages/Editor/Sources/Editor/Text/BlockTextEditor.swift](Packages/Editor/Sources/Editor/Text/BlockTextEditor.swift)).
-  Call `host.openLink(.url(url))`; return true if the host handled it.
+  Return true only when the URL was handled internally.
 - iOS — `UITextItemMenuConfiguration` /
   `textItemConfiguration(for:defaultMenu:)`. Same routing.
 
-`EditorHost.openLink` already exists; both surfaces just need to call
-it and let the host decide. Wikilinks (`[[Page]]`) and hover previews
-are out of scope.
+Wikilinks (`[[Page]]`) and hover previews are out of scope.
 
 ---
 
@@ -62,14 +60,12 @@ Also: the iOS swipe actions could go full-bleed.
 
 ---
 
-## Page reachability + ancestry tracking
+## Page ancestry tracking
 
-Track which pages are reachable from the home page and which are
-orphans, plus which have been edited recently. Each page could know
-its ancestors: when you `@`-mention a page, it gets added as a parent.
-That enables Notion-style containment semantics for deletes and
-restores (deleting a page deletes its descendants by default; restore
-brings the subtree back).
+Each page could know its ancestors: when you `@`-mention a page, it
+gets added as a parent. That enables Notion-style containment semantics
+for deletes and restores (deleting a page deletes its descendants by
+default; restore brings the subtree back).
 
 ---
 
@@ -125,25 +121,3 @@ renderer has a real bug. Don't add magic numbers to
 The `console-` prefixes in `/tmp/console-fixture/` and
 `/tmp/console-screenshots/` are residual — fine to leave but can be
 renamed when convenient.
-
----
-
-## Legacy-compat scripts — remaining cleanup
-
-UserDefaults keys, launch flags, and CLAUDE.md prose have all been
-updated to `org.nxhx.Hunch.*`. Three script-level residuals still
-reference the old `com.joeedelman.console` bundle id:
-
-- [scripts/run.sh](scripts/run.sh) — `pkill -f "com.joeedelman.console"`
-  is a no-op against the current binary (process command line is now
-  `Hunch`). Either delete the line or update to `pkill -f "Hunch"`.
-- [scripts/use-fixture.sh](scripts/use-fixture.sh) — same `pkill`
-  pattern.
-- [scripts/run-ios.sh](scripts/run-ios.sh) and
-  [scripts/use-fixture-ios.sh](scripts/use-fixture-ios.sh) — set
-  `bundle_id="com.joeedelman.console"` for `simctl launch`. These
-  almost certainly don't work; update to `org.nxhx.Hunch` and verify
-  the iOS fixture flow still launches.
-- [scripts/clean-orphans.sh](scripts/clean-orphans.sh) intentionally
-  scrubs the legacy id — leave as-is until you're sure no contributor
-  has a stale local install of the old bundle.

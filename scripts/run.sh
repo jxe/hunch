@@ -17,15 +17,14 @@ if [[ ! -d "$installed" ]]; then
   exit 1
 fi
 
-# Purge legacy `com.joeedelman.console` bundles and rebuild the LaunchServices
-# index. Without this, tools that resolve "Hunch" by display name (Spotlight,
-# accessibility grants, `open -b`) can land on a stale legacy bundle in
-# DerivedData instead of the current `org.nxhx.Hunch` build. Cheap to run
-# unconditionally (~0.15s); script is also invocable standalone.
+# Purge stale pre-rename bundles and rebuild the LaunchServices index.
+# Without this, tools that resolve "Hunch" by display name (Spotlight,
+# accessibility grants, `open -b`) can land on an old DerivedData build
+# instead of the current app. Cheap to run unconditionally (~0.15s);
+# script is also invocable standalone.
 "$script_dir/clean-orphans.sh"
 
-# Kill by bundle id so we catch both DerivedData and ~/Applications copies.
-pkill -f "com.joeedelman.console" 2>/dev/null || true
+# Kill any running copy before relaunching.
 pkill -x Hunch 2>/dev/null || true
 sleep 0.3
 
