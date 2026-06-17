@@ -2,7 +2,16 @@
 
 Unordered list of work that seems in scope.
 
----
+## Small ones
+
+* Drop target feel on ios as you drag is not ideal.
+* The disclosure triangles on toggle lists are not equilateral.
+* I have mixed feelings about the way that sections act as blocks.
+* I guess we should add "comes after" sibling info to the logs to make it easier to reconstruct the right tree structure when we have edit conflicts.
+* Maybe instead of n device logs per file, we should have n device logs per clamshell directory?
+* iOS swipe actions could go full-bleed
+
+## Larger
 
 ## Classified-list primitive
 
@@ -24,11 +33,9 @@ floating toolbar at the bottom would expose bulk actions (delete,
 indent, outdent, Turn-into to convert several blocks at once or fold an
 indented list into a toggle).
 
-Also: the iOS swipe actions could go full-bleed.
-
 ---
 
-## Page ancestry tracking
+## Page containment tracking
 
 Each page could know its ancestors: when you `@`-mention a page, it
 gets added as a parent. That enables Notion-style containment semantics
