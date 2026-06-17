@@ -37,6 +37,10 @@ final class WorkspaceWindow {
     /// Selecting a result pushes the page onto the nav stack (or resets to home
     /// when the result *is* home), preserving the trail.
     var showSearch: Bool = false
+    /// Destination picker for adding a link to the current page onto another
+    /// page. Kept separate from `showSearch` so Cmd-P and Cmd-Shift-P can
+    /// present the same picker surface with distinct activation behavior.
+    var showAddToPageSearch: Bool = false
     var recoveryFilter: RecoveryListFilter?
 
     struct MoveRequest: Identifiable {

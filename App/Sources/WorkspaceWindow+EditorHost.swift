@@ -137,6 +137,24 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
+    func appendCurrentPageLink(to pageID: String) async -> Bool {
+        guard let source = openDocument,
+              let sourcePageID = currentPageRelativePath,
+              sourcePageID != pageID,
+              let clamshell = workspace.clamshell else {
+            return false
+        }
+
+        let linkBlock = Block.subpage(title: source.title, pageID: sourcePageID)
+        do {
+            try await clamshell.appendBlocks([linkBlock], toPage: pageID)
+            return true
+        } catch {
+            workspace.error = "Failed to add \(source.title) to \(pageID): \(error.localizedDescription)"
+            return false
+        }
+    }
+
     /// Editor's async move-destination call site: store a continuation,
     /// drive the sheet via `moveRequest`, resume from `resolveMoveRequest`.
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? {

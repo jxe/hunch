@@ -61,6 +61,21 @@ struct ContentView: View {
                         onClose: { window.showSearch = false }
                     )
                 }
+                .sheet(isPresented: $window.showAddToPageSearch) {
+                    PageSearchSheet(
+                        workspace: workspace,
+                        excluding: window.openDocument?.url,
+                        title: "Add to…",
+                        onActivate: { item in
+                            Task {
+                                if await window.appendCurrentPageLink(to: item.id) {
+                                    window.showAddToPageSearch = false
+                                }
+                            }
+                        },
+                        onClose: { window.showAddToPageSearch = false }
+                    )
+                }
                 .sheet(item: $window.moveRequest) { request in
                     MoveDestinationSheet(
                         workspace: workspace,

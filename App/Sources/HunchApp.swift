@@ -49,6 +49,8 @@ struct HunchApp: App {
 
                 SearchMenuButton(workspaceURL: workspace.workspaceURL)
                     .keyboardShortcut("p", modifiers: [.command])
+                AddToPageMenuButton(workspaceURL: workspace.workspaceURL)
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
 
                 Divider()
 
@@ -281,6 +283,18 @@ private struct SearchMenuButton: View {
             window?.showSearch = true
         }
         .disabled(workspaceURL == nil || window == nil)
+    }
+}
+
+private struct AddToPageMenuButton: View {
+    let workspaceURL: URL?
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Add to…") {
+            window?.showAddToPageSearch = true
+        }
+        .disabled(workspaceURL == nil || window?.currentPageRelativePath == nil)
     }
 }
 
