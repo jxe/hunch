@@ -21,6 +21,11 @@ struct AutotransformResult: Equatable, Sendable {
     }
 }
 
+struct InlineAutotransformResult: Equatable, Sendable {
+    let text: AttributedString
+    let cursor: Int
+}
+
 extension BlockTransform {
     /// Returns the block(s) that replace the source row. Most transforms produce a single
     /// block. `divider` and `codeFence` produce two: the transform block plus a fresh empty
@@ -106,4 +111,157 @@ func detectEnterAutotransform(text: AttributedString) -> AutotransformResult? {
     default:
         return nil
     }
+}
+
+/// Detects inline Markdown-style mark delimiters ending exactly at `cursor`, removes the
+/// delimiters, and applies the corresponding attributed mark to the enclosed text.
+func detectInlineStyleAutotransform(text: AttributedString, cursor: Int) -> InlineAutotransformResult? {
+    let plain = String(text.characters)
+    guard cursor > 0, cursor <= plain.count else { return nil }
+    let beforeCursor = String(plain.prefix(cursor))
+
+    if beforeCursor.hasSuffix(")"),
+       let result = detectInlineLinkAutotransform(text: text, plain: plain, cursor: cursor) {
+        return result
+    }
+    if beforeCursor.hasSuffix("**"),
+       let result = detectDelimitedInlineAutotransform(
+        text: text,
+        plain: plain,
+        cursor: cursor,
+        delimiter: "**",
+        apply: { $0[InlineAttributes.BoldAttribute.self] = true }) {
+        return result
+    }
+    if beforeCursor.hasSuffix("~~"),
+       let result = detectDelimitedInlineAutotransform(
+        text: text,
+        plain: plain,
+        cursor: cursor,
+        delimiter: "~~",
+        apply: { $0[InlineAttributes.StrikethroughAttribute.self] = true }) {
+        return result
+    }
+    if beforeCursor.hasSuffix("`"),
+       let result = detectDelimitedInlineAutotransform(
+        text: text,
+        plain: plain,
+        cursor: cursor,
+        delimiter: "`",
+        apply: { $0[InlineAttributes.CodeAttribute.self] = true }) {
+        return result
+    }
+    if beforeCursor.hasSuffix("*"), !beforeCursor.hasSuffix("**"),
+       let result = detectDelimitedInlineAutotransform(
+        text: text,
+        plain: plain,
+        cursor: cursor,
+        delimiter: "*",
+        apply: { $0[InlineAttributes.ItalicAttribute.self] = true }) {
+        return result
+    }
+    if beforeCursor.hasSuffix("_"),
+       let result = detectDelimitedInlineAutotransform(
+        text: text,
+        plain: plain,
+        cursor: cursor,
+        delimiter: "_",
+        apply: { $0[InlineAttributes.ItalicAttribute.self] = true }) {
+        return result
+    }
+    return nil
+}
+
+private func detectDelimitedInlineAutotransform(
+    text: AttributedString,
+    plain: String,
+    cursor: Int,
+    delimiter: String,
+    apply: (inout AttributedString) -> Void
+) -> InlineAutotransformResult? {
+    let delimiterLength = delimiter.count
+    guard cursor >= delimiterLength * 2 else { return nil }
+
+    let searchEnd = cursor - delimiterLength
+    let beforeClosing = String(plain.prefix(searchEnd))
+    guard let openerRange = beforeClosing.range(of: delimiter, options: .backwards) else { return nil }
+
+    let opener = plain.distance(from: plain.startIndex, to: openerRange.lowerBound)
+    let contentStart = opener + delimiterLength
+    let contentEnd = searchEnd
+    guard contentStart < contentEnd else { return nil }
+
+    if delimiter == "*" || delimiter == "_" {
+        guard isSingleDelimiter(in: plain, at: opener, delimiter: delimiter) else { return nil }
+        guard isSingleDelimiter(in: plain, at: searchEnd, delimiter: delimiter) else { return nil }
+    }
+
+    let prefix = attributedSlice(text, 0..<opener)
+    var inner = attributedSlice(text, contentStart..<contentEnd)
+    apply(&inner)
+    let suffix = attributedSlice(text, cursor..<plain.count)
+    let newText = prefix + inner + suffix
+    return InlineAutotransformResult(
+        text: newText,
+        cursor: characterCount(prefix) + characterCount(inner)
+    )
+}
+
+private func detectInlineLinkAutotransform(
+    text: AttributedString,
+    plain: String,
+    cursor: Int
+) -> InlineAutotransformResult? {
+    let beforeCursor = String(plain.prefix(cursor))
+    guard let closeTextRange = beforeCursor.range(of: "](", options: .backwards),
+          let openTextRange = beforeCursor[..<closeTextRange.lowerBound].range(of: "[", options: .backwards) else {
+        return nil
+    }
+
+    let openText = plain.distance(from: plain.startIndex, to: openTextRange.lowerBound)
+    let closeText = plain.distance(from: plain.startIndex, to: closeTextRange.lowerBound)
+    let urlStart = closeText + 2
+    let urlEnd = cursor - 1
+    let textStart = openText + 1
+    guard textStart < closeText, urlStart < urlEnd else { return nil }
+
+    let urlString = String(plain[plainIndex(plain, offset: urlStart)..<plainIndex(plain, offset: urlEnd)])
+    guard let url = URL(string: urlString) else { return nil }
+
+    let prefix = attributedSlice(text, 0..<openText)
+    var linked = attributedSlice(text, textStart..<closeText)
+    linked.link = url
+    let suffix = attributedSlice(text, cursor..<plain.count)
+    let newText = prefix + linked + suffix
+    return InlineAutotransformResult(
+        text: newText,
+        cursor: characterCount(prefix) + characterCount(linked)
+    )
+}
+
+private func isSingleDelimiter(in plain: String, at offset: Int, delimiter: String) -> Bool {
+    if offset > 0 {
+        let previous = plainIndex(plain, offset: offset - 1)
+        if plain[previous] == Character(delimiter) { return false }
+    }
+    let nextOffset = offset + delimiter.count
+    if nextOffset < plain.count {
+        let next = plainIndex(plain, offset: nextOffset)
+        if plain[next] == Character(delimiter) { return false }
+    }
+    return true
+}
+
+private func attributedSlice(_ text: AttributedString, _ bounds: Range<Int>) -> AttributedString {
+    let lower = text.index(text.startIndex, offsetByCharacters: bounds.lowerBound)
+    let upper = text.index(text.startIndex, offsetByCharacters: bounds.upperBound)
+    return AttributedString(text[lower..<upper])
+}
+
+private func characterCount(_ text: AttributedString) -> Int {
+    String(text.characters).count
+}
+
+private func plainIndex(_ plain: String, offset: Int) -> String.Index {
+    plain.index(plain.startIndex, offsetBy: offset)
 }

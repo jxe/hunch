@@ -506,6 +506,11 @@ public struct EditorView: View {
                 onAutotransform: { transform, remainingText in
                     applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
                 },
+                onOpenLink: { url in
+                    guard let pageID = host.resolvePageID(from: url, in: document) else { return false }
+                    host.openPage(pageID: pageID)
+                    return true
+                },
                 onMentionTriggerChange: { trigger in
                     handleMentionTriggerChange(trigger, blockID: block.id)
                 },

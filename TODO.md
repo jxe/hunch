@@ -16,38 +16,6 @@ v1 scope: add/edit/remove tags only — no filter/sort/group views.
 
 ---
 
-## Inline link clicks inside the active TextEditor
-
-When a link sits inside the active `BlockTextEditor`, NSTextView
-(macOS) and UITextView (iOS) own the click. Route those active-editor
-link taps through the same URL classification path used by rendered
-rows: internal pages should push onto the navigation stack, external
-URLs should fall through to the system handler.
-
-**Surfaces to extend:**
-- macOS — implement `textView(_:clickedOnLink:at:)` in
-  `MacBlockTextEditor.Coordinator`
-  ([Packages/Editor/Sources/Editor/Text/BlockTextEditor.swift](Packages/Editor/Sources/Editor/Text/BlockTextEditor.swift)).
-  Return true only when the URL was handled internally.
-- iOS — `UITextItemMenuConfiguration` /
-  `textItemConfiguration(for:defaultMenu:)`. Same routing.
-
-Wikilinks (`[[Page]]`) and hover previews are out of scope.
-
----
-
-## Inline-style autotransforms
-
-Detection for `**bold**`, `*italic*` / `_italic_`, `` `code` ``,
-`~~strike~~`, `[text](url)`. Plug into
-[Autotransforms.swift](Packages/Editor/Sources/Editor/Autotransforms.swift).
-
-**Pre-typing toggles:** Cmd-B with no selection should bias
-`typingAttributes` so the next typed character is bold. Same for
-italic, code, and strikethrough.
-
----
-
 ## iOS multi-select gesture
 
 The swipe that currently triggers indent should instead enter selection

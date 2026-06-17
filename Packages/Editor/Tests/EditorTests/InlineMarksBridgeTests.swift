@@ -122,4 +122,33 @@ struct InlineMarksBridgeSanitizeTests {
         let linked = autoLinkBareURLs(in: text)
         #expect(linked.runs.allSatisfy { $0.link == nil })
     }
+
+    @Test func typingAttributesToggleEmptySelectionMarks() {
+        let base = InlineMarksBridge.baseTypingAttributes(
+            baseFontSize: baseFontSize,
+            baseBold: false,
+            lineSpacing: lineSpacing
+        )
+
+        let bold = InlineMarksBridge.typingAttributes(
+            toggling: .bold,
+            current: base,
+            baseFontSize: baseFontSize,
+            baseBold: false,
+            lineSpacing: lineSpacing
+        )
+        let boldFont = bold[.font] as? PlatformFont
+        #expect(boldFont?.fontDescriptor.symbolicTraits.contains(.boldTrait) == true)
+
+        let code = InlineMarksBridge.typingAttributes(
+            toggling: .code,
+            current: base,
+            baseFontSize: baseFontSize,
+            baseBold: false,
+            lineSpacing: lineSpacing
+        )
+        let codeFont = code[.font] as? PlatformFont
+        #expect(codeFont?.fontDescriptor.symbolicTraits.contains(.monoSpaceTrait) == true)
+        #expect(code[.backgroundColor] as? PlatformColor == NotionStyle.platformCodeBackground)
+    }
 }

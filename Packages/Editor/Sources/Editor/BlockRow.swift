@@ -82,6 +82,7 @@ struct BlockRow: View, Equatable {
         let mentionActive: Bool
         let onKey: (BlockKey) -> KeyPress.Result
         let onAutotransform: (BlockTransform, AttributedString) -> Void
+        let onOpenLink: (URL) -> Bool
         /// Fires whenever the cursor sits after an in-progress `@query` (or
         /// transitions out of one). EditorView holds the popover state.
         let onMentionTriggerChange: (MentionTrigger?) -> Void
@@ -96,6 +97,7 @@ struct BlockRow: View, Equatable {
             mentionActive: Bool,
             onKey: @escaping (BlockKey) -> KeyPress.Result,
             onAutotransform: @escaping (BlockTransform, AttributedString) -> Void,
+            onOpenLink: @escaping (URL) -> Bool,
             onMentionTriggerChange: @escaping (MentionTrigger?) -> Void,
             consumeInitialCursor: @escaping () -> InitialCursorTarget?
         ) {
@@ -104,6 +106,7 @@ struct BlockRow: View, Equatable {
             self.mentionActive = mentionActive
             self.onKey = onKey
             self.onAutotransform = onAutotransform
+            self.onOpenLink = onOpenLink
             self.onMentionTriggerChange = onMentionTriggerChange
             self.consumeInitialCursor = consumeInitialCursor
         }
@@ -537,6 +540,7 @@ struct BlockRow: View, Equatable {
                 blockID: block.id,
                 onKey: editor.onKey,
                 onAutotransform: editor.onAutotransform,
+                onOpenLink: editor.onOpenLink,
                 onMentionTriggerChange: editor.onMentionTriggerChange,
                 mentionActive: editor.mentionActive,
                 consumeInitialCursor: editor.consumeInitialCursor

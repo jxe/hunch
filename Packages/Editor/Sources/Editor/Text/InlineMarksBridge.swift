@@ -57,6 +57,15 @@ public enum InlineMark: Sendable {
 /// strikethrough style) when reading back, because that's what the platform text view
 /// mutates during edits. The custom typed `AttributedStringKey`s live only in the model.
 enum InlineMarksBridge {
+    static func baseTypingAttributes(baseFontSize: CGFloat, baseBold: Bool, lineSpacing: CGFloat) -> [NSAttributedString.Key: Any] {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = lineSpacing
+        return [
+            .font: interFont(size: baseFontSize, bold: baseBold, italic: false),
+            .paragraphStyle: paragraphStyle,
+            .foregroundColor: NotionStyle.platformForeground
+        ]
+    }
 
     /// Convert a model `AttributedString` into the `NSAttributedString` for textStorage.
     /// `baseFontSize` and `baseBold` come from the row's typography (e.g. an H2 row has
@@ -238,6 +247,62 @@ enum InlineMarksBridge {
             if let style = attrs[.strikethroughStyle] as? Int { return style != 0 }
             return false
         }
+    }
+
+    static func typingAttributes(
+        toggling mark: InlineMark,
+        current attrs: [NSAttributedString.Key: Any],
+        baseFontSize: CGFloat,
+        baseBold: Bool,
+        lineSpacing: CGFloat
+    ) -> [NSAttributedString.Key: Any] {
+        var newAttrs = attrs
+        if newAttrs[.paragraphStyle] == nil {
+            newAttrs[.paragraphStyle] = baseTypingAttributes(
+                baseFontSize: baseFontSize,
+                baseBold: baseBold,
+                lineSpacing: lineSpacing
+            )[.paragraphStyle]
+        }
+
+        let font = (attrs[.font] as? PlatformFont) ?? interFont(size: baseFontSize, bold: baseBold, italic: false)
+        let traits = font.fontDescriptor.symbolicTraits
+        let isCode = traits.contains(.monoSpaceTrait)
+
+        switch mark {
+        case .bold:
+            guard !isCode else { return newAttrs }
+            let italic = traits.contains(.italicTrait)
+            let currentlyBold = traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font)
+            let setting = !currentlyBold
+            newAttrs[.font] = interFont(size: baseFontSize, bold: setting, italic: italic)
+            newAttrs[.foregroundColor] = NotionStyle.platformForeground
+            newAttrs.removeValue(forKey: .backgroundColor)
+        case .italic:
+            guard !isCode else { return newAttrs }
+            let bold = traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font) || baseBold
+            let setting = !traits.contains(.italicTrait)
+            newAttrs[.font] = interFont(size: baseFontSize, bold: bold, italic: setting)
+            newAttrs[.foregroundColor] = NotionStyle.platformForeground
+            newAttrs.removeValue(forKey: .backgroundColor)
+        case .code:
+            if isCode {
+                newAttrs[.font] = interFont(size: baseFontSize, bold: baseBold, italic: false)
+                newAttrs[.foregroundColor] = NotionStyle.platformForeground
+                newAttrs.removeValue(forKey: .backgroundColor)
+            } else {
+                newAttrs[.font] = monoFont(size: NotionStyle.inlineCodeSize)
+                newAttrs[.foregroundColor] = NotionStyle.platformCodeForeground
+                newAttrs[.backgroundColor] = NotionStyle.platformCodeBackground
+            }
+        case .strikethrough:
+            if let style = attrs[.strikethroughStyle] as? Int, style != 0 {
+                newAttrs.removeValue(forKey: .strikethroughStyle)
+            } else {
+                newAttrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
+        }
+        return newAttrs
     }
 
     // MARK: - Font resolution

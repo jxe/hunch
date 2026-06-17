@@ -173,6 +173,76 @@ struct EnterAutotransformTests {
     }
 }
 
+@Suite("Markdown autotransforms — inline style detection")
+struct InlineStyleAutotransformTests {
+    private func detect(_ s: String, cursor: Int? = nil) -> InlineAutotransformResult? {
+        detectInlineStyleAutotransform(text: AttributedString(s), cursor: cursor ?? s.count)
+    }
+
+    private func plain(_ result: InlineAutotransformResult?) -> String {
+        guard let result else { return "<nil>" }
+        return String(result.text.characters)
+    }
+
+    @Test func bold() {
+        let r = detect("say **hello**")
+        #expect(plain(r) == "say hello")
+        #expect(r?.cursor == 9)
+        let hasBold = r?.text.runs.contains { $0[InlineAttributes.BoldAttribute.self] == true } ?? false
+        #expect(hasBold)
+    }
+
+    @Test func italicStarAndUnderscore() {
+        let star = detect("*hello*")
+        #expect(plain(star) == "hello")
+        #expect(star?.text.runs.contains { $0[InlineAttributes.ItalicAttribute.self] == true } == true)
+
+        let underscore = detect("_hello_")
+        #expect(plain(underscore) == "hello")
+        #expect(underscore?.text.runs.contains { $0[InlineAttributes.ItalicAttribute.self] == true } == true)
+    }
+
+    @Test func code() {
+        let r = detect("use `let x = 1`")
+        #expect(plain(r) == "use let x = 1")
+        #expect(r?.text.runs.contains { $0[InlineAttributes.CodeAttribute.self] == true } == true)
+    }
+
+    @Test func strikethrough() {
+        let r = detect("~~done~~")
+        #expect(plain(r) == "done")
+        #expect(r?.text.runs.contains { $0[InlineAttributes.StrikethroughAttribute.self] == true } == true)
+    }
+
+    @Test func linkAllowsRelativeURL() {
+        let r = detect("See [Docs](pages/docs.md)")
+        #expect(plain(r) == "See Docs")
+        #expect(r?.cursor == 8)
+        #expect(r?.text.runs.contains { $0.link?.relativeString == "pages/docs.md" } == true)
+    }
+
+    @Test func preservesExistingInnerMarksAndSuffix() {
+        var text = AttributedString("Say **hello** now")
+        let innerStart = text.index(text.startIndex, offsetByCharacters: 6)
+        let innerEnd = text.index(text.startIndex, offsetByCharacters: 11)
+        text[innerStart..<innerEnd][InlineAttributes.ItalicAttribute.self] = true
+
+        let r = detectInlineStyleAutotransform(text: text, cursor: 13)
+        #expect(plain(r) == "Say hello now")
+        #expect(r?.cursor == 9)
+        #expect(r?.text.runs.contains {
+            $0[InlineAttributes.BoldAttribute.self] == true &&
+            $0[InlineAttributes.ItalicAttribute.self] == true
+        } == true)
+    }
+
+    @Test func negativeEmptySpanAndBoldDoesNotBecomeItalic() {
+        #expect(detect("****") == nil)
+        let r = detect("**hello**")
+        #expect(r?.text.runs.contains { $0[InlineAttributes.ItalicAttribute.self] == true } == false)
+    }
+}
+
 @Suite("BlockTransform.apply")
 struct BlockTransformApplyTests {
     private func attr(_ s: String) -> AttributedString { AttributedString(s) }

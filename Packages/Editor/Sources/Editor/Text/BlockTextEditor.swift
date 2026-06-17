@@ -140,6 +140,7 @@ struct BlockTextEditor: View {
     let blockID: BlockID
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    let onOpenLink: (URL) -> Bool
     /// Fires whenever the cursor sits after an in-progress `@query` (or transitions out
     /// of one — `nil` then). EditorView holds the popover state and decides whether to
     /// show / dismiss the menu based on this stream.
@@ -177,6 +178,7 @@ struct BlockTextEditor: View {
         blockID: BlockID,
         onKey: @escaping (BlockKey) -> KeyPress.Result,
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
+        onOpenLink: @escaping (URL) -> Bool = { _ in false },
         onMentionTriggerChange: @escaping (MentionTrigger?) -> Void = { _ in },
         mentionActive: Bool = false,
         consumeInitialCursor: @escaping () -> InitialCursorTarget? = { nil }
@@ -191,6 +193,7 @@ struct BlockTextEditor: View {
         self.blockID = blockID
         self.onKey = onKey
         self.onAutotransform = onAutotransform
+        self.onOpenLink = onOpenLink
         self.onMentionTriggerChange = onMentionTriggerChange
         self.mentionActive = mentionActive
         self.consumeInitialCursor = consumeInitialCursor
@@ -218,6 +221,7 @@ struct BlockTextEditor: View {
             },
             onKey: onKey,
             onAutotransform: onAutotransform,
+            onOpenLink: onOpenLink,
             onMentionTriggerChange: onMentionTriggerChange,
             mentionActive: mentionActive,
             consumeInitialCursor: consumeInitialCursor,
@@ -260,6 +264,7 @@ struct BlockTextEditor: View {
             bridge: iosBridge,
             onKey: onKey,
             onAutotransform: onAutotransform,
+            onOpenLink: onOpenLink,
             onMentionTriggerChange: onMentionTriggerChange,
             mentionActive: mentionActive,
             consumeInitialCursor: consumeInitialCursor,
@@ -302,6 +307,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let onFocusChange: (Bool) -> Void
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    let onOpenLink: (URL) -> Bool
     let onMentionTriggerChange: (MentionTrigger?) -> Void
     let mentionActive: Bool
     let consumeInitialCursor: () -> InitialCursorTarget?
@@ -408,13 +414,8 @@ struct MacBlockTextEditor: NSViewRepresentable {
         // range by `loadAttributedString` (via toNS).
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
-        let font = InlineMarksBridge.interFont(size: fontSize, bold: bold, italic: false)
         view.defaultParagraphStyle = style
-        view.typingAttributes = [
-            .font: font,
-            .paragraphStyle: style,
-            .foregroundColor: NotionStyle.platformForeground
-        ]
+        view.typingAttributes = InlineMarksBridge.baseTypingAttributes(baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
     }
 
     nonisolated static func resolveNSFont(size: CGFloat, bold: Bool) -> NSFont {
@@ -459,6 +460,11 @@ struct MacBlockTextEditor: NSViewRepresentable {
                     // commits the active editor first — so the pre-mutation snapshot
                     // captures the typed prefix and Cmd-Z restores it cleanly.
                     parent.onAutotransform(result.transform, result.remainingText)
+                    return
+                }
+                if let result = detectInlineStyleAutotransform(text: attrSnapshot, cursor: cursor) {
+                    applyInlineAutotransform(result, in: tv)
+                    reportMentionTrigger(in: tv, composing: false)
                     return
                 }
             }
@@ -534,6 +540,37 @@ struct MacBlockTextEditor: NSViewRepresentable {
                     self.parent.onMentionTriggerChange(detectMentionTrigger(plain: plain, cursor: cursor))
                 }
             }
+        }
+
+        private func applyInlineAutotransform(_ result: InlineAutotransformResult, in tv: NSTextView) {
+            let ns = InlineMarksBridge.toNS(
+                result.text,
+                baseFontSize: parent.fontSize,
+                baseBold: parent.bold,
+                lineSpacing: parent.lineSpacing
+            )
+            tv.textStorage?.setAttributedString(ns)
+            tv.setSelectedRange(NSRange(location: result.cursor, length: 0))
+            tv.typingAttributes = InlineMarksBridge.baseTypingAttributes(
+                baseFontSize: parent.fontSize,
+                baseBold: parent.bold,
+                lineSpacing: parent.lineSpacing
+            )
+            textStorageDirty = true
+            tv.invalidateIntrinsicContentSize()
+        }
+
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            let url: URL?
+            if let value = link as? URL {
+                url = value
+            } else if let value = link as? String {
+                url = URL(string: value)
+            } else {
+                url = nil
+            }
+            guard let url else { return false }
+            return parent.onOpenLink(url)
         }
 
         private func reportMentionTrigger(in tv: NSTextView, composing: Bool) {
@@ -798,7 +835,16 @@ final class ContainedTextView: NSTextView {
         guard let storage = textStorage,
               let parent = coordinator?.parent else { return }
         let range = selectedRange()
-        guard range.length > 0 else { return }
+        guard range.length > 0 else {
+            typingAttributes = InlineMarksBridge.typingAttributes(
+                toggling: mark,
+                current: typingAttributes,
+                baseFontSize: parent.fontSize,
+                baseBold: parent.bold,
+                lineSpacing: parent.lineSpacing
+            )
+            return
+        }
         InlineMarksBridge.toggleMark(mark, on: range, in: storage, baseFontSize: parent.fontSize, baseBold: parent.bold)
         didChangeText()
     }
@@ -983,13 +1029,19 @@ final class IOSEditorBridge {
     weak var textView: ContainedTextViewIOS?
     var fontSize: CGFloat = 16
     var bold: Bool = false
+    var lineSpacing: CGFloat = 0
 
     func toggleMark(_ mark: InlineMark) {
         guard let tv = textView else { return }
         let range = tv.selectedRange
         guard range.length > 0 else {
-            // Pre-typing toggles (Cmd-B with no selection biasing typingAttributes)
-            // aren't wired yet — same gap as macOS, deferred to the M6 follow-up.
+            tv.typingAttributes = InlineMarksBridge.typingAttributes(
+                toggling: mark,
+                current: tv.typingAttributes,
+                baseFontSize: fontSize,
+                baseBold: bold,
+                lineSpacing: lineSpacing
+            )
             return
         }
         let storage = tv.textStorage
@@ -1012,6 +1064,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     let bridge: IOSEditorBridge
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
+    let onOpenLink: (URL) -> Bool
     let onMentionTriggerChange: (MentionTrigger?) -> Void
     let mentionActive: Bool
     let consumeInitialCursor: () -> InitialCursorTarget?
@@ -1040,6 +1093,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         bridge.textView = tv
         bridge.fontSize = fontSize
         bridge.bold = bold
+        bridge.lineSpacing = lineSpacing
         // See macOS twin: wire eagerly at mount, not in `textViewDidBeginEditing` —
         // formatting changes via `IOSEditorBridge` don't fire begin-editing.
         documentUndoController?.flushActiveText = { [weak coordinator = context.coordinator, weak tv] in
@@ -1091,6 +1145,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         bridge.textView = tv
         bridge.fontSize = fontSize
         bridge.bold = bold
+        bridge.lineSpacing = lineSpacing
 
         // Refresh the accessory bar's closures so they capture the latest
         // `onKey` / `bridge` references — both are recreated on every parent
@@ -1151,15 +1206,9 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     }
 
     private func applyTypingAttributes(to tv: ContainedTextViewIOS) {
-        let style = NSMutableParagraphStyle()
-        style.lineSpacing = lineSpacing
         let font = Self.resolveUIFont(size: fontSize, bold: bold)
         tv.font = font
-        tv.typingAttributes = [
-            .font: font,
-            .paragraphStyle: style,
-            .foregroundColor: NotionStyle.platformForeground
-        ]
+        tv.typingAttributes = InlineMarksBridge.baseTypingAttributes(baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
     }
 
     nonisolated static func resolveUIFont(size: CGFloat, bold: Bool) -> UIFont {
@@ -1198,6 +1247,11 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
                     // the active editor first — so the pre-mutation snapshot captures
                     // the typed prefix and Cmd-Z restores it cleanly.
                     parent.onAutotransform(result.transform, result.remainingText)
+                    return
+                }
+                if let result = detectInlineStyleAutotransform(text: attrSnapshot, cursor: cursor) {
+                    applyInlineAutotransform(result, in: textView)
+                    reportMentionTrigger(in: textView, composing: false)
                     return
                 }
             }
@@ -1257,6 +1311,36 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
                     self.parent.onMentionTriggerChange(detectMentionTrigger(plain: plain, cursor: cursor))
                 }
             }
+        }
+
+        private func applyInlineAutotransform(_ result: InlineAutotransformResult, in textView: UITextView) {
+            let ns = InlineMarksBridge.toNS(
+                result.text,
+                baseFontSize: parent.fontSize,
+                baseBold: parent.bold,
+                lineSpacing: parent.lineSpacing
+            )
+            textView.textStorage.setAttributedString(ns)
+            textView.selectedRange = NSRange(location: result.cursor, length: 0)
+            textView.typingAttributes = InlineMarksBridge.baseTypingAttributes(
+                baseFontSize: parent.fontSize,
+                baseBold: parent.bold,
+                lineSpacing: parent.lineSpacing
+            )
+            textStorageDirty = true
+            textView.invalidateIntrinsicContentSize()
+        }
+
+        func textView(
+            _ textView: UITextView,
+            primaryActionFor textItem: UITextItem,
+            defaultAction: UIAction
+        ) -> UIAction? {
+            guard case .link(let url) = textItem.content,
+                  parent.onOpenLink(url) else {
+                return defaultAction
+            }
+            return UIAction { _ in }
         }
 
         private func reportMentionTrigger(in textView: UITextView, composing: Bool) {
