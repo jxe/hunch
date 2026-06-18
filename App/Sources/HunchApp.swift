@@ -6,6 +6,7 @@ import UIKit
 #if os(macOS)
 import AppKit
 import Darwin
+import Security
 #endif
 
 @main
@@ -19,6 +20,7 @@ struct HunchApp: App {
     init() {
         #if os(macOS)
         SingleInstanceGuard.activateExistingInstanceAndExitIfNeeded()
+        StartupDiagnostics.logLaunchIdentity()
         EscapeKeyMonitor.install()
         #endif
         FontRegistration.registerInter()
@@ -152,6 +154,38 @@ final class HunchSceneDelegate: NSObject, UIWindowSceneDelegate {
 #endif
 
 #if os(macOS)
+private enum StartupDiagnostics {
+    static func logLaunchIdentity() {
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "unknown"
+        let homeDirectory = NSHomeDirectory()
+        let deviceID = DeviceID.current
+
+        Diag.log.log("startup identity bundle=\(bundleIdentifier, privacy: .public) deviceID=\(deviceID, privacy: .public) home=\(homeDirectory, privacy: .public)")
+
+        let hasSandboxEntitlement = sandboxEntitlementIsEnabled()
+        let expectedContainerSuffix = "/Library/Containers/\(bundleIdentifier)/Data"
+        let hasContainerHome = homeDirectory.hasSuffix(expectedContainerSuffix)
+
+        if !hasSandboxEntitlement || !hasContainerHome {
+            Diag.log.warning(
+                "startup sandbox warning bundle=\(bundleIdentifier, privacy: .public) deviceID=\(deviceID, privacy: .public) sandboxEntitlement=\(hasSandboxEntitlement, privacy: .public) containerHome=\(hasContainerHome, privacy: .public) home=\(homeDirectory, privacy: .public) expectedSuffix=\(expectedContainerSuffix, privacy: .public)"
+            )
+        }
+    }
+
+    private static func sandboxEntitlementIsEnabled() -> Bool {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(
+                task,
+                "com.apple.security.app-sandbox" as CFString,
+                nil
+              ) else {
+            return false
+        }
+        return (value as? Bool) == true
+    }
+}
+
 @MainActor
 private enum SingleInstanceGuard {
     static func activateExistingInstanceAndExitIfNeeded() {
