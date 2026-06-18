@@ -170,6 +170,7 @@ final class Clamshell {
         let document: Document
         let presenter: PresenterHandle
         var subscribers: [UUID: @MainActor (PresenterEvent) -> Void]
+        var hasLocalCommitSinceOpen = false
 
         init(
             url: URL,
@@ -873,7 +874,10 @@ final class Clamshell {
     /// a fresh `Document` with the merged tree.
     @discardableResult
     func enqueueCommit(_ commit: Commit, to doc: Document) -> Task<Void, Error> {
-        chain.enqueue(commit.logEntries, for: doc)
+        if let live = livePages[doc.url.standardizedFileURL], live.document === doc {
+            live.hasLocalCommitSinceOpen = true
+        }
+        return chain.enqueue(commit.logEntries, for: doc)
     }
 
     /// Persist a commit for `doc`, awaiting durability end-to-end: log

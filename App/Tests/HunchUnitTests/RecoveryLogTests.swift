@@ -1054,6 +1054,56 @@ struct RecoveryLogTests {
         #expect(recon.restoredHashes == [h])
     }
 
+    @Test func stampedFrontierCanDeferFutureForeignAddForPassiveOpen() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let foreign = Block.paragraph(text: attr("future peer file"))
+        let h = foreign.atomicHash
+        let foreignURL = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-B")
+        try FileManager.default.createDirectory(
+            at: foreignURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try encodedWire(
+            op: "add",
+            hash: h,
+            markdown: BlockSerializer.serializeAtomic(foreign),
+            t: 100,
+            counter: 11
+        ).write(to: foreignURL, atomically: true, encoding: .utf8)
+
+        let outcome = await log.reconcileAgainst(
+            page: "p.md",
+            doc: [],
+            mdMtime: nil,
+            trustedFrontier: ["dev-B": 10],
+            restoreFutureForeignAdds: false
+        )
+        guard case .folded(let recon, .full) = outcome else {
+            Issue.record("expected full fold for stamped page, got \(outcome)")
+            return
+        }
+        #expect(recon.inserts.isEmpty)
+        #expect(recon.restoredHashes.isEmpty)
+        let lost = await log.enumerate(page: "p.md", trustedFrontier: ["dev-B": 10])
+        #expect(lost.contains(where: { $0.hash == h }))
+
+        let retry = await log.reconcileAgainst(
+            page: "p.md",
+            doc: [],
+            mdMtime: nil,
+            trustedFrontier: ["dev-B": 10],
+            restoreFutureForeignAdds: true
+        )
+        guard case .folded(let retryRecon, .full) = retry else {
+            Issue.record("deferred peer state should not advance the watermark, got \(retry)")
+            return
+        }
+        #expect(retryRecon.restoredHashes == [h])
+    }
+
     @Test func stampedFrontierSuppressesForeignAddAtOrBeforeFrontier() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }

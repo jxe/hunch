@@ -39,7 +39,10 @@ struct ConflictMergerTests {
             let latestAdd: IntentState.AddSnapshot? = parents[h].map {
                 .init(parent: $0, markdown: "", recordedAt: now)
             }
-            byHash[h] = .tombstoned(latestAdd: latestAdd, purgedAt: now)
+            byHash[h] = .tombstoned(
+                latestAdd: latestAdd,
+                latestPurge: .init(purgedAt: now, counter: nil, deviceID: nil)
+            )
         }
         return IntentState(byHash: byHash)
     }

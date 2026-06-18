@@ -228,6 +228,12 @@ struct IntentState: Sendable {
         }
     }
 
+    struct PurgeSnapshot: Sendable {
+        let purgedAt: Date
+        let counter: UInt64?
+        let deviceID: String?
+    }
+
     enum Status: Sendable {
         /// Latest authoritative record is an `add`. The block is claimed
         /// alive by at least one device; eligible for auto-restore if it
@@ -242,7 +248,7 @@ struct IntentState: Sendable {
         /// Latest authoritative record is a `purge`. May still carry a
         /// prior `add` or `observe` snapshot (for the "Deleted on purpose"
         /// recovery surface).
-        case tombstoned(latestAdd: AddSnapshot?, purgedAt: Date)
+        case tombstoned(latestAdd: AddSnapshot?, latestPurge: PurgeSnapshot)
     }
 
     let byHash: [String: Status]
@@ -348,8 +354,15 @@ enum PatchEngine {
                     if let snapshot {
                         byHash[hash] = .alive(latestAdd: snapshot)
                     }
-                case .purge(_, _, let t):
-                    byHash[hash] = .tombstoned(latestAdd: snapshot, purgedAt: Date(timeIntervalSince1970: t))
+                case .purge:
+                    byHash[hash] = .tombstoned(
+                        latestAdd: snapshot,
+                        latestPurge: IntentState.PurgeSnapshot(
+                            purgedAt: Date(timeIntervalSince1970: auth.record.t),
+                            counter: auth.record.counter,
+                            deviceID: auth.deviceID
+                        )
+                    )
                 case .observe:
                     break // unreachable: observe isn't authoritative
                 }
@@ -377,14 +390,19 @@ enum PatchEngine {
     /// `mdMtime` gates tombstoned removes only. Missing `.alive` hashes are
     /// restored regardless of timestamp: without an explicit purge, a newer
     /// `.md` write might just be an unrelated local edit that raced ahead of
-    /// a delayed peer log. Existing live hashes are still filtered by hash so
-    /// auto-restore does not duplicate blocks already present in the doc.
+    /// a delayed peer log. When `restoreFutureForeignAdds` is false, foreign
+    /// adds beyond the `.md` stamp's trusted frontier are treated as pending
+    /// peer state instead of lost local content. Existing live hashes are still
+    /// filtered by hash so auto-restore does not duplicate blocks already
+    /// present in the doc.
     static func reconcile(
         intent: IntentState,
         doc: [Block],
         mdMtime: Date? = nil,
         trustedFrontier: [String: UInt64]? = nil,
-        allowJournalMutations: Bool = true
+        allowJournalMutations: Bool = true,
+        currentDeviceID: String? = nil,
+        restoreFutureForeignAdds: Bool = true
     ) -> Reconciliation {
         let toAppend = unloggedObservations(doc: doc, intent: intent)
 
@@ -393,11 +411,17 @@ enum PatchEngine {
         }
 
         let liveByHash = liveHashes(doc)
+        var deferredFutureForeignHashes: [String] = []
         var removes: [Remove] = []
         for (hash, status) in intent.byHash {
-            if case .tombstoned(_, let purgedAt) = status {
+            if case .tombstoned(_, let purge) = status {
                 guard let blockID = liveByHash[hash] else { continue }
-                if let mdMtime, purgedAt < mdMtime {
+                if !restoreFutureForeignAdds,
+                   isFutureForeign(purge, beyond: trustedFrontier, currentDeviceID: currentDeviceID) {
+                    deferredFutureForeignHashes.append(hash)
+                    continue
+                }
+                if let mdMtime, purge.purgedAt < mdMtime {
                     // `.md` is newer than the purge — likely an external
                     // re-add (vim'd the block back in after a prior
                     // deletion). Don't strip it out from under the user.
@@ -419,6 +443,11 @@ enum PatchEngine {
             case .alive(let add):
                 guard effectiveLiveByHash[hash] == nil else { continue }
                 if isAbsorbed(add, by: trustedFrontier) { continue }
+                if !restoreFutureForeignAdds,
+                   isFutureForeign(add, beyond: trustedFrontier, currentDeviceID: currentDeviceID) {
+                    deferredFutureForeignHashes.append(hash)
+                    continue
+                }
                 if let identity = restoreIdentity(fromMarkdown: add.markdown),
                    liveRestoreIdentities.contains(identity) {
                     continue
@@ -441,7 +470,8 @@ enum PatchEngine {
                 inserts: [],
                 restoredHashes: [],
                 removes: removes,
-                toAppend: toAppend
+                toAppend: toAppend,
+                deferredFutureForeignHashes: deferredFutureForeignHashes
             )
         }
         let aliveByHash = Dictionary(uniqueKeysWithValues: aliveEntries.map { ($0.hash, $0) })
@@ -511,6 +541,7 @@ enum PatchEngine {
             restoredHashes: restoredHashes,
             removes: removes,
             toAppend: toAppend,
+            deferredFutureForeignHashes: deferredFutureForeignHashes,
             unrestorable: unrestorable
         )
     }
@@ -520,6 +551,32 @@ enum PatchEngine {
               let deviceID = add.deviceID,
               let counter = add.counter else { return false }
         return (frontier[deviceID] ?? 0) >= counter
+    }
+
+    private static func isFutureForeign(
+        _ add: IntentState.AddSnapshot,
+        beyond frontier: [String: UInt64]?,
+        currentDeviceID: String?
+    ) -> Bool {
+        guard let frontier,
+              let currentDeviceID,
+              let deviceID = add.deviceID,
+              let counter = add.counter,
+              deviceID != currentDeviceID else { return false }
+        return (frontier[deviceID] ?? 0) < counter
+    }
+
+    private static func isFutureForeign(
+        _ purge: IntentState.PurgeSnapshot,
+        beyond frontier: [String: UInt64]?,
+        currentDeviceID: String?
+    ) -> Bool {
+        guard let frontier,
+              let currentDeviceID,
+              let deviceID = purge.deviceID,
+              let counter = purge.counter,
+              deviceID != currentDeviceID else { return false }
+        return (frontier[deviceID] ?? 0) < counter
     }
 
     /// Short, log-friendly label for a block kind. Just the case name —
@@ -582,6 +639,10 @@ enum PatchEngine {
         /// append to *this device's* log so the journal records the
         /// snapshot without claiming authorship.
         let toAppend: [Observation]
+        /// Foreign adds newer than the `.md` stamp's trusted frontier that the
+        /// caller chose not to auto-restore. Used by live passive-open flows
+        /// to avoid writing observations back over a stale peer file.
+        let deferredFutureForeignHashes: [String]
         /// Hashes the journal classifies as `.alive` but the engine can't
         /// turn into a valid `Insert`: the recorded `m` won't parse, or it
         /// parses to a block whose `atomicHash` doesn't match the recorded
@@ -598,12 +659,14 @@ enum PatchEngine {
             restoredHashes: [String],
             removes: [Remove] = [],
             toAppend: [Observation] = [],
+            deferredFutureForeignHashes: [String] = [],
             unrestorable: [UnrestorableEntry] = []
         ) {
             self.inserts = inserts
             self.restoredHashes = restoredHashes
             self.removes = removes
             self.toAppend = toAppend
+            self.deferredFutureForeignHashes = deferredFutureForeignHashes
             self.unrestorable = unrestorable
         }
     }
@@ -1286,9 +1349,10 @@ extension IntentState {
         var out: [PurgedBlock] = []
         let cutoff = since?.timeIntervalSince1970
         for (hash, status) in byHash {
-            guard case .tombstoned(let latestAdd, let purgedAt) = status,
+            guard case .tombstoned(let latestAdd, let purge) = status,
                   let add = latestAdd,
                   !liveHashes.contains(hash) else { continue }
+            let purgedAt = purge.purgedAt
             if let cutoff, purgedAt.timeIntervalSince1970 < cutoff { continue }
             out.append(PurgedBlock.adapt(
                 hash: hash,

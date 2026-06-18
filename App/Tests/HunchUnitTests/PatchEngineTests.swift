@@ -616,6 +616,57 @@ struct PatchEngineTests {
         #expect(recon.inserts.count == 1, "add is newer than .md → restore")
     }
 
+    @Test func passiveOpenDoesNotRestoreForeignAddBeyondStampedFrontier() {
+        let x = Block.paragraph(text: attr("X from Mac"))
+        let intent = PatchEngine.intent(from: journal(("mac", [addRecord(x, counter: 11, t: 200)])))
+
+        let recon = PatchEngine.reconcile(
+            intent: intent,
+            doc: [],
+            trustedFrontier: ["mac": 10],
+            currentDeviceID: "ios",
+            restoreFutureForeignAdds: false
+        )
+
+        #expect(recon.inserts.isEmpty)
+        #expect(recon.restoredHashes.isEmpty)
+    }
+
+    @Test func passiveOpenDoesNotRemoveForeignPurgeBeyondStampedFrontier() {
+        let old = Block.paragraph(text: attr("old text"))
+        let intent = PatchEngine.intent(from: journal(("mac", [
+            addRecord(old, counter: 9, t: 100),
+            purgeRecord(old, counter: 11, t: 200),
+        ])))
+
+        let recon = PatchEngine.reconcile(
+            intent: intent,
+            doc: [old],
+            trustedFrontier: ["mac": 10],
+            currentDeviceID: "ios",
+            restoreFutureForeignAdds: false
+        )
+
+        #expect(recon.removes.isEmpty)
+        #expect(recon.deferredFutureForeignHashes == [old.atomicHash])
+    }
+
+    @Test func passiveOpenStillRestoresOwnAddBeyondStampedFrontier() {
+        let x = Block.paragraph(text: attr("own crash recovery"))
+        let intent = PatchEngine.intent(from: journal(("ios", [addRecord(x, counter: 11, t: 200)])))
+
+        let recon = PatchEngine.reconcile(
+            intent: intent,
+            doc: [],
+            trustedFrontier: ["ios": 10],
+            currentDeviceID: "ios",
+            restoreFutureForeignAdds: false
+        )
+
+        #expect(recon.inserts.count == 1)
+        #expect(recon.restoredHashes == [x.atomicHash])
+    }
+
     /// Already-live hashes do not produce inserts, even when another device's
     /// add record is newer. This is the duplicate guard for auto-restore.
     @Test func autoRestoreDoesNotDuplicateLiveHash() {
@@ -828,7 +879,7 @@ struct PatchEngineTests {
         let oldPurge = IntentState(byHash: [
             x.atomicHash: .tombstoned(
                 latestAdd: .init(parent: nil, markdown: BlockSerializer.serializeAtomic(x), recordedAt: now.addingTimeInterval(-3600)),
-                purgedAt: now.addingTimeInterval(-7200)
+                latestPurge: .init(purgedAt: now.addingTimeInterval(-7200), counter: nil, deviceID: nil)
             )
         ])
 

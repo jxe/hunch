@@ -212,7 +212,8 @@ actor RecoveryLog {
         doc: [Block],
         mdMtime: Date?,
         trustedFrontier: [String: UInt64]? = nil,
-        allowJournalMutations: Bool = true
+        allowJournalMutations: Bool = true,
+        restoreFutureForeignAdds: Bool = true
     ) -> ReconcileOutcome {
         loadWatermarksIfNeeded()
         let dir = pageDir(rel: rel)
@@ -244,8 +245,12 @@ actor RecoveryLog {
                 oldStats: w.devices,
                 newStats: currentStats,
                 trustedFrontier: trustedFrontier,
-                allowJournalMutations: allowJournalMutations
+                allowJournalMutations: allowJournalMutations,
+                restoreFutureForeignAdds: restoreFutureForeignAdds
             )
+            guard recon.deferredFutureForeignHashes.isEmpty else {
+                return .folded(recon, mode: .tail)
+            }
             pageWatermarks?[rel] = PageWatermark(mdMtime: mdMtimeT, devices: currentStats, frontier: maxCounterFrontier(page: rel))
             saveWatermarks()
             return .folded(recon, mode: .tail)
@@ -258,8 +263,12 @@ actor RecoveryLog {
             doc: doc,
             mdMtime: mdMtime,
             trustedFrontier: trustedFrontier,
-            allowJournalMutations: allowJournalMutations
+            allowJournalMutations: allowJournalMutations,
+            restoreFutureForeignAdds: restoreFutureForeignAdds
         )
+        guard recon.deferredFutureForeignHashes.isEmpty else {
+            return .folded(recon, mode: .full)
+        }
         pageWatermarks?[rel] = PageWatermark(mdMtime: mdMtimeT, devices: currentStats, frontier: maxCounterFrontier(page: rel))
         saveWatermarks()
         return .folded(recon, mode: .full)
@@ -386,7 +395,8 @@ actor RecoveryLog {
         oldStats: [String: DeviceWatermark],
         newStats: [String: DeviceWatermark],
         trustedFrontier: [String: UInt64]?,
-        allowJournalMutations: Bool
+        allowJournalMutations: Bool,
+        restoreFutureForeignAdds: Bool
     ) -> PatchEngine.Reconciliation {
         let docHashes = Self.collectAtomicHashes(doc)
         var addsByHash: [String: IntentState.AddSnapshot] = [:]
@@ -466,7 +476,9 @@ actor RecoveryLog {
             doc: doc,
             mdMtime: mdMtime,
             trustedFrontier: trustedFrontier,
-            allowJournalMutations: allowJournalMutations
+            allowJournalMutations: allowJournalMutations,
+            currentDeviceID: deviceID,
+            restoreFutureForeignAdds: restoreFutureForeignAdds
         )
     }
 
@@ -475,7 +487,8 @@ actor RecoveryLog {
         doc: [Block],
         mdMtime: Date?,
         trustedFrontier: [String: UInt64]?,
-        allowJournalMutations: Bool
+        allowJournalMutations: Bool,
+        restoreFutureForeignAdds: Bool
     ) -> PatchEngine.Reconciliation {
         let journal = readJournal(page: rel)
         let intent = PatchEngine.intent(from: journal)
@@ -484,7 +497,9 @@ actor RecoveryLog {
             doc: doc,
             mdMtime: mdMtime,
             trustedFrontier: trustedFrontier,
-            allowJournalMutations: allowJournalMutations
+            allowJournalMutations: allowJournalMutations,
+            currentDeviceID: deviceID,
+            restoreFutureForeignAdds: restoreFutureForeignAdds
         )
     }
 
