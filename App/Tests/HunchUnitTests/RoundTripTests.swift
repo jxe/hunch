@@ -47,6 +47,95 @@ struct RoundTripTests {
         assertIdempotent("- [ ] open\n- [x] done\n")
     }
 
+    @Test func emptyParagraphSerializesAsExtraBlankLine() {
+        let tree = [
+            Block.paragraph(text: AttributedString("before")),
+            Block.paragraph(text: AttributedString("")),
+            Block.paragraph(text: AttributedString("after")),
+        ]
+        let serialized = BlockSerializer.serialize(tree)
+        #expect(serialized == "before\n\n\nafter\n\n")
+        #expect(!serialized.contains("\u{00A0}"))
+
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 3)
+        guard case .paragraph(let empty) = reparsed[1].kind else {
+            Issue.record("expected empty paragraph in the middle")
+            return
+        }
+        #expect(String(empty.characters).isEmpty)
+    }
+
+    @Test func emptyParagraphBetweenListItemsRoundTrips() {
+        let tree = [
+            Block.bullet(text: AttributedString("before")),
+            Block.paragraph(text: AttributedString("")),
+            Block.bullet(text: AttributedString("after")),
+        ]
+        let serialized = BlockSerializer.serialize(tree)
+        #expect(serialized == "- before\n\n\n- after\n")
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 3)
+        if case .paragraph(let text) = reparsed[1].kind {
+            #expect(String(text.characters).isEmpty)
+        } else {
+            Issue.record("expected empty paragraph between list items")
+        }
+    }
+
+    @Test func consecutiveEmptyParagraphsRoundTrip() {
+        let tree = [
+            Block.paragraph(text: AttributedString("before")),
+            Block.paragraph(text: AttributedString("")),
+            Block.paragraph(text: AttributedString("")),
+            Block.paragraph(text: AttributedString("after")),
+        ]
+        let serialized = BlockSerializer.serialize(tree)
+        #expect(serialized == "before\n\n\n\nafter\n\n")
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 4)
+        for index in 1...2 {
+            if case .paragraph(let text) = reparsed[index].kind {
+                #expect(String(text.characters).isEmpty)
+            } else {
+                Issue.record("expected empty paragraph at index \(index)")
+            }
+        }
+    }
+
+    @Test func emptyParagraphAfterToggleRoundTrips() {
+        let tree = [
+            Block.toggle(
+                title: AttributedString("before"),
+                children: [.bullet(text: AttributedString("child"))]
+            ),
+            Block.paragraph(text: AttributedString("")),
+            Block.toggle(
+                title: AttributedString("after"),
+                children: [.bullet(text: AttributedString("child"))]
+            ),
+        ]
+        let serialized = BlockSerializer.serialize(tree)
+        #expect(serialized == "▸ before\n  - child\n\n\n▸ after\n  - child\n")
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 3)
+        if case .paragraph(let text) = reparsed[1].kind {
+            #expect(String(text.characters).isEmpty)
+        } else {
+            Issue.record("expected empty paragraph between toggles")
+        }
+    }
+
+    @Test func legacyNBSPEmptyParagraphStillParses() {
+        let blocks = BlockParser.parse("before\n\n\u{00A0}\n\nafter\n")
+        #expect(blocks.count == 3)
+        if case .paragraph(let text) = blocks[1].kind {
+            #expect(String(text.characters).isEmpty)
+        } else {
+            Issue.record("expected empty paragraph from NBSP marker")
+        }
+    }
+
     @Test func quote() {
         assertIdempotent("> A quoted line.\n")
     }
@@ -61,6 +150,160 @@ struct RoundTripTests {
 
     @Test func toggleWithBody() {
         assertIdempotent("▸ Title\n  body line\n")
+    }
+
+    @Test func siblingTogglesSerializeTight() {
+        let tree = [
+            Block.toggle(
+                title: AttributedString("One"),
+                children: [.bullet(text: AttributedString("a"))]
+            ),
+            Block.toggle(
+                title: AttributedString("Two"),
+                children: [.bullet(text: AttributedString("b"))]
+            ),
+        ]
+        let serialized = BlockSerializer.serialize(tree)
+        #expect(serialized == "▸ One\n  - a\n▸ Two\n  - b\n")
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 2)
+        #expect(reparsed.allSatisfy {
+            if case .toggle = $0.kind { return true }
+            return false
+        })
+    }
+
+    @Test func bulletWithToggleChildrenRoundTripsTree() {
+        let tree = [
+            Block.bullet(
+                text: AttributedString("Next steps with writing"),
+                children: [
+                    .toggle(
+                        title: AttributedString("FFF"),
+                        children: [.bullet(text: AttributedString("enter edits"))]
+                    ),
+                    .toggle(
+                        title: AttributedString("Valuation"),
+                        children: [.bullet(text: AttributedString("get flow right"))]
+                    ),
+                    .toggle(
+                        title: AttributedString("Change"),
+                        children: [.bullet(text: AttributedString("review sections"))]
+                    ),
+                ]
+            ),
+            Block.bullet(text: AttributedString("Look through social and berlin")),
+        ]
+        let serialized = BlockSerializer.serialize(tree)
+        #expect(serialized == """
+        - Next steps with writing
+          ▸ FFF
+            - enter edits
+          ▸ Valuation
+            - get flow right
+          ▸ Change
+            - review sections
+        - Look through social and berlin
+        """)
+
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 2)
+        guard case .bullet(let text) = reparsed[0].kind else {
+            Issue.record("expected leading bullet")
+            return
+        }
+        #expect(String(text.characters) == "Next steps with writing")
+        #expect(reparsed[0].children.count == 3)
+        #expect(reparsed[0].children.allSatisfy {
+            if case .toggle = $0.kind { return true }
+            return false
+        })
+    }
+
+    @Test func blankLineAfterBulletWithToggleChildrenRoundTrips() {
+        let tree = [
+            Block.bullet(
+                text: AttributedString("Next steps with writing"),
+                children: [
+                    .toggle(
+                        title: AttributedString("FFF"),
+                        children: [.bullet(text: AttributedString("enter edits"))]
+                    ),
+                    .toggle(
+                        title: AttributedString("Change"),
+                        children: [.bullet(text: AttributedString("review sections"))]
+                    ),
+                ]
+            ),
+            Block.paragraph(text: AttributedString("")),
+            Block.bullet(text: AttributedString("Look through social and berlin")),
+        ]
+        let serialized = BlockSerializer.serialize(tree)
+        #expect(serialized == """
+        - Next steps with writing
+          ▸ FFF
+            - enter edits
+          ▸ Change
+            - review sections
+
+
+        - Look through social and berlin
+        """)
+
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 3)
+        if case .paragraph(let text) = reparsed[1].kind {
+            #expect(String(text.characters).isEmpty)
+        } else {
+            Issue.record("expected empty paragraph after nested toggles")
+        }
+    }
+
+    @Test func indentedToggleSourceKeepsFollowingBlankLine() {
+        let blocks = BlockParser.parse("""
+        - Next steps with writing
+          ▸ FFF
+            - enter edits
+          ▸ Change
+            - review sections
+
+
+        - Look through social and berlin
+        """)
+        #expect(blocks.count == 3)
+        guard case .bullet(let text) = blocks[0].kind else {
+            Issue.record("expected leading bullet")
+            return
+        }
+        #expect(String(text.characters) == "Next steps with writing")
+        #expect(blocks[0].children.count == 2)
+        if case .paragraph(let empty) = blocks[1].kind {
+            #expect(String(empty.characters).isEmpty)
+        } else {
+            Issue.record("expected empty paragraph after nested toggles")
+        }
+    }
+
+    @Test func indentedToggleSourceStaysUnderListItem() {
+        let blocks = BlockParser.parse("""
+        - Next steps with writing
+          ▸ FFF
+            - enter edits
+          ▸ Valuation
+            - get flow right
+        - Look through social and berlin
+        """)
+        #expect(blocks.count == 2)
+        guard case .bullet(let text) = blocks[0].kind else {
+            Issue.record("expected leading bullet")
+            return
+        }
+        #expect(String(text.characters) == "Next steps with writing")
+        #expect(blocks[0].children.count == 2)
+        #expect(blocks[0].children.allSatisfy {
+            if case .toggle = $0.kind { return true }
+            return false
+        })
     }
 
     @Test func templateButtonWithBody() {
@@ -221,9 +464,9 @@ struct RoundTripTests {
     // MARK: - List item with non-list child (bullet+subpage and friends)
 
     /// Bullet with a `.subpage` child must survive serialize → parse with the
-    /// nested-child structure intact. The serializer still puts a blank line
-    /// between the marker line and non-list children so CommonMark doesn't
-    /// fold the indented link into the bullet's paragraph.
+    /// nested-child structure intact. The serializer emits the tight form and
+    /// the parser peels the indented `.md` link back out of the leading
+    /// paragraph.
     @Test func bulletWithSubpageChildRoundTripsTree() {
         let tree = [Block.bullet(
             text: AttributedString("Foo bullet"),
@@ -246,7 +489,7 @@ struct RoundTripTests {
     }
 
     @Test func bulletWithSubpageChildIdempotent() {
-        assertIdempotent("- Foo bullet\n\n  [Subpage](Subpage.md)\n")
+        assertIdempotent("- Foo bullet\n  [Subpage](Subpage.md)\n")
     }
 
     /// Backward-compat: files written by the pre-blank-line serializer have
@@ -291,7 +534,7 @@ struct RoundTripTests {
     }
 
     @Test func numberedWithSubpageChildIdempotent() {
-        assertIdempotent("1. Foo\n\n   [Sub](sub.md)\n")
+        assertIdempotent("1. Foo\n   [Sub](sub.md)\n")
     }
 
     /// Todos render `- [ ] ` but in GFM the list marker itself is just `- ` —
@@ -317,7 +560,7 @@ struct RoundTripTests {
     }
 
     @Test func todoWithSubpageChildIdempotent() {
-        assertIdempotent("- [ ] Foo\n\n  [Sub](sub.md)\n")
+        assertIdempotent("- [ ] Foo\n  [Sub](sub.md)\n")
     }
 
     // MARK: - Consecutive numbering (pasteboard path)

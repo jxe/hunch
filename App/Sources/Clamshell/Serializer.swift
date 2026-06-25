@@ -204,17 +204,13 @@ enum BlockSerializer {
         let prefix = indentPrefix(depth)
         switch block.kind {
         case .paragraph(let text):
-            // An empty paragraph has no native markdown representation — blank lines
-            // are block separators, not blocks. Emit U+00A0 (non-breaking space) on
-            // its own line so the paragraph survives round-trip; the parser detects
-            // a single-NBSP paragraph and converts it back to empty. Whitespace-only
-            // bodies follow the same path — the hash normalizer treats them as
-            // empty, so serialize them the same way to keep the round-trip stable.
             let body = inlineString(text)
-            let line = body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "\u{00A0}" : body
+            if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "\n"
+            }
             // Paragraphs cannot contain children today, but defensively serialize
             // any descendant tree for forward-compat.
-            var s = prefix + line + "\n\n"
+            var s = prefix + body + "\n\n"
             if !block.children.isEmpty {
                 s += serializeContainerBody(block.children, depth: depth + 1, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
             }
@@ -258,15 +254,7 @@ enum BlockSerializer {
 
         case .toggle(let title):
             let titleLine = prefix + "▸ " + inlineString(title) + "\n"
-            var bodyText = serializeContainerBody(block.children, depth: depth + 1, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
-            // Toggles always end with a blank line so the next sibling has separation.
-            if !bodyText.hasSuffix("\n\n") {
-                if bodyText.hasSuffix("\n") {
-                    bodyText += "\n"
-                } else if !bodyText.isEmpty {
-                    bodyText += "\n\n"
-                }
-            }
+            let bodyText = serializeContainerBody(block.children, depth: depth + 1, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
             return titleLine + bodyText
 
         case .templateButton(let label):
@@ -305,6 +293,15 @@ enum BlockSerializer {
         if isListItem(current), isListItem(next) {
             return false
         }
+        if isToggle(current), isToggle(next) {
+            return false
+        }
+        if isEmptyParagraph(current) {
+            return false
+        }
+        if isEmptyParagraph(next) {
+            return true
+        }
         return true
     }
 
@@ -317,14 +314,32 @@ enum BlockSerializer {
         }
     }
 
+    private static func isToggle(_ block: Block) -> Bool {
+        if case .toggle = block.kind { return true }
+        return false
+    }
+
+    private static func isSubpage(_ block: Block) -> Bool {
+        if case .subpage = block.kind { return true }
+        return false
+    }
+
+    private static func isEmptyParagraph(_ block: Block) -> Bool {
+        guard case .paragraph(let text) = block.kind else { return false }
+        return inlineString(text).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// List items terminate with `\n` (not `\n\n`) so successive siblings stay
-    /// in the same list. When the item has non-list children, two things have
-    /// to be right for CommonMark to keep the body inside the item on reparse:
+    /// in the same list. When the item has paragraph-like children, two things
+    /// have to be right for CommonMark to keep the body inside the item on
+    /// reparse:
     ///
     /// 1. The body is separated from the marker line by a blank line only when
-    ///    the first child is not itself a list item. Without it, an indented
-    ///    paragraph, subpage link, quote, … folds into the leading paragraph
-    ///    via lazy continuation and the nested-child structure is lost.
+    ///    the first child is not itself a list item or subpage row. Without
+    ///    it, an indented paragraph, quote, … folds into the leading paragraph
+    ///    via lazy continuation and the nested-child structure is lost. A
+    ///    subpage row is safe because the parser peels a trailing softbreak +
+    ///    `.md` link back into a child block.
     /// 2. The body indents to the marker's *content column* — `prefix.count +
     ///    marker.count` spaces. That's 2 for a bullet, 3 for `1. `, 6 for a
     ///    todo's `- [ ] `. A shallower indent ends the list on reparse and the
@@ -344,8 +359,12 @@ enum BlockSerializer {
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.isEmpty ? "" : childIndent + $0 }
             .joined(separator: "\n")
-        let separator = children.first.map(isListItem) == true ? "" : "\n"
+        let separator = children.first.map(canStartListBodyTight) == true ? "" : "\n"
         return line + separator + indented
+    }
+
+    private static func canStartListBodyTight(_ block: Block) -> Bool {
+        isListItem(block) || isToggle(block) || isSubpage(block)
     }
 
     /// Escape `]`, `\`, and newlines inside the alt text so the bracket pair

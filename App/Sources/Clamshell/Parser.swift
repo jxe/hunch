@@ -24,7 +24,7 @@ enum BlockParser {
     }
 
     private static func parseMarkdown(_ source: String) -> [Block] {
-        let document = Markdown.Document(parsing: source, options: [.parseBlockDirectives])
+        let document = Markdown.Document(parsing: markingEmptyParagraphs(in: source), options: [.parseBlockDirectives])
         let children = Array(document.children)
         return assemble(children).blocks
     }
@@ -130,13 +130,53 @@ enum BlockParser {
             // Recursively parse the toggle body with the full pipeline so nested
             // toggles, templates, and headings within the body all fold correctly.
             let body = parse(bodySource)
-            out.append(.toggle(title: inlineParse(open.title), children: body))
+            let toggle = Block.toggle(title: inlineParse(open.title), children: body)
+            if open.leadingSpaces > 0,
+               appendToLastContainer(&out, atDepth: parentDepth(forChildLeadingSpaces: open.leadingSpaces), child: toggle) {
+                // attached to the list/toggle/template container it was indented under
+            } else {
+                out.append(toggle)
+            }
+            appendEmptyParagraphsFromTrailingBlankLines(
+                j - bodyEnd,
+                beforeNextLine: j < lines.count ? lines[j].text : nil,
+                into: &out
+            )
 
             i = j
         }
 
         flushRegular()
         return out
+    }
+
+    private static func parentDepth(forChildLeadingSpaces spaces: Int) -> Int {
+        max(0, spaces / 2 - 1)
+    }
+
+    private static func appendToLastContainer(_ blocks: inout [Block], atDepth depth: Int, child: Block) -> Bool {
+        guard !blocks.isEmpty else { return false }
+        let index = blocks.index(before: blocks.endIndex)
+        if depth == 0 {
+            guard blocks[index].canContain(child) else { return false }
+            blocks[index].children.append(child)
+            return true
+        }
+        return appendToLastContainer(&blocks[index].children, atDepth: depth - 1, child: child)
+    }
+
+    private static func appendEmptyParagraphsFromTrailingBlankLines(_ blankLineCount: Int, beforeNextLine nextLine: String?, into out: inout [Block]) {
+        guard let nextLine, blankLineCount > 1 else { return }
+        let emptyCount = blankLineCount - 1
+        let nextLeading = nextLine.prefix { $0 == " " }.count
+        for _ in 0..<emptyCount {
+            let empty = Block.paragraph(text: AttributedString(""))
+            if nextLeading > 0,
+               appendToLastContainer(&out, atDepth: parentDepth(forChildLeadingSpaces: nextLeading), child: empty) {
+                continue
+            }
+            out.append(empty)
+        }
     }
 
     private static func parseToggleOpen(_ line: String) -> ToggleOpen? {
@@ -164,6 +204,74 @@ enum BlockParser {
         }
         if count < expectedLength { return false }
         return trimmed.dropFirst(count).allSatisfy { $0 == " " }
+    }
+
+    /// CommonMark discards blank lines, but Hunch has a real empty-paragraph
+    /// block. Treat a single blank line as ordinary markdown separation and
+    /// each additional blank line in the same run as one empty paragraph.
+    /// The injected NBSP marker reuses the legacy empty-paragraph parser path
+    /// while keeping newly serialized files free of visible NBSP rows.
+    private static func markingEmptyParagraphs(in source: String) -> String {
+        let lines = splitPreservingLineEndings(source)
+        guard !lines.isEmpty else { return source }
+
+        var out = ""
+        var i = 0
+        var fenceLength: Int? = nil
+        var sawNonBlank = false
+
+        while i < lines.count {
+            let line = lines[i]
+
+            if let f = fenceLength {
+                if isClosingFence(line.text, expectedLength: f) { fenceLength = nil }
+                out += line.fullText
+                i += 1
+                continue
+            }
+
+            if let len = openingFenceLength(line.text) {
+                fenceLength = len
+                sawNonBlank = true
+                out += line.fullText
+                i += 1
+                continue
+            }
+
+            if isBlankMarkdownLine(line.text) {
+                let start = i
+                while i < lines.count, isBlankMarkdownLine(lines[i].text) {
+                    i += 1
+                }
+
+                let count = i - start
+                let hasNonBlankAfter = i < lines.count
+                if sawNonBlank, hasNonBlankAfter, count > 1 {
+                    out += lines[start].fullText
+                    let markerIndent = leadingSpaces(in: lines[i].text)
+                    for _ in 1..<count {
+                        out += markerIndent + "\u{00A0}\n\n"
+                    }
+                } else {
+                    out += lines[start..<i].map(\.fullText).joined()
+                }
+                continue
+            }
+
+            sawNonBlank = true
+            out += line.fullText
+            i += 1
+        }
+
+        return out
+    }
+
+    private static func isBlankMarkdownLine(_ line: String) -> Bool {
+        line.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r")).isEmpty
+    }
+
+    private static func leadingSpaces(in line: String) -> String {
+        String(line.prefix { $0 == " " })
     }
 
     private static func parseTemplateContainers(_ source: String) -> [Block] {
