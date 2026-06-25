@@ -28,6 +28,17 @@ struct RoundTripTests {
         assertIdempotent("- one\n  - nested\n- two\n")
     }
 
+    @Test func bulletAndNestedListSerializeTight() {
+        let tree = [
+            Block.bullet(
+                text: AttributedString("one"),
+                children: [.bullet(text: AttributedString("nested"))]
+            ),
+            Block.bullet(text: AttributedString("two")),
+        ]
+        #expect(BlockSerializer.serialize(tree) == "- one\n  - nested\n- two\n")
+    }
+
     @Test func numberedList() {
         assertIdempotent("1. first\n1. second\n")
     }
@@ -210,9 +221,9 @@ struct RoundTripTests {
     // MARK: - List item with non-list child (bullet+subpage and friends)
 
     /// Bullet with a `.subpage` child must survive serialize → parse with the
-    /// nested-child structure intact. The serializer puts a blank line between
-    /// the marker line and the child so CommonMark doesn't fold the indented
-    /// link into the bullet's paragraph.
+    /// nested-child structure intact. The serializer still puts a blank line
+    /// between the marker line and non-list children so CommonMark doesn't
+    /// fold the indented link into the bullet's paragraph.
     @Test func bulletWithSubpageChildRoundTripsTree() {
         let tree = [Block.bullet(
             text: AttributedString("Foo bullet"),
@@ -313,14 +324,13 @@ struct RoundTripTests {
 
     /// Default flag preserves the on-disk `1. 1. 1.` form — load-bearing
     /// for minimal git diffs on insert/delete in the middle of a list.
-    /// Same-depth siblings get a blank line separator (loose-list form).
     @Test func numberedListDefaultStaysAtOne() {
         let tree = [
             Block.numbered(text: AttributedString("a")),
             Block.numbered(text: AttributedString("b")),
             Block.numbered(text: AttributedString("c")),
         ]
-        #expect(BlockSerializer.serialize(tree) == "1. a\n\n1. b\n\n1. c\n")
+        #expect(BlockSerializer.serialize(tree) == "1. a\n1. b\n1. c\n")
     }
 
     /// Pasteboard flag renumbers a run of consecutive `.numbered` siblings
@@ -331,7 +341,7 @@ struct RoundTripTests {
             Block.numbered(text: AttributedString("b")),
             Block.numbered(text: AttributedString("c")),
         ]
-        #expect(BlockSerializer.serialize(tree, consecutiveNumbering: true) == "1. a\n\n2. b\n\n3. c\n")
+        #expect(BlockSerializer.serialize(tree, consecutiveNumbering: true) == "1. a\n2. b\n3. c\n")
     }
 
     /// A non-numbered block between runs resets the counter.
@@ -344,7 +354,7 @@ struct RoundTripTests {
             .numbered(text: AttributedString("d")),
         ]
         let out = BlockSerializer.serialize(tree, consecutiveNumbering: true)
-        #expect(out == "1. a\n\n2. b\n\nbreak\n\n1. c\n\n2. d\n")
+        #expect(out == "1. a\n2. b\n\nbreak\n\n1. c\n2. d\n")
     }
 
     /// Double-digit indices need their child indent to widen to the

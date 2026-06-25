@@ -187,13 +187,9 @@ enum BlockSerializer {
             let chunk = serializeBlock(block, depth: depth, numberedIndex: numberedIndex, titleForPath: titleForPath, consecutiveNumbering: consecutiveNumbering)
             out += chunk
             let isLast = i == blocks.count - 1
-            // Inter-block separator: paragraphs/headings/quotes/code/dividers
-            // already end with `\n\n`. Lists and the toggle/template envelope
-            // end with `\n` and need an extra blank line between unless we're
-            // mid-list — but every block here is at the same depth, so a blank
-            // line is always safe.
             if !isLast {
-                if !chunk.hasSuffix("\n\n") {
+                let next = blocks[i + 1]
+                if !chunk.hasSuffix("\n\n"), needsBlankLineBetween(block, and: next) {
                     if chunk.hasSuffix("\n") {
                         out += "\n"
                     } else {
@@ -305,14 +301,30 @@ enum BlockSerializer {
         return out
     }
 
+    private static func needsBlankLineBetween(_ current: Block, and next: Block) -> Bool {
+        if isListItem(current), isListItem(next) {
+            return false
+        }
+        return true
+    }
+
+    private static func isListItem(_ block: Block) -> Bool {
+        switch block.kind {
+        case .bullet, .numbered, .todo:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// List items terminate with `\n` (not `\n\n`) so successive siblings stay
-    /// in the same list. When the item has children, two things have to be
-    /// right for CommonMark to keep the body inside the item on reparse:
+    /// in the same list. When the item has non-list children, two things have
+    /// to be right for CommonMark to keep the body inside the item on reparse:
     ///
-    /// 1. The body is separated from the marker line by a blank line. Without
-    ///    it, an indented non-list child (paragraph, subpage link, quote, …)
-    ///    folds into the leading paragraph via lazy continuation and the
-    ///    nested-child structure is lost.
+    /// 1. The body is separated from the marker line by a blank line only when
+    ///    the first child is not itself a list item. Without it, an indented
+    ///    paragraph, subpage link, quote, … folds into the leading paragraph
+    ///    via lazy continuation and the nested-child structure is lost.
     /// 2. The body indents to the marker's *content column* — `prefix.count +
     ///    marker.count` spaces. That's 2 for a bullet, 3 for `1. `, 6 for a
     ///    todo's `- [ ] `. A shallower indent ends the list on reparse and the
@@ -332,7 +344,8 @@ enum BlockSerializer {
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.isEmpty ? "" : childIndent + $0 }
             .joined(separator: "\n")
-        return line + "\n" + indented
+        let separator = children.first.map(isListItem) == true ? "" : "\n"
+        return line + separator + indented
     }
 
     /// Escape `]`, `\`, and newlines inside the alt text so the bracket pair
