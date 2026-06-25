@@ -284,7 +284,12 @@ extension EditorView {
         // Between-rows insertion: resolve "kth visible slot" against the
         // visible-flat row frames, then convert to a tree DropPath using
         // the layout's depth + parent metadata.
-        let slot = resolveDropSlot(forY: y, in: rows, previousIndex: visibleSlotForCurrentDropPath(in: rows))
+        let slot = resolveDropSlot(
+            forY: y,
+            in: rows,
+            previousIndex: visibleSlotForCurrentDropPath(in: rows),
+            liftFootprint: currentLiftFootprint(in: rows)
+        )
         return .insertAt(dropPath(forVisibleSlot: slot, rows: rows))
     }
 
@@ -295,7 +300,12 @@ extension EditorView {
     /// full `rows` index space without a sparser-to-full remap. Returns 0
     /// when no row has yet been measured, which `dropPath` handles as
     /// "top of document."
-    func resolveDropSlot(forY y: CGFloat, in rows: [VisibleRow], previousIndex: Int? = nil) -> Int {
+    func resolveDropSlot(
+        forY y: CGFloat,
+        in rows: [VisibleRow],
+        previousIndex: Int? = nil,
+        liftFootprint: ClosedRange<Int>? = nil
+    ) -> Int {
         let knownFrames: [(rowsIndex: Int, frame: ReorderDropFrame)] = rows.enumerated().compactMap { (k, row) in
             layoutCache.frame(of: row.id).map { (k, ReorderDropFrame(frame: $0)) }
         }
@@ -303,9 +313,17 @@ extension EditorView {
         let prevInKnownSpace: Int? = previousIndex.map { prev in
             knownFrames.firstIndex { $0.rowsIndex >= prev } ?? knownFrames.count
         }
-        let knownSlot = ReorderDropResolver.insertionIndex(
+        let sourceRangeInKnownSpace: ClosedRange<Int>? = liftFootprint.flatMap { footprint in
+            guard let lower = knownFrames.firstIndex(where: { $0.rowsIndex >= footprint.lowerBound }),
+                  let upper = knownFrames.lastIndex(where: { $0.rowsIndex <= footprint.upperBound }),
+                  lower <= upper
+            else { return nil }
+            return lower...upper
+        }
+        let knownSlot = ReorderDropResolver.reorderInsertionIndex(
             forY: y,
             rowFrames: knownFrames.map { $0.frame },
+            sourceRange: sourceRangeInKnownSpace,
             previousIndex: prevInKnownSpace
         )
         if knownSlot < knownFrames.count {

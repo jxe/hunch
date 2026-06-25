@@ -156,6 +156,67 @@ struct ReorderDropResolverTests {
         )
     }
 
+    @Test func draggingUpIntoImmediatePreviousRowOpensGapBeforeThatRow() {
+        let frames = makeFrames(count: 4)
+
+        #expect(
+            ReorderDropResolver.insertionIndex(
+                forY: 119,
+                rowFrames: frames,
+                previousIndex: 2
+            ) == 2
+        )
+        #expect(
+            ReorderDropResolver.reorderInsertionIndex(
+                forY: 119,
+                rowFrames: frames,
+                sourceRange: 2...2,
+                previousIndex: 2
+            ) == 1
+        )
+    }
+
+    @Test func draggingDownIntoImmediateNextRowOpensGapAfterThatRow() {
+        let frames = makeFrames(count: 4)
+
+        #expect(
+            ReorderDropResolver.insertionIndex(
+                forY: 121,
+                rowFrames: frames,
+                previousIndex: 2
+            ) == 2
+        )
+        #expect(
+            ReorderDropResolver.reorderInsertionIndex(
+                forY: 121,
+                rowFrames: frames,
+                sourceRange: 1...1,
+                previousIndex: 2
+            ) == 3
+        )
+    }
+
+    @Test func sourceAwareReorderKeepsNoOpSlotWhilePointerIsInsideSourceRow() {
+        let frames = makeFrames(count: 4)
+
+        #expect(
+            ReorderDropResolver.reorderInsertionIndex(
+                forY: 121,
+                rowFrames: frames,
+                sourceRange: 2...2,
+                previousIndex: 2
+            ) == 2
+        )
+        #expect(
+            ReorderDropResolver.reorderInsertionIndex(
+                forY: 119,
+                rowFrames: frames,
+                sourceRange: 1...1,
+                previousIndex: 2
+            ) == 2
+        )
+    }
+
     private func makeFrames(count: Int) -> [ReorderDropFrame] {
         (0..<count).map { i in
             ReorderDropFrame(frame: CGRect(x: 0, y: CGFloat(i) * 60, width: 320, height: 60))
