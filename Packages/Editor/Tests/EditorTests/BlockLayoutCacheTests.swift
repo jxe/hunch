@@ -270,4 +270,42 @@ struct BlockLayoutCacheTests {
         #expect(rowsOpen.map(\.id) == [toggle.id, child.id, after.id])
         #expect(!hiddenOpen.contains(child.id))
     }
+
+    @Test func collapseStateChangeRefreshesVisibleRowsWithoutExplicitInvalidation() {
+        let cache = BlockLayoutCache()
+        let child = Block.paragraph(text: AttributedString("child"))
+        let toggle = Block.toggle(title: AttributedString("toggle"), children: [child])
+        let snapshot = [toggle]
+
+        let (rowsClosed, _) = cache.currentVisibleRows(
+            snapshot: snapshot,
+            isCollapsed: { $0.id == toggle.id }
+        )
+        #expect(rowsClosed.map(\.id) == [toggle.id])
+
+        let vAfterClosed = cache.structuralVersion
+        let (rowsOpen, hiddenOpen) = cache.currentVisibleRows(
+            snapshot: snapshot,
+            isCollapsed: { _ in false }
+        )
+
+        #expect(rowsOpen.map(\.id) == [toggle.id, child.id])
+        #expect(!hiddenOpen.contains(child.id))
+        #expect(cache.structuralVersion == vAfterClosed &+ 1)
+    }
+
+    @Test func snapshotChangeRefreshesVisibleRowsWithoutExplicitInvalidation() {
+        let cache = BlockLayoutCache()
+        let a = Block.paragraph(text: AttributedString("a"))
+        let b = Block.paragraph(text: AttributedString("b"))
+
+        let (rows1, _) = cache.currentVisibleRows(snapshot: [a], isCollapsed: { _ in false })
+        #expect(rows1.map(\.id) == [a.id])
+
+        let vAfterFirstSnapshot = cache.structuralVersion
+        let (rows2, _) = cache.currentVisibleRows(snapshot: [a, b], isCollapsed: { _ in false })
+
+        #expect(rows2.map(\.id) == [a.id, b.id])
+        #expect(cache.structuralVersion == vAfterFirstSnapshot &+ 1)
+    }
 }

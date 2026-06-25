@@ -463,6 +463,7 @@ final class BlockLayoutCache: RowSurfaceLayoutCache<BlockID> {
 
     private var cachedVisibleRows: [VisibleRow]?
     private var cachedHidden: Set<BlockID>?
+    private var cachedKey: StructuralCacheKey?
 
     /// Bumped on every invalidation. Useful for diagnostics + asserting
     /// cache-hit behavior during smoke tests.
@@ -474,6 +475,7 @@ final class BlockLayoutCache: RowSurfaceLayoutCache<BlockID> {
     func invalidateStructure() {
         cachedVisibleRows = nil
         cachedHidden = nil
+        cachedKey = nil
         structuralVersion &+= 1
     }
 
@@ -485,13 +487,49 @@ final class BlockLayoutCache: RowSurfaceLayoutCache<BlockID> {
         snapshot: [Block],
         isCollapsed: (Block) -> Bool
     ) -> (rows: [VisibleRow], hidden: Set<BlockID>) {
-        if let r = cachedVisibleRows, let h = cachedHidden {
+        let key = StructuralCacheKey(snapshot: snapshot, isCollapsed: isCollapsed)
+        if let r = cachedVisibleRows, let h = cachedHidden, cachedKey == key {
             return (r, h)
+        }
+        if cachedKey != nil {
+            structuralVersion &+= 1
         }
         let hidden = hiddenBlockIDs(in: snapshot, isCollapsed: isCollapsed)
         let rows = computeVisibleLayout(snapshot: snapshot, hidden: hidden, isCollapsed: isCollapsed)
         cachedHidden = hidden
         cachedVisibleRows = rows
+        cachedKey = key
         return (rows, hidden)
+    }
+}
+
+private struct StructuralCacheKey: Equatable {
+    struct Entry: Equatable {
+        let id: BlockID
+        let kind: VisibleRowKind
+        let childCount: Int
+        let isCollapsed: Bool
+    }
+
+    let entries: [Entry]
+
+    init(snapshot: [Block], isCollapsed: (Block) -> Bool) {
+        var entries: [Entry] = []
+        entries.reserveCapacity(snapshot.count)
+        Self.append(snapshot, isCollapsed: isCollapsed, entries: &entries)
+        self.entries = entries
+    }
+
+    private static func append(_ blocks: [Block], isCollapsed: (Block) -> Bool, entries: inout [Entry]) {
+        for block in blocks {
+            let kind = VisibleRowKind(block.kind)
+            entries.append(Entry(
+                id: block.id,
+                kind: kind,
+                childCount: block.children.count,
+                isCollapsed: kind.isCollapsedContainer && isCollapsed(block)
+            ))
+            append(block.children, isCollapsed: isCollapsed, entries: &entries)
+        }
     }
 }
