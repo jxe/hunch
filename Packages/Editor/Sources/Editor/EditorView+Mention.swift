@@ -51,11 +51,9 @@ extension EditorView {
         return .handled
     }
 
-    /// Replace the active block with a `.subpage` row pointing at `item`, then drop
-    /// out of edit mode. The user typed `@` to *make a page link*, not to insert
-    /// `[title]` mid-sentence — so we mirror Cmd-K's `convertBlockToSubpage` shape
-    /// (whole block becomes the link). Any text before/after the `@query` span is
-    /// preserved as adjacent paragraphs.
+    /// Commit the selected page mention. A line-leading mention becomes a
+    /// `.subpage` row; a mention with sentence content before it becomes an
+    /// inline link in the existing text block.
     fileprivate func commitMention(_ item: MentionItem, menu: MentionMenuState) {
         defer { state.closeMentionMenu() }
         // The popover detects from the live text storage, but `block.text` is the
@@ -65,32 +63,32 @@ extension EditorView {
         // text and the trigger-range guard below would silently bail.
         undoController.flushActiveText?()
         guard let block = document.find(menu.blockID) else { return }
-        let plain = String(block.text.characters) as NSString
+        let attr = block.text
+        let plain = String(attr.characters)
+        let triggerStartUTF16 = menu.trigger.nsRange.location
+        let triggerEndUTF16 = triggerStartUTF16 + menu.trigger.nsRange.length
+        guard let triggerStart = characterOffset(in: plain, utf16Offset: triggerStartUTF16),
+              let triggerEnd = characterOffset(in: plain, utf16Offset: triggerEndUTF16),
+              triggerStart <= triggerEnd,
+              triggerEnd <= attr.characters.count else {
+            return
+        }
 
-        let triggerStart = menu.trigger.nsRange.location
-        let triggerEnd = triggerStart + menu.trigger.nsRange.length
-        guard triggerEnd <= plain.length else { return }
-        let beforeText = plain.substring(with: NSRange(location: 0, length: triggerStart))
-        let afterText = plain.substring(with: NSRange(location: triggerEnd, length: plain.length - triggerEnd))
+        if !mentionStartsSubpageBlock(plain: plain, triggerStart: triggerStart) {
+            commitInlineMention(item, block: block, text: attr, triggerStart: triggerStart, triggerEnd: triggerEnd)
+            return
+        }
 
-        // Reuse the original block's id when the @ consumed the whole row — keeps any
-        // upstream references (selection, hover, undo) targeted at the same block.
-        // When there's surrounding text, the leading paragraph keeps the id and the
-        // subpage row gets a fresh one.
-        let beforeIsEmpty = beforeText.isEmpty
-        let subpageID = beforeIsEmpty ? block.id : BlockID()
+        let afterText = attributedSlice(attr, triggerEnd..<attr.characters.count)
 
         var replacements: [Block] = []
-        if !beforeIsEmpty {
-            replacements.append(block.withText(AttributedString(beforeText)))
-        }
         replacements.append(.subpage(
             title: item.title,
             pageID: item.id,
-            id: subpageID
+            id: block.id
         ))
-        if !afterText.isEmpty {
-            replacements.append(.paragraph(text: AttributedString(afterText)))
+        if !afterText.characters.isEmpty {
+            replacements.append(.paragraph(text: afterText))
         }
 
         mutate("Insert Page Link") {
@@ -98,7 +96,25 @@ extension EditorView {
         }
 
         DispatchQueue.main.async {
-            transferFocus(to: .nav(cursor: subpageID))
+            transferFocus(to: .nav(cursor: block.id))
+        }
+    }
+
+    private func commitInlineMention(_ item: MentionItem, block: Block, text: AttributedString, triggerStart: Int, triggerEnd: Int) {
+        guard let url = host.linkURL(forPageID: item.id, in: document) else { return }
+        let prefix = attributedSlice(text, 0..<triggerStart)
+        var linked = AttributedString(item.title)
+        linked.link = url
+        let suffix = attributedSlice(text, triggerEnd..<text.characters.count)
+        let newText = prefix + linked + suffix
+        let cursor = String((prefix + linked).characters).count
+
+        mutate("Insert Page Link") {
+            document.setText(block.id, newText)
+        }
+
+        DispatchQueue.main.async {
+            transferFocus(to: .editor(block.id, initialCursor: .offset(cursor)))
         }
     }
 
@@ -147,4 +163,17 @@ extension EditorView {
         .padding(.vertical, 4)
         .frame(width: 240, alignment: .leading)
     }
+}
+
+private func characterOffset(in plain: String, utf16Offset: Int) -> Int? {
+    guard utf16Offset >= 0, utf16Offset <= plain.utf16.count else { return nil }
+    let utf16Index = plain.utf16.index(plain.utf16.startIndex, offsetBy: utf16Offset)
+    guard let index = String.Index(utf16Index, within: plain) else { return nil }
+    return plain.distance(from: plain.startIndex, to: index)
+}
+
+private func attributedSlice(_ text: AttributedString, _ bounds: Range<Int>) -> AttributedString {
+    let lower = text.index(text.startIndex, offsetByCharacters: bounds.lowerBound)
+    let upper = text.index(text.startIndex, offsetByCharacters: bounds.upperBound)
+    return AttributedString(text[lower..<upper])
 }

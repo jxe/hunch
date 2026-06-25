@@ -64,4 +64,22 @@ struct MentionTriggerTests {
         #expect(r?.query == "foo")
         #expect(r?.nsRange == NSRange(location: 1, length: 4))
     }
+
+    @Test func lineLeadingMentionCreatesSubpageBlock() {
+        #expect(mentionStartsSubpageBlock(plain: "@foo", triggerStart: 0))
+        #expect(mentionStartsSubpageBlock(plain: "  @foo", triggerStart: 2))
+    }
+
+    @Test func mentionAfterMarkdownMarkerCreatesSubpageBlock() {
+        #expect(mentionStartsSubpageBlock(plain: "- @foo", triggerStart: 2))
+        #expect(mentionStartsSubpageBlock(plain: "1. @foo", triggerStart: 3))
+        #expect(mentionStartsSubpageBlock(plain: "[ ] @foo", triggerStart: 4))
+        #expect(mentionStartsSubpageBlock(plain: "## @foo", triggerStart: 3))
+    }
+
+    @Test func midSentenceMentionStaysInline() {
+        #expect(!mentionStartsSubpageBlock(plain: "see @foo", triggerStart: 4))
+        #expect(!mentionStartsSubpageBlock(plain: "(@foo", triggerStart: 1))
+        #expect(!mentionStartsSubpageBlock(plain: "see - @foo", triggerStart: 6))
+    }
 }

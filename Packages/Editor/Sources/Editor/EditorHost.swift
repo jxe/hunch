@@ -64,6 +64,12 @@ public protocol EditorHost: AnyObject {
     /// the page whose text contains the link.
     func resolvePageID(from url: URL, in document: Document) -> String?
 
+    /// Build the inline-link URL that should be stored for `pageID` when
+    /// mentioning it from `document`. The editor treats page ids as opaque;
+    /// hosts own whether persisted links are relative paths, file URLs, UUID
+    /// URLs, or something else.
+    func linkURL(forPageID pageID: String, in document: Document) -> URL?
+
     /// Persist a new page. `initialContent` is the body the editor wants the
     /// new page to start with (descendants of the source block); the host
     /// serializes it and prepends a title heading. `requestedPath` is honored

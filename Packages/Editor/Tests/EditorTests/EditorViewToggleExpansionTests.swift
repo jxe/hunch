@@ -176,6 +176,7 @@ private final class TestHost: EditorHost {
     func openPage(pageID: String) {}
     func lookupPage(_ pageID: String) -> PageLookup { .present(title: nil) }
     func resolvePageID(from url: URL, in document: Document) -> String? { nil }
+    func linkURL(forPageID pageID: String, in document: Document) -> URL? { URL(string: pageID) }
     func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? { nil }
     func loadPageBlocks(_ pageID: String) async -> [Block]? { loadedPageBlocks }
     func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {

@@ -57,6 +57,20 @@ func detectMentionTrigger(plain: String, cursor: Int) -> MentionTrigger? {
     return nil
 }
 
+/// Whether a mention whose `@` starts at `triggerStart` should commit as a
+/// block-level subpage row. Real content before the `@` means inline mention;
+/// only whitespace or a markdown-style row marker counts as line-leading.
+func mentionStartsSubpageBlock(plain: String, triggerStart: Int) -> Bool {
+    guard triggerStart >= 0, triggerStart <= plain.count else { return false }
+    let atIndex = plain.index(plain.startIndex, offsetBy: triggerStart)
+    let prefix = String(plain[..<atIndex]).trimmingCharacters(in: .whitespaces)
+    if prefix.isEmpty { return true }
+    if ["-", "*", ">", "\"", "\u{201C}", "[]", "[ ]", "#", "##", "###"].contains(prefix) {
+        return true
+    }
+    return prefix.range(of: #"^\d+\.$"#, options: .regularExpression) != nil
+}
+
 /// Chars that terminate an in-progress mention query when walking back from the cursor.
 /// Newlines and tabs are hard stops; the `@` can't legitimately have crossed them.
 private func isMentionStop(_ scalar: Unicode.Scalar) -> Bool {

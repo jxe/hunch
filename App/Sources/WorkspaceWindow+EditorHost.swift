@@ -26,6 +26,14 @@ extension WorkspaceWindow: EditorHost {
         workspace.clamshell?.pageID(for: url, relativeTo: document.url)
     }
 
+    func linkURL(forPageID pageID: String, in document: Document) -> URL? {
+        guard let clamshell = workspace.clamshell else { return nil }
+        return relativeMarkdownURL(
+            from: document.url.deletingLastPathComponent(),
+            to: clamshell.url(for: pageID)
+        )
+    }
+
     func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? {
         workspace.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
     }
@@ -169,4 +177,25 @@ extension WorkspaceWindow: EditorHost {
     private func showSaveFailure(for document: Document, error: Error) {
         workspace.banner = .saveFailed(page: document.title, error: error)
     }
+}
+
+private func relativeMarkdownURL(from baseDirectory: URL, to target: URL) -> URL? {
+    let baseComponents = baseDirectory.standardizedFileURL.pathComponents
+    let targetComponents = target.standardizedFileURL.pathComponents
+    var commonCount = 0
+    while commonCount < baseComponents.count,
+          commonCount < targetComponents.count,
+          baseComponents[commonCount] == targetComponents[commonCount] {
+        commonCount += 1
+    }
+
+    let up = Array(repeating: "..", count: baseComponents.count - commonCount)
+    let down = Array(targetComponents.dropFirst(commonCount))
+    let components = up + down
+    guard !components.isEmpty else { return nil }
+    let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    let encoded = components
+        .map { $0.addingPercentEncoding(withAllowedCharacters: allowed) ?? $0 }
+        .joined(separator: "/")
+    return URL(string: encoded)
 }
