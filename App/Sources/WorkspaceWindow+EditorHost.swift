@@ -22,6 +22,53 @@ extension WorkspaceWindow: EditorHost {
         workspace.clamshell?.lookupPage(pageID) ?? .missing
     }
 
+    func didDeleteSubpageLink(pageID: String, title: String, from document: Document) {
+        guard let clamshell = workspace.clamshell,
+              clamshell.entry(at: pageID) != nil else {
+            return
+        }
+
+        let sourcePageID = clamshell.relativePath(of: document.url)
+        let sourceURL = document.url
+        let sourceBlocksAfterDelete = document.children
+
+        Task { @MainActor [weak self, pageID, title, sourcePageID, sourceURL, sourceBlocksAfterDelete] in
+            guard let self,
+                  let clamshell = self.workspace.clamshell,
+                  clamshell.entry(at: pageID) != nil else {
+                return
+            }
+
+            let graph: LinkGraph
+            if let cached = clamshell.linkGraph {
+                graph = cached
+            } else {
+                graph = await clamshell.buildLinkGraph()
+            }
+            guard graph.allPageIDs.contains(pageID) else { return }
+
+            let classify: @Sendable (URL, URL) -> String? = { [clamshell] url, base in
+                clamshell.pageID(for: url, relativeTo: base)
+            }
+            let sourceOutboundAfterDelete = outboundLinks(
+                in: sourceBlocksAfterDelete,
+                pageURL: sourceURL,
+                classify: classify
+            )
+
+            guard SubpageTrashDecision.shouldPromptToTrash(
+                targetPageID: pageID,
+                sourcePageID: sourcePageID,
+                sourceOutboundAfterDelete: sourceOutboundAfterDelete,
+                graph: graph
+            ) else {
+                return
+            }
+
+            self.pendingSubpageTrashPrompt = .init(pageID: pageID, title: title)
+        }
+    }
+
     func resolvePageID(from url: URL, in document: Document) -> String? {
         workspace.clamshell?.pageID(for: url, relativeTo: document.url)
     }

@@ -99,6 +99,24 @@ struct ContentView: View {
                     .frame(minWidth: 480, minHeight: 480)
                     #endif
                 }
+                .confirmationDialog(
+                    "Move page to Trash?",
+                    isPresented: subpageTrashPromptPresented,
+                    titleVisibility: .visible
+                ) {
+                    if let prompt = window.pendingSubpageTrashPrompt {
+                        Button("Move to Trash", role: .destructive) {
+                            movePromptedSubpageToTrash(prompt)
+                        }
+                    }
+                    Button("Keep Page", role: .cancel) {
+                        window.pendingSubpageTrashPrompt = nil
+                    }
+                } message: {
+                    if let prompt = window.pendingSubpageTrashPrompt {
+                        Text("\"\(prompt.title)\" no longer has any links pointing to it.")
+                    }
+                }
             }
         }
         .focusedValue(\.workspaceWindow, window)
@@ -164,6 +182,17 @@ struct ContentView: View {
         )
     }
 
+    private var subpageTrashPromptPresented: Binding<Bool> {
+        Binding(
+            get: { window.pendingSubpageTrashPrompt != nil },
+            set: { newValue in
+                if !newValue {
+                    window.pendingSubpageTrashPrompt = nil
+                }
+            }
+        )
+    }
+
     private func setHome(_ item: MentionItem) {
         if let entry = workspace.clamshell?.entry(at: item.id) {
             workspace.clamshell?.setHome(relativePath: entry.relativePath)
@@ -174,6 +203,14 @@ struct ContentView: View {
         if let entry = workspace.clamshell?.entry(at: item.id) {
             Task { await window.moveToTrash(entry) }
         }
+    }
+
+    private func movePromptedSubpageToTrash(_ prompt: WorkspaceWindow.SubpageTrashPrompt) {
+        guard let entry = workspace.clamshell?.entry(at: prompt.pageID) else {
+            window.pendingSubpageTrashPrompt = nil
+            return
+        }
+        Task { await window.moveToTrash(entry) }
     }
 
     @ViewBuilder

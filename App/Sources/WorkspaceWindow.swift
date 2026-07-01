@@ -42,11 +42,18 @@ final class WorkspaceWindow {
     /// present the same picker surface with distinct activation behavior.
     var showAddToPageSearch: Bool = false
     var recoveryFilter: RecoveryListFilter?
+    var pendingSubpageTrashPrompt: SubpageTrashPrompt?
 
     struct MoveRequest: Identifiable {
         let id = UUID()
         let inDocCandidates: [InDocMoveTarget]
         let completion: (MoveDestination?) -> Void
+    }
+
+    struct SubpageTrashPrompt: Identifiable, Equatable {
+        let id = UUID()
+        let pageID: String
+        let title: String
     }
 
     init(workspace: Workspace) {

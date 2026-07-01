@@ -1686,6 +1686,7 @@ public struct EditorView: View {
             return
         }
 
+        let deletedSubpageLinks = subpageLinks(inSubtreesRootedAt: roots)
         let cursorTarget = nearestCursorAfterRemoval(of: roots)
         mutate(actionName) {
             // Bottom-up by depth to avoid stranding a child whose parent was
@@ -1703,6 +1704,31 @@ public struct EditorView: View {
         if let id = cursorTarget {
             setCursor(id)
         }
+        for link in deletedSubpageLinks {
+            host.didDeleteSubpageLink(pageID: link.pageID, title: link.title, from: document)
+        }
+    }
+
+    private func subpageLinks(inSubtreesRootedAt roots: [BlockID]) -> [(pageID: String, title: String)] {
+        var seen: Set<String> = []
+        var links: [(pageID: String, title: String)] = []
+
+        func walk(_ block: Block) {
+            if case .subpage(let title, let pageID) = block.kind,
+               seen.insert(pageID).inserted {
+                links.append((pageID: pageID, title: title))
+            }
+            for child in block.children {
+                walk(child)
+            }
+        }
+
+        for id in roots {
+            if let block = document.find(id) {
+                walk(block)
+            }
+        }
+        return links
     }
 
     /// Pick a cursor target after removing the given subtree-roots. Prefer

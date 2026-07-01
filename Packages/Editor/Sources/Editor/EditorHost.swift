@@ -53,6 +53,12 @@ public protocol EditorHost: AnyObject {
     /// into broken subpage rows.
     func lookupPage(_ pageID: String) -> PageLookup
 
+    /// A `.subpage` row was deleted from `document`. The editor has already
+    /// committed the row removal when this fires; hosts can inspect the
+    /// post-delete document and decide whether the now-unlinked target page
+    /// should be offered for trashing.
+    func didDeleteSubpageLink(pageID: String, title: String, from document: Document)
+
     /// Classify a URL from an inline `[text](url)` link as an internal page
     /// reference. Returns the host's pageID for that URL, or nil for
     /// external URLs (and for any URL the host doesn't consider an internal
@@ -182,6 +188,10 @@ public protocol EditorHost: AnyObject {
     /// `Assets/foo.png`) to a file URL the renderer can load. Nil →
     /// renderer shows a missing-image placeholder.
     func imageURL(for source: String) -> URL?
+}
+
+public extension EditorHost {
+    func didDeleteSubpageLink(pageID: String, title: String, from document: Document) {}
 }
 
 private struct EditorHostKey: @preconcurrency EnvironmentKey {
