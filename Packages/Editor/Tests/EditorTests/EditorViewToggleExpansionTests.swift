@@ -139,6 +139,26 @@ struct EditorViewToggleExpansionTests {
         #expect(state.expandedToggles.contains(toggle.id))
     }
 
+    @Test func indentingSelectedClosedToggleDoesNotExpandItsBody() {
+        let parent = Block.bullet(text: AttributedString("parent"))
+        let child = Block.paragraph(text: AttributedString("child"))
+        let toggle = Block.toggle(title: AttributedString("Closed"), children: [child])
+        let doc = Document(
+            url: URL(fileURLWithPath: "/tmp/test.md"),
+            children: [parent, toggle]
+        )
+        let state = EditorState()
+        let editor = EditorView(document: doc, state: state, host: TestHost())
+        editor.installUndoApply()
+
+        #expect(editor.indentBlocks([toggle.id, child.id], by: 1))
+
+        #expect(doc.children.map(\.id) == [parent.id])
+        #expect(doc.children[0].children.map(\.id) == [toggle.id])
+        #expect(doc.children[0].children[0].children.map(\.id) == [child.id])
+        #expect(state.expandedToggles.isEmpty)
+    }
+
     @Test func crossPageMoveCollapsesCoveredToggleDescendants() async {
         let toggle = Block.toggle(
             title: AttributedString("Details"),

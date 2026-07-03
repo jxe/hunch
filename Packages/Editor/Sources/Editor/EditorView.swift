@@ -1775,7 +1775,7 @@ public struct EditorView: View {
         mutate(delta > 0 ? "Indent" : "Outdent") {
             document.moveSubtrees(plan.roots, to: plan.target)
         }
-        revealHiddenBlocks(selected)
+        revealHiddenBlocks(Set(plan.roots))
         return true
     }
 
