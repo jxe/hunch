@@ -69,7 +69,7 @@ enum BlockParser {
                 regular = ""
                 return
             }
-            out.append(contentsOf: parseMarkdown(regular))
+            appendRegularBlocks(from: regular, into: &out)
             regular = ""
         }
 
@@ -148,6 +148,61 @@ enum BlockParser {
 
         flushRegular()
         return out
+    }
+
+    private static func appendRegularBlocks(from source: String, into out: inout [Block]) {
+        let lines = splitPreservingLineEndings(source)
+        var i = 0
+
+        while i < lines.count {
+            while i < lines.count, isBlankMarkdownLine(lines[i].text) {
+                i += 1
+            }
+            guard i < lines.count else { break }
+
+            let leading = lines[i].text.prefix { $0 == " " }.count
+            if leading == 0 {
+                let chunk = lines[i..<lines.count].map(\.fullText).joined()
+                out.append(contentsOf: parseMarkdown(chunk))
+                break
+            }
+
+            let start = i
+            i += 1
+            var fenceLength: Int? = openingFenceLength(lines[start].text)
+            while i < lines.count {
+                let text = lines[i].text
+                if let f = fenceLength {
+                    if isClosingFence(text, expectedLength: f) { fenceLength = nil }
+                    i += 1
+                    continue
+                }
+                if let len = openingFenceLength(text) {
+                    fenceLength = len
+                    i += 1
+                    continue
+                }
+                if isBlankMarkdownLine(text) {
+                    i += 1
+                    continue
+                }
+                let here = text.prefix { $0 == " " }.count
+                if here < leading { break }
+                i += 1
+            }
+
+            let stripped = lines[start..<i]
+                .map { stripLeadingSpaces(leading, from: $0.fullText) }
+                .joined()
+            let blocks = parseMarkdown(stripped)
+            let parentDepth = parentDepth(forChildLeadingSpaces: leading)
+            for block in blocks {
+                if appendToLastContainer(&out, atDepth: parentDepth, child: block) {
+                    continue
+                }
+                out.append(block)
+            }
+        }
     }
 
     private static func parentDepth(forChildLeadingSpaces spaces: Int) -> Int {

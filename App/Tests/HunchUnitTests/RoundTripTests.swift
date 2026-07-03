@@ -306,6 +306,65 @@ struct RoundTripTests {
         })
     }
 
+    @Test func indentedSiblingAfterToggleStaysUnderListItem() {
+        let blocks = BlockParser.parse("""
+        - foo
+          - bar
+          ▸ toggle
+          - baz
+        """)
+        #expect(blocks.count == 1)
+        guard case .bullet(let text) = blocks[0].kind else {
+            Issue.record("expected root bullet")
+            return
+        }
+        #expect(String(text.characters) == "foo")
+        #expect(blocks[0].children.count == 3)
+        if case .bullet(let bar) = blocks[0].children[0].kind {
+            #expect(String(bar.characters) == "bar")
+        } else {
+            Issue.record("expected first child bullet")
+        }
+        if case .toggle(let title) = blocks[0].children[1].kind {
+            #expect(String(title.characters) == "toggle")
+        } else {
+            Issue.record("expected toggle child")
+        }
+        if case .bullet(let baz) = blocks[0].children[2].kind {
+            #expect(String(baz.characters) == "baz")
+        } else {
+            Issue.record("expected following child bullet to remain indented")
+        }
+    }
+
+    @Test func bulletWithListToggleListChildrenRoundTripsTree() {
+        let tree = [
+            Block.bullet(
+                text: AttributedString("foo"),
+                children: [
+                    .bullet(text: AttributedString("bar")),
+                    .toggle(title: AttributedString("toggle")),
+                    .bullet(text: AttributedString("baz")),
+                ]
+            ),
+        ]
+        let serialized = BlockSerializer.serialize(tree)
+        #expect(serialized == """
+        - foo
+          - bar
+          ▸ toggle
+          - baz
+        """)
+        let reparsed = BlockParser.parse(serialized)
+        #expect(reparsed.count == 1)
+        #expect(reparsed[0].children.count == 3)
+        if case .bullet(let baz) = reparsed[0].children[2].kind {
+            #expect(String(baz.characters) == "baz")
+        } else {
+            Issue.record("expected following child bullet to remain indented")
+        }
+    }
+
     @Test func templateButtonWithBody() {
         assertIdempotent(":::{template-button} Add Task\n- [ ] new\n:::\n")
     }
