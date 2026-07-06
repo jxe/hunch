@@ -65,7 +65,7 @@ struct ContentView: View {
                     PageSearchSheet(
                         workspace: workspace,
                         excluding: window.openDocument?.url,
-                        title: "Add to…",
+                        title: "Add This Page to…",
                         onActivate: { item in
                             Task {
                                 if await window.appendCurrentPageLink(to: item.id) {

@@ -53,6 +53,7 @@ struct HunchApp: App {
                     .keyboardShortcut("p", modifiers: [.command])
                 AddToPageMenuButton(workspaceURL: workspace.workspaceURL)
                     .keyboardShortcut("p", modifiers: [.command, .shift])
+                MoveCurrentPageToTrashMenuButton(workspaceURL: workspace.workspaceURL)
 
                 Divider()
 
@@ -325,8 +326,21 @@ private struct AddToPageMenuButton: View {
     @FocusedValue(\.workspaceWindow) private var window
 
     var body: some View {
-        Button("Add to…") {
+        Button("Add This Page to…") {
             window?.showAddToPageSearch = true
+        }
+        .disabled(workspaceURL == nil || window?.currentPageRelativePath == nil)
+    }
+}
+
+private struct MoveCurrentPageToTrashMenuButton: View {
+    let workspaceURL: URL?
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Move Current Page to Trash", role: .destructive) {
+            guard let window else { return }
+            Task { await window.moveCurrentPageToTrash() }
         }
         .disabled(workspaceURL == nil || window?.currentPageRelativePath == nil)
     }

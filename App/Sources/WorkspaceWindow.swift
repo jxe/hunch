@@ -341,6 +341,16 @@ final class WorkspaceWindow {
     }
 
     @discardableResult
+    func moveCurrentPageToTrash() async -> Bool {
+        guard let clamshell = workspace.clamshell,
+              let relativePath = currentPageRelativePath,
+              let entry = clamshell.entry(at: relativePath) else {
+            return false
+        }
+        return await moveToTrash(entry)
+    }
+
+    @discardableResult
     func restoreRecoverable(_ entry: RecoverableEntry) async -> Bool {
         switch entry {
         case .deletedPage(let trashEntry):
