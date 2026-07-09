@@ -53,6 +53,7 @@ struct HunchApp: App {
                     .keyboardShortcut("p", modifiers: [.command])
                 AddToPageMenuButton(workspaceURL: workspace.workspaceURL)
                     .keyboardShortcut("p", modifiers: [.command, .shift])
+                CopyCurrentPageLinkMenuButton(workspaceURL: workspace.workspaceURL)
                 MoveCurrentPageToTrashMenuButton(workspaceURL: workspace.workspaceURL)
 
                 Divider()
@@ -264,13 +265,13 @@ private struct EditorCommandButton: View {
 
 private struct EditorBlockMenuItems: View {
     var body: some View {
-        EditorCommandButton(title: "Turn Into…", key: "/", action: .openBlockActionMenu)
-        EditorCommandButton(title: "Make Subpage / Link…", key: "k", action: .toggleLinkOrSubpage)
-        EditorCommandButton(title: "New Block Below", key: .return, action: .newBlockBelow)
+        EditorCommandButton(title: "Turn Selected Block Into…", key: "/", action: .openBlockActionMenu)
+        EditorCommandButton(title: "Create Page from Selected Block…", key: "k", action: .toggleLinkOrSubpage)
+        EditorCommandButton(title: "Insert Block Below", key: .return, action: .newBlockBelow)
         // ⇧⌘M to dodge the system Window > Minimize on plain ⌘M — that
         // collision made the shortcut not display in the menu and not fire
         // outside the popover (which has its own .keyboardShortcut binding).
-        EditorCommandButton(title: "Move to Page…", key: "m", modifiers: [.command, .shift], action: .openMoveTo)
+        EditorCommandButton(title: "Move Selected Blocks…", key: "m", modifiers: [.command, .shift], action: .openMoveTo)
         Divider()
         // Tab / Shift+Tab are the editor's real indent shortcuts; registering them
         // here surfaces them in the menu without intercepting Tab elsewhere — a
@@ -278,11 +279,11 @@ private struct EditorBlockMenuItems: View {
         // The enabled-predicates gray out the items when no candidate block can
         // perform the op (root-level first child, etc.), driven by the tree
         // model's `canIndent` / `canOutdent` predicates.
-        EditorCommandButton(title: "Indent", key: .tab, modifiers: [], requires: .canIndent, action: .indent)
-        EditorCommandButton(title: "Outdent", key: .tab, modifiers: .shift, requires: .canOutdent, action: .outdent)
+        EditorCommandButton(title: "Indent Selected Blocks", key: .tab, modifiers: [], requires: .canIndent, action: .indent)
+        EditorCommandButton(title: "Outdent Selected Blocks", key: .tab, modifiers: .shift, requires: .canOutdent, action: .outdent)
         Divider()
-        EditorCommandButton(title: "Move Block Up", key: .upArrow, modifiers: .option, action: .moveBlockUp)
-        EditorCommandButton(title: "Move Block Down", key: .downArrow, modifiers: .option, action: .moveBlockDown)
+        EditorCommandButton(title: "Move Selected Blocks Up", key: .upArrow, modifiers: .option, action: .moveBlockUp)
+        EditorCommandButton(title: "Move Selected Blocks Down", key: .downArrow, modifiers: .option, action: .moveBlockDown)
     }
 }
 
@@ -314,7 +315,7 @@ private struct SearchMenuButton: View {
     @FocusedValue(\.workspaceWindow) private var window
 
     var body: some View {
-        Button("Search…") {
+        Button("Search Pages…") {
             window?.showSearch = true
         }
         .disabled(workspaceURL == nil || window == nil)
@@ -326,8 +327,20 @@ private struct AddToPageMenuButton: View {
     @FocusedValue(\.workspaceWindow) private var window
 
     var body: some View {
-        Button("Add This Page to…") {
+        Button("Add Current Page to…") {
             window?.showAddToPageSearch = true
+        }
+        .disabled(workspaceURL == nil || window?.currentPageRelativePath == nil)
+    }
+}
+
+private struct CopyCurrentPageLinkMenuButton: View {
+    let workspaceURL: URL?
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Copy Link to Current Page") {
+            window?.copyCurrentPageLinkToPasteboard()
         }
         .disabled(workspaceURL == nil || window?.currentPageRelativePath == nil)
     }

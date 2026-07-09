@@ -1,5 +1,10 @@
 import Foundation
 import Editor
+#if os(macOS)
+import AppKit
+#elseif os(iOS)
+import UIKit
+#endif
 
 // MARK: - WorkspaceWindow: EditorHost
 //
@@ -208,6 +213,27 @@ extension WorkspaceWindow: EditorHost {
             workspace.error = "Failed to add \(source.title) to \(pageID): \(error.localizedDescription)"
             return false
         }
+    }
+
+    @discardableResult
+    func copyCurrentPageLinkToPasteboard() -> Bool {
+        guard let source = openDocument,
+              let sourcePageID = currentPageRelativePath else {
+            return false
+        }
+
+        let linkBlock = Block.subpage(title: source.title, pageID: sourcePageID)
+        let markdown = serializeBlocksForPasteboard([linkBlock])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !markdown.isEmpty else { return false }
+
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(markdown, forType: .string)
+        #else
+        UIPasteboard.general.string = markdown
+        #endif
+        return true
     }
 
     /// Editor's async move-destination call site: store a continuation,
