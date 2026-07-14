@@ -231,6 +231,14 @@ class RowSurfaceLayoutCache<ID: Hashable> {
     private var rowTops: [CGFloat] = []
     private var rowBottoms: [CGFloat] = []
 
+    /// Actual frames for rows currently materialized by the LazyVStack, in
+    /// the stack's internal coordinate space. iOS uses these for drag-source
+    /// hit-testing: unlike the cumulative geometry above, these frames cannot
+    /// drift when an earlier off-screen row has no measurement or a stale
+    /// cached height. Drop-slot resolution still uses the cumulative geometry
+    /// because it must cover rows outside the materialization window.
+    private(set) var realizedInternalFrames: [ID: CGRect] = [:]
+
     /// Y-position of the LazyVStack's top in PageHoverCoordinateSpace.
     /// Updated from a single anchor view at the top of the content area.
     /// One write per scroll tick — vs. N writes when each row published its
@@ -262,6 +270,18 @@ class RowSurfaceLayoutCache<ID: Hashable> {
         return true
     }
 
+    /// Record the actual stack-local frame of a currently materialized row.
+    /// Stack-local coordinates do not change while the page scrolls, so this
+    /// avoids the per-scroll invalidation cost of viewport-relative frames.
+    func setRealizedInternalFrame(_ frame: CGRect, for id: ID) {
+        guard realizedInternalFrames[id] != frame else { return }
+        realizedInternalFrames[id] = frame
+    }
+
+    func removeRealizedInternalFrame(for id: ID) {
+        realizedInternalFrames.removeValue(forKey: id)
+    }
+
     /// Replace the ordered ID list and reverse index, then recompute offsets.
     /// Called once per body render with the same `[ID]` the `ForEach`
     /// iterates over. `topGaps` carries layout space before each row that is
@@ -275,6 +295,7 @@ class RowSurfaceLayoutCache<ID: Hashable> {
         topGaps = sanitizedTopGaps
         indexByID.removeAll(keepingCapacity: true)
         for (i, id) in ids.enumerated() { indexByID[id] = i }
+        realizedInternalFrames = realizedInternalFrames.filter { indexByID[$0.key] != nil }
         recomputeOffsets()
     }
 
@@ -322,6 +343,22 @@ class RowSurfaceLayoutCache<ID: Hashable> {
     /// PageHoverCoordinateSpace. Convenience over `indexAtY`.
     func blockIDAtY(_ pageY: CGFloat) -> ID? {
         indexAtY(pageY).map { orderedIDs[$0] }
+    }
+
+    /// Strictly hit-test the rows currently realized on screen. There is no
+    /// nearest-row fallback: a press in inter-row spacing is not a row press.
+    /// When frames overlap transiently, document order provides deterministic
+    /// selection.
+    func realizedBlockIDAtInternalY(_ internalY: CGFloat) -> ID? {
+        for id in orderedIDs {
+            guard let frame = realizedInternalFrames[id] else { continue }
+            if frame.minY <= internalY, internalY < frame.maxY { return id }
+        }
+        return nil
+    }
+
+    func realizedBlockIDAtPageY(_ pageY: CGFloat) -> ID? {
+        realizedBlockIDAtInternalY(pageY - contentOriginY)
     }
 
     /// Find the row whose leading gutter contains `point`.

@@ -147,6 +147,10 @@ final class Workspace {
             installTallDocUITestWorkspace()
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--hunch-ui-testing-variable-rows") {
+            installVariableRowsUITestWorkspace()
+            return
+        }
         // tryRestore is called from `.task` in every window; only the first
         // call needs to do anything.
         guard workspaceURL == nil else { return }
@@ -565,6 +569,38 @@ final class Workspace {
             try? clamshell.rescan()
         } catch {
             self.error = "Failed to install tall-doc UI test workspace: \(error.localizedDescription)"
+        }
+    }
+
+    private func installVariableRowsUITestWorkspace() {
+        do {
+            let root = FileManager.default
+                .temporaryDirectory
+                .appendingPathComponent("hunch-ui-tests", isDirectory: true)
+            try? FileManager.default.removeItem(at: root)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let documentURL = root.appendingPathComponent("everything.md")
+            let source = """
+            # Variable Height Drag Test
+
+            ## A deliberately large heading above the rows being reordered
+
+            This is a deliberately long paragraph that wraps over several lines on an iPhone so the rows below it have substantial variable-height content above them.
+
+            Alpha
+
+            Bravo
+
+            Charlie
+
+            Delta
+            """
+            try source.write(to: documentURL, atomically: true, encoding: .utf8)
+            let clamshell = mount(root: root)
+            clamshell.setHome(relativePath: "everything.md")
+            try? clamshell.rescan()
+        } catch {
+            self.error = "Failed to install variable-row UI test workspace: \(error.localizedDescription)"
         }
     }
 

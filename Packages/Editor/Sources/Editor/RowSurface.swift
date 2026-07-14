@@ -1,6 +1,10 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum RowSurfaceInternalCoordinateSpace {
+    static let name = "RowSurface.internal"
+}
+
 /// Render/layout facts for one row in a `RowSurface`.
 ///
 /// This type is deliberately content-agnostic: no `Block`, no editor state, no
@@ -140,15 +144,24 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
                         } action: { newHeight in
                             layoutCache.setHeight(newHeight, for: row.id)
                         }
+                        .onGeometryChange(for: CGRect.self) { proxy in
+                            proxy.frame(in: .named(RowSurfaceInternalCoordinateSpace.name))
+                        } action: { frame in
+                            layoutCache.setRealizedInternalFrame(frame, for: row.id)
+                        }
                         .padding(.top, row.spacingBefore + row.pinchGap + row.reorderGap)
                         .opacity(row.isSourceDimmed ? 0.12 : 1)
                         .animation(.spring(response: 0.26, dampingFraction: 0.76), value: row.reorderGap)
+                        .onDisappear {
+                            layoutCache.removeRealizedInternalFrame(for: row.id)
+                        }
                 }
                 trailingDropTarget
                 if let footer {
                     footer
                 }
             }
+            .coordinateSpace(name: RowSurfaceInternalCoordinateSpace.name)
             // Associate each row's `BlockID` (the ForEach id) with its laid-out
             // view so `scrollPosition.scrollTo(id:)` can resolve a target that
             // hasn't been measured into the layout cache yet — i.e. a cursor

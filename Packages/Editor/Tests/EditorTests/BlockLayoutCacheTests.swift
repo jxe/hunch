@@ -87,6 +87,33 @@ struct RowSurfaceLayoutCacheTests {
         #expect(cache.nearestBlockIDAtInternalY(31) == "a")
         #expect(cache.nearestBlockIDAtInternalY(60) == "b")
     }
+
+    @Test func realizedFramesChooseTouchedRowDespiteStaleCumulativeHeights() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["heading", "tall", "target"])
+
+        // Deliberately stale cumulative measurements put the synthesized
+        // target frame far above its actual on-screen position.
+        cache.setHeight(20, for: "heading")
+        cache.setHeight(20, for: "tall")
+        cache.setHeight(20, for: "target")
+        cache.contentOriginY = 100
+
+        cache.setRealizedInternalFrame(CGRect(x: 0, y: 0, width: 320, height: 48), for: "heading")
+        cache.setRealizedInternalFrame(CGRect(x: 0, y: 88, width: 320, height: 104), for: "tall")
+        cache.setRealizedInternalFrame(CGRect(x: 0, y: 200, width: 320, height: 30), for: "target")
+
+        #expect(cache.blockIDAtY(315) == nil)
+        #expect(cache.realizedBlockIDAtPageY(315) == "target")
+        #expect(cache.realizedBlockIDAtPageY(296) == nil) // inter-row spacing
+
+        cache.removeRealizedInternalFrame(for: "target")
+        #expect(cache.realizedBlockIDAtPageY(315) == nil)
+
+        cache.setRealizedInternalFrame(CGRect(x: 0, y: 200, width: 320, height: 30), for: "target")
+        cache.updateOrder(["heading", "tall"])
+        #expect(cache.realizedInternalFrames["target"] == nil)
+    }
 }
 
 @Suite("BlockLayoutCache")

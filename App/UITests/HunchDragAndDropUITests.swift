@@ -38,6 +38,23 @@ final class HunchDragAndDropUITests: XCTestCase {
         assertRowOrder(["Row 13", "Row 14", "Row 12", "Row 15"])
     }
 
+    func testLongPressTargetsTouchedRowBelowVariableHeightContent() {
+        launchVariableRowsApp()
+
+        let bravo = row(containing: "Bravo")
+        let delta = row(containing: "Delta")
+        XCTAssertTrue(bravo.waitForExistence(timeout: 3))
+        XCTAssertTrue(delta.waitForExistence(timeout: 3))
+        XCTAssertTrue(bravo.isHittable, "Expected Bravo to be visible below the variable-height rows")
+        XCTAssertTrue(delta.isHittable, "Expected Delta to be visible as the drop target")
+
+        let start = bravo.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5))
+        let end = delta.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5))
+        start.press(forDuration: 0.55, thenDragTo: end)
+
+        assertRowOrder(["Alpha", "Charlie", "Bravo", "Delta"])
+    }
+
     func testHorizontalSwipeDoesNotStartReorder() {
         launchApp()
 
@@ -252,6 +269,13 @@ final class HunchDragAndDropUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["--hunch-ui-testing-tall-doc"]
+        app.launch()
+    }
+
+    private func launchVariableRowsApp() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--hunch-ui-testing-variable-rows"]
         app.launch()
     }
 

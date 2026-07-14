@@ -444,7 +444,7 @@ struct IOSPageReorderGestureBridge<ID: Hashable>: UIViewRepresentable {
             let location = pageCoordinateLocation(for: recognizer, scrollView: scrollView)
             switch recognizer.state {
             case .began:
-                guard let blockID = parent.layoutCache.nearestBlockID(toY: location.y) else {
+                guard let blockID = parent.layoutCache.realizedBlockIDAtPageY(location.y) else {
                     activeBlockID = nil
                     return
                 }
@@ -492,7 +492,7 @@ struct IOSPageReorderGestureBridge<ID: Hashable>: UIViewRepresentable {
                 return true
             }
             let location = pageCoordinateLocation(for: gestureRecognizer, scrollView: scrollView)
-            return parent.layoutCache.nearestBlockID(toY: location.y) != nil
+            return parent.layoutCache.realizedBlockIDAtPageY(location.y) != nil
         }
     }
 }
