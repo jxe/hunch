@@ -31,6 +31,9 @@ extension EditorView {
                 guard let id = topSelectedBlockID() else { return }
                 actionSheet = BlockActionSheet(id: id)
 
+            case .polishTranscription:
+                polishTranscription(blockIDs: selectedTextBlockIDs())
+
             case .openMoveTo:
                 guard let id = topSelectedBlockID() else { return }
                 let targetIDs = menuTargetIDs(anchorID: id)
@@ -155,6 +158,10 @@ extension EditorView {
                 }
                 let roots = document.selectionSubtreeRoots(state.selection)
                 return !roots.isEmpty && roots.allSatisfy { document.canOutdent($0) }
+            case .canPolishTranscription:
+                return !isPolishingTranscription
+                    && TranscriptPolisher.isAvailable
+                    && !selectedTextBlockIDs().isEmpty
             }
         }
     }

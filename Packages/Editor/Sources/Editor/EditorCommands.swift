@@ -31,6 +31,7 @@ public final class EditorCommands {
 public enum EditorAction: Sendable, Equatable {
     // Surfaces from the menu bar AND nav-mode keyboard. Same in both contexts.
     case openBlockActionMenu
+    case polishTranscription
     case openMoveTo
     case toggleLinkOrSubpage
     case toggleInlineMark(InlineMark)
@@ -59,6 +60,7 @@ public enum EditorAction: Sendable, Equatable {
 public enum EditorPredicate: Sendable {
     case canIndent
     case canOutdent
+    case canPolishTranscription
 }
 
 struct EditorCommandsFocusKey: FocusedValueKey {

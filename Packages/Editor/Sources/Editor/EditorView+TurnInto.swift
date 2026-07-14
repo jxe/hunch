@@ -396,6 +396,13 @@ extension EditorView {
                             _ = copyBlocksToPasteboard(ids: targetIDs)
                         }
                         compactMenuButton(
+                            title: "Polish",
+                            systemImage: "wand.and.sparkles",
+                            keyboardShortcut: "p"
+                        ) {
+                            polishTranscription(blockIDs: selectedTextBlockIDs(anchorID: blockID))
+                        }
+                        compactMenuButton(
                             title: "Move to",
                             systemImage: "arrow.right.doc.on.clipboard",
                             keyboardShortcut: "m",
@@ -489,6 +496,72 @@ extension EditorView {
         }
         #endif
         return [anchorID]
+    }
+
+    /// Text-bearing rows in the nav selection, in document order. Unlike the
+    /// structural action targets, this intentionally does not expand selected
+    /// containers to include their descendants: polishing changes only the rows
+    /// the user explicitly selected.
+    func selectedTextBlockIDs(anchorID: BlockID? = nil) -> [BlockID] {
+        let selected: Set<BlockID>
+        if let anchorID, !state.selection.contains(anchorID) {
+            selected = [anchorID]
+        } else {
+            selected = state.selection
+        }
+
+        return selected
+            .filter { id in
+                guard let block = document.find(id),
+                      let text = textForBlockTypeChange(block) else { return false }
+                return !String(text.characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            .sorted {
+                (document.documentOrder(of: $0) ?? .max) < (document.documentOrder(of: $1) ?? .max)
+            }
+    }
+
+    func polishTranscription(blockIDs: [BlockID]) {
+        guard !isPolishingTranscription else { return }
+        let snapshots: [(id: BlockID, text: String)] = blockIDs.compactMap { id in
+            guard let block = document.find(id),
+                  let attributed = textForBlockTypeChange(block) else { return nil }
+            let text = String(attributed.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : (id, text)
+        }
+        guard !snapshots.isEmpty else { return }
+
+        isPolishingTranscription = true
+        Task { @MainActor in
+            defer { isPolishingTranscription = false }
+            do {
+                var replacements: [(id: BlockID, original: String, polished: String)] = []
+                for snapshot in snapshots {
+                    let polished = try await TranscriptPolisher.polish(snapshot.text)
+                    if polished != snapshot.text {
+                        replacements.append((snapshot.id, snapshot.text, polished))
+                    }
+                }
+
+                // Do not overwrite a row that changed while the model was working.
+                let applicable = replacements.filter { replacement in
+                    guard let block = document.find(replacement.id),
+                          let current = textForBlockTypeChange(block) else { return false }
+                    return String(current.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                        == replacement.original
+                }
+                guard !applicable.isEmpty else { return }
+
+                mutate("Polish Transcription") {
+                    for replacement in applicable {
+                        _ = document.setText(replacement.id, AttributedString(replacement.polished))
+                    }
+                }
+                showActionToast("Polished transcription")
+            } catch {
+                polishErrorMessage = error.localizedDescription
+            }
+        }
     }
 
     fileprivate func indentMenuTargets(_ ids: [BlockID], by delta: Int) {

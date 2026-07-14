@@ -266,6 +266,13 @@ private struct EditorCommandButton: View {
 private struct EditorBlockMenuItems: View {
     var body: some View {
         EditorCommandButton(title: "Turn Selected Block Into…", key: "/", action: .openBlockActionMenu)
+        EditorCommandButton(
+            title: "Polish Transcription",
+            key: "p",
+            modifiers: [.command, .option],
+            requires: .canPolishTranscription,
+            action: .polishTranscription
+        )
         EditorCommandButton(title: "Create Page from Selected Block…", key: "k", action: .toggleLinkOrSubpage)
         EditorCommandButton(title: "Insert Block Below", key: .return, action: .newBlockBelow)
         // ⇧⌘M to dodge the system Window > Minimize on plain ⌘M — that

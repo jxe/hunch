@@ -114,6 +114,11 @@ public struct EditorView: View {
         let id: BlockID
     }
     @State var actionSheet: BlockActionSheet?
+    /// True while Apple’s on-device language model is polishing the selected
+    /// rows. Keeps duplicate menu invocations out and gives the async operation
+    /// visible progress after the compact action sheet closes.
+    @State var isPolishingTranscription = false
+    @State var polishErrorMessage: String?
 
     public init(
         document: Document,
@@ -264,7 +269,18 @@ public struct EditorView: View {
             }
             .background(NotionStyle.background)
             .overlay(alignment: .bottom) {
-                if let toast = state.actionToast {
+                if isPolishingTranscription {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Polishing transcription…")
+                    }
+                    .font(NotionStyle.body(size: 13))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, 18)
+                } else if let toast = state.actionToast {
                     HStack(spacing: 12) {
                         Text(toast)
                         Button("Undo") {
@@ -293,6 +309,14 @@ public struct EditorView: View {
             // scene-level remains visible to the menu commands.
             .focusedSceneValue(\.documentUndoController, undoController)
             .focusedSceneValue(\.editorCommands, editorCommands)
+            .alert("Polish Transcription", isPresented: Binding(
+                get: { polishErrorMessage != nil },
+                set: { if !$0 { polishErrorMessage = nil } }
+            )) {
+                Button("OK") { polishErrorMessage = nil }
+            } message: {
+                Text(polishErrorMessage ?? "")
+            }
             #if os(macOS)
             // macOS uses page-level focus for nav-mode hardware keyboard handling.
             // iOS has no such nav mode and no hardware keyboard nav, AND attaching
