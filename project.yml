@@ -68,24 +68,6 @@ targets:
             UIApplicationShortcutItemTitle: Change Icon
             UIApplicationShortcutItemIconType: UIApplicationShortcutIconTypeCompose
         ITSAppUsesNonExemptEncryption: false
-        CFBundleIcons:
-          CFBundlePrimaryIcon:
-            CFBundleIconFiles: [AppIcon]
-            CFBundleIconName: AppIcon
-          CFBundleAlternateIcons:
-            AppIcon-Woman:
-              CFBundleIconFiles: [AppIcon-Woman]
-              CFBundleIconName: AppIcon-Woman
-              UIPrerenderedIcon: false
-        CFBundleIcons~ipad:
-          CFBundlePrimaryIcon:
-            CFBundleIconFiles: [AppIcon]
-            CFBundleIconName: AppIcon
-          CFBundleAlternateIcons:
-            AppIcon-Woman:
-              CFBundleIconFiles: [AppIcon-Woman]
-              CFBundleIconName: AppIcon-Woman
-              UIPrerenderedIcon: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.nxhx.Hunch

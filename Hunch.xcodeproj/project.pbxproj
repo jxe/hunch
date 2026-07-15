@@ -9,8 +9,10 @@
 /* Begin PBXBuildFile section */
 		04A06B21070FBD3F94135665 /* RecoveryLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CAB768C1FCE7C688962A0B3 /* RecoveryLog.swift */; };
 		05EDCEDBEF4C024F981312E2 /* InterVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C60B591D585995CB7097A0DC /* InterVariable.ttf */; };
+		06D6A88E893F0986E9919590 /* AppIcon-Woman.icon in Resources */ = {isa = PBXBuildFile; fileRef = 51A4F447CFC7D0904C9BC40F /* AppIcon-Woman.icon */; };
 		06E9308807AFDD62FE4A1BF0 /* RecordingButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B0CEECA177750C83715122D /* RecordingButton.swift */; };
 		08925AC1A04AD08FF0C8383B /* VoiceRecordingIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 944CFC55C63C67A7EC1BBC58 /* VoiceRecordingIntents.swift */; };
+		145388E1A88588E37F8D3EE7 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = FF724D0AA3E9BB99C7645DCD /* AppIcon.icon */; };
 		1D34E25E041903E821F8836D /* ClamshellSavingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B215D52D128FC5C1D8D785B4 /* ClamshellSavingTests.swift */; };
 		23117D5233A97DD99B42A62E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F152EE3E8A4F7205FF247D87 /* Assets.xcassets */; };
 		262D29CF7CAA3118EBB12F92 /* HunchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDE9175735C2BEE33F669B6 /* HunchApp.swift */; };
@@ -104,6 +106,7 @@
 		454E8E145765A1A4C9633C3E /* Clamshell+Reconcile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Clamshell+Reconcile.swift"; sourceTree = "<group>"; };
 		46F2C79D34F79309A525B503 /* PatchEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PatchEngineTests.swift; sourceTree = "<group>"; };
 		4EDE9175735C2BEE33F669B6 /* HunchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HunchApp.swift; sourceTree = "<group>"; };
+		51A4F447CFC7D0904C9BC40F /* AppIcon-Woman.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = "AppIcon-Woman.icon"; sourceTree = "<group>"; };
 		55F9D8DDFDBD126289D6957C /* LinkPreviewCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkPreviewCache.swift; sourceTree = "<group>"; };
 		5C30C0CFCA4EB1D4E825D211 /* SubpageTrashDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubpageTrashDecision.swift; sourceTree = "<group>"; };
 		5ECE6A64919F54162EC5473A /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -151,6 +154,7 @@
 		F152EE3E8A4F7205FF247D87 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F2F06B0B8E466E1C833D3F5C /* BannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BannerTests.swift; sourceTree = "<group>"; };
 		F40BF2D87C103EC5F23D76AE /* WorkspaceWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindow.swift; sourceTree = "<group>"; };
+		FF724D0AA3E9BB99C7645DCD /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -303,6 +307,8 @@
 			isa = PBXGroup;
 			children = (
 				154CE5820956BD4B16F03FB7 /* Fonts */,
+				51A4F447CFC7D0904C9BC40F /* AppIcon-Woman.icon */,
+				FF724D0AA3E9BB99C7645DCD /* AppIcon.icon */,
 				F152EE3E8A4F7205FF247D87 /* Assets.xcassets */,
 				C4608B6FE43942A156484E8F /* PrivacyInfo.xcprivacy */,
 			);
@@ -446,6 +452,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				06D6A88E893F0986E9919590 /* AppIcon-Woman.icon in Resources */,
+				145388E1A88588E37F8D3EE7 /* AppIcon.icon in Resources */,
 				23117D5233A97DD99B42A62E /* Assets.xcassets in Resources */,
 				05EDCEDBEF4C024F981312E2 /* InterVariable.ttf in Resources */,
 				B681767CB931D2A7DC39D806 /* PrivacyInfo.xcprivacy in Resources */,

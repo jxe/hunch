@@ -1,0 +1,89 @@
+{
+  "fill-specializations" : [
+    {
+      "value" : {
+        "automatic-gradient" : "extended-srgb:0.99608,0.99608,0.99608,1.00000"
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : {
+        "automatic-gradient" : "extended-srgb:0.01176,0.01176,0.01176,1.00000"
+      }
+    },
+    {
+      "appearance" : "tinted",
+      "value" : {
+        "automatic-gradient" : "extended-srgb:0.01176,0.01176,0.01176,1.00000"
+      }
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "automatic-gradient" : "gray:0.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "automatic-gradient" : "gray:0.03137,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "automatic-gradient" : "gray:0.03137,1.00000"
+              }
+            }
+          ],
+          "image-name" : "Ink.png",
+          "name" : "Ink"
+        }
+      ],
+      "lighting" : "individual",
+      "name" : "Ink",
+      "specular" : true
+    },
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "automatic-gradient" : "gray:1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "automatic-gradient" : "extended-srgb:0.96078,0.93725,0.89412,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "automatic-gradient" : "gray:0.92000,1.00000"
+              }
+            }
+          ],
+          "image-name" : "Skin.png",
+          "name" : "Skin"
+        }
+      ],
+      "lighting" : "individual",
+      "name" : "Skin",
+      "specular" : true
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "iOS",
+      "macOS"
+    ]
+  }
+}
