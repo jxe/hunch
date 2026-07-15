@@ -3,17 +3,16 @@ import Foundation
 @testable import Hunch
 import Editor
 
-/// Pins the synchronous-enqueue contract of the save chain: the chain
-/// entry is installed before `enqueueCommit` returns, so quiescence
-/// readers (`flush`, `isQuiescent`, close-then-trash sequencing) can
-/// never observe false quiescence between a commit firing and its
-/// bytes landing. Also pins coalescing, ordering, and self-cleanup.
-@Suite("SaveChain enqueue semantics")
+/// Pins the synchronous-enqueue contract of the page coordinator: a write
+/// generation is installed before `enqueueCommit` returns, so `flush` and
+/// close-then-trash sequencing cannot overlook a commit between its firing
+/// and its bytes landing. Also pins coalescing, ordering, and self-cleanup.
+@Suite("PageCoordinator persistence semantics")
 @MainActor
-struct SaveChainTests {
+struct PageCoordinatorTests {
     private func makeRoot() -> URL {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("savechain-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("page-coordinator-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -35,14 +34,15 @@ struct SaveChainTests {
             .fromEditorOps([.insert(hash: block.atomicHash, parent: nil, block: block)]),
             to: doc
         )
-        #expect(!clamshell.isQuiescent(at: doc.url), "enqueue must install the chain entry before returning")
+        let page = try #require(clamshell.pageCoordinators[doc.url])
+        #expect(page.hasPendingWrite, "enqueue must install the write generation before returning")
 
         try await clamshell.flush(doc)
         let mdText = try String(contentsOf: doc.url, encoding: .utf8)
         #expect(mdText.contains("keystroke"), "flush must await the enqueued write")
     }
 
-    /// Chain entries self-clean when their task finishes — quiescence
+    /// Write entries self-clean when their task finishes — quiescence
     /// must not require a flush to clear a completed-save corpse.
     @Test func completedCommitSelfCleansWithoutFlush() async throws {
         let root = makeRoot()
@@ -53,12 +53,13 @@ struct SaveChainTests {
         let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
 
         let task = clamshell.enqueueCommit(Commit(logEntries: []), to: doc)
+        let page = try #require(clamshell.pageCoordinators[doc.url])
         try await task.value
-        #expect(clamshell.isQuiescent(at: doc.url), "a finished chain task must clear its own slot")
+        #expect(!page.hasPendingWrite, "a finished coordinator write must clear its own slot")
     }
 
     /// Two enqueues for the same Document before the first starts fold
-    /// into one chain entry: same task, both batches' log entries land.
+    /// into one write entry: same task, both batches' log entries land.
     @Test func rapidEnqueuesForSameDocumentCoalesce() async throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -77,8 +78,11 @@ struct SaveChainTests {
             to: doc
         )
         #expect(first == second, "an un-started tail for the same Document must coalesce")
+        let page = try #require(clamshell.pageCoordinators[doc.url])
+        #expect(page.currentGeneration == 2)
 
         try await second.value
+        #expect(page.durableGeneration == 2)
         let intent = PatchEngine.intent(from: clamshell.log.readJournal(page: "p.md"))
         if case .alive = intent.byHash[a.atomicHash] {} else {
             Issue.record("first batch's add must survive coalescing")
@@ -119,32 +123,34 @@ struct SaveChainTests {
         }
     }
 
-    /// A fresh Document instance for the same URL must not coalesce into
-    /// another instance's pending entry — its own block snapshot is the
-    /// one that has to serialize (conflict-merge pattern).
-    @Test func distinctDocumentInstancesDoNotCoalesce() async throws {
+    /// A transient closed-page operation and a subsequently attached editor
+    /// share one canonical Document while their lifetimes overlap.
+    @Test func transientAndEditorLeasesShareCanonicalDocument() async throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
         let url = clamshell.url(for: "p.md")
-        let docA = Document(url: url, children: [Block.paragraph(text: attr("from A"))])
-        let docB = Document(url: url, children: [Block.paragraph(text: attr("from B"))])
+        try "# P\n\nseed\n".write(to: url, atomically: true, encoding: .utf8)
+        let page = clamshell.coordinator(for: url)
+        let transient = try await page.acquireTransientDocument()
+        let open = try await clamshell.openPage(at: url) { _ in }
+        #expect(open.document === transient)
 
-        let first = clamshell.enqueueCommit(Commit(logEntries: []), to: docA)
-        let second = clamshell.enqueueCommit(Commit(logEntries: []), to: docB)
-        #expect(first != second, "a different Document instance needs its own chain entry")
+        let block = Block.paragraph(text: attr("shared canonical"))
+        transient.replaceChildrenFromSystemMutation(transient.children + [block])
+        try await clamshell.commit(.fromEditorOps([.insert(hash: block.atomicHash, parent: nil, block: block)]), to: transient)
+        page.releaseTransientDocument()
+        try await clamshell.closePage(open)
 
-        try await second.value
         let mdText = try String(contentsOf: url, encoding: .utf8)
-        #expect(mdText.contains("from B"), "the later instance's snapshot must win")
-        #expect(!mdText.contains("from A"))
+        #expect(mdText.contains("shared canonical"))
     }
 
     /// Teardown contract: `drain()` awaits unawaited commits and tears
     /// down remaining live pages, so an owner that drains before dropping
     /// its reference can never lose in-flight work.
-    @Test func drainAwaitsPendingCommitsAndClosesLivePages() async throws {
+    @Test func drainAwaitsPendingCommitsAndClosesCoordinators() async throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
@@ -152,7 +158,7 @@ struct SaveChainTests {
         let url = clamshell.url(for: "p.md")
         try "# P\n\nseed\n".write(to: url, atomically: true, encoding: .utf8)
         let open = try await clamshell.openPage(at: url) { _ in }
-        #expect(!clamshell.livePages.isEmpty)
+        #expect(clamshell.pageCoordinators[url]?.hasEditorSubscribers == true)
 
         let block = Block.paragraph(text: attr("last keystroke"))
         open.document.replaceChildrenFromSystemMutation(open.document.children + [block])
@@ -165,7 +171,6 @@ struct SaveChainTests {
 
         let mdText = try String(contentsOf: url, encoding: .utf8)
         #expect(mdText.contains("last keystroke"), "drain must await the pending commit")
-        #expect(clamshell.livePages.isEmpty, "drain must tear down live pages")
-        #expect(clamshell.isQuiescent(at: url))
+        #expect(clamshell.pageCoordinators.isEmpty, "drain must tear down page coordinators")
     }
 }

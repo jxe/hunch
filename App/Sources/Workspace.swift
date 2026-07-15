@@ -349,7 +349,7 @@ final class Workspace {
                 let resolution: Clamshell.ConflictResolution
                 let iter = perfStart()
                 do {
-                    resolution = try await clamshell.resolveConflictVersions(at: url, againstLive: nil)
+                    resolution = try await clamshell.resolveConflictVersions(at: url)
                 } catch {
                     Diag.merge.error("scan-time resolve failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                     perfEnd(iter, "sweep.iter", "url=\(url.lastPathComponent) error=1")

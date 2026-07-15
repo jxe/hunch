@@ -6,7 +6,7 @@ import Editor
 // A `Commit` is one durable unit of work for a single page: log entries to
 // append (zero or more) plus the implicit "serialize and write the current
 // `.md`." Caller mutates the live `Document` first; `Commit` does not carry
-// in-memory mutations. `Clamshell.commit(_:to:)` (the per-URL save chain)
+// in-memory mutations. `Clamshell.commit(_:to:)` (the per-URL coordinator)
 // applies log entries strictly before the file write, awaited end-to-end,
 // so the "log at-or-ahead of disk" invariant holds across crashes.
 //
@@ -51,7 +51,7 @@ extension PatchEngine.Reconciliation {
     /// Project a reconcile result onto a `Commit`. Caller is expected to
     /// have already applied `inserts` + `removes` to the live `Document`
     /// (typically via `PatchEngine.apply(_:to:)`) — those mutations are
-    /// in-memory and don't go through the save chain. The `Commit` carries
+    /// in-memory and don't go through the writer. The `Commit` carries
     /// only what needs to be durably appended to the log: `observe` records
     /// for unlogged-but-in-doc blocks, and `purge` records to quarantine
     /// unrestorable hashes so reconcile stops firing for them.

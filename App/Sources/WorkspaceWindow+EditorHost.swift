@@ -104,7 +104,7 @@ extension WorkspaceWindow: EditorHost {
     func persistCommit(ops: [EditorOp], in document: Document) {
         guard let clamshell = workspace.clamshell else { return }
         // Editor's `didCommitTransaction` is sync (typing path can't
-        // await). The enqueue is synchronous too, so the save chain
+        // await). The enqueue is synchronous too, so the page coordinator
         // reflects this commit before we return — `flush(_:)` callers
         // (blur, nav, scenePhase) can never observe false quiescence.
         // The Task only awaits durability for the failure banner.

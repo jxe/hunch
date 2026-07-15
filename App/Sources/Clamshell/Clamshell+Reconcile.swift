@@ -43,26 +43,28 @@ extension Clamshell {
     }
 
     /// Reconcile-against-journal on a live `Document`: mutate `doc` in
-    /// place if the engine finds blocks to splice. Gated on
-    /// `isQuiescent(at:)` — the engine assumes `doc.children ==
-    /// parsed(.md)`, only true on a settled page. Returns nil when the
-    /// gate fires, so the caller can distinguish "deferred, retry after
-    /// flush" from "ran and found nothing." Used both by openPage (the
+    /// place if the engine finds blocks to splice. Gated on the coordinator's
+    /// settled generation — the engine assumes `doc.children == parsed(.md)`,
+    /// only true after every local generation is durable. Returns nil when
+    /// the gate fires, so the caller can distinguish "deferred, retry after
+    /// durability" from "ran and found nothing." Used both by openPage (the
     /// initial post-load fold, deferred so it doesn't block first
     /// paint) and by presenter wakeups.
     @discardableResult
     func reconcileLive(_ doc: Document) async throws -> PatchEngine.ReconcileSummary? {
-        guard isQuiescent(at: doc.url) else {
+        guard let page = pageCoordinators[doc.url.standardizedFileURL],
+              page.document === doc,
+              let generation = page.settledGeneration else {
             Diag.merge.log("reconcileLive deferred url=\(doc.url.lastPathComponent, privacy: .public)")
             return nil
         }
-        return try await runReconcile(on: doc)
+        return try await runReconcile(on: doc, page: page, generation: generation)
     }
 
     /// Shared body: run the pure reconciliation, mutate `doc` in place
     /// for any inserts/removes, then commit the catch-up log entries
     /// (observations + unrestorable quarantines) and the new `.md` shape
-    /// through the per-URL save chain. Caller has already decided which
+    /// through the per-URL page coordinator. Caller has already decided which
     /// Document to operate on.
     ///
     /// `recon.toAppend` is emitted as `observe`, not `add`: the engine's
@@ -73,7 +75,11 @@ extension Clamshell {
     /// auto-restore-eligible, so a subsequent foreign delete won't trigger
     /// a spurious resurrect. The `Reconciliation.asCommit()` projection
     /// handles the entry shaping.
-    private func runReconcile(on doc: Document) async throws -> PatchEngine.ReconcileSummary {
+    private func runReconcile(
+        on doc: Document,
+        page: PageCoordinator,
+        generation: UInt64
+    ) async throws -> PatchEngine.ReconcileSummary? {
         let url = doc.url
         let rel = relativePath(of: url)
         let foldT = perfStart()
@@ -87,6 +93,13 @@ extension Clamshell {
             trustedFrontier: inputs.trustedFrontier,
             allowJournalMutations: inputs.allowJournalMutations
         )
+        guard page.remainsSettled(at: generation) else {
+            // An editor commit landed while the journal was being folded.
+            // Applying a reconciliation derived from the older tree could
+            // remove or restore against stale state; retain the sync request.
+            page.requestSynchronization()
+            return nil
+        }
         switch outcome {
         case .skipped:
             perfEnd(foldT, "runReconcile.skipped", "rel=\(rel)")
@@ -132,7 +145,10 @@ extension Clamshell {
             throw RestoreError.pageMissing(source)
         }
 
-        let (doc, isLive) = try await resolveRestoreDoc(pageURL: pageURL, liveDoc: liveDoc)
+        let page = liveDoc.map { coordinator(for: $0) } ?? coordinator(for: pageURL)
+        let doc = try await page.acquireTransientDocument()
+        defer { page.releaseTransientDocument() }
+        let isLive = page.hasEditorSubscribers
 
         let journal = log.readJournal(page: source)
         let intent = PatchEngine.intent(from: journal)
@@ -243,14 +259,6 @@ extension Clamshell {
             Diag.merge.error("restore commit failed page=\(source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             throw error
         }
-    }
-
-    private func resolveRestoreDoc(pageURL: URL, liveDoc: Document?) async throws -> (Document, Bool) {
-        if let liveDoc, liveDoc.url == pageURL {
-            return (liveDoc, true)
-        }
-        let doc = try await loadDocument(at: pageURL)
-        return (doc, false)
     }
 
     private static func logUnrestorables(_ entries: [PatchEngine.UnrestorableEntry], url: URL) {

@@ -301,13 +301,13 @@ final class WorkspaceWindow {
         navigationTask = nil
     }
 
-    // The save lifecycle (commit-time atomic save, per-URL SaveChain,
+    // The save lifecycle (commit-time atomic save, per-URL PageCoordinator,
     // post-save bookkeeping) lives on `Clamshell`. The host's
     // `EditorHost.persistCommit` conformance calls
     // `clamshell.enqueueCommit(.fromEditorOps(ops), to: doc)`
-    // synchronously at every edit-session commit point (so the chain is
+    // synchronously at every edit-session commit point (so the coordinator is
     // never blind to a just-fired commit), and `clamshell.flush(_:)`
-    // awaits the chain on blur / scenePhase / navigation away. Clamshell
+    // awaits its writer on blur / scenePhase / navigation away. Clamshell
     // keeps the title cache + entries in sync internally; the host
     // doesn't thread anything through it.
 

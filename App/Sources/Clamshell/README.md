@@ -193,7 +193,7 @@ containment. The orchestrator (`Clamshell+Reconcile.swift`) calls
 `apply` and then projects the rest of the reconcile output —
 `toAppend` observations and `unrestorable` quarantines — into a
 single `Commit` via `Reconciliation.asCommit()`, which `commit(_:to:)`
-routes through the per-URL save chain.
+routes through the URL's `PageCoordinator`.
 
 #### The mtime gate
 
@@ -242,12 +242,13 @@ The contract:
 
 ### Reconciliation paths
 
-Hosts don't call reconcile directly. `openPage(at:onEvent:)` returns
-as soon as the `.md` is loaded + parsed; the journal fold runs in a
-background Task and fires `onEvent(.restored(count:))` if anything
-was spliced. Deferring the fold keeps the home-page critical path
-clear of the per-device JSONL iCloud reads, and the common case has
-nothing to restore.
+Hosts don't call reconcile directly. Every URL is mediated by one
+`PageCoordinator`, which owns its canonical in-memory `Document`, ordered
+write generations, editor subscribers, presenters, and pending sync request.
+`openPage(at:onEvent:)` returns as soon as the `.md` is loaded + parsed; the
+coordinator requests a journal fold in its background sync loop and fires
+`onEvent(.restored(count:))` if anything was spliced. Deferring the fold keeps
+the home-page critical path clear of the per-device JSONL iCloud reads.
 
 Presenter-wakeup reconcile fires from two presenters installed per
 open page:
@@ -266,9 +267,15 @@ open page:
   trigger a re-reconcile and the stale Recover-sheet entries would
   linger.
 
-Both presenters fire the same idempotent wakeup. The 250ms debounce
-plus `try await flush(doc)` at the top of `handlePresenterWakeup`
-coalesce bursts and serialise against any pending Mac saves.
+Both presenters set the same sticky synchronization request. The 250ms
+debounce coalesces filesystem bursts; the coordinator waits for the latest
+local write generation to become durable before classifying disk content and
+folding the journal. A request that arrives during a save or sync remains
+pending and runs afterward rather than relying on another presenter wakeup.
+
+Closed-page mutations (append, manual recovery, conflict sweep) acquire a
+transient lease on the same URL coordinator. Consequently an editor and a
+background operation cannot load competing `Document` snapshots for one page.
 
 Log apply is awaited strictly before the file save fires either way
 — the at-or-ahead invariant holds across crashes.
@@ -353,8 +360,8 @@ let clamshell = Clamshell(root: workspaceURL)
 try clamshell.rescan()
 
 // Open a page: load + parse the `.md`, install the file presenter,
-// return immediately. The journal fold runs in a background Task
-// after openPage returns — `.restored` fires later if anything was
+// return immediately. Its PageCoordinator runs the journal fold in
+// the background after openPage returns — `.restored` fires later if anything was
 // auto-spliced. `.conflictMerged` fires from presenter wakeups when
 // iCloud delivers a sibling-version conflict.
 // `onEvent` fires only for noteworthy outcomes — non-noteworthy
@@ -410,15 +417,15 @@ existing instance and build a new one.
 | Group | Methods |
 |-------|---------|
 | Path conversion | `relativePath(of:)`, `url(for:)`, `pageID(for:relativeTo:)` |
-| Read | `loadDocument(at:)` — async; seeds the iCloud disk-content ring buffer for the live-page path. `readBlocks(at:)` — async; one-off read that doesn't seed history (used by inline-expand). |
+| Read | `readBlocks(at:)` — async one-off read used by inline-expand. `loadDocument(at:)` is the coordinator-internal document loader and seeds the iCloud disk-content ring buffer. |
 | Page list (observable) | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:filter:)` — returns ranked `WorkspaceEntry`s; the app boundary maps to `MentionItem` via `WorkspaceEntry.asMentionItem(homeRelativePath:)` |
-| Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. Load + parse + install one presenter per live URL on first open (journal fold runs deferred in a background Task, fires `onEvent(.restored)` if anything was auto-spliced); later opens of the same URL share the live `Document` and add another event subscriber. Close drops one handle; the final close flushes and tears down. |
-| Write (all flows) | `enqueueCommit(_:to:)` — synchronously installs a `SaveChain` entry (log entries before `.md` write, one chained task per commit) and returns the task; used by the host's sync `persistCommit` hook. `commit(_:to:)` — enqueue + await: returns when the bytes are on disk. Concurrent calls for the same URL chain so they land in arrival order; reconcile, manual restore, conflict-merge, and subpage append each build the appropriate `Commit` and await it. `flush(_:)` awaits any in-flight commit head without triggering work; for blur / scenePhase / navigate-away. `drain()` — terminal teardown: awaits every pending save and tears down live pages; owner holds the Clamshell strongly until it returns. `inlineAndTrash(pageID:parent:)` flushes the parent and trashes the named page in one durable sequence — used by inline-expand. |
+| Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. The URL's coordinator loads one canonical `Document`, installs its Markdown and history presenters on the first editor attach, and adds an event subscriber for every later attach. Close drops one subscriber; the final close removes both presenters, flushes, and retires the coordinator when no other work remains. |
+| Write (all flows) | `enqueueCommit(_:to:)` synchronously installs a coordinator generation and returns its task; used by the host's synchronous `persistCommit` hook. `commit(_:to:)` is enqueue + await. Each generation snapshots the document and applies its log entries before writing `.md`; same-URL generations land in arrival order, while an unstarted tail may coalesce. `flush(_:)` awaits already-enqueued work. `drain()` awaits all pending generations and shuts down every coordinator. `inlineAndTrash(pageID:parent:)` flushes the parent and trashes the named page in one durable sequence. |
 | Restore | `restoreBlocks(_:liveDoc:)` — the Recover-sheet entry point for both lost and purged blocks. (Paired with `restorePage(_:)` in the Trash group below, which restores a whole trashed page.) |
 | Create | `createPage(title:requestedPath:initialContent:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Recovery log | `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)` |
-| iCloud merge | `resolveConflictVersions(at:againstLive:)` → `ConflictResolution` (`{ salvaged, liveDocumentMutated }`) |
+| iCloud merge | `resolveConflictVersions(at:)` → `ConflictResolution` (`{ salvaged }`). Open and closed callers both merge through the URL's canonical coordinator document. |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
 | Home page | `homeURL`, `homeRelativePath` (read-only), `isHome(relativePath:)`, `setHome(relativePath:)` |
 | Misc | `root` |
@@ -429,9 +436,9 @@ came back) vs stomp (iCloud rolled us back) vs external (a different
 editor wrote). Callers don't have to seed anything.
 
 Engine orchestration (`reconcile`, `reconcileLive`, conflict-merge
-wakeups, save chain) is internal to the module — see the Swift
+wakeups, coordinator state transitions) is internal to the module — see the Swift
 docstrings in `Clamshell.swift`, `Clamshell+Reconcile.swift`, and
-`Clamshell+Presenter.swift`.
+`Clamshell+Presenter.swift`, plus `PageCoordinator.swift`.
 
 ---
 
@@ -515,15 +522,15 @@ restore is a page-bundle operation.
 **One write API: `enqueueCommit(_:to:)` / `commit(_:to:)` +
 `flush(_:)`.** Every durable write — editor commit, reconcile
 catch-up, manual restore, conflict-merge, subpage append — projects
-to a `Commit`. `enqueueCommit` synchronously installs a `SaveChain`
-entry and returns its task; `commit` is enqueue-then-await. Log
-entries land in the recovery log first, the `.md` is serialized and
-written second, both inside one chained Task. Concurrent calls for
-the same URL chain so a typing burst → blur → navigate sequence lands
-in order. `flush(_:)` awaits the chain head without triggering work —
-for blur, scenePhase backgrounding, navigation-away. `drain()` is the
-terminal teardown: awaits every pending save across all URLs and
-tears down remaining live pages; the owner must hold the Clamshell
+to a `Commit`. `enqueueCommit` synchronously installs the next
+`PageCoordinator` generation and returns its task; `commit` is
+enqueue-then-await. The generation snapshots the document immediately,
+then lands recovery-log entries before its `.md` write. Same-URL
+generations run in arrival order, and rapid commits may coalesce while
+the tail has not started. `flush(_:)` awaits the current tail without
+triggering work — for blur, scenePhase backgrounding, and navigation
+away. `drain()` is terminal teardown: it awaits every pending generation
+and shuts down remaining coordinators; the owner must hold the Clamshell
 strongly until it returns (see `Workspace.switchWorkspace`).
 Post-save bookkeeping (mtime refresh, title cache, page rescan) fires
 internally on every successful commit.
@@ -579,16 +586,14 @@ tombstone from the union.
 
 ## Concurrency
 
-`Clamshell` is `@MainActor`-isolated for its mutable property
-(`homeRelativePath`) and the operations that touch it
-(`moveToTrash`, `restorePage`, the save paths). Path conversions, raw
-reads, and asset I/O are `nonisolated`. The underlying stores are
-actors (`RecoveryLog`, `TrashStore`) or stateless `Sendable`
-(`FileStore`); call them from background tasks freely. Per-URL save
-ordering during a live editor session is handled by `SaveChain` (a
-MainActor class owning a `[URL: entry]` chain — see SaveChain.swift),
-not a queueing actor — the chain inherits the surrounding MainActor
-isolation, which is what makes its synchronous enqueue possible.
+`Clamshell` and `PageCoordinator` are `@MainActor`-isolated. One
+coordinator owns the canonical `Document`, editor subscribers, presenter
+lifecycle, transient closed-page leases, ordered write generations, and
+sticky synchronization requests for a URL. Keeping generation enqueue on
+the MainActor makes installation synchronous; serialization and coordinated
+file I/O still hop off the actor. Path conversions, raw reads, and asset I/O
+are `nonisolated`. The underlying stores are actors (`RecoveryLog`,
+`TrashStore`) or stateless `Sendable` (`FileStore`).
 
 `PatchEngine` is pure — no actors, no I/O. `reconcile` and the
 helpers are `@MainActor` only because they hand back / accept `Block`
@@ -606,17 +611,15 @@ append" — `NSFileCoordinator` handles that.
 
 - [Clamshell.swift](Clamshell.swift) — the umbrella API. Orchestrates
   reads/writes, hands the engine its inputs, applies the engine's
-  outputs. The per-URL save chain lives in
-  [SaveChain.swift](SaveChain.swift): `enqueueCommit(_:to:)`
-  (synchronous chain install, returns the task), `commit(_:to:)`
-  (enqueue + await), `flush(_:)` (await chain head without triggering
-  work), `drain()` (terminal teardown). Engine-internal in-place saves
-  (reconcile auto-restore) project to a `Commit` with no log entries
-  and go through the same primitive.
+  outputs, and exposes enqueue/commit/flush/drain operations backed by
+  [PageCoordinator.swift](PageCoordinator.swift). A coordinator is the
+  per-URL state machine for canonical document ownership, editor and
+  transient leases, presenter lifetime, persistence generations, and
+  synchronization. Engine-internal saves use the same commit primitive.
 - [Commit.swift](Commit.swift) — the `Commit` value type that
   unifies every durable write (editor commit, reconcile catch-up,
-  manual restore, conflict-merge, subpage append). One Commit = log
-  entries to append + a CommitSummary the host displays. Factories:
+  manual restore, conflict-merge, subpage append). One Commit is the
+  recovery-log entries associated with a document snapshot. Factories:
   `Commit.fromEditorOps(_:)`, `Reconciliation.asCommit()`; the other
   call sites build the value directly.
 - [Clamshell+Reconcile.swift](Clamshell+Reconcile.swift) — engine

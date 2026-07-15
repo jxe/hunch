@@ -154,42 +154,11 @@ final class Clamshell {
     @ObservationIgnored private var pageFrontmatter: [URL: [String]?] = [:]
     @ObservationIgnored private var pageStampTrust: [URL: ClamshellPageEnvelope.StampTrust] = [:]
 
-    /// Per-URL ordered save chain (see `SaveChain` for the coalescing +
-    /// ordering rules). Assigned at the end of `init` — the work body is
-    /// one chained task per commit: log entries strictly before the `.md`
-    /// write, so the "log durable before file durable" invariant is
-    /// structural. `[weak self]` because the chain belongs to this
-    /// Clamshell; liveness across pending work is guaranteed by `drain()`
-    /// — the owner holds the Clamshell strongly until drain returns, so
-    /// the weak no-op path is unreachable in practice.
-    @ObservationIgnored private var chain: SaveChain!
-
-    @MainActor
-    final class LivePage {
-        let url: URL
-        let document: Document
-        let presenter: PresenterHandle
-        var subscribers: [UUID: @MainActor (PresenterEvent) -> Void]
-
-        init(
-            url: URL,
-            document: Document,
-            presenter: PresenterHandle,
-            firstSubscriberID: UUID,
-            onEvent: @escaping @MainActor (PresenterEvent) -> Void
-        ) {
-            self.url = url
-            self.document = document
-            self.presenter = presenter
-            self.subscribers = [firstSubscriberID: onEvent]
-        }
-    }
-
-    /// One live `Document` per open page URL. Multiple windows may hold
-    /// `OpenPage` handles for the same URL, but they all render/mutate this
-    /// shared document instance so per-URL saves do not serialize stale
-    /// snapshots from independent in-memory trees.
-    @ObservationIgnored var livePages: [URL: LivePage] = [:]
+    /// One coordinator per URL that currently has an editor subscriber,
+    /// pending persistence/synchronization work, or a transient closed-page
+    /// operation. The coordinator owns the canonical in-memory `Document`
+    /// and all sequencing for that page.
+    @ObservationIgnored var pageCoordinators: [URL: PageCoordinator] = [:]
 
     init(root: URL) {
         let total = perfStart()
@@ -229,17 +198,6 @@ final class Clamshell {
         perfEnd(probeT, "Clamshell.init.probeBlocksDir")
         if blocksExists {
             try? FileManager.default.removeItem(at: blocksDir)
-        }
-
-        self.chain = SaveChain { [weak self] doc, logEntries in
-            guard let self else { return }
-            let rel = self.relativePath(of: doc.url)
-            if !logEntries.isEmpty {
-                try await self.log.apply(Patch(entries: logEntries), to: rel)
-            }
-            let frontier = await self.log.frontierForStampAfterOwnSave(page: rel)
-            _ = try await self.save(doc, logFrontier: frontier)
-            self.postSaveBookkeeping(doc)
         }
 
         // Seed titles from the persisted link cache so they're correct on the
@@ -574,12 +532,9 @@ final class Clamshell {
         }
         try files.requireLocallyWritable(target)
 
-        let doc: Document
-        if let live = liveDocument(at: target) {
-            doc = live
-        } else {
-            doc = try await loadDocument(at: target)
-        }
+        let page = coordinator(for: target)
+        let doc = try await page.acquireTransientDocument()
+        defer { page.releaseTransientDocument() }
         doc.replaceChildrenFromSystemMutation(doc.children + blocks)
         try await commit(Commit(logEntries: Patch.adds(from: blocks).entries), to: doc)
     }
@@ -849,13 +804,12 @@ final class Clamshell {
     // MARK: - Pages: write
     //
     // Save model is commit-time atomic: every commit applies its log
-    // entries to the recovery log and writes the .md file as one chained
-    // task, log strictly before file. `enqueueCommit(_:to:)` installs the
-    // chain entry *synchronously* and returns the task; `commit(_:to:)`
-    // awaits it. Concurrent commits for the same URL chain in order (see
-    // `SaveChain`), so a fast burst (typing → focus blur → navigation)
-    // lands in order; rapid commits whose predecessor hasn't started yet
-    // coalesce into one serialize + one .md write. No debounce, no
+    // entries to the recovery log and writes the .md file as one coordinator
+    // generation, log strictly before file. `enqueueCommit(_:to:)` installs
+    // that generation *synchronously* and returns its task; `commit(_:to:)`
+    // awaits it. Concurrent commits for the same URL run in order through
+    // its `PageCoordinator`; rapid commits whose predecessor hasn't started
+    // yet coalesce into one serialize + one .md write. No debounce, no
     // separate per-op log task: every `Document.transaction` (typing via
     // `commitLiveText`, structural via `mutate(_:_:)`, undo, redo) emits
     // its pre→post diff through `Document.didCommitTransaction` → host
@@ -866,26 +820,26 @@ final class Clamshell {
     // contend with the UI work the edit burst is driving. See `save(_:)`.
 
     /// Synchronously enqueue a commit for `doc` and return its task
-    /// without awaiting. The chain entry is installed before this
-    /// returns — `flush(_:)` / `isQuiescent(at:)` see the commit
-    /// immediately, with no gap for a fire-and-forget caller (the
-    /// editor's typing path) to fall through. Await the returned task
-    /// for durability + errors; failures are logged either way.
+    /// without awaiting. The write generation is installed before this
+    /// returns — the coordinator-backed `flush(_:)` sees the commit
+    /// immediately, with no gap for a fire-and-forget caller (the editor's
+    /// typing path) to fall through. Await the returned task for durability
+    /// + errors; failures are logged either way.
     ///
     /// Caller is responsible for the in-memory state of `doc.children`:
     /// editor mutations go through `Document.transaction` (which fires
     /// `didCommitTransaction` → host bridge → here); reconcile mutates
-    /// via `PatchEngine.apply` before committing; conflict merge builds
-    /// a fresh `Document` with the merged tree.
+    /// via `PatchEngine.apply` before committing; conflict merge rewrites
+    /// the coordinator's canonical document before committing.
     @discardableResult
     func enqueueCommit(_ commit: Commit, to doc: Document) -> Task<Void, Error> {
-        return chain.enqueue(commit.logEntries, for: doc)
+        coordinator(for: doc).enqueue(commit, for: doc)
     }
 
     /// Persist a commit for `doc`, awaiting durability end-to-end: log
     /// entries (if any) are applied to the recovery log strictly before
     /// the `.md` is serialized and written. Concurrent commits for the
-    /// same URL chain in order; the `await` returns only after this
+    /// same URL run in order; the `await` returns only after this
     /// commit's bytes are on disk, and errors propagate.
     func commit(_ commit: Commit, to doc: Document) async throws {
         try await enqueueCommit(commit, to: doc).value
@@ -896,21 +850,52 @@ final class Clamshell {
     /// navigation / blur / scenePhase / close to make sure the bytes for
     /// the just-fired commit are on disk before the editor unmounts.
     func flush(_ doc: Document) async throws {
-        guard let pending = chain.pendingTask(for: doc.url) else { return }
-        try await pending.value
+        guard let coordinator = pageCoordinators[doc.url.standardizedFileURL] else { return }
+        try await coordinator.flush()
     }
 
-    /// True when no work is pending for `url`. The engine's reconcile and
-    /// presenter paths gate on this — they assume
-    /// `doc.children == parsed(.md)`, which is only true on a settled page.
-    func isQuiescent(at url: URL) -> Bool {
-        chain.isQuiescent(at: url)
+    func coordinator(for url: URL) -> PageCoordinator {
+        let key = url.standardizedFileURL
+        if let existing = pageCoordinators[key] { return existing }
+        let coordinator = PageCoordinator(owner: self, url: key)
+        pageCoordinators[key] = coordinator
+        return coordinator
     }
 
-    /// Engine-internal: await every pending save across all URLs. Part of
-    /// `drain()` (Clamshell+Presenter.swift) — use that for teardown.
-    func drainSaveChain() async {
-        await chain.drainAll()
+    func coordinator(for document: Document) -> PageCoordinator {
+        let coordinator = coordinator(for: document.url)
+        coordinator.bindCanonicalDocument(document)
+        return coordinator
+    }
+
+    func removeCoordinatorIfIdle(_ coordinator: PageCoordinator) {
+        let key = coordinator.url.standardizedFileURL
+        guard pageCoordinators[key] === coordinator,
+              !coordinator.hasEditorSubscribers,
+              !coordinator.hasPendingWrite else { return }
+        pageCoordinators.removeValue(forKey: key)
+    }
+
+    /// The coordinator's one durable write effect. Keeping log application
+    /// and Markdown serialization in the same awaited body makes the
+    /// log-before-file invariant structural.
+    @discardableResult
+    func persist(
+        url: URL,
+        children: [Block],
+        previousModificationDate: Date?,
+        logEntries: [Patch.Entry]
+    ) async throws -> Date? {
+        let rel = relativePath(of: url)
+        if !logEntries.isEmpty {
+            try await log.apply(Patch(entries: logEntries), to: rel)
+        }
+        let frontier = await log.frontierForStampAfterOwnSave(page: rel)
+        _ = try await save(children: children, at: url, logFrontier: frontier)
+        let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let saved = Document(url: url, children: children, modificationDate: mtime ?? previousModificationDate)
+        postSaveBookkeeping(saved)
+        return mtime
     }
 
     func rememberEnvelope(_ parsed: ClamshellPageEnvelope.Parsed, for url: URL) {
@@ -969,9 +954,11 @@ final class Clamshell {
     /// the very UI a typing/move burst is trying to drive.
     @MainActor
     @discardableResult
-    private func save(_ document: Document, logFrontier: [String: UInt64]) async throws -> String {
-        let children = document.children
-        let url = document.url
+    private func save(
+        children: [Block],
+        at url: URL,
+        logFrontier: [String: UInt64]
+    ) async throws -> String {
         let titleMap = buildSubpageTitleMap(referencedBy: children)
         let files = self.files
         let frontmatter = frontmatterForSave(at: url)
@@ -1017,7 +1004,7 @@ final class Clamshell {
     /// Post-save hygiene: refresh the document's mtime from disk, update
     /// the title cache, refresh the reconcile watermark, and rescan the
     /// workspace if the entries surface needs it. Runs at the end of
-    /// every successful chain task (i.e. every commit).
+    /// every successfully persisted coordinator generation.
     @MainActor
     private func postSaveBookkeeping(_ document: Document) {
         document.modificationDate = (try? document.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
@@ -1047,39 +1034,28 @@ final class Clamshell {
 
     // MARK: - iCloud conflict resolution
 
-    /// Outcome of a conflict-resolution pass. `salvaged` counts block-hashes
-    /// pulled in from alternates that weren't already in the survivor;
-    /// `liveDocumentMutated` is true exactly when the live `Document` passed
-    /// in was rewritten in place — the caller's signal to reseed mtime, the
-    /// disk-content history, the title cache, and to show a banner.
+    /// Outcome of a conflict-resolution pass. `salvaged` counts block hashes
+    /// pulled in from alternates that weren't already in the survivor.
     struct ConflictResolution: Equatable, Sendable {
         let salvaged: Int
-        let liveDocumentMutated: Bool
-        static let none = ConflictResolution(salvaged: 0, liveDocumentMutated: false)
+        static let none = ConflictResolution(salvaged: 0)
     }
 
     /// If `url` has any unresolved `NSFileVersion` conflict alternates,
-    /// merge their blocks into the survivor (in-memory `doc` if provided,
-    /// otherwise the on-disk text), apply the salvaged blocks to the log
-    /// then write the merged document to disk, and mark each alternate
-    /// version resolved.
-    ///
-    /// Open-page callers: pass the live `Document`. When the return value's
-    /// `liveDocumentMutated` is true, the live doc's `children` was rewritten
-    /// in place and the caller must reseed its per-URL bookkeeping (mtime,
-    /// disk-hash, title cache, banner).
-    ///
-    /// Closed-page callers: pass `nil`. The merged result is written
-    /// straight to disk; `liveDocumentMutated` is always false.
+    /// merge their blocks into the coordinator's canonical document, apply
+    /// the salvaged blocks to the log, write the merged document, and mark
+    /// each alternate version resolved. Open and closed pages use the same
+    /// path, so conflict merge cannot create competing in-memory page state.
     @MainActor
-    func resolveConflictVersions(
-        at url: URL,
-        againstLive doc: Document? = nil
-    ) async throws -> ConflictResolution {
+    func resolveConflictVersions(at url: URL) async throws -> ConflictResolution {
         let nsfvT = perfStart()
         let alternates = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
         perfEnd(nsfvT, "NSFileVersion.unresolved", "url=\(url.lastPathComponent) count=\(alternates.count)")
         guard !alternates.isEmpty else { return .none }
+
+        let page = coordinator(for: url)
+        let canonical = try await page.acquireTransientDocument()
+        defer { page.releaseTransientDocument() }
 
         var alternateBlockLists: [[Block]] = []
         for version in alternates {
@@ -1087,13 +1063,7 @@ final class Clamshell {
             alternateBlockLists.append(ClamshellPageEnvelope.parse(text).blocks)
         }
 
-        let survivorBlocks: [Block]
-        if let doc {
-            survivorBlocks = doc.children
-        } else {
-            let raw = try files.read(url)
-            survivorBlocks = ClamshellPageEnvelope.parse(raw).blocks
-        }
+        let survivorBlocks = canonical.children
 
         let rel = relativePath(of: url)
         let intent = PatchEngine.intent(from: log.readJournal(page: rel))
@@ -1111,22 +1081,14 @@ final class Clamshell {
             return .none
         }
 
-        let merged = Document(url: url, children: result.merged)
+        canonical.replaceChildrenFromConflictResolution(result.merged)
         let mergeCommit = Commit(
-            logEntries: Patch.observations(from: merged.children).entries
+            logEntries: Patch.observations(from: canonical.children).entries
         )
-        try await commit(mergeCommit, to: merged)
-
-        let mutated: Bool
-        if let doc {
-            doc.replaceChildrenFromConflictResolution(result.merged)
-            mutated = true
-        } else {
-            mutated = false
-        }
+        try await commit(mergeCommit, to: canonical)
 
         Clamshell.markAlternatesResolved(alternates)
-        return ConflictResolution(salvaged: result.salvagedHashes.count, liveDocumentMutated: mutated)
+        return ConflictResolution(salvaged: result.salvagedHashes.count)
     }
 
     nonisolated private static func readCoordinated(_ url: URL) -> String? {
@@ -1309,7 +1271,7 @@ final class Clamshell {
     /// is visible (Notion / Obsidian convention) so the same file opens cleanly
     /// in any other markdown app.
     ///
-    /// One-shot, content-immutable writes — no need to go through the save chain.
+    /// One-shot, content-immutable writes — no need to go through a page coordinator.
     nonisolated func writeImage(_ image: PastedImage) throws -> String {
         let safeExt = sanitizeImageExtension(image.ext)
         let filename = pastedImageFilename(ext: safeExt)

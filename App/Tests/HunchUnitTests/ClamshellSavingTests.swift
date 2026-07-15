@@ -5,7 +5,7 @@ import Editor
 
 /// Commit-time save model: every `commit(_:to:)` applies the log entries
 /// (when non-empty) and writes the .md atomically per call. Calls for the
-/// same URL chain so concurrent commits land in order, and the top-level
+/// same URL coordinator so concurrent commits land in order, and the top-level
 /// `await` propagates durability + errors to the caller. These tests pin
 /// the invariants that matter: typing-driven hash changes reach the
 /// journal as purge+add, the .md content matches the latest commit, and
@@ -102,7 +102,7 @@ struct ClamshellSavingTests {
         #expect(ClamshellPageEnvelope.parse(mdText).stampTrust == .trusted([:]))
     }
 
-    /// A burst of commits for the same URL chain — each waits for the
+    /// A burst of commits for the same URL coordinator — each waits for the
     /// previous to land before its own log + .md write. Fired as
     /// concurrent Tasks (mirrors the host bridge's fire-and-forget
     /// pattern from `persistCommit`); after draining via flush, the .md

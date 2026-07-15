@@ -50,13 +50,12 @@ private final class PresenterWakeupDebouncer {
     }
 }
 
-/// File-presenter watch over a Document's URL. Owns the NSFilePresenter
-/// lifecycle, the wakeup debounce, conflict-version merging, disk-content
-/// classification (echo / stomp / external), and reconcile-against-log.
+/// File-presenter integration for a page coordinator. The coordinator owns
+/// lifecycle and sticky synchronization state; this file supplies the two
+/// NSFilePresenters and the conflict/classify/reconcile synchronization effect.
 /// The host calls `openPage(at:onEvent:)`/`closePage(_:)`; the presenter
 /// is installed/removed internally as part of that lifecycle. Host reacts
-/// to one `PresenterEvent` per wakeup for UI bookkeeping (banners,
-/// workspace rescan, title cache refresh).
+/// to noteworthy `PresenterEvent`s for UI bookkeeping (banners).
 @MainActor
 extension Clamshell {
     /// A noteworthy outcome of a presenter wakeup (or the deferred
@@ -109,25 +108,20 @@ extension Clamshell {
     /// handled the filesystem-level response in place (conflict merge,
     /// content reload, journal reconcile). The host reacts only with
     /// UI/workspace bookkeeping.
-    private func installPresenter(
-        for doc: Document,
-        onEvent: @escaping @MainActor (PresenterEvent) -> Void
-    ) -> PresenterHandle {
-        let debouncer = PresenterWakeupDebouncer { [weak self, weak doc] in
-            guard let self, let doc else { return }
-            if let event = await self.handlePresenterWakeup(for: doc) {
-                onEvent(event)
-            }
+    func installPresenter(for page: PageCoordinator) -> PresenterHandle {
+        let url = page.url
+        let debouncer = PresenterWakeupDebouncer { [weak page] in
+            page?.requestSynchronization()
         }
         let fire: @Sendable () -> Void = { [weak debouncer] in
             Task { @MainActor in
                 debouncer?.schedule()
             }
         }
-        let documentPresenter = DocumentFilePresenter(url: doc.url, onChange: fire)
+        let documentPresenter = DocumentFilePresenter(url: url, onChange: fire)
         NSFileCoordinator.addFilePresenter(documentPresenter)
 
-        let rel = relativePath(of: doc.url)
+        let rel = relativePath(of: url)
         let historyDir = root
             .appendingPathComponent(RecoveryLog.directoryName, isDirectory: true)
             .appendingPathComponent(rel, isDirectory: true)
@@ -142,7 +136,7 @@ extension Clamshell {
     }
 
     /// Tear down previously-installed presenters. Idempotent.
-    private func removePresenter(_ handle: PresenterHandle) {
+    func removePresenter(_ handle: PresenterHandle) {
         handle.debouncer.cancel()
         NSFileCoordinator.removeFilePresenter(handle.document)
         NSFileCoordinator.removeFilePresenter(handle.history)
@@ -154,8 +148,15 @@ extension Clamshell {
     /// restored subtrees splice into `document` in place and surface via
     /// `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
     struct OpenPage {
-        fileprivate let id: UUID
+        let id: UUID
+        let coordinator: PageCoordinator
         let document: Document
+
+        init(id: UUID, coordinator: PageCoordinator, document: Document) {
+            self.id = id
+            self.coordinator = coordinator
+            self.document = document
+        }
     }
 
     /// Load `url`, install the file presenter, and return immediately.
@@ -185,59 +186,11 @@ extension Clamshell {
         at url: URL,
         onEvent: @escaping @MainActor (PresenterEvent) -> Void
     ) async throws -> OpenPage {
-        let url = url.standardizedFileURL
-        let subscriberID = UUID()
-        if let live = livePages[url] {
-            live.subscribers[subscriberID] = onEvent
-            return OpenPage(id: subscriberID, document: live.document)
-        }
-
         let total = perfStart()
-        // Fast path: read + parse off MainActor. Skip the journal fold —
-        // it's deferred below.
-        let readT = perfStart()
-        let (raw, parsed) = try await readEnvelope(at: url)
-        perfEnd(readT, "openPage.read+parse", "url=\(url.lastPathComponent) bytes=\(raw.utf8.count) blocks=\(parsed.blocks.count)")
-        let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        recordDiskContent(raw, at: url)
-        rememberEnvelope(parsed, for: url)
-        let document = Document(url: url, children: parsed.blocks, modificationDate: mtime)
-
-        let presT = perfStart()
-        let presenter = installPresenter(for: document) { [weak self] event in
-            self?.broadcastPresenterEvent(event, for: url)
-        }
-        perfEnd(presT, "openPage.installPresenter", "url=\(url.lastPathComponent)")
-
-        livePages[url] = LivePage(
-            url: url,
-            document: document,
-            presenter: presenter,
-            firstSubscriberID: subscriberID,
-            onEvent: onEvent
-        )
-
-        // Deferred reconcile. `reconcileLive` gates on `isQuiescent`; if
-        // the user is mid-save when this runs, it returns nil and the
-        // next presenter wakeup (after the save completes) retries.
-        Task(priority: .utility) { @MainActor [weak self, weak document] in
-            guard let self, let document else { return }
-            let deferredT = perfStart()
-            do {
-                if let summary = try await self.reconcileLive(document), summary.didChange {
-                    self.broadcastPresenterEvent(
-                        .restored(count: summary.restoredHashes.count),
-                        for: url
-                    )
-                }
-                perfEnd(deferredT, "openPage.deferredReconcile", "url=\(url.lastPathComponent)")
-            } catch {
-                Diag.merge.error("deferred reconcile failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            }
-        }
-
-        perfEnd(total, "openPage.total", "url=\(url.lastPathComponent)")
-        return OpenPage(id: subscriberID, document: document)
+        let key = url.standardizedFileURL
+        let open = try await coordinator(for: key).attachEditor(onEvent: onEvent)
+        perfEnd(total, "openPage.total", "url=\(key.lastPathComponent)")
+        return open
     }
 
     /// Symmetric inverse of `openPage`: flush any pending writes for the
@@ -245,42 +198,20 @@ extension Clamshell {
     /// calls with the same `OpenPage`.
     @MainActor
     func closePage(_ open: OpenPage) async throws {
-        let url = open.document.url.standardizedFileURL
-        guard let live = livePages[url], live.document === open.document else {
-            try await flush(open.document)
-            return
-        }
-        live.subscribers.removeValue(forKey: open.id)
-        guard live.subscribers.isEmpty else { return }
-        try await flush(open.document)
-        removePresenter(live.presenter)
-        livePages.removeValue(forKey: url)
-    }
-
-    func liveDocument(at url: URL) -> Document? {
-        livePages[url.standardizedFileURL]?.document
+        try await open.coordinator.detachEditor(id: open.id)
     }
 
     /// Terminal teardown: await every pending save, then tear down any
-    /// remaining live pages (presenters removed, registry cleared). The
-    /// owner must hold a strong reference to this Clamshell until drain
-    /// returns — the save-chain work captures `self` weakly, so disposing
-    /// before drain can silently drop pending commits. See
+    /// remaining page coordinators (presenters removed, registry cleared).
+    /// The owner must call this before releasing the Clamshell so pending
+    /// coordinator generations reach disk. See
     /// `Workspace.switchWorkspace()` for the canonical call site.
     func drain() async {
-        await drainSaveChain()
-        for live in livePages.values {
-            removePresenter(live.presenter)
+        let coordinators = Array(pageCoordinators.values)
+        for coordinator in coordinators {
+            await coordinator.shutdown()
         }
-        livePages.removeAll()
-    }
-
-    private func broadcastPresenterEvent(_ event: PresenterEvent, for url: URL) {
-        guard let live = livePages[url.standardizedFileURL] else { return }
-        let subscribers = Array(live.subscribers.values)
-        for subscriber in subscribers {
-            subscriber(event)
-        }
+        pageCoordinators.removeAll()
     }
 
     /// Internal wakeup handler. Runs the three filesystem-level phases —
@@ -291,28 +222,18 @@ extension Clamshell {
     /// device>.jsonl` in the same burst; running reconcile on every
     /// wakeup catches the second case even when the `.md` hash hasn't
     /// moved. Priority for the returned event: conflictMerged > restored.
-    private func handlePresenterWakeup(for doc: Document) async -> PresenterEvent? {
+    func synchronizePage(_ page: PageCoordinator, document doc: Document) async -> PresenterEvent? {
         let url = doc.url
 
-        // Drain any pending save so doc.children, the journal, and .md
-        // are coherent before we classify or reconcile. Cheap when
-        // nothing is in flight (chain entries self-clean on completion,
-        // so this is a no-op on a settled page); essential when Mac is
-        // actively editing as iOS's bytes land.
-        do {
-            try await flush(doc)
-        } catch {
-            Diag.log.error("presenter flush failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            return nil
-        }
+        precondition(page.document === doc)
 
         // 1. iCloud conflict alternates. When merged into the live doc,
         //    the post-write `didSave` already reseeds the host's mtime
         //    + title cache via Clamshell's callback.
         var conflictSalvaged: Int? = nil
         do {
-            let resolution = try await resolveConflictVersions(at: url, againstLive: doc)
-            if resolution.liveDocumentMutated {
+            let resolution = try await resolveConflictVersions(at: url)
+            if resolution.salvaged > 0 {
                 conflictSalvaged = resolution.salvaged
             }
         } catch {
@@ -333,21 +254,31 @@ extension Clamshell {
                     doc.modificationDate = mtime
                 }
             case .stomp:
-                if isQuiescent(at: url) {
-                    Task {
-                        do {
-                            try await self.flush(doc)
-                        } catch {
-                            Diag.log.error("stomp flush failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                        }
-                    }
+                do {
+                    try await commit(Commit(logEntries: []), to: doc)
+                } catch {
+                    Diag.log.error("stomp rewrite failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 }
             case .external:
                 // Quiescence is guaranteed by the upfront flush.
+                guard let generation = page.settledGeneration else {
+                    page.requestSynchronization()
+                    break
+                }
                 do {
-                    let reloaded = try await loadDocument(at: url)
-                    doc.replaceChildrenFromExternalReload(reloaded.children)
-                    doc.modificationDate = reloaded.modificationDate
+                    let (raw, parsed) = try await readEnvelope(at: url)
+                    let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                    guard page.remainsSettled(at: generation) else {
+                        // The user edited while the coordinated read was in
+                        // flight. Keep the canonical local tree and retry once
+                        // that newer generation is durable.
+                        page.requestSynchronization()
+                        break
+                    }
+                    recordDiskContent(raw, at: url)
+                    rememberEnvelope(parsed, for: url)
+                    doc.replaceChildrenFromExternalReload(parsed.blocks)
+                    doc.modificationDate = mtime
                 } catch {
                     Diag.merge.error("presenter reload failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 }
@@ -356,8 +287,8 @@ extension Clamshell {
 
         // 3. Reconcile against the journal. Idempotent: already-live
         //    hashes produce no inserts; already-logged hashes produce no
-        //    observations. Returns nil when the page isn't quiescent —
-        //    the next wakeup retries.
+        //    observations. Returns nil when a newer local generation landed
+        //    during the fold; the coordinator retains a sticky retry request.
         var restoredCount = 0
         do {
             if let summary = try await reconcileLive(doc), summary.didChange {
