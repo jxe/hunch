@@ -3,7 +3,7 @@ import Editor
 
 struct StartVoiceRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Voice Recording"
-    static let description = IntentDescription("Open Hunch and start recording audio for the current page.")
+    static let description = IntentDescription("Open Hunch and start recording audio for the Home page.")
     static let supportedModes: IntentModes = .foreground(.immediate)
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     static let openAppWhenRun = true

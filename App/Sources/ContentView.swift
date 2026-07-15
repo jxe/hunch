@@ -8,6 +8,7 @@ import AppKit
 struct ContentView: View {
     @Bindable var workspace: Workspace
     @State private var window: WorkspaceWindow
+    @State private var recordingSession = VoiceRecordingSession()
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @Bindable var quickActions: QuickActionRouter
@@ -120,18 +121,33 @@ struct ContentView: View {
             }
         }
         .focusedValue(\.workspaceWindow, window)
-        .task { workspace.tryRestore() }
+        .task {
+            workspace.tryRestore()
+            forwardPendingVoiceRecording()
+        }
         .onChange(of: workspace.workspaceURL) { _, new in
             // switchWorkspace propagates to every open window — drop our
             // navigation/cache so the next mount starts fresh.
-            if new == nil { window.reset() }
+            if new == nil {
+                recordingSession.cancel()
+                window.reset()
+            }
         }
         .onChange(of: scenePhase) { _, new in
             if new == .active {
                 window.refreshCloudSyncSnapshot()
+                forwardPendingVoiceRecording()
             } else if let doc = window.openDocument {
                 Task { await window.flush(doc) }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: VoiceRecordingLaunchRequest.notificationName)) { _ in
+            forwardPendingVoiceRecording()
+        }
+        .alert("Recording", isPresented: recordingErrorBinding) {
+            Button("OK") { recordingSession.errorMessage = nil }
+        } message: {
+            Text(recordingSession.errorMessage ?? "")
         }
         .alert("Error", isPresented: errorBinding) {
             Button("OK") { workspace.error = nil }
@@ -167,7 +183,8 @@ struct ContentView: View {
             EditorPage(
                 url: homeURL,
                 workspace: workspace,
-                window: window
+                window: window,
+                recordingSession: recordingSession
             )
             .id(homeURL)
         } else {
@@ -180,6 +197,28 @@ struct ContentView: View {
             get: { workspace.error != nil },
             set: { newValue in if !newValue { workspace.error = nil } }
         )
+    }
+
+    private var recordingErrorBinding: Binding<Bool> {
+        Binding(
+            get: { recordingSession.errorMessage != nil },
+            set: { newValue in
+                if !newValue { recordingSession.errorMessage = nil }
+            }
+        )
+    }
+
+    private func forwardPendingVoiceRecording() {
+        guard VoiceRecordingLaunchRequest.consumePendingStart() else { return }
+        // Defer state changes off NotificationCenter's synchronous delivery;
+        // an intent can post while SwiftUI is updating this view hierarchy.
+        Task { @MainActor in
+            guard let homePageID = workspace.homeRelativePath else {
+                recordingSession.reportMissingHome()
+                return
+            }
+            await recordingSession.toggleFromShortcut(homePageID: homePageID, window: window)
+        }
     }
 
     private var subpageTrashPromptPresented: Binding<Bool> {
@@ -222,7 +261,8 @@ struct ContentView: View {
         EditorPage(
             url: url,
             workspace: workspace,
-            window: window
+            window: window,
+            recordingSession: recordingSession
         )
         .id(url)
     }
@@ -237,6 +277,7 @@ private struct EditorPage: View {
     let url: URL
     @Bindable var workspace: Workspace
     @Bindable var window: WorkspaceWindow
+    let recordingSession: VoiceRecordingSession
 
     @State private var editorState = EditorState()
     @FocusedValue(\.documentUndoController) private var undoController
@@ -304,7 +345,11 @@ private struct EditorPage: View {
             }
             #endif
             ToolbarItem(placement: .primaryAction) {
-                RecordingButton(editorState: editorState)
+                RecordingButton(
+                    editorState: editorState,
+                    recordingSession: recordingSession,
+                    window: window
+                )
             }
         }
     }

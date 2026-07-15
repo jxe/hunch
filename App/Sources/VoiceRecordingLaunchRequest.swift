@@ -2,8 +2,8 @@ import Foundation
 
 /// Cross-process bridge for the Siri "start recording" intent. The intent handler
 /// (`VoiceRecordingIntents`) calls `requestStart()` from a background process; the
-/// app side reads `consumePendingStart()` from the active `EditorPage` to forward
-/// the request into the editor.
+/// app side reads `consumePendingStart()` once from `ContentView` and forwards the
+/// request into the window's shared recording session.
 enum VoiceRecordingLaunchRequest {
     static let notificationName = Notification.Name("HunchVoiceRecordingLaunchRequest")
 
