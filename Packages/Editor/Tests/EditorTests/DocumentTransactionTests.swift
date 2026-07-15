@@ -192,6 +192,26 @@ struct DocumentTransactionTests {
         #expect(fires == 3, "redo fires again")
     }
 
+    @Test func externalReloadInvalidatesWholeTreeUndoSnapshots() {
+        let (doc, mgr) = makeDocWithUndo()
+        let id = doc.children[0].id
+
+        tx(doc, mgr, name: "Local edit") {
+            doc.setText(id, AttributedString("locally edited"))
+        }
+        #expect(mgr.canUndo)
+
+        let foreign = Block.paragraph(text: AttributedString("arrived elsewhere"))
+        doc.replaceChildrenFromExternalReload([foreign])
+
+        var emitted: [EditorOp] = []
+        doc.didCommitTransaction = { emitted = $0 }
+        #expect(!mgr.canUndo, "an external tree replacement makes older whole-tree snapshots stale")
+        mgr.undo()
+        #expect(doc.children.map(\.atomicHash) == [foreign.atomicHash])
+        #expect(emitted.isEmpty, "stale undo must not report externally-arrived blocks as user removals")
+    }
+
     @Test func transactionReturnsForwardDiff() {
         // The forward transaction's return value is the pre→post diff. For a
         // text edit that changes the block's hash, that's `(.remove(pre),

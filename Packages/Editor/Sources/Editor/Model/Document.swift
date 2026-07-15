@@ -252,6 +252,11 @@ public final class Document: @MainActor Identifiable {
         children = newChildren
         lastTransactionKey = nil
         lastTransactionTime = nil
+        // Undo snapshots are whole-tree states. Once disk or other host-owned
+        // system work replaces the tree, replaying an older snapshot would
+        // erase externally-arrived blocks and incorrectly report their hashes
+        // as user-authored removals to the recovery journal.
+        undoManager?.removeAllActions()
         didReplaceChildren?()
         for hooks in editorHookSets.values {
             hooks.didReplaceChildren()

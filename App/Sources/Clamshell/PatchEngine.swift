@@ -640,8 +640,9 @@ enum PatchEngine {
         /// snapshot without claiming authorship.
         let toAppend: [Observation]
         /// Foreign adds newer than the `.md` stamp's trusted frontier that the
-        /// caller chose not to auto-restore. Used by live passive-open flows
-        /// to avoid writing observations back over a stale peer file.
+        /// caller chose not to auto-restore. The default reconciliation path
+        /// restores them; specialized callers can defer while awaiting a peer
+        /// markdown payload without advancing the journal watermark.
         let deferredFutureForeignHashes: [String]
         /// Hashes the journal classifies as `.alive` but the engine can't
         /// turn into a valid `Insert`: the recorded `m` won't parse, or it

@@ -80,14 +80,12 @@ extension Clamshell {
         let docChildren = doc.children
         let mdMtime = doc.modificationDate
         let inputs = reconcileInputs(for: doc)
-        let restoreFutureForeignAdds = livePages[url.standardizedFileURL]?.hasLocalCommitSinceOpen ?? true
         let outcome = await log.reconcileAgainst(
             page: rel,
             doc: docChildren,
             mdMtime: mdMtime,
             trustedFrontier: inputs.trustedFrontier,
-            allowJournalMutations: inputs.allowJournalMutations,
-            restoreFutureForeignAdds: restoreFutureForeignAdds
+            allowJournalMutations: inputs.allowJournalMutations
         )
         switch outcome {
         case .skipped:
@@ -110,11 +108,7 @@ extension Clamshell {
             // Skip entirely if there's nothing to do — pure-skipped
             // reconciles are the steady-state hot path.
             let reconCommit = recon.asCommit()
-            let deferredPassivePeerState = !restoreFutureForeignAdds
-                && !recon.deferredFutureForeignHashes.isEmpty
-                && !recon.didChange
-            if !deferredPassivePeerState,
-               !reconCommit.logEntries.isEmpty || recon.didChange {
+            if !reconCommit.logEntries.isEmpty || recon.didChange {
                 try await commit(reconCommit, to: doc)
             }
 

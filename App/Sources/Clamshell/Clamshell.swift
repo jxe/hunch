@@ -170,7 +170,6 @@ final class Clamshell {
         let document: Document
         let presenter: PresenterHandle
         var subscribers: [UUID: @MainActor (PresenterEvent) -> Void]
-        var hasLocalCommitSinceOpen = false
 
         init(
             url: URL,
@@ -789,7 +788,13 @@ final class Clamshell {
     private static let historyDepth = 5
 
     private static func stableHash(_ text: String) -> String {
-        SHA256.hash(data: Data(text.utf8)).prefix(8)
+        // Sync stamps legitimately differ by device even when the markdown
+        // body is identical. Classifying the whole envelope makes a peer's
+        // frontier update look like an external content edit and can replace
+        // the live editor tree with the same (or stale) body. Compare only
+        // user-visible block content; the journal handles frontier changes.
+        let body = ClamshellPageEnvelope.parse(text).body
+        return SHA256.hash(data: Data(body.utf8)).prefix(8)
             .map { String(format: "%02x", $0) }.joined()
     }
 
@@ -874,9 +879,6 @@ final class Clamshell {
     /// a fresh `Document` with the merged tree.
     @discardableResult
     func enqueueCommit(_ commit: Commit, to doc: Document) -> Task<Void, Error> {
-        if let live = livePages[doc.url.standardizedFileURL], live.document === doc {
-            live.hasLocalCommitSinceOpen = true
-        }
         return chain.enqueue(commit.logEntries, for: doc)
     }
 

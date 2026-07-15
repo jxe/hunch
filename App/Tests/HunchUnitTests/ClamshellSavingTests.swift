@@ -180,6 +180,37 @@ struct ClamshellSavingTests {
                 "flush does not trigger a save on a quiescent URL")
     }
 
+    @Test func diskClassificationIgnoresPeerSyncStampChanges() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let url = clamshell.url(for: "p.md")
+        let body = [Block.paragraph(text: attr("same body"))]
+        let localEnvelope = ClamshellPageEnvelope.serialize(
+            blocks: body,
+            existingFrontmatterLines: nil,
+            logFrontier: ["mac": 4]
+        )
+        let peerEnvelope = ClamshellPageEnvelope.serialize(
+            blocks: body,
+            existingFrontmatterLines: nil,
+            logFrontier: ["iphone": 9]
+        )
+
+        clamshell.recordDiskContent(localEnvelope, at: url)
+        try peerEnvelope.write(to: url, atomically: true, encoding: .utf8)
+
+        #expect(clamshell.classifyDiskContent(at: url) == .echo)
+
+        let changedEnvelope = ClamshellPageEnvelope.serialize(
+            blocks: [Block.paragraph(text: attr("actually changed"))],
+            existingFrontmatterLines: nil,
+            logFrontier: ["iphone": 10]
+        )
+        try changedEnvelope.write(to: url, atomically: true, encoding: .utf8)
+        #expect(clamshell.classifyDiskContent(at: url) == .external)
+    }
+
     @Test func openingSameURLTwiceSharesOneLiveDocument() async throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
