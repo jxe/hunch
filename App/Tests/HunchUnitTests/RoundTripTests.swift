@@ -204,7 +204,7 @@ struct RoundTripTests {
           ▸ Change
             - review sections
         - Look through social and berlin
-        """)
+        """ + "\n")
 
         let reparsed = BlockParser.parse(serialized)
         #expect(reparsed.count == 2)
@@ -248,7 +248,7 @@ struct RoundTripTests {
 
 
         - Look through social and berlin
-        """)
+        """ + "\n")
 
         let reparsed = BlockParser.parse(serialized)
         #expect(reparsed.count == 3)
@@ -352,9 +352,11 @@ struct RoundTripTests {
         #expect(serialized == """
         - foo
           - bar
+
           ▸ toggle
+
           - baz
-        """)
+        """ + "\n")
         let reparsed = BlockParser.parse(serialized)
         #expect(reparsed.count == 1)
         #expect(reparsed[0].children.count == 3)

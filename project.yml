@@ -46,7 +46,6 @@ targets:
         CFBundleShortVersionString: "0.1"
         CFBundleVersion: "1"
         LSApplicationCategoryType: public.app-category.productivity
-        LSMultipleInstancesProhibited: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations~iphone:
           - UIInterfaceOrientationPortrait
@@ -157,9 +156,15 @@ schemes:
     build:
       targets:
         Hunch: all
-        HunchUITests: [test]
         HunchUnitTests: [test]
     test:
       targets:
         - HunchUnitTests
+  HunchUITests:
+    build:
+      targets:
+        Hunch: all
+        HunchUITests: [test]
+    test:
+      targets:
         - HunchUITests

@@ -172,6 +172,15 @@ enum BlockSerializer {
     /// reattaches the block as a child of whatever ancestor is still live;
     /// orphaned descendants are restored separately.
     static func serializeAtomic(_ block: Block) -> String {
+        // Full-page serialization represents an empty paragraph as spacing
+        // between neighboring blocks. An isolated recovery-log snapshot has
+        // no neighbors, so a bare newline would parse as zero blocks. Keep
+        // the legacy NBSP marker only at this atomic boundary; the parser
+        // normalizes it back to an empty paragraph and its original hash.
+        if case .paragraph(let text) = block.kind,
+           inlineString(text).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "\u{00A0}\n\n"
+        }
         let bare = Block(id: block.id, kind: block.kind, children: [])
         return serializeBlock(bare, depth: 0, numberedIndex: 0, titleForPath: { _ in nil }, consecutiveNumbering: false)
     }

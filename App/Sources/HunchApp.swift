@@ -191,6 +191,14 @@ private enum StartupDiagnostics {
 @MainActor
 private enum SingleInstanceGuard {
     static func activateExistingInstanceAndExitIfNeeded() {
+        // App-hosted unit tests intentionally launch a second instance
+        // while the developer's installed Hunch may remain open. The Debug
+        // test host must bypass the process-level guard or it exits before
+        // XCTest establishes its control connection. Normal launches still
+        // activate the existing process and exit here.
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else {
+            return
+        }
         guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
         let currentPID = ProcessInfo.processInfo.processIdentifier
         let existing = NSWorkspace.shared.runningApplications.first {
