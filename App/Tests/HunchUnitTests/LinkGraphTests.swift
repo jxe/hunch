@@ -15,7 +15,7 @@ struct LinkGraphTests {
 
     private func classify() -> @Sendable (URL, URL) -> String? {
         let clamshell = self.clamshell
-        return { url, base in clamshell.pageID(for: url, relativeTo: base) }
+        return { url, base in clamshell.pagePath(for: url, relativeTo: base) }
     }
 
     private func linked(_ text: String, to dest: String) -> AttributedString {

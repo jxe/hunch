@@ -107,7 +107,7 @@ final class VoiceRecordingSession {
                 throw VoiceRecordingSessionError.workspaceUnavailable
             }
             do {
-                try await clamshell.appendBlocks([block], toPage: pageID)
+                try await clamshell.page(atPath: pageID).append([block])
             } catch {
                 throw VoiceRecordingSessionError.couldNotAppendToHome(underlying: error.localizedDescription)
             }
@@ -123,7 +123,7 @@ final class VoiceRecordingSession {
                 guard let clamshell = window.workspace.clamshell else {
                     throw VoiceRecordingSessionError.workspaceUnavailable
                 }
-                try await clamshell.appendBlocks([block], toPage: pageID)
+                try await clamshell.page(atPath: pageID).append([block])
             }
         }
     }

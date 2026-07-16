@@ -53,7 +53,7 @@ extension WorkspaceWindow: EditorHost {
             guard graph.allPageIDs.contains(pageID) else { return }
 
             let classify: @Sendable (URL, URL) -> String? = { [clamshell] url, base in
-                clamshell.pageID(for: url, relativeTo: base)
+                clamshell.pagePath(for: url, relativeTo: base)
             }
             let sourceOutboundAfterDelete = outboundLinks(
                 in: sourceBlocksAfterDelete,
@@ -75,7 +75,7 @@ extension WorkspaceWindow: EditorHost {
     }
 
     func resolvePageID(from url: URL, in document: Document) -> String? {
-        workspace.clamshell?.pageID(for: url, relativeTo: document.url)
+        workspace.clamshell?.pagePath(for: url, relativeTo: document.url)
     }
 
     func linkURL(forPageID pageID: String, in document: Document) -> URL? {
@@ -92,23 +92,23 @@ extension WorkspaceWindow: EditorHost {
 
     func loadPageBlocks(_ pageID: String) async -> [Block]? {
         guard let clamshell = workspace.clamshell else { return nil }
-        let target = clamshell.url(for: pageID)
+        let page = clamshell.page(atPath: pageID)
         do {
-            return try await clamshell.readBlocks(at: target)
+            return try await page.readBlocks()
         } catch {
-            Diag.subpage.error("loadPageBlocks(_:): read(\(target.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
+            Diag.subpage.error("loadPageBlocks(_:): read(\(page.url.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
 
     func persistCommit(ops: [EditorOp], in document: Document) {
-        guard let clamshell = workspace.clamshell else { return }
+        guard let session = session(for: document) else { return }
         // Editor's `didCommitTransaction` is sync (typing path can't
         // await). The enqueue is synchronous too, so the page coordinator
-        // reflects this commit before we return — `flush(_:)` callers
+        // reflects this commit before we return — `PageSession.flush()` callers
         // (blur, nav, scenePhase) can never observe false quiescence.
         // The Task only awaits durability for the failure banner.
-        let task = clamshell.enqueueCommit(.fromEditorOps(ops), to: document)
+        let task = session.enqueueEditorOps(ops)
         Task { @MainActor in
             defer { if openDocument === document { refreshCloudSyncSnapshot() } }
             do {
@@ -120,10 +120,10 @@ extension WorkspaceWindow: EditorHost {
     }
 
     func flush(_ document: Document) async {
-        guard let clamshell = workspace.clamshell else { return }
+        guard let session = session(for: document) else { return }
         defer { if openDocument === document { refreshCloudSyncSnapshot() } }
         do {
-            try await clamshell.flush(document)
+            try await session.flush()
         } catch {
             showSaveFailure(for: document, error: error)
         }
@@ -176,9 +176,10 @@ extension WorkspaceWindow: EditorHost {
     }
 
     func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {
-        guard let clamshell = workspace.clamshell else { return false }
+        guard let clamshell = workspace.clamshell,
+              let parentSession = session(for: parent) else { return false }
         do {
-            try await clamshell.inlineAndTrash(pageID: pageID, parent: parent)
+            try await clamshell.page(atPath: pageID).trashAfterInlining(into: parentSession)
             return true
         } catch {
             workspace.error = "Failed to move \(pageID) to trash: \(error.localizedDescription)"
@@ -189,7 +190,7 @@ extension WorkspaceWindow: EditorHost {
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
         do {
-            try await clamshell.appendBlocks(blocks, toPage: pageID)
+            try await clamshell.page(atPath: pageID).append(blocks)
             return true
         } catch {
             workspace.error = "Failed to move blocks into \(pageID): \(error.localizedDescription)"
@@ -207,7 +208,7 @@ extension WorkspaceWindow: EditorHost {
 
         let linkBlock = Block.subpage(title: source.title, pageID: sourcePageID)
         do {
-            try await clamshell.appendBlocks([linkBlock], toPage: pageID)
+            try await clamshell.page(atPath: pageID).append([linkBlock])
             return true
         } catch {
             workspace.error = "Failed to add \(source.title) to \(pageID): \(error.localizedDescription)"

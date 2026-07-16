@@ -15,7 +15,7 @@ struct WorkspaceRelativeLinkTests {
     private func resolve(_ link: String, from doc: String?) -> String? {
         let url = URL(string: link)!
         let docURL = doc.map { workspaceURL.appendingPathComponent($0).standardizedFileURL }
-        return clamshell.pageID(for: url, relativeTo: docURL)
+        return clamshell.pagePath(for: url, relativeTo: docURL)
     }
 
     @Test func resolvesSiblingPage() {
@@ -59,11 +59,11 @@ struct WorkspaceRelativeLinkTests {
 
     @Test func acceptsFileSchemeInsideWorkspace() {
         let url = workspaceURL.appendingPathComponent("nested/Page.md")
-        #expect(clamshell.pageID(for: url) == "nested/Page.md")
+        #expect(clamshell.pagePath(for: url) == "nested/Page.md")
     }
 
     @Test func rejectsFileSchemeOutsideWorkspace() {
         let url = URL(fileURLWithPath: "/tmp/elsewhere/Page.md")
-        #expect(clamshell.pageID(for: url) == nil)
+        #expect(clamshell.pagePath(for: url) == nil)
     }
 }

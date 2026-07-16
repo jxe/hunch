@@ -72,8 +72,8 @@ final class Clamshell {
             switch self {
             case .empty:
                 return "No blocks to move."
-            case .pageMissing(let pageID):
-                return "Couldn't find destination page \(pageID)."
+            case .pageMissing(let relativePath):
+                return "Couldn't find destination page \(relativePath)."
             }
         }
     }
@@ -223,6 +223,14 @@ final class Clamshell {
         root.appendingPathComponent(relativePath).standardizedFileURL
     }
 
+    func page(at url: URL) -> Page {
+        Page(owner: self, url: url)
+    }
+
+    func page(atPath relativePath: String) -> Page {
+        page(at: url(for: relativePath))
+    }
+
     enum CloudSyncTargetKind: String, Sendable {
         case page
         case thisDeviceLog
@@ -289,8 +297,8 @@ final class Clamshell {
         }
     }
 
-    func cloudSyncTargets(for doc: Document) -> [CloudSyncTarget] {
-        let pageURL = doc.url.standardizedFileURL
+    private func cloudSyncTargets(for pageURL: URL) -> [CloudSyncTarget] {
+        let pageURL = pageURL.standardizedFileURL
         let relativePath = relativePath(of: pageURL)
         let logURL = root
             .appendingPathComponent(RecoveryLog.directoryName, isDirectory: true)
@@ -304,11 +312,11 @@ final class Clamshell {
         ]
     }
 
-    func cloudSyncSnapshot(for doc: Document) -> CloudSyncSnapshot {
-        CloudSyncSnapshot(items: cloudSyncTargets(for: doc).map { snapshot(for: $0) })
+    private func cloudSyncSnapshot(for pageURL: URL) -> CloudSyncSnapshot {
+        CloudSyncSnapshot(items: cloudSyncTargets(for: pageURL).map { snapshot(for: $0) })
     }
 
-    func compactThisDeviceLog(for doc: Document) async throws -> LogCompactionResult {
+    private func compactThisDeviceLog(for doc: Document) async throws -> LogCompactionResult {
         let relativePath = relativePath(of: doc.url)
         return try await log.compactOwnLog(
             page: relativePath,
@@ -384,12 +392,12 @@ final class Clamshell {
     }
 
     /// Classify a URL from an inline `[text](url)` link as an internal-page
-    /// reference. Returns the workspace-relative pageID (path) when the URL
+    /// reference. Returns the workspace-relative page path when the URL
     /// names a `.md` file inside this Clamshell; nil for external schemes,
     /// non-`.md` targets, and anything resolving outside the root. Resolves
     /// relative URLs against `currentDocURL?.deletingLastPathComponent()`
     /// when provided, otherwise against the workspace root.
-    nonisolated func pageID(for url: URL, relativeTo currentDocURL: URL? = nil) -> String? {
+    nonisolated func pagePath(for url: URL, relativeTo currentDocURL: URL? = nil) -> String? {
         if let scheme = url.scheme?.lowercased(), scheme != "file" { return nil }
 
         let resolvedURL: URL
@@ -524,56 +532,17 @@ final class Clamshell {
         return ranked.sorted { $0.1 < $1.1 }.map(\.0)
     }
 
-    func appendBlocks(_ blocks: [Block], toPage pageID: String) async throws {
-        guard !blocks.isEmpty else { throw AppendBlocksError.empty }
-        let target = url(for: pageID)
-        guard FileManager.default.fileExists(atPath: target.path) else {
-            throw AppendBlocksError.pageMissing(pageID)
-        }
-        try files.requireLocallyWritable(target)
-
-        let page = coordinator(for: target)
-        let doc = try await page.acquireTransientDocument()
-        defer { page.releaseTransientDocument() }
-        doc.replaceChildrenFromSystemMutation(doc.children + blocks)
-        try await commit(Commit(logEntries: Patch.adds(from: blocks).entries), to: doc)
-    }
-
     /// Engine-internal single read path: read **and parse** inside one
     /// detached task so neither lands on MainActor (the parse alone is
-    /// tens of ms for large docs). Every load flavor — `loadDocument`,
-    /// `readBlocks`, `openPage` — funnels through here; they differ only
-    /// in what bookkeeping they seed afterwards.
+    /// tens of ms for large docs). Canonical coordinator materialization,
+    /// one-shot block reads, and link-graph scans funnel through here; they
+    /// differ only in what bookkeeping they seed afterward.
     nonisolated func readEnvelope(at url: URL) async throws -> (raw: String, parsed: ClamshellPageEnvelope.Parsed) {
         let files = self.files
         return try await Task.detached(priority: .userInitiated) {
             let raw = try files.read(url)
             return (raw, ClamshellPageEnvelope.parse(raw))
         }.value
-    }
-
-    /// Read + parse the `.md` at `url` and return a live `Document` ready to
-    /// host an editor session. Seeds the iCloud disk-content ring buffer so
-    /// subsequent presenter wakeups can classify the file against what we last
-    /// read or wrote. Use `readBlocks(at:)` for one-off reads that won't open
-    /// a session — those must not seed history or a future wakeup may
-    /// misclassify as `.echo`. Disk read + parse run off-MainActor; hops back
-    /// only to touch the ring buffer and build the `Document`.
-    func loadDocument(at url: URL) async throws -> Document {
-        let (raw, parsed) = try await readEnvelope(at: url)
-        let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        recordDiskContent(raw, at: url)
-        rememberEnvelope(parsed, for: url)
-        return Document(url: url, children: parsed.blocks, modificationDate: mtime)
-    }
-
-    /// One-shot read of `url`'s blocks for callers that won't open an editor
-    /// session against the file (e.g. the inline-expand flow that reads a
-    /// subpage's body, splices it into the parent, then trashes the source).
-    /// Does **not** seed the disk-content ring buffer — seeding from a stale
-    /// non-session read can later misclassify a presenter wakeup as `.echo`.
-    func readBlocks(at url: URL) async throws -> [Block] {
-        try await readEnvelope(at: url).parsed.blocks
     }
 
     // MARK: - Title cache
@@ -720,7 +689,7 @@ final class Clamshell {
         guard let current = linkGraph else { return }
         let rel = relativePath(of: document.url)
         let classify: @Sendable (URL, URL) -> String? = { [self] url, base in
-            self.pageID(for: url, relativeTo: base)
+            self.pagePath(for: url, relativeTo: base)
         }
         let targets = outboundLinks(in: document.children, pageURL: document.url, classify: classify)
             .intersection(current.allPageIDs)
@@ -805,36 +774,19 @@ final class Clamshell {
     //
     // Save model is commit-time atomic: every commit applies its log
     // entries to the recovery log and writes the .md file as one coordinator
-    // generation, log strictly before file. `enqueueCommit(_:to:)` installs
-    // that generation *synchronously* and returns its task; `commit(_:to:)`
-    // awaits it. Concurrent commits for the same URL run in order through
-    // its `PageCoordinator`; rapid commits whose predecessor hasn't started
-    // yet coalesce into one serialize + one .md write. No debounce, no
-    // separate per-op log task: every `Document.transaction` (typing via
+    // generation, log strictly before file. `PageSession.enqueueEditorOps(_:)`
+    // installs editor generations synchronously; internal `commit(_:to:)`
+    // awaits coordinator durability. Concurrent commits for the same URL run
+    // in order through its `PageCoordinator`; rapid commits whose predecessor
+    // hasn't started yet coalesce into one serialize + one .md write. No
+    // debounce or separate per-op log task: every `Document.transaction` (typing via
     // `commitLiveText`, structural via `mutate(_:_:)`, undo, redo) emits
     // its pre→post diff through `Document.didCommitTransaction` → host
-    // bridge → `enqueueCommit(_:to:)`.
+    // bridge → `PageSession.enqueueEditorOps(_:)`.
     //
     // Heavy lifting hops off MainActor: serialize + `NSFileCoordinator`
     // write run on a detached task at `.userInitiated` so they don't
     // contend with the UI work the edit burst is driving. See `save(_:)`.
-
-    /// Synchronously enqueue a commit for `doc` and return its task
-    /// without awaiting. The write generation is installed before this
-    /// returns — the coordinator-backed `flush(_:)` sees the commit
-    /// immediately, with no gap for a fire-and-forget caller (the editor's
-    /// typing path) to fall through. Await the returned task for durability
-    /// + errors; failures are logged either way.
-    ///
-    /// Caller is responsible for the in-memory state of `doc.children`:
-    /// editor mutations go through `Document.transaction` (which fires
-    /// `didCommitTransaction` → host bridge → here); reconcile mutates
-    /// via `PatchEngine.apply` before committing; conflict merge rewrites
-    /// the coordinator's canonical document before committing.
-    @discardableResult
-    func enqueueCommit(_ commit: Commit, to doc: Document) -> Task<Void, Error> {
-        coordinator(for: doc).enqueue(commit, for: doc)
-    }
 
     /// Persist a commit for `doc`, awaiting durability end-to-end: log
     /// entries (if any) are applied to the recovery log strictly before
@@ -842,16 +794,7 @@ final class Clamshell {
     /// same URL run in order; the `await` returns only after this
     /// commit's bytes are on disk, and errors propagate.
     func commit(_ commit: Commit, to doc: Document) async throws {
-        try await enqueueCommit(commit, to: doc).value
-    }
-
-    /// Await durability of any commits already in flight for `doc`. Does
-    /// not trigger a save — that's what `commit(_:to:)` is for. Used on
-    /// navigation / blur / scenePhase / close to make sure the bytes for
-    /// the just-fired commit are on disk before the editor unmounts.
-    func flush(_ doc: Document) async throws {
-        guard let coordinator = pageCoordinators[doc.url.standardizedFileURL] else { return }
-        try await coordinator.flush()
+        try await coordinator(for: doc).enqueue(commit, for: doc).value
     }
 
     func coordinator(for url: URL) -> PageCoordinator {
@@ -1030,67 +973,6 @@ final class Clamshell {
         // link edit without a full re-read.
         refreshLinkGraph(forSaved: document)
     }
-
-
-    // MARK: - iCloud conflict resolution
-
-    /// Outcome of a conflict-resolution pass. `salvaged` counts block hashes
-    /// pulled in from alternates that weren't already in the survivor.
-    struct ConflictResolution: Equatable, Sendable {
-        let salvaged: Int
-        static let none = ConflictResolution(salvaged: 0)
-    }
-
-    /// If `url` has any unresolved `NSFileVersion` conflict alternates,
-    /// merge their blocks into the coordinator's canonical document, apply
-    /// the salvaged blocks to the log, write the merged document, and mark
-    /// each alternate version resolved. Open and closed pages use the same
-    /// path, so conflict merge cannot create competing in-memory page state.
-    @MainActor
-    func resolveConflictVersions(at url: URL) async throws -> ConflictResolution {
-        let nsfvT = perfStart()
-        let alternates = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
-        perfEnd(nsfvT, "NSFileVersion.unresolved", "url=\(url.lastPathComponent) count=\(alternates.count)")
-        guard !alternates.isEmpty else { return .none }
-
-        let page = coordinator(for: url)
-        let canonical = try await page.acquireTransientDocument()
-        defer { page.releaseTransientDocument() }
-
-        var alternateBlockLists: [[Block]] = []
-        for version in alternates {
-            guard let text = Clamshell.readCoordinated(version.url) else { continue }
-            alternateBlockLists.append(ClamshellPageEnvelope.parse(text).blocks)
-        }
-
-        let survivorBlocks = canonical.children
-
-        let rel = relativePath(of: url)
-        let intent = PatchEngine.intent(from: log.readJournal(page: rel))
-
-        let result = PatchEngine.mergeConflict(
-            survivor: survivorBlocks,
-            alternates: alternateBlockLists,
-            intent: intent
-        )
-
-        Diag.merge.log("resolve url=\(url.lastPathComponent, privacy: .public) alternates=\(alternates.count, privacy: .public) salvaged=\(result.salvagedHashes.count, privacy: .public)")
-
-        if result.salvagedHashes.isEmpty {
-            Clamshell.markAlternatesResolved(alternates)
-            return .none
-        }
-
-        canonical.replaceChildrenFromConflictResolution(result.merged)
-        let mergeCommit = Commit(
-            logEntries: Patch.observations(from: canonical.children).entries
-        )
-        try await commit(mergeCommit, to: canonical)
-
-        Clamshell.markAlternatesResolved(alternates)
-        return ConflictResolution(salvaged: result.salvagedHashes.count)
-    }
-
     nonisolated private static func readCoordinated(_ url: URL) -> String? {
         let coordinator = NSFileCoordinator()
         var coordError: NSError?
@@ -1172,20 +1054,6 @@ final class Clamshell {
     }
 
     // MARK: - Trash (soft-deleted pages)
-
-    /// Drain `parent`'s pending writes, then move the page at `pageID` to
-    /// Trash. Used by the editor's inline-expand flow: the editor has just
-    /// spliced the subpage's blocks into the parent, and the source file
-    /// must only go away once that splice is durable — a crash between
-    /// flush and trash would otherwise leave the source gone and the
-    /// inlined copy unpersisted. No-op when the source file is already
-    /// missing.
-    func inlineAndTrash(pageID: String, parent: Document) async throws {
-        let target = url(for: pageID)
-        guard FileManager.default.fileExists(atPath: target.path) else { return }
-        try await flush(parent)
-        _ = try moveToTrash(at: target)
-    }
 
     /// Move a page to `Trash/`. If the page is the current home page, also clears
     /// `homeRelativePath` (the home pointer can't reference a trashed page).
@@ -1367,6 +1235,89 @@ final class Clamshell {
         var coordError: NSError?
         coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordError) { coordinatedURL in
             try? data.write(to: coordinatedURL, options: [.atomic])
+        }
+    }
+}
+
+@MainActor
+extension Clamshell.Page {
+    func append(_ blocks: [Block]) async throws {
+        guard !blocks.isEmpty else { throw Clamshell.AppendBlocksError.empty }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw Clamshell.AppendBlocksError.pageMissing(relativePath)
+        }
+        try owner.files.requireLocallyWritable(url)
+
+        let coordinator = owner.coordinator(for: url)
+        try await coordinator.withTransientDocument { document in
+            document.replaceChildrenFromSystemMutation(document.children + blocks)
+            try await owner.commit(
+                Commit(logEntries: Patch.adds(from: blocks).entries),
+                to: document
+            )
+        }
+    }
+
+    /// Move this page to Trash only after an inlined copy in `parent` is
+    /// durable. No-op if this page has already disappeared.
+    func trashAfterInlining(into parent: Clamshell.PageSession) async throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try await parent.flush()
+        _ = try owner.moveToTrash(at: url)
+    }
+
+    func cloudSyncSnapshot() -> Clamshell.CloudSyncSnapshot {
+        owner.cloudSyncSnapshot(for: url)
+    }
+
+    func compactThisDeviceLog() async throws -> LogCompactionResult {
+        let coordinator = owner.coordinator(for: url)
+        return try await coordinator.withTransientDocument { document in
+            try await coordinator.flush()
+            return try await owner.compactThisDeviceLog(for: document)
+        }
+    }
+
+    /// Merge unresolved iCloud alternates into this page's canonical document
+    /// and return the number of block hashes salvaged.
+    func resolveConflicts() async throws -> Int {
+        let nsfvT = perfStart()
+        let alternates = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        perfEnd(nsfvT, "NSFileVersion.unresolved", "url=\(url.lastPathComponent) count=\(alternates.count)")
+        guard !alternates.isEmpty else { return 0 }
+
+        let coordinator = owner.coordinator(for: url)
+        return try await coordinator.withTransientDocument { canonical in
+            var alternateBlockLists: [[Block]] = []
+            for version in alternates {
+                guard let text = Clamshell.readCoordinated(version.url) else { continue }
+                alternateBlockLists.append(ClamshellPageEnvelope.parse(text).blocks)
+            }
+
+            let intent = PatchEngine.intent(
+                from: owner.log.readJournal(page: relativePath)
+            )
+            let result = PatchEngine.mergeConflict(
+                survivor: canonical.children,
+                alternates: alternateBlockLists,
+                intent: intent
+            )
+
+            Diag.merge.log("resolve url=\(url.lastPathComponent, privacy: .public) alternates=\(alternates.count, privacy: .public) salvaged=\(result.salvagedHashes.count, privacy: .public)")
+
+            guard !result.salvagedHashes.isEmpty else {
+                Clamshell.markAlternatesResolved(alternates)
+                return 0
+            }
+
+            canonical.replaceChildrenFromConflictResolution(result.merged)
+            try await owner.commit(
+                Commit(logEntries: Patch.observations(from: canonical.children).entries),
+                to: canonical
+            )
+
+            Clamshell.markAlternatesResolved(alternates)
+            return result.salvagedHashes.count
         }
     }
 }

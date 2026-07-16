@@ -53,8 +53,8 @@ private final class PresenterWakeupDebouncer {
 /// File-presenter integration for a page coordinator. The coordinator owns
 /// lifecycle and sticky synchronization state; this file supplies the two
 /// NSFilePresenters and the conflict/classify/reconcile synchronization effect.
-/// The host calls `openPage(at:onEvent:)`/`closePage(_:)`; the presenter
-/// is installed/removed internally as part of that lifecycle. Host reacts
+/// The host calls `Page.open(onEvent:)`/`PageSession.close()`; the presenter
+/// is installed/removed internally as part of that lifecycle. The host reacts
 /// to noteworthy `PresenterEvent`s for UI bookkeeping (banners).
 @MainActor
 extension Clamshell {
@@ -68,7 +68,7 @@ extension Clamshell {
     enum PresenterEvent: Sendable {
         /// iCloud conflict alternates merged into the live doc in place,
         /// salvaging `salvaged` blocks (> 0 by construction —
-        /// `resolveConflictVersions` reports `.none` otherwise).
+        /// `Page.resolveConflicts()` returns zero otherwise).
         case conflictMerged(salvaged: Int)
 
         /// Auto-restore from the recovery-log journal landed `count`
@@ -77,8 +77,7 @@ extension Clamshell {
     }
 
     /// Opaque handle to a registered pair of presenters. Internal — the
-    /// host only sees it via `OpenPage` and passes the whole thing back
-    /// to `closePage`.
+    /// host only sees its effects through a `PageSession`.
     ///
     /// Two presenters per open page:
     /// 1. `document` watches the `.md` itself. Catches user edits made by
@@ -142,65 +141,6 @@ extension Clamshell {
         NSFileCoordinator.removeFilePresenter(handle.history)
     }
 
-    /// One open page — the Document the editor renders against and the
-    /// file presenter handle. Hand back to `closePage(_:)` to tear down.
-    /// The journal fold runs asynchronously after `openPage` returns; any
-    /// restored subtrees splice into `document` in place and surface via
-    /// `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
-    struct OpenPage {
-        let id: UUID
-        let coordinator: PageCoordinator
-        let document: Document
-
-        init(id: UUID, coordinator: PageCoordinator, document: Document) {
-            self.id = id
-            self.coordinator = coordinator
-            self.document = document
-        }
-    }
-
-    /// Load `url`, install the file presenter, and return immediately.
-    /// The journal fold (reconcile-against-log) is **deferred**: it runs
-    /// in a background Task after `openPage` returns, and any auto-
-    /// restored subtrees fire `onEvent(.restored(count:))` so the host
-    /// shows the same banner it would for a presenter-wakeup restore.
-    /// Symmetric inverse: `closePage(_:)`.
-    ///
-    /// Why deferred: on iCloud workspaces, materializing the per-device
-    /// `.history/<rel>/<device-id>.jsonl` files dominates time-to-page
-    /// (4 device logs × ~1s of cold-cache fault-in). The common case has
-    /// nothing to restore, so paying that cost on the critical path is
-    /// pure latency. If the journal does have lost-but-alive blocks,
-    /// they appear a few seconds after the editor renders, with a
-    /// banner — same UX as iCloud delivering a foreign device's writes
-    /// mid-session.
-    ///
-    /// `onEvent` fires only for noteworthy outcomes — a conflict merge or
-    /// a journal restore that mutated the live doc — whether from a
-    /// presenter wakeup or the deferred-reconcile background Task.
-    /// Filesystem-level work is already done by the time the callback
-    /// runs; non-noteworthy wakeups are handled internally and emit
-    /// nothing.
-    @MainActor
-    func openPage(
-        at url: URL,
-        onEvent: @escaping @MainActor (PresenterEvent) -> Void
-    ) async throws -> OpenPage {
-        let total = perfStart()
-        let key = url.standardizedFileURL
-        let open = try await coordinator(for: key).attachEditor(onEvent: onEvent)
-        perfEnd(total, "openPage.total", "url=\(key.lastPathComponent)")
-        return open
-    }
-
-    /// Symmetric inverse of `openPage`: flush any pending writes for the
-    /// document and tear down its file presenter. Idempotent on repeated
-    /// calls with the same `OpenPage`.
-    @MainActor
-    func closePage(_ open: OpenPage) async throws {
-        try await open.coordinator.detachEditor(id: open.id)
-    }
-
     /// Terminal teardown: await every pending save, then tear down any
     /// remaining page coordinators (presenters removed, registry cleared).
     /// The owner must call this before releasing the Clamshell so pending
@@ -219,9 +159,11 @@ extension Clamshell {
     /// against journal — and returns one event for the host, or nil when
     /// nothing noteworthy happened. iCloud
     /// often delivers the `.md` and a sibling `.history/<rel>/<other-
-    /// device>.jsonl` in the same burst; running reconcile on every
-    /// wakeup catches the second case even when the `.md` hash hasn't
-    /// moved. Priority for the returned event: conflictMerged > restored.
+    /// device>.jsonl` in the same burst; running reconcile on every wakeup
+    /// catches same-device crash recovery and already-absorbed peer records.
+    /// A future peer log that arrives before its `.md` is deferred so the
+    /// later external reload preserves the peer edit's exact placement.
+    /// Priority for the returned event: conflictMerged > restored.
     func synchronizePage(_ page: PageCoordinator, document doc: Document) async -> PresenterEvent? {
         let url = doc.url
 
@@ -232,9 +174,9 @@ extension Clamshell {
         //    + title cache via Clamshell's callback.
         var conflictSalvaged: Int? = nil
         do {
-            let resolution = try await resolveConflictVersions(at: url)
-            if resolution.salvaged > 0 {
-                conflictSalvaged = resolution.salvaged
+            let salvaged = try await self.page(at: url).resolveConflicts()
+            if salvaged > 0 {
+                conflictSalvaged = salvaged
             }
         } catch {
             Diag.merge.error("presenter resolve failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")

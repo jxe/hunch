@@ -18,10 +18,10 @@ final class WorkspaceWindow {
     var canNavigateBack: Bool { !path.isEmpty }
 
     /// Document currently rendered by `EditorPage`. Owned-by-clamshell once
-    /// it's been opened (`openPage`); `nil` between navigations and on
-    /// workspaces without a home page set. Computed from `openPage` (a
+    /// it's been opened (`PageSession`); `nil` between navigations and on
+    /// workspaces without a home page set. Computed from `pageSession` (a
     /// tracked stored property) so the two can't drift.
-    var openDocument: Document? { openPage?.document }
+    var openDocument: Document? { pageSession?.document }
     private(set) var cloudSyncSnapshot: Clamshell.CloudSyncSnapshot?
     private(set) var isCompactingLog = false
 
@@ -29,8 +29,9 @@ final class WorkspaceWindow {
     @ObservationIgnored private var loadingTargetURL: URL?
     @ObservationIgnored private var navigationRequestID = 0
     @ObservationIgnored private var cloudSyncPollingTask: Task<Void, Never>?
+    @ObservationIgnored private var sessionsByDocument: [ObjectIdentifier: Clamshell.PageSession] = [:]
 
-    private var openPage: Clamshell.OpenPage?
+    private var pageSession: Clamshell.PageSession?
 
     var moveRequest: MoveRequest?
     /// Unified page-search sheet — replaces the old jump-to and page-list sheets.
@@ -97,7 +98,7 @@ final class WorkspaceWindow {
     /// Reconcile `openDocument` with the currently visible page. Driven by
     /// `.onChange(of: path)` in `ContentView`. Drains the outgoing
     /// document's pending writes before loading the next via
-    /// `clamshell.openPage(at:)`, which folds the journal, auto-restores
+    /// `clamshell.page(at:).open()`, which folds the journal, auto-restores
     /// any lost subtrees, and installs the file presenter. Banner-worthy
     /// reconcile outcomes are surfaced via `postReconcileBanner`.
     func handlePathChange() {
@@ -110,18 +111,19 @@ final class WorkspaceWindow {
         let requestID = navigationRequestID
         loadingTargetURL = topURL
 
-        let outgoing = openPage
-        clearOpenPage()
+        let outgoing = pageSession
+        clearPageSession()
         guard let url = topURL, let clamshell = workspace.clamshell else {
-            if let outgoing, let priorClamshell = workspace.clamshell {
-                navigationTask = Task { @MainActor [weak self, outgoing, priorClamshell, requestID] in
+            if let outgoing {
+                navigationTask = Task { @MainActor [weak self, outgoing, requestID] in
                     guard let self else { return }
                     defer { self.finishNavigationRequest(requestID) }
                     do {
-                        try await priorClamshell.closePage(outgoing)
+                        try await outgoing.close()
                     } catch {
                         workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
                     }
+                    self.forgetSession(outgoing)
                     workspace.unregisterOpenURL(outgoing.document.url)
                 }
             } else {
@@ -139,37 +141,38 @@ final class WorkspaceWindow {
             if let outgoing {
                 let drain = perfStart()
                 do {
-                    try await clamshell.closePage(outgoing)
+                    try await outgoing.close()
                 } catch {
                     workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
                 }
+                self.forgetSession(outgoing)
                 workspace.unregisterOpenURL(outgoing.document.url)
                 perfEnd(drain, "handlePathChange.drainOutgoing")
             }
             guard !Task.isCancelled, self.navigationRequestID == requestID else { return }
             do {
                 let openT = perfStart()
-                let open = try await clamshell.openPage(at: url) { [weak self] event in
+                let open = try await clamshell.page(at: url).open { [weak self] event in
                     self?.handlePresenterEvent(event)
                 }
-                perfEnd(openT, "handlePathChange.openPage", "url=\(url.lastPathComponent)")
+                perfEnd(openT, "handlePathChange.pageOpen", "url=\(url.lastPathComponent)")
                 // The user may have navigated again while we were awaiting.
                 guard !Task.isCancelled,
                       self.navigationRequestID == requestID,
                       currentTargetURL() == url else {
                     do {
-                        try await clamshell.closePage(open)
+                        try await open.close()
                     } catch {
                         workspace.banner = .saveFailed(page: open.document.title, error: error)
                     }
                     return
                 }
-                setOpenPage(open)
+                setPageSession(open)
                 refreshCloudSyncSnapshot()
                 startCloudSyncPolling(for: open.document)
                 workspace.registerOpenURL(url)
                 perfEnd(total, "handlePathChange.total", "url=\(url.lastPathComponent)")
-                // First successful openPage per mount triggers the deferred
+                // First successful page session per mount triggers the deferred
                 // conflict sweep — keeps the home-page critical path clear of
                 // the 49× NSFileVersion sweep until the editor is visible.
                 workspace.scheduleConflictSweepIfNeeded()
@@ -193,25 +196,26 @@ final class WorkspaceWindow {
 
     /// Workspace was dropped (switchWorkspace, etc.). Clear all per-window
     /// state. Called by `ContentView` via `.onChange(of: workspace.workspaceURL)`.
-    /// When that fires the clamshell is already nil, so the closePage branch
-    /// below is skipped — durability is backstopped by `Clamshell.drain()`,
-    /// which `switchWorkspace` awaits before releasing the outgoing instance.
+    /// The session retains its Clamshell, so it can still close even after the
+    /// workspace drops its reference. `Clamshell.drain()` remains the terminal
+    /// durability backstop during workspace switching.
     func reset() {
         navigationTask?.cancel()
         navigationTask = nil
         loadingTargetURL = nil
         navigationRequestID += 1
-        if let outgoing = openPage, let clamshell = workspace.clamshell {
+        if let outgoing = pageSession {
             Task {
                 do {
-                    try await clamshell.closePage(outgoing)
+                    try await outgoing.close()
                 } catch {
                     workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
                 }
+                forgetSession(outgoing)
             }
             workspace.unregisterOpenURL(outgoing.document.url)
         }
-        clearOpenPage()
+        clearPageSession()
         path = []
     }
 
@@ -234,31 +238,33 @@ final class WorkspaceWindow {
         openDocument?.url.standardizedFileURL == url.standardizedFileURL ? openDocument : nil
     }
 
+    func session(for document: Document) -> Clamshell.PageSession? {
+        sessionsByDocument[ObjectIdentifier(document)]
+    }
+
     // MARK: - iCloud sync snapshot
 
     func refreshCloudSyncSnapshot() {
-        guard let doc = openDocument, let clamshell = workspace.clamshell else {
+        guard let pageSession else {
             cloudSyncSnapshot = nil
             return
         }
-        cloudSyncSnapshot = clamshell.cloudSyncSnapshot(for: doc)
+        cloudSyncSnapshot = pageSession.cloudSyncSnapshot()
     }
 
     func compactCurrentPageLog() {
-        guard !isCompactingLog, let document = openDocument, let clamshell = workspace.clamshell else { return }
+        guard !isCompactingLog, let session = pageSession else { return }
+        let document = session.document
         isCompactingLog = true
-        Task { @MainActor [weak self, document, clamshell] in
+        Task { @MainActor [weak self, document, session] in
             guard let self else { return }
             defer {
                 self.isCompactingLog = false
                 self.refreshCloudSyncSnapshot()
             }
             do {
-                // Direct clamshell flush (throwing) — compaction must abort
-                // on a failed flush; the host's EditorHost.flush swallows.
-                try await clamshell.flush(document)
                 guard self.openDocument === document else { return }
-                _ = try await clamshell.compactThisDeviceLog(for: document)
+                _ = try await session.compactThisDeviceLog()
             } catch {
                 self.workspace.error = "Failed to compact log: \(error.localizedDescription)"
             }
@@ -285,13 +291,20 @@ final class WorkspaceWindow {
         (path.last ?? workspace.homeURL)?.standardizedFileURL
     }
 
-    private func setOpenPage(_ open: Clamshell.OpenPage) {
-        openPage = open
+    private func setPageSession(_ session: Clamshell.PageSession) {
+        sessionsByDocument[ObjectIdentifier(session.document)] = session
+        pageSession = session
     }
 
-    private func clearOpenPage() {
+    private func forgetSession(_ session: Clamshell.PageSession) {
+        let key = ObjectIdentifier(session.document)
+        guard sessionsByDocument[key] === session else { return }
+        sessionsByDocument[key] = nil
+    }
+
+    private func clearPageSession() {
         stopCloudSyncPolling()
-        openPage = nil
+        pageSession = nil
         cloudSyncSnapshot = nil
     }
 
@@ -304,9 +317,9 @@ final class WorkspaceWindow {
     // The save lifecycle (commit-time atomic save, per-URL PageCoordinator,
     // post-save bookkeeping) lives on `Clamshell`. The host's
     // `EditorHost.persistCommit` conformance calls
-    // `clamshell.enqueueCommit(.fromEditorOps(ops), to: doc)`
+    // `PageSession.enqueueEditorOps(ops)`
     // synchronously at every edit-session commit point (so the coordinator is
-    // never blind to a just-fired commit), and `clamshell.flush(_:)`
+    // never blind to a just-fired commit), and `PageSession.flush()`
     // awaits its writer on blur / scenePhase / navigation away. Clamshell
     // keeps the title cache + entries in sync internally; the host
     // doesn't thread anything through it.
@@ -316,19 +329,20 @@ final class WorkspaceWindow {
     @discardableResult
     func moveToTrash(_ entry: WorkspaceEntry) async -> Bool {
         guard let clamshell = workspace.clamshell else { return false }
-        if let outgoing = openPage, outgoing.document.url == entry.url {
+        if let outgoing = pageSession, outgoing.document.url == entry.url {
             // Drain the open document BEFORE trashing so its last edits
             // are durable, then close the page and drop the presenter so
             // the trash op below never races a save against a now-
             // trashed URL.
             do {
-                try await clamshell.closePage(outgoing)
+                try await outgoing.close()
             } catch {
                 workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
                 return false
             }
+            forgetSession(outgoing)
             workspace.unregisterOpenURL(outgoing.document.url)
-            clearOpenPage()
+            clearPageSession()
         }
         path.removeAll { $0 == entry.url }
         do {
@@ -365,7 +379,7 @@ final class WorkspaceWindow {
     private func restoreBlock(_ target: Clamshell.RecoveryTarget) async -> Bool {
         guard let clamshell = workspace.clamshell else { return false }
         do {
-            try await clamshell.restoreBlocks(target, liveDoc: openDocument)
+            try await clamshell.page(atPath: target.source).restore(target)
             return true
         } catch Clamshell.RestoreError.pageMissing(let source) {
             workspace.error = "Original page no longer exists at \(source)."

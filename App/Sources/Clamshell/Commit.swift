@@ -15,11 +15,11 @@ import Editor
 //   - Reconcile: `Reconciliation.asCommit()` projects observations +
 //     unrestorable quarantines (the doc is mutated separately via
 //     `PatchEngine.apply`).
-//   - Restore: built by hand in `Clamshell.restoreBlocks` (follow-up purges
+//   - Restore: built by hand in `Clamshell.Page.restore` (follow-up purges
 //     or fresh adds, plus an optional full-doc add-walk for the closed-page
 //     branch where the journal might not yet know about every block in
 //     `doc`).
-//   - Conflict merge: built by `Clamshell.resolveConflictVersions` as a
+//   - Conflict merge: built by `Clamshell.Page.resolveConflicts()` as a
 //     full-doc observe-walk on the merged tree.
 
 /// One unit of durable work for a single page.

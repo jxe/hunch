@@ -123,7 +123,7 @@ final class Workspace {
     private var accessedWorkspaceURL: URL?
 
     /// Once-per-mount latch: the closed-page conflict sweep runs at most once
-    /// per `Clamshell` instance, kicked by the first successful `openPage`
+    /// per `Clamshell` instance, kicked by the first successful page session
     /// (see `scheduleConflictSweepIfNeeded`). Reset whenever the clamshell is
     /// replaced (mount / switchWorkspace).
     private var hasRunConflictSweep = false
@@ -301,7 +301,7 @@ final class Workspace {
 
     /// Fire the closed-page conflict sweep exactly once per `Clamshell`
     /// instance. Called from `WorkspaceWindow.handlePathChange` after the
-    /// first successful `openPage` so the sweep runs after the home page
+    /// first successful page session so the sweep runs after the home page
     /// is visible, not racing it for MainActor. No-op on repeat calls.
     func scheduleConflictSweepIfNeeded() {
         guard let workspaceURL else { return }
@@ -327,7 +327,7 @@ final class Workspace {
     // MARK: - iCloud conflict resolution
 
     /// Iterate scanned entries in the background and run
-    /// `Clamshell.resolveConflictVersions` for any page that isn't currently
+    /// `Clamshell.Page.resolveConflicts()` for any page that isn't currently
     /// open in a window (those are handled by their file presenter). Surfaces
     /// a banner per page that salvaged blocks; rescans once at the end if
     /// anything was merged so the page list picks up the new mtime.
@@ -346,21 +346,21 @@ final class Workspace {
             for url in candidates {
                 guard let self else { return }
                 guard self.workspaceURL == workspaceURL else { return }
-                let resolution: Clamshell.ConflictResolution
+                let salvaged: Int
                 let iter = perfStart()
                 do {
-                    resolution = try await clamshell.resolveConflictVersions(at: url)
+                    salvaged = try await clamshell.page(at: url).resolveConflicts()
                 } catch {
                     Diag.merge.error("scan-time resolve failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                     perfEnd(iter, "sweep.iter", "url=\(url.lastPathComponent) error=1")
                     await Task.yield()
                     continue
                 }
-                perfEnd(iter, "sweep.iter", "url=\(url.lastPathComponent) salvaged=\(resolution.salvaged)")
-                if resolution.salvaged > 0 {
+                perfEnd(iter, "sweep.iter", "url=\(url.lastPathComponent) salvaged=\(salvaged)")
+                if salvaged > 0 {
                     anyMerged = true
                     let title = titleByURL[url] ?? url.deletingPathExtension().lastPathComponent
-                    self.banner = .merged(salvaged: resolution.salvaged, into: title)
+                    self.banner = .merged(salvaged: salvaged, into: title)
                 }
                 await Task.yield()
             }

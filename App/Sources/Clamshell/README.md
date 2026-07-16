@@ -87,7 +87,7 @@ Two flavours: **authoritative** (`add`, `purge`) and **tentative**
   diff via `BlockTreeDiff.derive(_:_:)` and fires
   `host.persistCommit(ops:in:)` (the editor-facing `EditorHost`
   protocol method); the host bridges that to
-  `Clamshell.enqueueCommit(_:to:)`, which projects the batch onto
+  `PageSession.enqueueEditorOps(_:)`, which projects the batch onto
   a `Patch` (inserts → `.add`, removes → `.purge`) and routes it to
   `RecoveryLog.apply(_:to:)` for one ordered append with sequential
   counters. Authoritative — drives `.tombstoned` and triggers engine
@@ -133,8 +133,8 @@ in one batched write. No write-time dedup: every entry emits a record.
 Duplicate `add`s for the same hash are harmless — intent is a
 latest-`(counter, deviceID)`-wins fold, so the union collapses them to
 the same intent at read time. The log just gets a little chattier on
-the rare full-doc-walk callers (conflict-merge in
-`resolveConflictVersions`, subpage drops via
+the rare full-doc-walk callers (conflict merge in
+`Page.resolveConflicts()`, subpage drops via
 `EditorHost.appendToPage`).
 
 ### Journal
@@ -242,11 +242,12 @@ The contract:
 
 ### Reconciliation paths
 
-Hosts don't call reconcile directly. Every URL is mediated by one
-`PageCoordinator`, which owns its canonical in-memory `Document`, ordered
+Hosts don't call reconcile directly. `Clamshell.page(at:)` returns a stable,
+lightweight `Page` facade; operations resolve its current retiring
+`PageCoordinator`, which owns the canonical in-memory `Document`, ordered
 write generations, editor subscribers, presenters, and pending sync request.
-`openPage(at:onEvent:)` returns as soon as the `.md` is loaded + parsed; the
-coordinator requests a journal fold in its background sync loop and fires
+`Page.open(onEvent:)` returns a `PageSession` as soon as the `.md` is loaded +
+parsed; the coordinator requests a journal fold in its background sync loop and fires
 `onEvent(.restored(count:))` if anything was spliced. Deferring the fold keeps
 the home-page critical path clear of the per-device JSONL iCloud reads.
 
@@ -272,6 +273,16 @@ debounce coalesces filesystem bursts; the coordinator waits for the latest
 local write generation to become durable before classifying disk content and
 folding the journal. A request that arrives during a save or sync remains
 pending and runs afterward rather than relying on another presenter wakeup.
+
+If a peer `.jsonl` arrives before its `.md`, records beyond the page envelope's
+stamped frontier are treated as pending peer state, not as blocks to restore.
+The coordinator leaves both the live tree and disk untouched until the peer
+Markdown arrives, then refreshes the canonical document in place. This keeps
+the peer's exact sibling order; the recovery log only knows the parent and
+would otherwise append the block at the end of that parent's children. Future
+records from this device are still restored automatically, preserving the
+log-before-file crash guarantee. A peer record whose page never arrives remains
+available through Recover rather than being synthesized into an open page.
 
 Closed-page mutations (append, manual recovery, conflict sweep) acquire a
 transient lease on the same URL coordinator. Consequently an editor and a
@@ -324,11 +335,11 @@ When iCloud Drive lands a sibling-file conflict (`<page> 2.md`,
 alternates: intent:)` splices any block present in an alternate but
 absent from the survivor and not tombstoned in intent, under the
 closest live ancestor in the merged tree. Driven by
-`Clamshell.resolveConflictVersions`; called from Clamshell's internal
+`Page.resolveConflicts()`; called from Clamshell's internal
 file-presenter wakeup (`Clamshell+Presenter.swift`) for the open page
 and from `Workspace.resolveConflictsForClosedPages` for closed pages.
 The closed-page sweep is **deferred until after the first successful
-`openPage`** (kicked by `Workspace.scheduleConflictSweepIfNeeded()` from
+page session** (kicked by `Workspace.scheduleConflictSweepIfNeeded()` from
 `WorkspaceWindow.handlePathChange`), so the 49× `NSFileVersion`
 query never competes with the home-page open for MainActor. Cmd-R's
 `Workspace.rescan(includeConflictSweep: true)` forces the sweep
@@ -359,14 +370,15 @@ let clamshell = Clamshell(root: workspaceURL)
 // re-render when scan / title / home changes.
 try clamshell.rescan()
 
-// Open a page: load + parse the `.md`, install the file presenter,
-// return immediately. Its PageCoordinator runs the journal fold in
-// the background after openPage returns — `.restored` fires later if anything was
+// Get a stable page facade, then open an editor session: load + parse
+// the `.md`, install the file presenters, and return immediately. Its
+// coordinator runs the journal fold in the background — `.restored` fires later if anything was
 // auto-spliced. `.conflictMerged` fires from presenter wakeups when
 // iCloud delivers a sibling-version conflict.
 // `onEvent` fires only for noteworthy outcomes — non-noteworthy
 // wakeups (echo, external reload, nothing) are handled internally.
-let open = try await clamshell.openPage(at: url) { event in
+let page = clamshell.page(at: url)
+let session = try await page.open { event in
     switch event {
     case .restored(let n): // show "Restored N blocks..." banner
     case .conflictMerged(let n): // show "Merged N blocks..." banner
@@ -376,34 +388,32 @@ let open = try await clamshell.openPage(at: url) { event in
 // Editor-driven write — commit-time atomic save. Non-empty log entries
 // are applied to the recovery log; then the .md is serialized and
 // written. Calls for the same URL chain so concurrent commits land in
-// order. `enqueueCommit` installs the chain entry *synchronously* and
-// returns the task (the host's sync persistCommit hook uses it, so
-// flush can never observe false quiescence); `commit` is
-// enqueue-then-await for callers that want durability inline. Empty
-// log entries still save the .md (used by reconcile/restore paths
-// after they splice into a live doc).
-try await clamshell.commit(Commit.fromEditorOps(ops), to: open.document)
+// order. `enqueueEditorOps` installs the coordinator generation
+// synchronously and returns its durability task (the host's sync
+// persistCommit hook uses it, so flush cannot overlook the edit).
+let durability = session.enqueueEditorOps(ops)
+try await durability.value
 
 // Force-flush any in-flight commits (blur, scenePhase background,
 // navigation away, shutdown). No-op if the chain is empty; never
 // triggers a save on its own. Throws if the pending save failed.
-try await clamshell.flush(open.document)
+try await session.flush()
 
-// Symmetric inverse of openPage: drops this open handle, then flushes
+// Close drops this editor attachment, then flushes
 // and tears down the presenter when the final handle closes.
-try await clamshell.closePage(open)
+try await session.close()
 
 // Trash a page. If it was the home page, homeRelativePath gets cleared.
 // The page's .history/<rel>/ dir is moved alongside the .md.
-try clamshell.moveToTrash(at: open.document.url)
+try clamshell.moveToTrash(at: page.url)
 
 // Recover something
 let trashed = try await clamshell.listTrashedPages()
 let lost = await clamshell.listLostBlocks()
 
-// Restore one lost or purged block (host passes `openDocument` so the
-// splice mutates the live doc when the source page is open).
-try await clamshell.restoreBlocks(.lost(entry), liveDoc: openDocument)
+// Restore one lost or purged block. The coordinator finds or loads the
+// source page's canonical document.
+try await clamshell.page(atPath: entry.source).restore(.lost(entry))
 ```
 
 **One Clamshell per directory.** Construct with the root URL; never
@@ -416,24 +426,23 @@ existing instance and build a new one.
 
 | Group | Methods |
 |-------|---------|
-| Path conversion | `relativePath(of:)`, `url(for:)`, `pageID(for:relativeTo:)` |
-| Read | `readBlocks(at:)` — async one-off read used by inline-expand. `loadDocument(at:)` is the coordinator-internal document loader and seeds the iCloud disk-content ring buffer. |
-| Page list (observable) | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:filter:)` — returns ranked `WorkspaceEntry`s; the app boundary maps to `MentionItem` via `WorkspaceEntry.asMentionItem(homeRelativePath:)` |
-| Open / close a page | `openPage(at:onEvent:)` → `OpenPage` (`{document}`), `closePage(_:)`. The URL's coordinator loads one canonical `Document`, installs its Markdown and history presenters on the first editor attach, and adds an event subscriber for every later attach. Close drops one subscriber; the final close removes both presenters, flushes, and retires the coordinator when no other work remains. |
-| Write (all flows) | `enqueueCommit(_:to:)` synchronously installs a coordinator generation and returns its task; used by the host's synchronous `persistCommit` hook. `commit(_:to:)` is enqueue + await. Each generation snapshots the document and applies its log entries before writing `.md`; same-URL generations land in arrival order, while an unstarted tail may coalesce. `flush(_:)` awaits already-enqueued work. `drain()` awaits all pending generations and shuts down every coordinator. `inlineAndTrash(pageID:parent:)` flushes the parent and trashes the named page in one durable sequence. |
-| Restore | `restoreBlocks(_:liveDoc:)` — the Recover-sheet entry point for both lost and purged blocks. (Paired with `restorePage(_:)` in the Trash group below, which restores a whole trashed page.) |
+| Get a page | `page(at:)`, `page(atPath:)` → stable lightweight `Page`; `relativePath(of:)`, `url(for:)`, `pagePath(for:relativeTo:)` remain workspace path conversions. |
+| Page | `open(onEvent:)`, `readBlocks()`, `append(_:)`, `restore(_:)`, `resolveConflicts()`, `cloudSyncSnapshot()`, `compactThisDeviceLog()`, `trashAfterInlining(into:)`. Closed-page operations acquire the URL's canonical coordinator document transiently. |
+| Page session | `document`, `enqueueEditorOps(_:)`, `flush()`, `close()`, `cloudSyncSnapshot()`, `compactThisDeviceLog()`. Multiple sessions for one URL share one canonical document and coordinator. |
+| Page list (observable) | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:filter:)` — returns ranked `WorkspaceEntry`s; the app boundary maps to `MentionItem` via `WorkspaceEntry.asMentionItem(homeRelativePath:)`. |
+| Workspace lifetime | `drain()` awaits all pending generations and shuts down every coordinator. Generic `Commit` construction and `commit(_:to:)` are engine-internal. |
 | Create | `createPage(title:requestedPath:initialContent:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Recovery log | `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)` |
-| iCloud merge | `resolveConflictVersions(at:)` → `ConflictResolution` (`{ salvaged }`). Open and closed callers both merge through the URL's canonical coordinator document. |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
 | Home page | `homeURL`, `homeRelativePath` (read-only), `isHome(relativePath:)`, `setHome(relativePath:)` |
 | Misc | `root` |
 
-Every read/write path internally seeds a per-URL content-hash ring
-buffer that the file presenter classifies against — echo (our write
-came back) vs stomp (iCloud rolled us back) vs external (a different
-editor wrote). Callers don't have to seed anything.
+Canonical page loads and writes internally seed a per-URL content-hash
+ring buffer that the file presenter classifies against — echo (our
+write came back) vs stomp (iCloud rolled us back) vs external (a
+different editor wrote). One-shot `Page.readBlocks()` deliberately does
+not seed session history. Callers don't manage either case themselves.
 
 Engine orchestration (`reconcile`, `reconcileLive`, conflict-merge
 wakeups, coordinator state transitions) is internal to the module — see the Swift
@@ -477,10 +486,10 @@ log apply + file write inside a single Task, log first. At any point
 a crash can happen, the log is at-or-ahead of the file → reconcile
 heals on next open. The editor's `EditorHost.persistCommit` protocol
 method stays synchronous (typing path can't await) — the host bridge
-calls `Clamshell.enqueueCommit(_:to:)`, which installs the chain
-entry before returning, then awaits the returned task only for the
-failure banner; only the chained Task pays the I/O. Because the
-enqueue is synchronous, `flush(_:)` (which awaits the chain head)
+calls `PageSession.enqueueEditorOps(_:)`, which installs the generation
+before returning, then awaits the returned task only for the failure
+banner; only the coordinator writer pays the I/O. Because the enqueue
+is synchronous, `PageSession.flush()` (which awaits the current write tail)
 can never miss a just-fired commit — blur / scenePhase / nav-away
 callbacks land bytes on disk before the editor unmounts.
 
@@ -519,15 +528,15 @@ again automatically without any log mutation.
 `.history/<rel>/` directory moves alongside the `.md`, so trash +
 restore is a page-bundle operation.
 
-**One write API: `enqueueCommit(_:to:)` / `commit(_:to:)` +
-`flush(_:)`.** Every durable write — editor commit, reconcile
-catch-up, manual restore, conflict-merge, subpage append — projects
-to a `Commit`. `enqueueCommit` synchronously installs the next
-`PageCoordinator` generation and returns its task; `commit` is
-enqueue-then-await. The generation snapshots the document immediately,
+**One session write API: `enqueueEditorOps(_:)` + `flush()`.** The
+editor submits its transaction diff without knowing about recovery-log
+patches or `Commit`. Internally, every durable write — editor commit,
+reconcile catch-up, manual restore, conflict merge, subpage append —
+projects to a `Commit` and uses `commit(_:to:)`. The coordinator
+generation snapshots the document immediately,
 then lands recovery-log entries before its `.md` write. Same-URL
 generations run in arrival order, and rapid commits may coalesce while
-the tail has not started. `flush(_:)` awaits the current tail without
+the tail has not started. `PageSession.flush()` awaits the current tail without
 triggering work — for blur, scenePhase backgrounding, and navigation
 away. `drain()` is terminal teardown: it awaits every pending generation
 and shuts down remaining coordinators; the owner must hold the Clamshell
@@ -540,8 +549,8 @@ internally on every successful commit.
 `BlockTreeDiff.derive(_:_:)` and fires
 `Document.didCommitTransaction`, which the editor wires to
 `EditorHost.persistCommit(ops:in:)`. The host's adapter projects the
-ops onto a `Commit.fromEditorOps(ops)` and calls
-`Clamshell.enqueueCommit(_:to:)` synchronously (inserts → `.add`,
+ops onto a `Commit.fromEditorOps(ops)` through
+`PageSession.enqueueEditorOps(_:)` synchronously (inserts → `.add`,
 removes → `.purge`) — the editor's sync hook surface is preserved,
 and durability is awaited in a follow-up Task only for the failure
 banner. Typing goes through the same path:
@@ -575,7 +584,7 @@ are tracked alongside "lost" entries — the union remembers both the
 latest record (purge) and the latest prior `add` (carrying markdown +
 parent). `listPurgedBlocks` surfaces them so the user can bring back
 something they deleted on purpose. To restore, the host calls
-`Clamshell.restoreBlocks(.purged(entry), liveDoc:)`; internally, a fresh
+`clamshell.page(atPath: entry.source).restore(.purged(entry))`; internally, a fresh
 `.add` for the hash gets appended to the log, and the new counter
 beats the prior purge under `(c, device-id)` lex, lifting the
 tombstone from the union.
@@ -586,10 +595,12 @@ tombstone from the union.
 
 ## Concurrency
 
-`Clamshell` and `PageCoordinator` are `@MainActor`-isolated. One
+`Clamshell`, `Page`, `PageSession`, and `PageCoordinator` are
+`@MainActor`-isolated. `Page` is a stable URL facade with no live state;
+`PageSession` retains the coordinator for an editor attachment. The retiring
 coordinator owns the canonical `Document`, editor subscribers, presenter
-lifecycle, transient closed-page leases, ordered write generations, and
-sticky synchronization requests for a URL. Keeping generation enqueue on
+lifecycle, transient closed-page leases, ordered write generations, and sticky
+synchronization requests for a URL. Keeping generation enqueue on
 the MainActor makes installation synchronous; serialization and coordinated
 file I/O still hop off the actor. Path conversions, raw reads, and asset I/O
 are `nonisolated`. The underlying stores are actors (`RecoveryLog`,
@@ -609,13 +620,12 @@ append" — `NSFileCoordinator` handles that.
 
 ## Files in this directory
 
-- [Clamshell.swift](Clamshell.swift) — the umbrella API. Orchestrates
-  reads/writes, hands the engine its inputs, applies the engine's
-  outputs, and exposes enqueue/commit/flush/drain operations backed by
-  [PageCoordinator.swift](PageCoordinator.swift). A coordinator is the
-  per-URL state machine for canonical document ownership, editor and
-  transient leases, presenter lifetime, persistence generations, and
-  synchronization. Engine-internal saves use the same commit primitive.
+- [Clamshell.swift](Clamshell.swift) — workspace-level storage and API:
+  page lookup, lists/search, create/trash, recovery lists, home metadata,
+  assets, and terminal drain. Page-scoped operations live on `Page` and
+  `PageSession`, backed by [PageCoordinator.swift](PageCoordinator.swift).
+  The coordinator remains the internal per-URL state machine for canonical
+  document ownership, leases, presenters, persistence, and synchronization.
 - [Commit.swift](Commit.swift) — the `Commit` value type that
   unifies every durable write (editor commit, reconcile catch-up,
   manual restore, conflict-merge, subpage append). One Commit is the
@@ -624,10 +634,10 @@ append" — `NSFileCoordinator` handles that.
   call sites build the value directly.
 - [Clamshell+Reconcile.swift](Clamshell+Reconcile.swift) — engine
   orchestration: open-doc reconcile, live-doc reconcile for presenter
-  wakeups, and `restoreBlocks(_:liveDoc:)` for the Recover sheet.
+  wakeups, and `Page.restore(_:)` for the Recover sheet.
 - [Clamshell+Presenter.swift](Clamshell+Presenter.swift) — the
   NSFilePresenter lifecycle, wakeup classification (echo / stomp /
-  external), and `openPage` / `closePage`. Installs two presenters
+  external), used by `Page.open` / `PageSession.close`. Installs two presenters
   per open page: a `DocumentFilePresenter` on the `.md` and a
   `DocumentHistoryPresenter` on `.history/<rel>/` for peer-log
   changes. Both fire the same idempotent wakeup.
@@ -673,9 +683,9 @@ append" — `NSFileCoordinator` handles that.
   `WorkspaceWindow`. Clamshell handles one persistent format; the
   host splits workspace-wide vs. per-window state across `Workspace`
   and `WorkspaceWindow`.
-- **No banners or recovery-sheet UI.** `Clamshell.openPage(...)` does
+- **No banners or recovery-sheet UI.** `Page.open(...)` does
   the engine work and surfaces outcomes via `PresenterEvent`s on the
-  `onEvent` callback; `Clamshell.restoreBlocks(_:liveDoc:)` and
+  `onEvent` callback; `Page.restore(_:)` and
   `Clamshell.restorePage(_:)` mutate state and throw on failure. The
   host (`WorkspaceWindow`) shows the resulting banner and routes from
   the Recover sheet's row taps.

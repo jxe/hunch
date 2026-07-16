@@ -6,7 +6,7 @@ import Editor
 /// snapshot — built off-main by `Clamshell.buildLinkGraph()`, cached on
 /// `Clamshell`, and patched in place on save (`replacingOutbound`). Edges come
 /// from both `.subpage` blocks and inline `[text](url)` links; the same
-/// classifier the editor uses (`Clamshell.pageID(for:relativeTo:)`) decides
+/// classifier the editor uses (`Clamshell.pagePath(for:relativeTo:)`) decides
 /// what counts as an internal page reference.
 struct LinkGraph: Sendable, Equatable {
     /// pageID → pages it links to (only targets that exist as live pages).
@@ -150,7 +150,7 @@ extension Clamshell {
         let home = homeRelativePath
         let cached = cachedLinkEntries()
         let classify: @Sendable (URL, URL) -> String? = { [self] url, base in
-            self.pageID(for: url, relativeTo: base)
+            self.pagePath(for: url, relativeTo: base)
         }
 
         // Reuse cached title + links where the mtime matches; content-read the rest.

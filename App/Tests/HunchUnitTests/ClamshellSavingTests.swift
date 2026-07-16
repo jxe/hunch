@@ -145,7 +145,7 @@ struct ClamshellSavingTests {
         _ = try await t1.value
         _ = try await t2.value
         _ = try await t3.value
-        try await clamshell.flush(doc)
+        try await clamshell.coordinator(for: doc).flush()
 
         let mdText = try String(contentsOf: doc.url, encoding: .utf8)
         #expect(mdText.contains("abc"), "final .md reflects last commit")
@@ -175,7 +175,7 @@ struct ClamshellSavingTests {
         let block = Block.paragraph(text: attr("standalone"))
         let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
 
-        try await clamshell.flush(doc)
+        try await clamshell.coordinator(for: doc).flush()
         #expect(!FileManager.default.fileExists(atPath: doc.url.path),
                 "flush does not trigger a save on a quiescent URL")
     }
@@ -218,13 +218,30 @@ struct ClamshellSavingTests {
         let url = clamshell.url(for: "p.md")
         try "# Title\n\nbody\n".write(to: url, atomically: true, encoding: .utf8)
 
-        let first = try await clamshell.openPage(at: url) { _ in }
-        let second = try await clamshell.openPage(at: url) { _ in }
+        let first = try await clamshell.page(at: url).open { _ in }
+        let second = try await clamshell.page(at: url).open { _ in }
 
         #expect(first.document === second.document)
 
-        try await clamshell.closePage(first)
-        try await clamshell.closePage(second)
+        try await first.close()
+        try await second.close()
+    }
+
+    @Test func stablePageFacadeReopensAfterCoordinatorRetires() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+        let page = clamshell.page(atPath: "p.md")
+        try "# Title\n\nbody\n".write(to: page.url, atomically: true, encoding: .utf8)
+
+        let first = try await page.open { _ in }
+        try await first.close()
+        #expect(clamshell.pageCoordinators.isEmpty)
+
+        let second = try await page.open { _ in }
+        #expect(second.page.url == page.url)
+        #expect(second.document.title == "Title")
+        try await second.close()
     }
 
     @Test func sameURLHandlesSaveOneSharedDocumentShape() async throws {
@@ -234,8 +251,8 @@ struct ClamshellSavingTests {
         let url = clamshell.url(for: "p.md")
         try "# Title\n".write(to: url, atomically: true, encoding: .utf8)
 
-        let first = try await clamshell.openPage(at: url) { _ in }
-        let second = try await clamshell.openPage(at: url) { _ in }
+        let first = try await clamshell.page(at: url).open { _ in }
+        let second = try await clamshell.page(at: url).open { _ in }
         let doc = first.document
         #expect(doc === second.document)
 
@@ -257,8 +274,8 @@ struct ClamshellSavingTests {
         #expect(mdText.contains("alpha"))
         #expect(mdText.contains("beta"))
 
-        try await clamshell.closePage(first)
-        try await clamshell.closePage(second)
+        try await first.close()
+        try await second.close()
     }
 
     @Test func pagesFilterReturnsOnlyLocallyWritablePages() throws {
@@ -296,7 +313,7 @@ struct ClamshellSavingTests {
         try "# Target\n".write(to: targetURL, atomically: true, encoding: .utf8)
 
         let moved = Block.paragraph(text: attr("moved body"))
-        try await clamshell.appendBlocks([moved], toPage: "Target.md")
+        try await clamshell.page(atPath: "Target.md").append([moved])
 
         let mdText = try String(contentsOf: targetURL, encoding: .utf8)
         #expect(mdText.contains("Target"))
@@ -314,16 +331,16 @@ struct ClamshellSavingTests {
 
         let targetURL = clamshell.url(for: "Target.md")
         try "# Target\n".write(to: targetURL, atomically: true, encoding: .utf8)
-        let open = try await clamshell.openPage(at: targetURL) { _ in }
+        let open = try await clamshell.page(at: targetURL).open { _ in }
 
         let moved = Block.paragraph(text: attr("live moved body"))
-        try await clamshell.appendBlocks([moved], toPage: "Target.md")
+        try await clamshell.page(atPath: "Target.md").append([moved])
 
         #expect(open.document.children.contains { $0.id == moved.id })
         let mdText = try String(contentsOf: targetURL, encoding: .utf8)
         #expect(mdText.contains("live moved body"))
 
-        try await clamshell.closePage(open)
+        try await open.close()
     }
 
     @Test func appendBlocksThrowsBeforeCreatingMissingDestination() async throws {
@@ -334,7 +351,7 @@ struct ClamshellSavingTests {
         let moved = Block.paragraph(text: attr("should not move"))
 
         await #expect(throws: Clamshell.AppendBlocksError.self) {
-            try await clamshell.appendBlocks([moved], toPage: "Missing.md")
+            try await clamshell.page(atPath: "Missing.md").append([moved])
         }
         #expect(!FileManager.default.fileExists(atPath: clamshell.url(for: "Missing.md").path))
     }
@@ -345,13 +362,13 @@ struct ClamshellSavingTests {
         let clamshell = Clamshell(root: root)
 
         let rootDoc = Document(url: clamshell.url(for: "Home.md"), children: [])
-        let rootTargets = clamshell.cloudSyncTargets(for: rootDoc)
+        let rootTargets = clamshell.page(at: rootDoc.url).cloudSyncSnapshot().items.map(\.target)
         #expect(rootTargets.map(\.kind) == [.page, .thisDeviceLog])
         #expect(rootTargets[0].url == rootDoc.url.standardizedFileURL)
         #expect(relativePath(rootTargets[1].url, under: root) == ".history/Home.md/\(DeviceID.current).jsonl")
 
         let nestedDoc = Document(url: clamshell.url(for: "Projects/Ideas.md"), children: [])
-        let nestedTargets = clamshell.cloudSyncTargets(for: nestedDoc)
+        let nestedTargets = clamshell.page(at: nestedDoc.url).cloudSyncSnapshot().items.map(\.target)
         #expect(nestedTargets[0].url == nestedDoc.url.standardizedFileURL)
         #expect(relativePath(nestedTargets[1].url, under: root) == ".history/Projects/Ideas.md/\(DeviceID.current).jsonl")
     }
@@ -374,7 +391,7 @@ struct ClamshellSavingTests {
         let doc = Document(url: clamshell.url(for: "Sized.md"), children: [block])
         try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
 
-        let snapshot = clamshell.cloudSyncSnapshot(for: doc)
+        let snapshot = clamshell.page(at: doc.url).cloudSyncSnapshot()
         let pageItem = try #require(snapshot.items.first { $0.target.kind == .page })
         let logItem = try #require(snapshot.items.first { $0.target.kind == .thisDeviceLog })
         let pageBytes = Int64(try Data(contentsOf: doc.url).count)
@@ -385,7 +402,7 @@ struct ClamshellSavingTests {
 
         let missingLogDoc = Document(url: clamshell.url(for: "NoLog.md"), children: [])
         try "# No log\n".write(to: missingLogDoc.url, atomically: true, encoding: .utf8)
-        let missingSnapshot = clamshell.cloudSyncSnapshot(for: missingLogDoc)
+        let missingSnapshot = clamshell.page(at: missingLogDoc.url).cloudSyncSnapshot()
         let missingLogItem = try #require(missingSnapshot.items.first { $0.target.kind == .thisDeviceLog })
         #expect(missingLogItem.status == .missingNeutral)
         #expect(missingLogItem.byteCount == nil)

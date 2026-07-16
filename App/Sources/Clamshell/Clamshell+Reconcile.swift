@@ -45,11 +45,16 @@ extension Clamshell {
     /// Reconcile-against-journal on a live `Document`: mutate `doc` in
     /// place if the engine finds blocks to splice. Gated on the coordinator's
     /// settled generation — the engine assumes `doc.children == parsed(.md)`,
-    /// only true after every local generation is durable. Returns nil when
-    /// the gate fires, so the caller can distinguish "deferred, retry after
-    /// durability" from "ran and found nothing." Used both by openPage (the
-    /// initial post-load fold, deferred so it doesn't block first
-    /// paint) and by presenter wakeups.
+    /// only true after every local generation is durable. Future records from
+    /// another device are deliberately deferred when they are beyond the
+    /// Markdown envelope's stamped frontier: iCloud commonly delivers that
+    /// device's log before its page, and reconstructing the edit from the log
+    /// would discard its exact sibling position and rewrite a stale page.
+    /// Same-device future records still restore, preserving log-before-file
+    /// crash recovery. Returns nil when the generation gate fires, so the
+    /// caller can distinguish "deferred, retry after durability" from "ran
+    /// and found nothing." Used both by Page.open (the initial post-load fold,
+    /// deferred so it doesn't block first paint) and by presenter wakeups.
     @discardableResult
     func reconcileLive(_ doc: Document) async throws -> PatchEngine.ReconcileSummary? {
         guard let page = pageCoordinators[doc.url.standardizedFileURL],
@@ -91,7 +96,8 @@ extension Clamshell {
             doc: docChildren,
             mdMtime: mdMtime,
             trustedFrontier: inputs.trustedFrontier,
-            allowJournalMutations: inputs.allowJournalMutations
+            allowJournalMutations: inputs.allowJournalMutations,
+            restoreFutureForeignAdds: false
         )
         guard page.remainsSettled(at: generation) else {
             // An editor commit landed while the journal was being folded.
@@ -106,6 +112,17 @@ extension Clamshell {
             return PatchEngine.ReconcileSummary(restoredHashes: [])
         case .folded(let recon, let mode):
             perfEnd(foldT, "runReconcile.folded", "rel=\(rel) mode=\(mode) inserts=\(recon.inserts.count) removes=\(recon.removes.count) observe=\(recon.toAppend.count) quarantine=\(recon.unrestorable.count)")
+
+            // The peer log won the iCloud delivery race. Keep both the live
+            // document and the Markdown file untouched until the matching
+            // peer page arrives. RecoveryLog intentionally does not advance
+            // its watermark in this case, so that later page wakeup folds the
+            // same records against the refreshed document.
+            if !recon.deferredFutureForeignHashes.isEmpty {
+                Diag.merge.log("reconcile awaiting peer page url=\(url.lastPathComponent, privacy: .public) deferred=\(recon.deferredFutureForeignHashes.count, privacy: .public)")
+                return PatchEngine.ReconcileSummary(restoredHashes: [])
+            }
+
             Self.logUnrestorables(recon.unrestorable, url: url)
 
             if recon.didChange {
@@ -129,25 +146,12 @@ extension Clamshell {
         }
     }
 
-    /// Restore a single lost or purged block into its source page. Pass
-    /// `liveDoc` when the source page is currently open in some window so
-    /// the splice mutates the same `Document` the editor renders; pass nil
-    /// to load-from-disk and persist via the unified `commit(_:to:)`.
-    ///
-    /// Lost-restore appends one `.purge` per covered hash so the Recover
-    /// sheet stops surfacing the row. Purged-restore appends a fresh `.add`
-    /// per covered hash so the union's latest record flips back to alive.
-    /// Both happen in one batched log write.
-    func restoreBlocks(_ target: RecoveryTarget, liveDoc: Document?) async throws {
-        let source = target.source
-        let pageURL = url(for: source)
-        guard FileManager.default.fileExists(atPath: pageURL.path) else {
-            throw RestoreError.pageMissing(source)
-        }
-
-        let page = liveDoc.map { coordinator(for: $0) } ?? coordinator(for: pageURL)
-        let doc = try await page.acquireTransientDocument()
-        defer { page.releaseTransientDocument() }
+    fileprivate func restoreBlocks(
+        _ target: RecoveryTarget,
+        source: String,
+        page: PageCoordinator,
+        document doc: Document
+    ) async throws {
         let isLive = page.hasEditorSubscribers
 
         let journal = log.readJournal(page: source)
@@ -276,6 +280,28 @@ extension Clamshell {
                 .prefix(160)
                 .replacingOccurrences(of: "\n", with: "\\n")
             Diag.merge.error("unrestorable hash=\(entry.hash, privacy: .public) reason=\(reasonLabel, privacy: .public) parent=\(entry.recordedParent ?? "nil", privacy: .public) recordedAt=\(entry.recordedAt.timeIntervalSince1970, privacy: .public) md=\(String(mdPreview), privacy: .public)")
+        }
+    }
+}
+
+@MainActor
+extension Clamshell.Page {
+    /// Restore one lost or purged block into this page. The coordinator
+    /// supplies its canonical document whether or not an editor is attached.
+    func restore(_ target: Clamshell.RecoveryTarget) async throws {
+        precondition(target.source == relativePath)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw Clamshell.RestoreError.pageMissing(relativePath)
+        }
+
+        let coordinator = owner.coordinator(for: url)
+        try await coordinator.withTransientDocument { document in
+            try await owner.restoreBlocks(
+                target,
+                source: relativePath,
+                page: coordinator,
+                document: document
+            )
         }
     }
 }

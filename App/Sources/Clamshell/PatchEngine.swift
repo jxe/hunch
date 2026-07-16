@@ -806,7 +806,7 @@ enum PatchEngine {
     /// nearest live ancestor, otherwise top-level.
     ///
     /// Pure: no I/O, no log writes. Caller writes the merged result.
-    /// Used by `Clamshell.resolveConflictVersions` to absorb iCloud
+    /// Used by `Clamshell.Page.resolveConflicts()` to absorb iCloud
     /// sibling-file conflicts (`<page> 2.md`) — independent edits on
     /// two devices end up additive instead of clobbering each other.
     @MainActor

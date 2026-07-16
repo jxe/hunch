@@ -7,6 +7,86 @@ import Editor
 /// canonical `Document` for that interval.
 @MainActor
 extension Clamshell {
+    /// Stable, lightweight facade for one workspace-relative page. It owns no
+    /// live document state; each operation resolves the URL's current retiring
+    /// coordinator through its Clamshell.
+    @MainActor
+    struct Page {
+        let owner: Clamshell
+        let url: URL
+
+        var relativePath: String { owner.relativePath(of: url) }
+
+        init(owner: Clamshell, url: URL) {
+            self.owner = owner
+            self.url = url.standardizedFileURL
+        }
+
+        func open(
+            onEvent: @escaping @MainActor (PresenterEvent) -> Void
+        ) async throws -> PageSession {
+            let total = perfStart()
+            let session = try await owner.coordinator(for: url).attachEditor(page: self, onEvent: onEvent)
+            perfEnd(total, "page.open.total", "url=\(url.lastPathComponent)")
+            return session
+        }
+
+        /// One-shot read that does not seed live-session disk history.
+        func readBlocks() async throws -> [Block] {
+            try await owner.readEnvelope(at: url).parsed.blocks
+        }
+    }
+
+    /// One live editor attachment to a `Page`. The session holds the retiring
+    /// coordinator for its entire open lifetime and is the host-facing surface
+    /// for editor persistence and durability.
+    @MainActor
+    final class PageSession {
+        let page: Page
+        let document: Document
+
+        private let id: UUID
+        private let coordinator: PageCoordinator
+        private var isClosed = false
+
+        fileprivate init(
+            page: Page,
+            id: UUID,
+            coordinator: PageCoordinator,
+            document: Document
+        ) {
+            self.page = page
+            self.id = id
+            self.coordinator = coordinator
+            self.document = document
+        }
+
+        @discardableResult
+        func enqueueEditorOps(_ ops: [EditorOp]) -> Task<Void, Error> {
+            precondition(!isClosed, "Cannot persist through a closed PageSession")
+            return coordinator.enqueue(.fromEditorOps(ops), for: document)
+        }
+
+        func flush() async throws {
+            guard !isClosed else { return }
+            try await coordinator.flush()
+        }
+
+        func close() async throws {
+            guard !isClosed else { return }
+            try await coordinator.detachEditor(id: id)
+            isClosed = true
+        }
+
+        func cloudSyncSnapshot() -> CloudSyncSnapshot {
+            page.cloudSyncSnapshot()
+        }
+
+        func compactThisDeviceLog() async throws -> LogCompactionResult {
+            try await page.compactThisDeviceLog()
+        }
+    }
+
     @MainActor
     final class PageCoordinator {
         let url: URL
@@ -26,7 +106,6 @@ extension Clamshell {
 
         private(set) var currentGeneration: UInt64 = 0
         private(set) var durableGeneration: UInt64 = 0
-        private(set) var failedGeneration: UInt64?
 
         private var requestedSyncGeneration: UInt64 = 0
         private var completedSyncGeneration: UInt64 = 0
@@ -96,7 +175,11 @@ extension Clamshell {
             }
 
             let task = Task<Document, Error> { @MainActor [owner, url] in
-                try await owner.loadDocument(at: url)
+                let (raw, parsed) = try await owner.readEnvelope(at: url)
+                let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                owner.recordDiskContent(raw, at: url)
+                owner.rememberEnvelope(parsed, for: url)
+                return Document(url: url, children: parsed.blocks, modificationDate: mtime)
             }
             loadTask = task
             do {
@@ -111,7 +194,7 @@ extension Clamshell {
             }
         }
 
-        func acquireTransientDocument() async throws -> Document {
+        private func acquireTransientDocument() async throws -> Document {
             transientLeaseCount += 1
             do {
                 return try await materializeDocument()
@@ -122,15 +205,27 @@ extension Clamshell {
             }
         }
 
-        func releaseTransientDocument() {
+        private func releaseTransientDocument() {
             precondition(transientLeaseCount > 0)
             transientLeaseCount -= 1
             retireIfIdle()
         }
 
+        /// Run a closed-page operation against the URL's canonical document,
+        /// retaining the coordinator for the full async operation and always
+        /// releasing the transient lease afterward.
+        func withTransientDocument<T>(
+            _ operation: (Document) async throws -> T
+        ) async throws -> T {
+            let document = try await acquireTransientDocument()
+            defer { releaseTransientDocument() }
+            return try await operation(document)
+        }
+
         func attachEditor(
+            page: Page,
             onEvent: @escaping @MainActor (PresenterEvent) -> Void
-        ) async throws -> OpenPage {
+        ) async throws -> PageSession {
             let document = try await materializeDocument()
             let id = UUID()
             subscribers[id] = onEvent
@@ -138,7 +233,7 @@ extension Clamshell {
                 presenter = owner.installPresenter(for: self)
             }
             requestSynchronization()
-            return OpenPage(id: id, coordinator: self, document: document)
+            return PageSession(page: page, id: id, coordinator: self, document: document)
         }
 
         func detachEditor(id: UUID) async throws {
@@ -148,6 +243,14 @@ extension Clamshell {
                 owner.removePresenter(presenter)
                 self.presenter = nil
             }
+            // The initial/open-page synchronization is deliberately
+            // asynchronous. Once the final editor detaches there is no live
+            // document to update or subscriber to notify, so cancel and join
+            // it before retiring the coordinator instead of letting a closed
+            // page remain registered until that fold happens to finish.
+            syncTask?.cancel()
+            _ = await syncTask?.value
+            syncTask = nil
             try await flush()
             retireIfIdle()
         }
@@ -207,10 +310,8 @@ extension Clamshell {
                     if self.currentGeneration == generation {
                         self.document?.modificationDate = savedMtime
                     }
-                    self.failedGeneration = nil
                     self.startSyncLoopIfNeeded()
                 } catch {
-                    self.failedGeneration = generation
                     Diag.log.error("commit failed url=\(self.url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                     throw error
                 }
