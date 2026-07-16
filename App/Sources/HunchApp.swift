@@ -234,13 +234,13 @@ private struct UndoRedoMenuItems: View {
 
     var body: some View {
         Button("Undo") {
-            undoController?.undoManager.undo()
+            undoController?.undo()
         }
         .keyboardShortcut("z", modifiers: .command)
         .disabled(undoController == nil)
 
         Button("Redo") {
-            undoController?.undoManager.redo()
+            undoController?.redo()
         }
         .keyboardShortcut("z", modifiers: [.command, .shift])
         .disabled(undoController == nil)

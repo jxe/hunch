@@ -57,9 +57,55 @@ public final class DocumentUndoController {
     /// before snapshotting.
     var flushActiveText: (() -> Void)?
 
+    /// Cancels the active editor's delayed typing checkpoint. Undo/redo and
+    /// system-driven document replacement use this before changing the model so
+    /// a stale timer cannot recommit text after the change.
+    var cancelActiveTextCheckpoint: (() -> Void)?
+
+    /// True while the native editor contains text that has not reached the
+    /// document yet. This makes undo availability reflect live typing during
+    /// the checkpoint delay and suppresses redo as soon as a new edit begins.
+    var hasActiveTextChanges: (() -> Bool)?
+
+    /// Reloads the mounted native text view from the document after undo/redo.
+    /// The native view owns the live cursor while editing, so waiting for a
+    /// SwiftUI update would both lag and lose useful caret placement context.
+    var synchronizeActiveText: ((Document) -> Void)?
+
     public init() {
         self.undoManager = UndoManager()
         self.undoManager.levelsOfUndo = 100
+        // Editor transactions explicitly bound their own logical actions. Avoid
+        // run-loop event grouping so a live-text flush can be immediately undone
+        // without leaving Foundation's scheduled event-group closer out of sync.
+        self.undoManager.groupsByEvent = false
+    }
+
+    public var canUndo: Bool { undoManager.canUndo || hasActiveTextChanges?() == true }
+    public var canRedo: Bool { hasActiveTextChanges?() != true && undoManager.canRedo }
+
+    /// Commit the current typing burst before undoing so Cmd-Z works even when
+    /// the 750 ms checkpoint has not fired yet. Closing the event group makes
+    /// that just-registered typing transaction the top undo action immediately.
+    public func undo() {
+        cancelActiveTextCheckpoint?()
+        flushActiveText?()
+        closeOpenUndoGroups()
+        guard undoManager.canUndo else { return }
+        undoManager.undo()
+        if let document { synchronizeActiveText?(document) }
+    }
+
+    /// Redo through the same active-editor synchronization path. If live text
+    /// was dirty, flushing it correctly invalidates the old redo stack before
+    /// this checks `canRedo`, matching standard editor behavior.
+    public func redo() {
+        cancelActiveTextCheckpoint?()
+        flushActiveText?()
+        closeOpenUndoGroups()
+        guard undoManager.canRedo else { return }
+        undoManager.redo()
+        if let document { synchronizeActiveText?(document) }
     }
 
     /// Forward to the document's transaction. Convenience for callers (the
@@ -68,12 +114,16 @@ public final class DocumentUndoController {
     /// via `didCommitTransaction`.
     @discardableResult
     func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: () -> Void) -> [EditorOp] {
-        document?.transaction(
+        guard let document else { return [] }
+        let opensGroup = undoManager.groupingLevel == 0
+        if opensGroup { undoManager.beginUndoGrouping() }
+        defer { if opensGroup { undoManager.endUndoGrouping() } }
+        return document.transaction(
             name: name,
             coalesceKey: coalesceKey,
             undoManager: undoManager,
             change
-        ) ?? []
+        )
     }
 
     /// Force the next coalesce-keyed transaction to register a fresh undo entry
@@ -81,5 +131,11 @@ public final class DocumentUndoController {
     /// at edit-session boundaries.
     func breakCoalescing() {
         document?.breakCoalescing()
+    }
+
+    private func closeOpenUndoGroups() {
+        while undoManager.groupingLevel > 0 {
+            undoManager.endUndoGrouping()
+        }
     }
 }

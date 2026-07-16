@@ -319,10 +319,10 @@ private struct EditorPage: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    undoController?.undoManager.undo()
+                    undoController?.undo()
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
-                        .foregroundStyle(undoController?.undoManager.canUndo == true ? HierarchicalShapeStyle.primary : .tertiary)
+                        .foregroundStyle(undoController?.canUndo == true ? HierarchicalShapeStyle.primary : .tertiary)
                 }
                 .accessibilityLabel("Undo")
                 .contextMenu {
@@ -333,10 +333,10 @@ private struct EditorPage: View {
                     }
                 }
             }
-            if undoController?.undoManager.canRedo == true {
+            if undoController?.canRedo == true {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        undoController?.undoManager.redo()
+                        undoController?.redo()
                     } label: {
                         Image(systemName: "arrow.uturn.forward")
                     }

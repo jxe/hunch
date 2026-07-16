@@ -172,6 +172,12 @@ public final class Document: @MainActor Identifiable {
         let ops = BlockTreeDiff.derive(pre: before, post: children)
         let activeUndoManager = transactionUndoManagerOverride ?? undoManager
         if !shouldCoalesce, let undoManager = activeUndoManager {
+            let opensGroup = !undoManager.groupsByEvent
+                && undoManager.groupingLevel == 0
+                && !undoManager.isUndoing
+                && !undoManager.isRedoing
+            if opensGroup { undoManager.beginUndoGrouping() }
+            defer { if opensGroup { undoManager.endUndoGrouping() } }
             // The inverse of any forward transaction is another transaction
             // that resets `children` to `before`. Routing through the same
             // entry point means undo, redo, and forward share one code path:

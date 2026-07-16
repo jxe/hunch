@@ -265,7 +265,7 @@ struct BlockRow: View, Equatable {
                    !attributedStringMarksEqual(newValue, block.text) {
                     // Update the model. Persistence is driven by the live
                     // editor's `commitLiveText`, which opens a
-                    // `controller.transaction(name:"Type", coalesceKey:)`;
+                    // `controller.transaction(name:"Type")`;
                     // the resulting diff flows through
                     // `Document.didCommitTransaction` to the host.
                     onBlockChange(block.withText(newValue))

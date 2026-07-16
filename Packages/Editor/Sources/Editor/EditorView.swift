@@ -284,7 +284,7 @@ public struct EditorView: View {
                     HStack(spacing: 12) {
                         Text(toast)
                         Button("Undo") {
-                            undoController.undoManager.undo()
+                            undoController.undo()
                             state.actionToast = nil
                         }
                     }
@@ -296,7 +296,7 @@ public struct EditorView: View {
                 }
             }
             // Hand the controller down through the environment. BlockTextEditor reads it
-            // to register a typing-session snapshot when an editor loses focus.
+            // to register typing-burst checkpoints and the final blur flush.
             .environment(\.documentUndoController, undoController)
             .environment(\.editorHost, host)
             #if os(macOS)

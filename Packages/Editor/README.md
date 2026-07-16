@@ -119,8 +119,9 @@ page-local view state (not persisted to the model).
 **Undo/redo**
 Cmd-Z / Shift-Cmd-Z. The editor owns a `DocumentUndoController` that
 registers structural ops (split/merge/indent/slide/delete/autotransform/
-drag-drop) alongside NSTextView's typing-undo on the same shared
-`UndoManager`.
+drag-drop) alongside 750 ms pause-delimited typing checkpoints on the same
+shared `UndoManager`. Native text-view undo stays disabled because its entries
+can retain a text view after SwiftUI unmounts it.
 
 ---
 
