@@ -122,3 +122,41 @@ struct FileStoreTests {
         #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(trashedPath).path))
     }
 }
+
+@Suite("Pending voice recordings")
+struct PendingVoiceRecordingStoreTests {
+    @Test func keepsRecordingUntilExplicitRemoval() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hunch-pending-recordings-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = PendingVoiceRecordingStore(directoryURL: directory)
+        let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let recording = try store.begin(pageID: "notes/meeting.md", now: createdAt)
+
+        #expect(try store.pendingRecordings().isEmpty)
+
+        try Data([0x01, 0x02, 0x03]).write(to: store.audioURL(for: recording))
+        #expect(try store.pendingRecordings() == [recording])
+        #expect(recording.pageID == "notes/meeting.md")
+        #expect(recording.createdAt == createdAt)
+
+        try store.remove(recording)
+        #expect(try store.pendingRecordings().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: store.audioURL(for: recording).path))
+    }
+
+    @Test func returnsRecoveriesOldestFirst() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hunch-pending-recordings-order-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = PendingVoiceRecordingStore(directoryURL: directory)
+        let later = try store.begin(pageID: "later.md", now: Date(timeIntervalSince1970: 20))
+        let earlier = try store.begin(pageID: "earlier.md", now: Date(timeIntervalSince1970: 10))
+        try Data([0x01]).write(to: store.audioURL(for: later))
+        try Data([0x01]).write(to: store.audioURL(for: earlier))
+
+        #expect(try store.pendingRecordings().map(\.pageID) == ["earlier.md", "later.md"])
+    }
+}

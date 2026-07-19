@@ -149,6 +149,16 @@ struct ContentView: View {
         } message: {
             Text(recordingSession.errorMessage ?? "")
         }
+        .alert("Recover Recording?", isPresented: recordingRecoveryBinding) {
+            Button("Transcribe and Add") {
+                Task { await recordingSession.recoverPendingRecording(using: window) }
+            }
+            Button("Later", role: .cancel) {
+                recordingSession.deferPendingRecovery()
+            }
+        } message: {
+            Text(recordingRecoveryMessage)
+        }
         .alert("Error", isPresented: errorBinding) {
             Button("OK") { workspace.error = nil }
         } message: {
@@ -206,6 +216,22 @@ struct ContentView: View {
                 if !newValue { recordingSession.errorMessage = nil }
             }
         )
+    }
+
+    private var recordingRecoveryBinding: Binding<Bool> {
+        Binding(
+            get: {
+                recordingSession.pendingRecovery != nil
+                    && recordingSession.errorMessage == nil
+            },
+            set: { _ in }
+        )
+    }
+
+    private var recordingRecoveryMessage: String {
+        guard let recording = recordingSession.pendingRecovery else { return "" }
+        let date = recording.createdAt.formatted(date: .abbreviated, time: .shortened)
+        return "Hunch preserved an unfinished recording from \(date). It will be transcribed and added to its original page."
     }
 
     private func forwardPendingVoiceRecording() {
