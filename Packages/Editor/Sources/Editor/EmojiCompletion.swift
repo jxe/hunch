@@ -1,6 +1,9 @@
 import EmojiKit
 import Foundation
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// An active `:query` immediately before the caret. The range is expressed in
 /// UTF-16 units so it can be replaced directly in NSTextView/UITextView text.
@@ -213,6 +216,13 @@ struct HunchEmojiPicker: View {
         }
         .emojiGridStyle(.medium)
         .frame(idealWidth: 340, idealHeight: 420)
+        #if os(macOS)
+        .background {
+            PopoverVisibilityReader {
+                focus = .search
+            }
+        }
+        #endif
         .onChange(of: query) { _, _ in
             selectFirstVisibleEmoji()
         }
@@ -221,12 +231,9 @@ struct HunchEmojiPicker: View {
         }
         .task {
             selectFirstVisibleEmoji()
-            // A popover's window can become key one run-loop turn after its
-            // content appears. Reasserting focus after yielding makes the
-            // search field the reliable first responder on macOS and iPadOS.
+            #if !os(macOS)
             focus = .search
-            await Task.yield()
-            focus = .search
+            #endif
         }
         #if os(iOS)
         .presentationDetents([.medium, .large])
@@ -271,3 +278,59 @@ struct HunchEmojiPicker: View {
         return .init(emoji: emoji, category: firstCategory)
     }
 }
+
+#if os(macOS)
+/// Reports only after the containing NSPopover window is actually visible.
+/// Moving focus any earlier can make AppKit's remote completion-list view key
+/// the not-yet-visible popover window and crash in NSRemoteView.
+private struct PopoverVisibilityReader: NSViewRepresentable {
+    let onVisible: @MainActor () -> Void
+
+    func makeNSView(context: Context) -> VisibilityView {
+        VisibilityView(onVisible: onVisible)
+    }
+
+    func updateNSView(_ view: VisibilityView, context: Context) {
+        view.onVisible = onVisible
+        view.waitUntilVisible()
+    }
+
+    @MainActor
+    final class VisibilityView: NSView {
+        var onVisible: @MainActor () -> Void
+        private var didReportVisible = false
+
+        init(onVisible: @escaping @MainActor () -> Void) {
+            self.onVisible = onVisible
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            didReportVisible = false
+            waitUntilVisible()
+        }
+
+        func waitUntilVisible() {
+            guard !didReportVisible, window != nil else { return }
+            guard window?.isVisible == true else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+                    self?.waitUntilVisible()
+                }
+                return
+            }
+            didReportVisible = true
+            // Run after the order-on-screen transaction that flipped isVisible.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window?.isVisible == true else { return }
+                self.onVisible()
+            }
+        }
+    }
+}
+#endif

@@ -15,6 +15,14 @@ typealias PlatformFontDescriptor = UIFontDescriptor
 typealias PlatformFontWeight = UIFont.Weight
 #endif
 
+private extension NSAttributedString.Key {
+    /// Marks a semibold font that exists only to present a link, rather than
+    /// representing the Markdown bold mark. The native editor stores visual
+    /// attributes, so without this distinction `toModel` would turn every link
+    /// into bold Markdown as soon as the block was edited.
+    static let linkPresentationSemibold = NSAttributedString.Key("HunchLinkPresentationSemibold")
+}
+
 /// `SymbolicTraits` is the same OptionSet shape on both platforms, but Apple spelled
 /// the cases differently (macOS: `.bold`, iOS: `.traitBold`). These wrappers paper over
 /// the discrepancy so call sites can stay platform-agnostic.
@@ -84,7 +92,8 @@ enum InlineMarksBridge {
         for run in source.runs {
             let segment = source[run.range]
             let plain = String(segment.characters)
-            let bold = (run[InlineAttributes.BoldAttribute.self] == true) || baseBold
+            let inlineBold = run[InlineAttributes.BoldAttribute.self] == true
+            let bold = inlineBold || baseBold
             let italic = run[InlineAttributes.ItalicAttribute.self] == true
             let code = run[InlineAttributes.CodeAttribute.self] == true
             let strike = run[InlineAttributes.StrikethroughAttribute.self] == true
@@ -107,8 +116,11 @@ enum InlineMarksBridge {
             }
             if let link {
                 attrs[.link] = link
-                attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
-                attrs[.foregroundColor] = NotionStyle.platformLinkForeground
+                attrs[.foregroundColor] = NotionStyle.platformForeground
+                if !code, !inlineBold {
+                    attrs[.font] = interFont(size: baseFontSize, bold: true, italic: italic)
+                    attrs[.linkPresentationSemibold] = true
+                }
             }
             result.append(NSAttributedString(string: plain, attributes: attrs))
         }
@@ -135,6 +147,9 @@ enum InlineMarksBridge {
                 bold = traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font)
                 italic = traits.contains(.italicTrait)
                 code = traits.contains(.monoSpaceTrait)
+            }
+            if attrs[.linkPresentationSemibold] as? Bool == true {
+                bold = false
             }
             if bold {
                 piece[InlineAttributes.BoldAttribute.self] = true
@@ -189,7 +204,13 @@ enum InlineMarksBridge {
                 let italic = traits.contains(.italicTrait)
                 let isCode = traits.contains(.monoSpaceTrait)
                 if !isCode {
-                    newAttrs[.font] = interFont(size: baseFontSize, bold: setting, italic: italic)
+                    let isLink = attrs[.link] != nil
+                    newAttrs[.font] = interFont(size: baseFontSize, bold: setting || isLink, italic: italic)
+                    if setting {
+                        newAttrs.removeValue(forKey: .linkPresentationSemibold)
+                    } else if isLink {
+                        newAttrs[.linkPresentationSemibold] = true
+                    }
                 }
             case .italic:
                 let font = (attrs[.font] as? PlatformFont) ?? interFont(size: baseFontSize, bold: baseBold, italic: false)
@@ -205,9 +226,13 @@ enum InlineMarksBridge {
                     newAttrs[.foregroundColor] = NotionStyle.platformCodeForeground
                     newAttrs[.backgroundColor] = NotionStyle.platformCodeBackground
                 } else {
-                    newAttrs[.font] = interFont(size: baseFontSize, bold: baseBold, italic: false)
+                    let isLink = attrs[.link] != nil
+                    newAttrs[.font] = interFont(size: baseFontSize, bold: baseBold || isLink, italic: false)
                     newAttrs[.foregroundColor] = NotionStyle.platformForeground
                     newAttrs.removeValue(forKey: .backgroundColor)
+                    if isLink, !baseBold {
+                        newAttrs[.linkPresentationSemibold] = true
+                    }
                 }
             case .strikethrough:
                 if setting {
@@ -228,6 +253,9 @@ enum InlineMarksBridge {
         let attrs = storage.attributes(at: probeRange.location, effectiveRange: nil)
         switch mark {
         case .bold:
+            if attrs[.linkPresentationSemibold] as? Bool == true {
+                return false
+            }
             if let font = attrs[.font] as? PlatformFont {
                 let traits = font.fontDescriptor.symbolicTraits
                 return traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font)
@@ -273,11 +301,18 @@ enum InlineMarksBridge {
         case .bold:
             guard !isCode else { return newAttrs }
             let italic = traits.contains(.italicTrait)
-            let currentlyBold = traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font)
+            let presentationOnly = attrs[.linkPresentationSemibold] as? Bool == true
+            let currentlyBold = !presentationOnly && (traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font))
             let setting = !currentlyBold
-            newAttrs[.font] = interFont(size: baseFontSize, bold: setting, italic: italic)
+            let isLink = attrs[.link] != nil
+            newAttrs[.font] = interFont(size: baseFontSize, bold: setting || isLink, italic: italic)
             newAttrs[.foregroundColor] = NotionStyle.platformForeground
             newAttrs.removeValue(forKey: .backgroundColor)
+            if setting {
+                newAttrs.removeValue(forKey: .linkPresentationSemibold)
+            } else if isLink {
+                newAttrs[.linkPresentationSemibold] = true
+            }
         case .italic:
             guard !isCode else { return newAttrs }
             let bold = traits.contains(.boldTrait) || isFontSemiboldOrHeavier(font) || baseBold
@@ -287,9 +322,13 @@ enum InlineMarksBridge {
             newAttrs.removeValue(forKey: .backgroundColor)
         case .code:
             if isCode {
-                newAttrs[.font] = interFont(size: baseFontSize, bold: baseBold, italic: false)
+                let isLink = attrs[.link] != nil
+                newAttrs[.font] = interFont(size: baseFontSize, bold: baseBold || isLink, italic: false)
                 newAttrs[.foregroundColor] = NotionStyle.platformForeground
                 newAttrs.removeValue(forKey: .backgroundColor)
+                if isLink, !baseBold {
+                    newAttrs[.linkPresentationSemibold] = true
+                }
             } else {
                 newAttrs[.font] = monoFont(size: NotionStyle.inlineCodeSize)
                 newAttrs[.foregroundColor] = NotionStyle.platformCodeForeground

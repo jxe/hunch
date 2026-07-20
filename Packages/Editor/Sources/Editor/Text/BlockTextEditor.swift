@@ -361,6 +361,10 @@ struct MacBlockTextEditor: NSViewRepresentable {
         view.activeView = activeView
         view.blockID = blockID
         view.isRichText = true
+        view.linkTextAttributes = [
+            .foregroundColor: NotionStyle.platformForeground,
+            .underlineStyle: 0,
+        ]
         // NSTextView's native typing-undo registers actions that hold strong refs to the
         // NSTextView itself; SwiftUI's view lifecycle (one-editor-at-a-time, unmount on
         // Esc/cursor-out) frees those entries' inner state and the next Cmd-Z crashes
@@ -1178,6 +1182,10 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         tv.coordinator = context.coordinator
         tv.isEditable = true
         tv.isSelectable = true
+        tv.linkTextAttributes = [
+            .foregroundColor: NotionStyle.platformForeground,
+            .underlineStyle: 0,
+        ]
         tv.backgroundColor = .clear
         tv.textContainerInset = .zero
         tv.textContainer.lineFragmentPadding = 0

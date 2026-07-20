@@ -99,9 +99,41 @@ struct InlineMarksBridgeSanitizeTests {
 
         let attrs = sanitized.attributes(at: 0, effectiveRange: nil)
         #expect(attrs[.link] as? URL == url)
-        // Link foreground overrides default — it's the link color, not red.
+        // Links use the normal text color, no underline, and presentation-only
+        // semibold that must not become a Markdown bold mark on round-trip.
         let fg = attrs[.foregroundColor] as? PlatformColor
-        #expect(fg == NotionStyle.platformLinkForeground)
+        #expect(fg == NotionStyle.platformForeground)
+        #expect(attrs[.underlineStyle] == nil)
+        guard let font = attrs[.font] as? PlatformFont else {
+            Issue.record("missing .font on link run")
+            return
+        }
+        let traits = font.fontDescriptor.fontAttributes[.traits] as? [PlatformFontDescriptor.TraitKey: Any]
+        let weight = traits?[.weight] as? CGFloat
+        let isSemibold = font.fontDescriptor.symbolicTraits.contains(.boldTrait)
+            || (weight ?? 0) >= PlatformFontWeight.semibold.rawValue
+        #expect(isSemibold)
+
+        let roundTripped = InlineMarksBridge.toModel(sanitized)
+        #expect(roundTripped.runs.first?[InlineAttributes.BoldAttribute.self] != true)
+    }
+
+    @Test func preservesExplicitBoldOnLinkRoundTrip() {
+        let url = URL(string: "https://example.com")!
+        var linked = AttributedString("click")
+        linked.link = url
+        linked[InlineAttributes.BoldAttribute.self] = true
+
+        let rendered = InlineMarksBridge.toNS(
+            linked,
+            baseFontSize: baseFontSize,
+            baseBold: false,
+            lineSpacing: lineSpacing
+        )
+        let roundTripped = InlineMarksBridge.toModel(rendered)
+
+        #expect(roundTripped.runs.first?.link == url)
+        #expect(roundTripped.runs.first?[InlineAttributes.BoldAttribute.self] == true)
     }
 
     @Test func bareHTTPURLBecomesLinkAttribute() {

@@ -567,7 +567,6 @@ struct BlockRow: View, Equatable {
                     block.text,
                     baseFont: font,
                     boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
-                    fontSize: fontSize,
                     pageLookups: pageLookups,
                     previews: linkPreviews
                 )
@@ -653,7 +652,7 @@ func subpageRowBody(title: String, missing: Bool, depth: Int) -> some View {
         }
         HStack(spacing: 6) {
             Text(displayTitle)
-                .font(NotionStyle.body(weight: .medium))
+                .font(NotionStyle.body(weight: .semibold))
                 .foregroundStyle(missing ? NotionStyle.mutedForeground : NotionStyle.foreground)
                 .lineSpacing(NotionStyle.bodyLineSpacing)
             if missing {
@@ -721,7 +720,6 @@ private func decoratedText(
     _ source: AttributedString,
     baseFont: Font,
     boldFont: Font,
-    fontSize: CGFloat,
     pageLookups: [String: PageLookup],
     previews: [URL: LinkPreview]
 ) -> Text {
@@ -758,12 +756,8 @@ private func decoratedText(
         if code {
             attributed.font = NotionStyle.mono(size: NotionStyle.inlineCodeSize)
             attributed.foregroundColor = NotionStyle.codeForeground
-        } else if externalWithPreview != nil {
-            var f = NotionStyle.body(size: fontSize, weight: .medium)
-            if italic { f = f.italic() }
-            attributed.font = f
         } else {
-            var f = bold ? boldFont : baseFont
+            var f = (bold || link != nil) ? boldFont : baseFont
             if italic { f = f.italic() }
             attributed.font = f
         }
@@ -772,10 +766,7 @@ private func decoratedText(
         }
         if let url = link {
             attributed.link = url
-            if externalWithPreview == nil {
-                attributed.underlineStyle = .single
-                attributed.foregroundColor = NotionStyle.linkForeground
-            }
+            attributed.foregroundColor = NotionStyle.foreground
         }
 
         if let preview = externalWithPreview,
@@ -1009,7 +1000,6 @@ struct BlockRowPreview: View, Equatable {
                 block.text,
                 baseFont: font,
                 boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
-                fontSize: fontSize,
                 pageLookups: pageLookups,
                 previews: linkPreviews
             )

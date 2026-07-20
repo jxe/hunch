@@ -70,12 +70,10 @@ public enum NotionStyle {
     static let platformForeground = adaptivePlatformColor(light: rgb(55, 53, 47), dark: rgb(218, 216, 211))
     static let platformCodeForeground = adaptivePlatformColor(light: rgb(235, 87, 87), dark: rgb(255, 115, 105))
     static let platformCodeBackground = adaptivePlatformColor(light: rgba(135, 131, 120, 0.15), dark: rgba(255, 255, 255, 0.08))
-    static let platformLinkForeground = adaptivePlatformColor(light: rgb(35, 131, 226), dark: rgb(82, 156, 255))
     #elseif os(iOS)
     static let platformForeground = adaptivePlatformColor(light: rgb(55, 53, 47), dark: rgb(218, 216, 211))
     static let platformCodeForeground = adaptivePlatformColor(light: rgb(235, 87, 87), dark: rgb(255, 115, 105))
     static let platformCodeBackground = adaptivePlatformColor(light: rgba(135, 131, 120, 0.15), dark: rgba(255, 255, 255, 0.08))
-    static let platformLinkForeground = adaptivePlatformColor(light: rgb(35, 131, 226), dark: rgb(82, 156, 255))
     #endif
 
     // MARK: Fonts

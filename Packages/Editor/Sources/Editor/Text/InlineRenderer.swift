@@ -32,7 +32,7 @@ enum InlineRenderer {
                 attributed.font = NotionStyle.mono(size: NotionStyle.inlineCodeSize)
                 attributed.foregroundColor = NotionStyle.codeForeground
             } else {
-                var font = bold ? boldFont : baseFont
+                var font = (bold || link != nil) ? boldFont : baseFont
                 if italic {
                     font = font.italic()
                 }
@@ -44,8 +44,7 @@ enum InlineRenderer {
             }
             if let link {
                 attributed.link = link
-                attributed.underlineStyle = .single
-                attributed.foregroundColor = NotionStyle.linkForeground
+                attributed.foregroundColor = NotionStyle.foreground
             }
 
             var text = Text(attributed)
