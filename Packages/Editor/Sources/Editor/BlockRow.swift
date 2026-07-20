@@ -495,30 +495,7 @@ struct BlockRow: View, Equatable {
     }
 
     private func subpageRow(title: String, missing: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-            Image(systemName: missing ? "doc.badge.exclamationmark" : "doc.text")
-                .font(.system(size: NotionStyle.pageIconSize))
-                .foregroundStyle(NotionStyle.mutedForeground)
-                .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
-                .offset(x: NotionStyle.markerCenteringOffset(markerWidth: NotionStyle.pageIconSize))
-                .alignmentGuide(.firstTextBaseline) { dimensions in
-                    dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
-                }
-            HStack(spacing: 6) {
-                Text(title)
-                    .font(NotionStyle.body(weight: .medium))
-                    .foregroundStyle(missing ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                    .lineSpacing(NotionStyle.bodyLineSpacing)
-                if missing {
-                    Text("(missing)")
-                        .font(NotionStyle.body())
-                        .foregroundStyle(NotionStyle.mutedForeground)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+        subpageRowBody(title: title, missing: missing, depth: depth)
     }
 
     private func imageRow(source: String, alt: String) -> some View {
@@ -603,6 +580,61 @@ struct BlockRowActions {
     let onIOSShowMenu: () -> Void
     let actionMenuContent: () -> AnyView
     let mentionMenuContent: () -> AnyView
+}
+
+/// A page title that begins with an emoji ("👍 Emoji Page") lends that
+/// emoji to its subpage-row icon; the rest becomes the label. Returns nil
+/// when there's no leading emoji, or when stripping it would leave an empty
+/// label (an emoji-only title renders normally instead of as a blank row).
+func leadingEmojiIcon(in title: String) -> (emoji: String, rest: String)? {
+    let trimmed = title.trimmingCharacters(in: .whitespaces)
+    guard let first = trimmed.first else { return nil }
+    let isEmoji = first.unicodeScalars.contains {
+        $0.properties.isEmojiPresentation || ($0.properties.isEmoji && !$0.isASCII)
+    }
+    guard isEmoji else { return nil }
+    let rest = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
+    guard !rest.isEmpty else { return nil }
+    return (String(first), rest)
+}
+
+/// Shared subpage-row body (used by both the editing and preview render
+/// paths). A leading emoji in the title becomes the row icon in place of
+/// the generic `doc.text`; a missing target keeps its warning icon.
+@ViewBuilder
+func subpageRowBody(title: String, missing: Bool, depth: Int) -> some View {
+    let icon = missing ? nil : leadingEmojiIcon(in: title)
+    let displayTitle = leadingEmojiIcon(in: title)?.rest ?? title
+    HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+        Group {
+            if let icon {
+                Text(icon.emoji)
+            } else {
+                Image(systemName: missing ? "doc.badge.exclamationmark" : "doc.text")
+                    .foregroundStyle(NotionStyle.mutedForeground)
+            }
+        }
+        .font(.system(size: NotionStyle.pageIconSize))
+        .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+        .offset(x: NotionStyle.markerCenteringOffset(markerWidth: NotionStyle.pageIconSize))
+        .alignmentGuide(.firstTextBaseline) { dimensions in
+            dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+        }
+        HStack(spacing: 6) {
+            Text(displayTitle)
+                .font(NotionStyle.body(weight: .medium))
+                .foregroundStyle(missing ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                .lineSpacing(NotionStyle.bodyLineSpacing)
+            if missing {
+                Text("(missing)")
+                    .font(NotionStyle.body())
+                    .foregroundStyle(NotionStyle.mutedForeground)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
 }
 
 /// Pre-resolve every workspace-page reference this row needs to render: the
@@ -924,30 +956,7 @@ struct BlockRowPreview: View, Equatable {
             let lookup = pageLookups[path]
             let displayTitle = lookup?.title ?? title
             let missing = lookup?.isMissing == true
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
-                Image(systemName: missing ? "doc.badge.exclamationmark" : "doc.text")
-                    .font(.system(size: NotionStyle.pageIconSize))
-                    .foregroundStyle(NotionStyle.mutedForeground)
-                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
-                    .offset(x: NotionStyle.markerCenteringOffset(markerWidth: NotionStyle.pageIconSize))
-                    .alignmentGuide(.firstTextBaseline) { dimensions in
-                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
-                    }
-                HStack(spacing: 6) {
-                    Text(displayTitle)
-                        .font(NotionStyle.body(weight: .medium))
-                        .foregroundStyle(missing ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                        .lineSpacing(NotionStyle.bodyLineSpacing)
-                    if missing {
-                        Text("(missing)")
-                            .font(NotionStyle.body())
-                            .foregroundStyle(NotionStyle.mutedForeground)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+            subpageRowBody(title: displayTitle, missing: missing, depth: depth)
 
         case .image(let source, let alt):
             ImageBlockView(source: source, alt: alt)
