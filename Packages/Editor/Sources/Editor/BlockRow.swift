@@ -620,7 +620,9 @@ func subpageRowBody(title: String, missing: Bool, depth: Int) -> some View {
             }
         }
         .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
-        .offset(x: NotionStyle.markerCenteringOffset(markerWidth: NotionStyle.pageIconSize))
+        .offset(x: NotionStyle.markerCenteringOffset(
+            markerWidth: icon != nil ? NotionStyle.subpageEmojiIconAdvance : NotionStyle.pageIconSize
+        ))
         .alignmentGuide(.firstTextBaseline) { dimensions in
             dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
         }

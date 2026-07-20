@@ -187,6 +187,11 @@ public enum NotionStyle {
     /// SF Symbol at the same point size; render it a touch larger. It sits
     /// in the same fixed-height marker frame, so the row height is unchanged.
     static let subpageEmojiIconSize: CGFloat = 17
+    /// Emoji glyphs render ~1.2× their point size wide. `markerCenteringOffset`
+    /// centers a right-aligned marker by its *visual width*, so feed it the
+    /// emoji's advance (not its point size) or the glyph lands a couple px
+    /// too far left.
+    static let subpageEmojiIconAdvance: CGFloat = subpageEmojiIconSize * 1.2
 
     /// Visual shift (in pt) to apply to a right-aligned marker so its horizontal center
     /// matches the bullet marker's center. Bullet is `bulletMarkerDiameter` wide and sits
