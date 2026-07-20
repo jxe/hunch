@@ -46,7 +46,7 @@ private struct RowSurfaceOrder<ID: Hashable>: Equatable {
 /// top-level closures.
 struct RowSurfaceActions<ID: Hashable> {
     var onHover: (ID?) -> Void = { _ in }
-    var onTapRow: (ID) -> Void = { _ in }
+    var onTapRow: (ID, CGPoint) -> Void = { _, _ in }
     var onTapGutter: (ID) -> Void = { _ in }
     var onTapBelowRows: (CGPoint) -> Void = { _ in }
 
@@ -312,7 +312,7 @@ struct RowSurface<ID: Hashable, RowContent: View, LiftContent: View>: View {
                 return
             }
             if point.x >= frame.minX, point.x <= frame.maxX {
-                actions.onTapRow(rowID)
+                actions.onTapRow(rowID, point)
                 return
             }
         }

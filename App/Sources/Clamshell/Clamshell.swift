@@ -1585,6 +1585,36 @@ final class Clamshell {
 
 @MainActor
 extension Clamshell.Page {
+    func setIcon(_ emoji: String) async throws {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw Clamshell.AppendBlocksError.pageMissing(relativePath)
+        }
+        try owner.files.requireLocallyWritable(url)
+
+        let coordinator = owner.coordinator(for: url)
+        try await coordinator.withTransientDocument { document in
+            let before = document.children
+            var after = before
+            if let titleIndex = after.firstIndex(where: { block in
+                if case .heading(.h1, _) = block.kind { return true }
+                return false
+            }), case .heading(.h1, let titleText) = after[titleIndex].kind {
+                let currentTitle = String(titleText.characters)
+                after[titleIndex].kind = .heading(
+                    level: .h1,
+                    text: AttributedString(pageTitle(currentTitle, settingEmoji: emoji))
+                )
+            } else {
+                let title = pageTitle(document.title, settingEmoji: emoji)
+                after = [.heading(level: .h1, text: AttributedString(title), children: before)]
+            }
+            guard after != before else { return }
+            document.replaceChildrenFromSystemMutation(after)
+            let ops = BlockTreeDiff.derive(pre: before, post: after)
+            try await owner.commit(.fromEditorOps(ops), to: document)
+        }
+    }
+
     func append(_ blocks: [Block]) async throws {
         guard !blocks.isEmpty else { throw Clamshell.AppendBlocksError.empty }
         guard FileManager.default.fileExists(atPath: url.path) else {

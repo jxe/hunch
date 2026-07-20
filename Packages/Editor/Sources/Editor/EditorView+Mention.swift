@@ -1,14 +1,20 @@
 import SwiftUI
 
 extension EditorView {
-    func handleMentionTriggerChange(_ trigger: MentionTrigger?, blockID: BlockID) {
+    func handleCompletionTriggerChange(_ trigger: InlineCompletionTrigger?, blockID: BlockID) {
         guard let trigger else {
-            // The editor lost the @-region (cursor moved past whitespace, range cleared,
-            // etc.). Drop the menu — even if its blockID still matches, we shouldn't
-            // hold stale state.
-            state.closeMentionMenu(forBlockID: blockID)
+            state.closeCompletionMenu(forBlockID: blockID)
             return
         }
+        switch trigger {
+        case .mention(let mention):
+            handleMentionTriggerChange(mention, blockID: blockID)
+        case .emoji(let emoji):
+            handleEmojiTriggerChange(emoji, blockID: blockID)
+        }
+    }
+
+    private func handleMentionTriggerChange(_ trigger: MentionTrigger, blockID: BlockID) {
         // Snapshot match candidates once per trigger change. Body renders and
         // keyboard handlers read from `menu.matches` instead of re-querying
         // the host on every pass.
@@ -25,6 +31,32 @@ extension EditorView {
         } else {
             state.setMentionMenu(MentionMenuState(blockID: blockID, trigger: trigger, selectedIndex: 0, matches: matches))
         }
+    }
+
+    private func handleEmojiTriggerChange(_ trigger: EmojiTrigger, blockID: BlockID) {
+        let matches = emojiSuggestions(matching: trigger.query)
+        if var existing = state.emojiMenu, existing.blockID == blockID {
+            existing.trigger = trigger
+            existing.matches = matches
+            if matches.isEmpty {
+                existing.selectedIndex = 0
+            } else if existing.selectedIndex >= matches.count {
+                existing.selectedIndex = matches.count - 1
+            }
+            state.setEmojiMenu(existing)
+        } else {
+            state.setEmojiMenu(EmojiMenuState(blockID: blockID, trigger: trigger, selectedIndex: 0, matches: matches))
+        }
+    }
+
+    func moveCompletionSelection(by delta: Int) -> KeyPress.Result {
+        if state.emojiMenu != nil { return moveEmojiSelection(by: delta) }
+        return moveMentionSelection(by: delta)
+    }
+
+    func commitCompletionSelection() -> KeyPress.Result {
+        if state.emojiMenu != nil { return commitEmojiSelection() }
+        return commitMentionSelection()
     }
 
     func moveMentionSelection(by delta: Int) -> KeyPress.Result {
@@ -49,6 +81,46 @@ extension EditorView {
         let safeIndex = max(0, min(menu.selectedIndex, menu.matches.count - 1))
         commitMention(menu.matches[safeIndex], menu: menu)
         return .handled
+    }
+
+    private func moveEmojiSelection(by delta: Int) -> KeyPress.Result {
+        guard var menu = state.emojiMenu else { return .ignored }
+        guard !menu.matches.isEmpty else { return .handled }
+        let count = menu.matches.count
+        menu.selectedIndex = ((menu.selectedIndex + delta) % count + count) % count
+        state.setEmojiMenu(menu)
+        return .handled
+    }
+
+    private func commitEmojiSelection() -> KeyPress.Result {
+        guard let menu = state.emojiMenu else { return .ignored }
+        guard !menu.matches.isEmpty else {
+            state.closeCompletionMenu()
+            return .handled
+        }
+        let safeIndex = max(0, min(menu.selectedIndex, menu.matches.count - 1))
+        commitEmoji(menu.matches[safeIndex], menu: menu)
+        return .handled
+    }
+
+    private func commitEmoji(_ suggestion: EmojiSuggestion, menu: EmojiMenuState) {
+        defer { state.closeCompletionMenu() }
+        undoController.flushActiveText?()
+        guard let block = document.find(menu.blockID) else { return }
+        guard let replacement = replacingEmojiTrigger(
+            in: block.text,
+            trigger: menu.trigger,
+            with: suggestion.character
+        ) else { return }
+
+        mutate("Insert Emoji") {
+            document.setText(block.id, replacement.text)
+        }
+        registerEmojiSelection(suggestion.character)
+
+        DispatchQueue.main.async {
+            transferFocus(to: .editor(block.id, initialCursor: .offset(replacement.cursor)))
+        }
     }
 
     /// Commit the selected page mention. A line-leading mention becomes a
@@ -162,6 +234,73 @@ extension EditorView {
         }
         .padding(.vertical, 4)
         .frame(width: 240, alignment: .leading)
+    }
+
+    @ViewBuilder
+    func completionMenuContent() -> some View {
+        if state.emojiMenu != nil {
+            emojiMenuContent()
+        } else {
+            mentionMenuContent()
+        }
+    }
+
+    private func emojiMenuContent() -> some View {
+        let matches = state.emojiMenu?.matches ?? []
+        return VStack(alignment: .leading, spacing: 0) {
+            Group {
+                Button("") { _ = commitEmojiSelection() }
+                    .keyboardShortcut(.return, modifiers: [])
+                Button("") { state.closeCompletionMenu() }
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
+
+            if matches.isEmpty {
+                Text("No matching emoji")
+                    .font(NotionStyle.body(size: 12))
+                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+            } else {
+                ForEach(Array(matches.enumerated()), id: \.element.id) { index, item in
+                    HStack(spacing: 10) {
+                        Text(item.character)
+                            .font(.system(size: 20))
+                            .frame(width: 26)
+                        Text(item.name)
+                            .font(NotionStyle.body(size: 13))
+                            .foregroundStyle(NotionStyle.foreground)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        state.emojiMenu?.selectedIndex == index
+                            ? NotionStyle.selectionBackground
+                            : Color.clear
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard let menu = state.emojiMenu else { return }
+                        commitEmoji(item, menu: menu)
+                    }
+                    .onHover { hovering in
+                        #if os(macOS)
+                        if hovering, var menu = state.emojiMenu {
+                            menu.selectedIndex = index
+                            state.setEmojiMenu(menu)
+                        }
+                        #endif
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(width: 260, alignment: .leading)
     }
 }
 

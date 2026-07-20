@@ -114,6 +114,8 @@ public struct EditorView: View {
         let id: BlockID
     }
     @State var actionSheet: BlockActionSheet?
+    /// Subpage row whose marker anchors the page-icon picker.
+    @State var iconPickerBlockID: BlockID?
     /// True while Apple’s on-device language model is polishing the selected
     /// rows. Keeps duplicate menu invocations out and gives the async operation
     /// visible progress after the compact action sheet closes.
@@ -200,7 +202,18 @@ public struct EditorView: View {
             let trailingReorderGap = reorderDriftGap(at: trailingSlot, hoverSlot: dropHoverSlot, liftFootprint: liftFootprint)
             let surfaceActions = RowSurfaceActions<BlockID>(
                 onHover: { id in state.setHoveredBlock(id) },
-                onTapRow: { id in handleRowClick(blockID: id) },
+                onTapRow: { id, point in
+                    guard let row = visibleRowByID[id],
+                          let frame = layoutCache.frame(of: id),
+                          let block = document.find(id) else { return }
+                    if case .subpage(_, let pageID) = block.kind,
+                       !host.lookupPage(pageID).isMissing,
+                       hitsSubpageIconColumn(point: point, rowFrame: frame, depth: row.depth) {
+                        openPageIconPicker(for: id)
+                    } else {
+                        handleRowClick(blockID: id)
+                    }
+                },
                 onTapGutter: { id in handleHandleClick(blockID: id) },
                 onTapBelowRows: { point in handleTapBelowRows(at: point) },
                 onReorderBegin: { blockID, location, anchor in
@@ -525,7 +538,7 @@ public struct EditorView: View {
             ? BlockRow.TextEditing(
                 editorFocused: $editorFocused,
                 isActive: state.editingBlock == block.id,
-                mentionActive: state.mentionMenu?.blockID == block.id,
+                completionActive: state.completionMenuBlockID == block.id,
                 onKey: { key in handleEditorKey(key, blockID: block.id) },
                 onAutotransform: { transform, remainingText in
                     applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
@@ -535,8 +548,8 @@ public struct EditorView: View {
                     host.openPage(pageID: pageID)
                     return true
                 },
-                onMentionTriggerChange: { trigger in
-                    handleMentionTriggerChange(trigger, blockID: block.id)
+                onCompletionTriggerChange: { trigger in
+                    handleCompletionTriggerChange(trigger, blockID: block.id)
                 },
                 consumeInitialCursor: { state.takePendingInitialCursor() }
             )
@@ -550,7 +563,8 @@ public struct EditorView: View {
             isSelected: isSelected,
             isEditing: editing != nil,
             isActiveEditor: editing?.isActive ?? false,
-            mentionActive: editing?.mentionActive ?? false,
+            completionActive: editing?.completionActive ?? false,
+            isIconPickerPresented: iconPickerBlockID == block.id,
             isExpanded: state.expandedToggles.contains(block.id) || state.expandedTemplates.contains(block.id),
             isDropTarget: state.dropOntoBlockID == block.id,
             isActionMenuTarget: isActionMenuTarget,
@@ -604,11 +618,17 @@ public struct EditorView: View {
                 // position info, cursor lands at end via the editor's default behavior.
                 transferFocus(to: .editor(block.id, initialCursor: nil))
             },
+            onSubpageIconTap: {
+                openPageIconPicker(for: block.id)
+            },
             onActionMenuDismiss: {
                 if actionSheet != nil { actionSheet = nil }
             },
-            onMentionMenuDismiss: {
-                if state.mentionMenu != nil { state.closeMentionMenu() }
+            onCompletionMenuDismiss: {
+                state.closeCompletionMenu()
+            },
+            onIconPickerDismiss: {
+                if iconPickerBlockID == block.id { iconPickerBlockID = nil }
             },
             onIOSDelete: {
                 let isMultiSelect = state.selection.contains(block.id) && state.selection.count > 1
@@ -621,7 +641,12 @@ public struct EditorView: View {
             },
             onIOSShowMenu: onShowActionSheet,
             actionMenuContent: { AnyView(blockActionMenuContent(for: block.id)) },
-            mentionMenuContent: { AnyView(mentionMenuContent()) }
+            completionMenuContent: { AnyView(completionMenuContent()) },
+            emojiPickerContent: {
+                AnyView(HunchEmojiPicker { emoji in
+                    selectPageIcon(emoji, fromSubpageBlock: block.id)
+                })
+            }
         )
         BlockRow(model: rowModel, state: state, actions: rowActions)
         .equatable()
@@ -830,6 +855,27 @@ public struct EditorView: View {
         transferFocus(to: .editor(blockID, initialCursor: nil))
     }
 
+    private func selectPageIcon(_ emoji: String, fromSubpageBlock blockID: BlockID) {
+        guard let block = document.find(blockID),
+              case .subpage(_, let pageID) = block.kind,
+              !host.lookupPage(pageID).isMissing else {
+            iconPickerBlockID = nil
+            return
+        }
+        iconPickerBlockID = nil
+        Task { @MainActor [host] in
+            _ = await host.setPageIcon(emoji, forPageID: pageID)
+        }
+    }
+
+    private func openPageIconPicker(for blockID: BlockID) {
+        guard let block = document.find(blockID),
+              case .subpage(_, let pageID) = block.kind,
+              !host.lookupPage(pageID).isMissing else { return }
+        transferFocus(to: .nav(cursor: blockID))
+        iconPickerBlockID = blockID
+    }
+
     /// Same as the previous per-row drag-handle tap: collapse selection
     /// to this row, open the action menu on the next runloop tick (so
     /// the `.onChange(of: state.sessionState)` clear-handler runs first).
@@ -888,6 +934,10 @@ public struct EditorView: View {
     /// through to other handlers.
     func handleNavKeyPress(_ press: KeyPress) -> KeyPress.Result {
         Diag.navkey.debug("press key=\(String(describing: press.key), privacy: .public) modifiers=\(press.modifiers.rawValue, privacy: .public) cursor=\(String(describing: state.cursor), privacy: .public) selection=\(state.selection.count, privacy: .public) editing=\(String(describing: state.editingBlock), privacy: .public)")
+        // The page remains in navigation mode while its icon-picker popover is
+        // open. Let the picker's focused search field/grid own every key so
+        // Backspace edits the query instead of deleting the selected row.
+        guard iconPickerBlockID == nil else { return .ignored }
         guard state.editingBlock == nil else { return .ignored }
         guard let action = Self.navAction(for: press.key, modifiers: press.modifiers) else {
             Diag.navkey.debug("no action matched")
@@ -1972,14 +2022,14 @@ public struct EditorView: View {
             return exitEditHorizontal(blockID, by: -1)
         case .exitEditRight:
             return exitEditHorizontal(blockID, by: +1)
-        case .mentionUp:
-            return moveMentionSelection(by: -1)
-        case .mentionDown:
-            return moveMentionSelection(by: +1)
-        case .mentionCommit:
-            return commitMentionSelection()
-        case .mentionDismiss:
-            state.closeMentionMenu()
+        case .completionUp:
+            return moveCompletionSelection(by: -1)
+        case .completionDown:
+            return moveCompletionSelection(by: +1)
+        case .completionCommit:
+            return commitCompletionSelection()
+        case .completionDismiss:
+            state.closeCompletionMenu()
             return .handled
         case .paste(let str):
             return handleEditorPaste(str, blockID: blockID)

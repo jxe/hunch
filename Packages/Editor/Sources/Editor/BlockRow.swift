@@ -11,7 +11,8 @@ struct BlockRowModel: Equatable {
     let isSelected: Bool
     let isEditing: Bool
     let isActiveEditor: Bool
-    let mentionActive: Bool
+    let completionActive: Bool
+    let isIconPickerPresented: Bool
     let isExpanded: Bool
     let isDropTarget: Bool
     let isActionMenuTarget: Bool
@@ -76,16 +77,16 @@ struct BlockRow: View, Equatable {
         /// `BlockTextEditor` reads this to set `wantsFocus = false` and avoid
         /// fighting the new editor for first responder.
         let isActive: Bool
-        /// True when the `@`-mention popover is interacting with this row —
+        /// True when an inline-completion popover is interacting with this row —
         /// the only `TextEditing` field whose change has to invalidate body,
         /// hence the only one compared in `BlockRow`'s `==`.
-        let mentionActive: Bool
+        let completionActive: Bool
         let onKey: (BlockKey) -> KeyPress.Result
         let onAutotransform: (BlockTransform, AttributedString) -> Void
         let onOpenLink: (URL) -> Bool
         /// Fires whenever the cursor sits after an in-progress `@query` (or
         /// transitions out of one). EditorView holds the popover state.
-        let onMentionTriggerChange: (MentionTrigger?) -> Void
+        let onCompletionTriggerChange: (InlineCompletionTrigger?) -> Void
         /// Called once on first mount to fetch the cursor target captured at
         /// tap/split/merge time. EditorView's closure atomically reads and
         /// clears `EditorState.pendingInitialCursor`.
@@ -94,20 +95,20 @@ struct BlockRow: View, Equatable {
         init(
             editorFocused: FocusState<BlockID?>.Binding,
             isActive: Bool = true,
-            mentionActive: Bool,
+            completionActive: Bool,
             onKey: @escaping (BlockKey) -> KeyPress.Result,
             onAutotransform: @escaping (BlockTransform, AttributedString) -> Void,
             onOpenLink: @escaping (URL) -> Bool,
-            onMentionTriggerChange: @escaping (MentionTrigger?) -> Void,
+            onCompletionTriggerChange: @escaping (InlineCompletionTrigger?) -> Void,
             consumeInitialCursor: @escaping () -> InitialCursorTarget?
         ) {
             self.editorFocused = editorFocused
             self.isActive = isActive
-            self.mentionActive = mentionActive
+            self.completionActive = completionActive
             self.onKey = onKey
             self.onAutotransform = onAutotransform
             self.onOpenLink = onOpenLink
-            self.onMentionTriggerChange = onMentionTriggerChange
+            self.onCompletionTriggerChange = onCompletionTriggerChange
             self.consumeInitialCursor = consumeInitialCursor
         }
     }
@@ -144,12 +145,15 @@ struct BlockRow: View, Equatable {
     var onLinkPreviewLoaded: (URL, LinkPreview) -> Void { actions.onLinkPreviewLoaded }
     var host: EditorHost { actions.host }
     var onTapOutsideText: () -> Void { actions.onTapOutsideText }
+    var onSubpageIconTap: () -> Void { actions.onSubpageIconTap }
     var onActionMenuDismiss: () -> Void { actions.onActionMenuDismiss }
-    var onMentionMenuDismiss: () -> Void { actions.onMentionMenuDismiss }
+    var onCompletionMenuDismiss: () -> Void { actions.onCompletionMenuDismiss }
+    var onIconPickerDismiss: () -> Void { actions.onIconPickerDismiss }
     var onIOSDelete: () -> Void { actions.onIOSDelete }
     var onIOSShowMenu: () -> Void { actions.onIOSShowMenu }
     var actionMenuContent: () -> AnyView { actions.actionMenuContent }
-    var mentionMenuContent: () -> AnyView { actions.mentionMenuContent }
+    var completionMenuContent: () -> AnyView { actions.completionMenuContent }
+    var emojiPickerContent: () -> AnyView { actions.emojiPickerContent }
 
     /// Convenience: this row is in edit mode (its text area is hosting a
     /// `BlockTextEditor` rather than a read-only renderer).
@@ -217,11 +221,11 @@ struct BlockRow: View, Equatable {
             }
             .blockActionPopover(
                 isPresented: Binding(
-                    get: { editor?.mentionActive == true },
-                    set: { if !$0 { onMentionMenuDismiss() } }
+                    get: { editor?.completionActive == true },
+                    set: { if !$0 { onCompletionMenuDismiss() } }
                 )
             ) {
-                mentionMenuContent()
+                completionMenuContent()
             }
             .opacity(reorderSourceOpacity)
             .contentShape(Rectangle())
@@ -233,9 +237,16 @@ struct BlockRow: View, Equatable {
             )
             // Row-level tap on iOS enters edit mode (no macOS analog — macOS
             // taps come through `MacPageGestureHost.onClickRow` instead).
-            .onTapGesture {
-                onTapOutsideText()
-            }
+            .gesture(
+                SpatialTapGesture().onEnded { value in
+                    if case .subpage = block.kind,
+                       hitsSubpageIconColumn(localX: value.location.x, depth: depth) {
+                        onSubpageIconTap()
+                    } else {
+                        onTapOutsideText()
+                    }
+                }
+            )
             #endif
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier(accessibilityID)
@@ -496,6 +507,20 @@ struct BlockRow: View, Equatable {
 
     private func subpageRow(title: String, missing: Bool) -> some View {
         subpageRowBody(title: title, missing: missing, depth: depth)
+            .overlay(alignment: .leading) {
+                Color.clear
+                    .frame(width: NotionStyle.bulletMarkerColumnWidth)
+                    .offset(x: CGFloat(depth) * NotionStyle.indentStep)
+                    .allowsHitTesting(false)
+                    .popover(
+                        isPresented: Binding(
+                            get: { model.isIconPickerPresented },
+                            set: { if !$0 { onIconPickerDismiss() } }
+                        )
+                    ) {
+                        emojiPickerContent()
+                    }
+            }
     }
 
     private func imageRow(source: String, alt: String) -> some View {
@@ -518,8 +543,8 @@ struct BlockRow: View, Equatable {
                 onKey: editor.onKey,
                 onAutotransform: editor.onAutotransform,
                 onOpenLink: editor.onOpenLink,
-                onMentionTriggerChange: editor.onMentionTriggerChange,
-                mentionActive: editor.mentionActive,
+                onCompletionTriggerChange: editor.onCompletionTriggerChange,
+                completionActive: editor.completionActive,
                 consumeInitialCursor: editor.consumeInitialCursor
             )
             .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
@@ -574,12 +599,15 @@ struct BlockRowActions {
     let onLinkPreviewLoaded: (URL, LinkPreview) -> Void
     let host: EditorHost
     let onTapOutsideText: () -> Void
+    let onSubpageIconTap: () -> Void
     let onActionMenuDismiss: () -> Void
-    let onMentionMenuDismiss: () -> Void
+    let onCompletionMenuDismiss: () -> Void
+    let onIconPickerDismiss: () -> Void
     let onIOSDelete: () -> Void
     let onIOSShowMenu: () -> Void
     let actionMenuContent: () -> AnyView
-    let mentionMenuContent: () -> AnyView
+    let completionMenuContent: () -> AnyView
+    let emojiPickerContent: () -> AnyView
 }
 
 /// A page title that begins with an emoji ("👍 Emoji Page") lends that
@@ -589,10 +617,7 @@ struct BlockRowActions {
 func leadingEmojiIcon(in title: String) -> (emoji: String, rest: String)? {
     let trimmed = title.trimmingCharacters(in: .whitespaces)
     guard let first = trimmed.first else { return nil }
-    let isEmoji = first.unicodeScalars.contains {
-        $0.properties.isEmojiPresentation || ($0.properties.isEmoji && !$0.isASCII)
-    }
-    guard isEmoji else { return nil }
+    guard isEmojiCharacter(first) else { return nil }
     let rest = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
     guard !rest.isEmpty else { return nil }
     return (String(first), rest)
@@ -795,7 +820,7 @@ private func decodeFavicon(_ data: Data) -> Image? {
 /// Read-only block renderer used by the reorder lift overlay. The lift just
 /// shows what's being dragged — no editing, no gestures, no popovers, no
 /// link-preview fetching. So this view doesn't carry any of `BlockRowContent`'s
-/// editor closures (`onKey`, `onAutotransform`, `onMentionTriggerChange`,
+/// editor closures (`onKey`, `onAutotransform`, `onCompletionTriggerChange`,
 /// `editorFocused`, …) or hover/drop state. Equatable so the lift overlay can
 /// re-render cheaply if the dragged block's text or page-title resolution
 /// changes mid-drag.

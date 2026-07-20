@@ -152,6 +152,8 @@ extension SessionState {
 public enum Overlay: Equatable, Sendable {
     /// @-mention popover open on the editing block.
     case mention(MentionMenuState)
+    /// :emoji completion popover open on the editing block.
+    case emoji(EmojiMenuState)
 }
 
 public enum Gesture: Equatable, Sendable {
@@ -192,6 +194,20 @@ public struct MentionMenuState: Equatable, Sendable {
     public var matches: [MentionItem]
 
     public init(blockID: BlockID, trigger: MentionTrigger, selectedIndex: Int, matches: [MentionItem] = []) {
+        self.blockID = blockID
+        self.trigger = trigger
+        self.selectedIndex = selectedIndex
+        self.matches = matches
+    }
+}
+
+public struct EmojiMenuState: Equatable, Sendable {
+    public let blockID: BlockID
+    public var trigger: EmojiTrigger
+    public var selectedIndex: Int
+    public var matches: [EmojiSuggestion]
+
+    public init(blockID: BlockID, trigger: EmojiTrigger, selectedIndex: Int, matches: [EmojiSuggestion] = []) {
         self.blockID = blockID
         self.trigger = trigger
         self.selectedIndex = selectedIndex
@@ -313,6 +329,17 @@ public extension EditorState {
     var mentionMenu: MentionMenuState? {
         if case .editing(_, .some(.mention(let m))) = sessionState { return m }
         return nil
+    }
+    var emojiMenu: EmojiMenuState? {
+        if case .editing(_, .some(.emoji(let m))) = sessionState { return m }
+        return nil
+    }
+    var completionMenuBlockID: BlockID? {
+        switch sessionState {
+        case .editing(_, .some(.mention(let menu))): return menu.blockID
+        case .editing(_, .some(.emoji(let menu))): return menu.blockID
+        default: return nil
+        }
     }
     /// Active drag-reorder lift, if any.
     var reorderLift: ReorderLift? {
@@ -438,6 +465,28 @@ extension EditorState {
     /// Close the mention popover only if it's attached to a specific block.
     func closeMentionMenu(forBlockID blockID: BlockID) {
         if case .editing(let id, .mention(let m)) = sessionState, m.blockID == blockID {
+            setSessionStateIfChanged(.editing(id, overlay: nil))
+        }
+    }
+
+    func setEmojiMenu(_ menu: EmojiMenuState) {
+        guard case .editing(let id, _) = sessionState, id == menu.blockID else { return }
+        setSessionStateIfChanged(.editing(id, overlay: .emoji(menu)))
+    }
+
+    func closeCompletionMenu() {
+        guard case .editing(let id, .some) = sessionState else { return }
+        setSessionStateIfChanged(.editing(id, overlay: nil))
+    }
+
+    func closeCompletionMenu(forBlockID blockID: BlockID) {
+        guard case .editing(let id, let overlay?) = sessionState else { return }
+        let menuBlockID: BlockID
+        switch overlay {
+        case .mention(let menu): menuBlockID = menu.blockID
+        case .emoji(let menu): menuBlockID = menu.blockID
+        }
+        if menuBlockID == blockID {
             setSessionStateIfChanged(.editing(id, overlay: nil))
         }
     }

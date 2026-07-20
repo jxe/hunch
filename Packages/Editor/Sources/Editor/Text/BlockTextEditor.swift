@@ -125,10 +125,10 @@ enum BlockKey: Sendable, Equatable {
     // The mention popover (@-menu) is open over the active editor; the editor
     // forwards these unconditionally so EditorView can drive menu navigation
     // without taking focus away from the text.
-    case mentionUp
-    case mentionDown
-    case mentionCommit
-    case mentionDismiss
+    case completionUp
+    case completionDown
+    case completionCommit
+    case completionDismiss
     /// Cmd-V / paste action received by the editor with the raw pasteboard
     /// string. EditorView decides whether the parsed result splits into
     /// multiple blocks (handled here, splice below the row) or is a single
@@ -179,14 +179,13 @@ struct BlockTextEditor: View {
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     let onOpenLink: (URL) -> Bool
-    /// Fires whenever the cursor sits after an in-progress `@query` (or transitions out
-    /// of one — `nil` then). EditorView holds the popover state and decides whether to
-    /// show / dismiss the menu based on this stream.
-    let onMentionTriggerChange: (MentionTrigger?) -> Void
+    /// Fires whenever the cursor sits after an in-progress inline completion
+    /// trigger (or transitions out of one — `nil` then).
+    let onCompletionTriggerChange: (InlineCompletionTrigger?) -> Void
     /// When true, the editor unconditionally forwards ↑/↓/Return/Esc to `onKey` as
-    /// `mentionUp/Down/Commit/Dismiss` so EditorView can drive the popover. When false,
+    /// completion commands so EditorView can drive the popover. When false,
     /// arrow keys behave normally (intra-block nav or exit-edit on boundary).
-    let mentionActive: Bool
+    let completionActive: Bool
     /// Called exactly once during the underlying NSView/UIView's `make…` to fetch
     /// the cursor target for this mount. The host atomically reads-and-clears its
     /// pending-cursor channel inside the closure, so a second mount of the same
@@ -215,8 +214,8 @@ struct BlockTextEditor: View {
         onKey: @escaping (BlockKey) -> KeyPress.Result,
         onAutotransform: @escaping (BlockTransform, AttributedString) -> Void = { _, _ in },
         onOpenLink: @escaping (URL) -> Bool = { _ in false },
-        onMentionTriggerChange: @escaping (MentionTrigger?) -> Void = { _ in },
-        mentionActive: Bool = false,
+        onCompletionTriggerChange: @escaping (InlineCompletionTrigger?) -> Void = { _ in },
+        completionActive: Bool = false,
         consumeInitialCursor: @escaping () -> InitialCursorTarget? = { nil }
     ) {
         self._text = text
@@ -230,8 +229,8 @@ struct BlockTextEditor: View {
         self.onKey = onKey
         self.onAutotransform = onAutotransform
         self.onOpenLink = onOpenLink
-        self.onMentionTriggerChange = onMentionTriggerChange
-        self.mentionActive = mentionActive
+        self.onCompletionTriggerChange = onCompletionTriggerChange
+        self.completionActive = completionActive
         self.consumeInitialCursor = consumeInitialCursor
     }
 
@@ -258,8 +257,8 @@ struct BlockTextEditor: View {
             onKey: onKey,
             onAutotransform: onAutotransform,
             onOpenLink: onOpenLink,
-            onMentionTriggerChange: onMentionTriggerChange,
-            mentionActive: mentionActive,
+            onCompletionTriggerChange: onCompletionTriggerChange,
+            completionActive: completionActive,
             consumeInitialCursor: consumeInitialCursor,
             blockID: blockID,
             documentUndoController: documentUndoController,
@@ -301,8 +300,8 @@ struct BlockTextEditor: View {
             onKey: onKey,
             onAutotransform: onAutotransform,
             onOpenLink: onOpenLink,
-            onMentionTriggerChange: onMentionTriggerChange,
-            mentionActive: mentionActive,
+            onCompletionTriggerChange: onCompletionTriggerChange,
+            completionActive: completionActive,
             consumeInitialCursor: consumeInitialCursor,
             documentUndoController: documentUndoController
         )
@@ -344,8 +343,8 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     let onOpenLink: (URL) -> Bool
-    let onMentionTriggerChange: (MentionTrigger?) -> Void
-    let mentionActive: Bool
+    let onCompletionTriggerChange: (InlineCompletionTrigger?) -> Void
+    let completionActive: Bool
     let consumeInitialCursor: () -> InitialCursorTarget?
     let blockID: BlockID
     let documentUndoController: DocumentUndoController?
@@ -638,9 +637,9 @@ struct MacBlockTextEditor: NSViewRepresentable {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if composing {
-                    self.parent.onMentionTriggerChange(nil)
+                    self.parent.onCompletionTriggerChange(nil)
                 } else {
-                    self.parent.onMentionTriggerChange(detectMentionTrigger(plain: plain, cursor: cursor))
+                    self.parent.onCompletionTriggerChange(detectInlineCompletionTrigger(plain: plain, cursor: cursor))
                 }
             }
         }
@@ -678,12 +677,12 @@ struct MacBlockTextEditor: NSViewRepresentable {
 
         private func reportMentionTrigger(in tv: NSTextView, composing: Bool) {
             if composing {
-                parent.onMentionTriggerChange(nil)
+                parent.onCompletionTriggerChange(nil)
                 return
             }
             let cursor = tv.selectedRange().location
-            let trigger = detectMentionTrigger(plain: tv.string, cursor: cursor)
-            parent.onMentionTriggerChange(trigger)
+            let trigger = detectInlineCompletionTrigger(plain: tv.string, cursor: cursor)
+            parent.onCompletionTriggerChange(trigger)
         }
 
         func textDidBeginEditing(_ notification: Notification) {
@@ -802,18 +801,18 @@ final class ContainedTextView: NSTextView {
         if let onKey = coordinator?.parent.onKey {
             // While the mention popover is open, intercept menu-nav keys before the
             // editor's normal handling so EditorView can drive selection / commit.
-            if coordinator?.parent.mentionActive == true {
+            if coordinator?.parent.completionActive == true {
                 switch event.keyCode {
                 case 126: // Up
-                    if onKey(.mentionUp) == .handled { return }
+                    if onKey(.completionUp) == .handled { return }
                 case 125: // Down
-                    if onKey(.mentionDown) == .handled { return }
+                    if onKey(.completionDown) == .handled { return }
                 case 36, 76: // Return / numpad Enter
-                    if onKey(.mentionCommit) == .handled { return }
+                    if onKey(.completionCommit) == .handled { return }
                 case 53: // Escape
-                    if onKey(.mentionDismiss) == .handled { return }
+                    if onKey(.completionDismiss) == .handled { return }
                 case 48: // Tab — accept the highlighted entry, mirroring Notion.
-                    if onKey(.mentionCommit) == .handled { return }
+                    if onKey(.completionCommit) == .handled { return }
                 default:
                     break
                 }
@@ -1055,9 +1054,9 @@ final class ContainedTextView: NSTextView {
     /// can't successfully set the page container as the new first responder, leaving
     /// arrow-key nav unbound.
     override func cancelOperation(_ sender: Any?) {
-        if coordinator?.parent.mentionActive == true,
+        if coordinator?.parent.completionActive == true,
            let onKey = coordinator?.parent.onKey,
-           onKey(.mentionDismiss) == .handled {
+           onKey(.completionDismiss) == .handled {
             // Esc while the mention popover is open dismisses the menu but leaves the
             // editor focused — don't resign first responder.
             return
@@ -1166,8 +1165,8 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     let onKey: (BlockKey) -> KeyPress.Result
     let onAutotransform: (BlockTransform, AttributedString) -> Void
     let onOpenLink: (URL) -> Bool
-    let onMentionTriggerChange: (MentionTrigger?) -> Void
-    let mentionActive: Bool
+    let onCompletionTriggerChange: (InlineCompletionTrigger?) -> Void
+    let completionActive: Bool
     let consumeInitialCursor: () -> InitialCursorTarget?
     let documentUndoController: DocumentUndoController?
 
@@ -1472,9 +1471,9 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if composing {
-                    self.parent.onMentionTriggerChange(nil)
+                    self.parent.onCompletionTriggerChange(nil)
                 } else {
-                    self.parent.onMentionTriggerChange(detectMentionTrigger(plain: plain, cursor: cursor))
+                    self.parent.onCompletionTriggerChange(detectInlineCompletionTrigger(plain: plain, cursor: cursor))
                 }
             }
         }
@@ -1511,12 +1510,12 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
 
         private func reportMentionTrigger(in textView: UITextView, composing: Bool) {
             if composing {
-                parent.onMentionTriggerChange(nil)
+                parent.onCompletionTriggerChange(nil)
                 return
             }
             let cursor = textView.selectedRange.location
-            let trigger = detectMentionTrigger(plain: textView.text ?? "", cursor: cursor)
-            parent.onMentionTriggerChange(trigger)
+            let trigger = detectInlineCompletionTrigger(plain: textView.text ?? "", cursor: cursor)
+            parent.onCompletionTriggerChange(trigger)
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
@@ -1655,8 +1654,8 @@ final class ContainedTextViewIOS: UITextView {
            let coordinator {
             // While the mention popover is open, soft- or hardware-keyboard return
             // commits the highlighted entry instead of splitting the block.
-            if coordinator.parent.mentionActive,
-               coordinator.parent.onKey(.mentionCommit) == .handled {
+            if coordinator.parent.completionActive,
+               coordinator.parent.onKey(.completionCommit) == .handled {
                 return
             }
             // Soft-keyboard return: split the block at the current selection. Live-text

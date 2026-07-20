@@ -191,6 +191,18 @@ extension WorkspaceWindow: EditorHost {
         openSubpage(relativePath: resolved)
     }
 
+    func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool {
+        guard let clamshell = workspace.clamshell else { return false }
+        let relativePath = clamshell.resolvePageTarget(pageID) ?? pageID
+        do {
+            try await clamshell.page(atPath: relativePath).setIcon(emoji)
+            return true
+        } catch {
+            workspace.error = "Couldn't set the page icon: \(error.localizedDescription)"
+            return false
+        }
+    }
+
     func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {
         guard let clamshell = workspace.clamshell,
               let parentSession = session(for: parent) else { return false }
@@ -270,4 +282,3 @@ extension WorkspaceWindow: EditorHost {
         workspace.banner = .saveFailed(page: document.title, error: error)
     }
 }
-

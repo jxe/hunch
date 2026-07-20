@@ -48,6 +48,11 @@ public protocol EditorHost: AnyObject {
     /// they fall through to the system handler at the OpenURLAction site.
     func openPage(pageID: String)
 
+    /// Set the page-level icon for the referenced page. Hunch represents the
+    /// icon as the leading emoji of the page title; other hosts may project
+    /// this onto their own storage model.
+    func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool
+
     /// Resolve an opaque page id to its existence + title. Used by inline-link
     /// and subpage rows for display, and by the editor to gate navigation
     /// into broken subpage rows.
@@ -192,6 +197,7 @@ public protocol EditorHost: AnyObject {
 
 public extension EditorHost {
     func didDeleteSubpageLink(pageID: String, title: String, from document: Document) {}
+    func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool { false }
 }
 
 private struct EditorHostKey: @preconcurrency EnvironmentKey {
