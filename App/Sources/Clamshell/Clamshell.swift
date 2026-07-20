@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Synchronization
 import Editor
 
 /// Hunch's persistent markdown format and its API.
@@ -148,6 +149,13 @@ final class Clamshell {
     @ObservationIgnored private var linkCacheEntries: [String: LinkCacheEntry] = [:]
     @ObservationIgnored private let linkCacheDefaultsKey: String
 
+    /// Page-ID → workspace-relative path, for resolving `page.md#<id>` link
+    /// fragments. Derived state: rebuilt from the persisted link cache at
+    /// init and on every graph build, patched on save/load via
+    /// `rememberEnvelope`. Behind a `Mutex` because `pagePath` (nonisolated,
+    /// called from the off-main link-graph classify closures) consults it.
+    @ObservationIgnored nonisolated private let pageIDIndexStore = Mutex<[String: String]>([:])
+
     /// User frontmatter + Clamshell stamp trust for pages we've loaded in
     /// this process. `Editor.Document` remains pure block content; Clamshell
     /// reattaches/updates the envelope only when it writes markdown.
@@ -204,6 +212,7 @@ final class Clamshell {
         // first frame (the entries-merge mtime guard rejects any stale entry).
         self.linkCacheEntries = Clamshell.loadPersistedLinkCache(key: linkCacheDefaultsKey)
         seedTitleCacheFromLinkCache()
+        rebuildPageIDIndex(from: linkCacheEntries)
 
         perfEnd(total, "Clamshell.init")
     }
@@ -411,12 +420,151 @@ final class Clamshell {
             resolvedURL = resolved.absoluteURL.standardizedFileURL
         }
 
+        // `URL.path` / `pathExtension` already exclude any `#fragment`, so
+        // the syntactic path resolution below is fragment-transparent.
         guard resolvedURL.pathExtension.lowercased() == "md" else { return nil }
 
         let rootPath = root.standardizedFileURL.path
         let resolvedPath = resolvedURL.path
         guard resolvedPath.hasPrefix(rootPath + "/") else { return nil }
-        return String(resolvedPath.dropFirst(rootPath.count + 1))
+        let pathRel = String(resolvedPath.dropFirst(rootPath.count + 1))
+        let id = url.fragment.flatMap { ClamshellPageEnvelope.isValidPageID($0) ? $0 : nil }
+        return resolve(pathRel: pathRel, id: id)
+    }
+
+    // MARK: - Link-target resolution (page-ID fragments + title fallback)
+
+    /// Resolve a subpage destination string (verbatim from the `.md`) to a
+    /// workspace-relative page path. Nonisolated so the off-main link-graph
+    /// classify pass can call it.
+    nonisolated func resolveSubpageTarget(_ dest: String) -> String? {
+        let (rawPath, id) = ClamshellPageEnvelope.splitPageFragment(dest)
+        let path = rawPath.removingPercentEncoding ?? rawPath
+        guard path.hasSuffix(".md") else { return nil }
+        return resolve(pathRel: path, id: id)
+    }
+
+    /// Core identity rule shared by both link flavors. Fragment-less
+    /// destinations keep the historical purely-syntactic behavior (no
+    /// stat). With a fragment, the ID is authoritative: when the index
+    /// knows the ID and its page exists, that page wins even if the path
+    /// part names a different (newer) file — the author linked *this*
+    /// page, whatever it's called now. A cold index or a vanished ID
+    /// target falls back to the path.
+    nonisolated private func resolve(pathRel: String?, id: String?) -> String? {
+        guard let id else { return pathRel }
+        if let idRel = pageIDIndexStore.withLock({ $0[id] }),
+           FileManager.default.fileExists(atPath: url(for: idRel).path) {
+            return idRel
+        }
+        return pathRel
+    }
+
+    /// Full resolution for one subpage destination, adding the title
+    /// fallback for fragment-less links whose path went stale: when the
+    /// resolved target is missing on disk and exactly one live page's
+    /// title equals the link's display text, that page wins. Used where
+    /// display text is available (subpage opens, healing).
+    func resolvePageTarget(_ dest: String, displayText: String? = nil) -> String? {
+        let resolved = resolveSubpageTarget(dest)
+        if let resolved, FileManager.default.fileExists(atPath: url(for: resolved).path) {
+            return resolved
+        }
+        guard let displayText, !displayText.isEmpty else { return resolved }
+        let matches = entries.filter { $0.title == displayText }
+        guard matches.count == 1 else { return resolved }
+        return matches[0].relativePath
+    }
+
+    /// Document-relative URL for an inline link from `baseDirectory` to a
+    /// page at `target`, percent-encoded per component. The inverse of
+    /// `pagePath(for:relativeTo:)` — kept next to it so the URL ↔ pageID
+    /// conventions share one home. Pass `fragment` to append a page-ID
+    /// fragment (`page.md#x7f3q2`).
+    nonisolated func relativeMarkdownURL(from baseDirectory: URL, to target: URL, fragment: String? = nil) -> URL? {
+        let baseComponents = baseDirectory.standardizedFileURL.pathComponents
+        let targetComponents = target.standardizedFileURL.pathComponents
+        var commonCount = 0
+        while commonCount < baseComponents.count,
+              commonCount < targetComponents.count,
+              baseComponents[commonCount] == targetComponents[commonCount] {
+            commonCount += 1
+        }
+
+        let up = Array(repeating: "..", count: baseComponents.count - commonCount)
+        let down = Array(targetComponents.dropFirst(commonCount))
+        let components = up + down
+        guard !components.isEmpty else { return nil }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        var encoded = components
+            .map { $0.addingPercentEncoding(withAllowedCharacters: allowed) ?? $0 }
+            .joined(separator: "/")
+        if let fragment {
+            encoded += "#\(fragment)"
+        }
+        return URL(string: encoded)
+    }
+
+    // MARK: - Page-ID index maintenance
+
+    nonisolated func pageIDIndexHit(_ id: String) -> String? {
+        pageIDIndexStore.withLock { $0[id] }
+    }
+
+    /// Reverse index lookup: the ID currently claimed by the page at `rel`,
+    /// when the index knows one.
+    nonisolated func knownPageID(forRel rel: String) -> String? {
+        pageIDIndexStore.withLock { index in
+            index.first(where: { $0.value == rel })?.key
+        }
+    }
+
+    /// Make sure the page at `rel` has a durable ID. Loading the page
+    /// registers any on-disk ID via `rememberEnvelope`; when there is
+    /// none, an empty commit runs the save path, whose legacy-mint step
+    /// adds the `clamshell-id` line. Returns the ID, or nil when the
+    /// page is unreadable.
+    @discardableResult
+    func ensurePageID(forRel rel: String) async -> String? {
+        if let known = knownPageID(forRel: rel) { return known }
+        let url = self.url(for: rel)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do {
+            try await coordinator(for: url).withTransientDocument { doc in
+                if knownPageID(forRel: rel) == nil {
+                    try await commit(Commit(logEntries: []), to: doc)
+                }
+            }
+        } catch {
+            return nil
+        }
+        return knownPageID(forRel: rel)
+    }
+
+    /// Record `id → rel`, dropping any prior claim the rel held under a
+    /// different ID (a page has exactly one ID at a time).
+    func registerPageID(_ id: String?, forRel rel: String) {
+        guard let id else { return }
+        pageIDIndexStore.withLock { index in
+            for (key, value) in index where value == rel && key != id {
+                index[key] = nil
+            }
+            index[id] = rel
+        }
+    }
+
+    func unregisterPageIDs(forRel rel: String) {
+        pageIDIndexStore.withLock { index in
+            index = index.filter { $0.value != rel }
+        }
+    }
+
+    private func rebuildPageIDIndex(from entries: [String: LinkCacheEntry]) {
+        var index: [String: String] = [:]
+        for (rel, entry) in entries {
+            if let id = entry.pageID { index[id] = rel }
+        }
+        pageIDIndexStore.withLock { $0 = index }
     }
 
     // MARK: - Pages: read
@@ -486,8 +634,8 @@ final class Clamshell {
     /// warm so the next render returns the cached title via @Observable.
     /// Safe to call from a SwiftUI body: warm requests are deduped by URL.
     func lookupPage(_ relativePath: String) -> PageLookup {
-        guard relativePath.hasSuffix(".md") else { return .missing }
-        let url = self.url(for: relativePath)
+        guard let resolved = resolveSubpageTarget(relativePath) else { return .missing }
+        let url = self.url(for: resolved)
         guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
         if let cached = titleCache[url], cached.modificationDate == mtime {
@@ -628,6 +776,7 @@ final class Clamshell {
     /// map is the current page set, so pages that vanished drop out.
     func storeLinkEntries(_ entries: [String: LinkCacheEntry]) {
         linkCacheEntries = entries
+        rebuildPageIDIndex(from: entries)
         if let data = try? JSONEncoder().encode(entries) {
             UserDefaults.standard.set(data, forKey: linkCacheDefaultsKey)
         }
@@ -691,7 +840,10 @@ final class Clamshell {
         let classify: @Sendable (URL, URL) -> String? = { [self] url, base in
             self.pagePath(for: url, relativeTo: base)
         }
-        let targets = outboundLinks(in: document.children, pageURL: document.url, classify: classify)
+        let classifySubpage: @Sendable (String) -> String? = { [self] dest in
+            self.resolveSubpageTarget(dest)
+        }
+        let targets = outboundLinks(in: document.children, pageURL: document.url, classify: classify, classifySubpage: classifySubpage)
             .intersection(current.allPageIDs)
         guard targets != (current.outbound[rel] ?? []) else { return }
         linkGraph = current.replacingOutbound(of: rel, with: targets, home: homeRelativePath)
@@ -845,6 +997,7 @@ final class Clamshell {
         let key = url.standardizedFileURL
         pageFrontmatter[key] = parsed.frontmatterLines
         pageStampTrust[key] = parsed.stampTrust
+        registerPageID(parsed.pageID, forRel: relativePath(of: key))
     }
 
     private func frontmatterForSave(at url: URL) -> [String]? {
@@ -904,7 +1057,13 @@ final class Clamshell {
     ) async throws -> String {
         let titleMap = buildSubpageTitleMap(referencedBy: children)
         let files = self.files
-        let frontmatter = frontmatterForSave(at: url)
+        var frontmatter = frontmatterForSave(at: url)
+        // Legacy pages gain their durable page ID on first save; every
+        // later save carries the line through untouched.
+        if ClamshellPageEnvelope.pageID(in: frontmatter) == nil {
+            frontmatter = ClamshellPageEnvelope.addingPageID(mintUniquePageID(), to: frontmatter)
+            pageFrontmatter[url.standardizedFileURL] = frontmatter
+        }
 
         let newText = try await Task.detached(priority: .userInitiated) {
             let text = ClamshellPageEnvelope.serialize(
@@ -933,7 +1092,9 @@ final class Clamshell {
         func walk(_ blocks: [Block]) {
             for block in blocks {
                 if case .subpage(_, let pageID) = block.kind {
-                    if map[pageID] == nil, let title = entry(at: pageID)?.title {
+                    if map[pageID] == nil,
+                       let rel = resolveSubpageTarget(pageID),
+                       let title = entry(at: rel)?.title {
                         map[pageID] = title
                     }
                 }
@@ -1021,7 +1182,11 @@ final class Clamshell {
         } else {
             blocks = [.heading(level: .h1, text: AttributedString(title))]
         }
-        let body = ClamshellPageEnvelope.serialize(blocks: blocks, existingFrontmatterLines: nil, logFrontier: [:])
+        let body = ClamshellPageEnvelope.serialize(
+            blocks: blocks,
+            existingFrontmatterLines: ClamshellPageEnvelope.addingPageID(mintUniquePageID(), to: nil),
+            logFrontier: [:]
+        )
         // Coordinated write like every other .md — an uncoordinated write
         // can race iCloud sync on cloud-hosted workspaces.
         try files.write(body, to: url)
@@ -1032,9 +1197,47 @@ final class Clamshell {
         return path
     }
 
-    /// Workspace-relative slug for a new page titled `title`, suffixed with
+    /// Mint a page ID no live page already claims. Collisions are ~1 in 2
+    /// billion per pair, but the index check is free.
+    func mintUniquePageID() -> String {
+        for _ in 0..<8 {
+            let id = ClamshellPageEnvelope.mintPageID()
+            if pageIDIndexHit(id) == nil { return id }
+        }
+        return ClamshellPageEnvelope.mintPageID()
+    }
+
+    /// Workspace-relative slug for a page titled `title`, suffixed with
     /// `-2`, `-3`, etc. to avoid collision with existing files.
-    private func availablePagePath(for title: String) -> String {
+    ///
+    /// `excludingCurrent` is the renaming page's own relative path: a
+    /// candidate equal to it (case-insensitively — APFS is case-insensitive
+    /// by default) is returned directly rather than treated as a collision,
+    /// which covers case-only renames and pages already sitting on a `-N`
+    /// disambiguated name. The candidate keeps `excludingCurrent`'s
+    /// directory so renaming never moves a page between folders.
+    func availablePagePath(for title: String, excludingCurrent currentRel: String? = nil) -> String {
+        let stem = Clamshell.slugStem(for: title)
+        let dir = currentRel.flatMap { rel -> String? in
+            guard let slash = rel.lastIndex(of: "/") else { return nil }
+            return String(rel[...slash])
+        } ?? ""
+
+        var candidate = dir + stem + ".md"
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: root.appendingPathComponent(candidate).path) {
+            if let currentRel, candidate.caseInsensitiveCompare(currentRel) == .orderedSame {
+                return candidate
+            }
+            candidate = "\(dir)\(stem)-\(suffix).md"
+            suffix += 1
+        }
+        return candidate
+    }
+
+    /// The filename stem a title slugifies to. Shared by `availablePagePath`
+    /// and `filenameMatchesTitle` so the two can never drift.
+    nonisolated static func slugStem(for title: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         let chars = title.unicodeScalars.map { scalar -> Character in
             allowed.contains(scalar) ? Character(scalar) : "-"
@@ -1042,15 +1245,104 @@ final class Clamshell {
         let collapsed = String(chars)
             .split(separator: "-", omittingEmptySubsequences: true)
             .joined(separator: "-")
-        let stem = collapsed.isEmpty ? "Untitled" : collapsed
+        return collapsed.isEmpty ? "Untitled" : collapsed
+    }
 
-        var candidate = stem + ".md"
-        var suffix = 2
-        while FileManager.default.fileExists(atPath: root.appendingPathComponent(candidate).path) {
-            candidate = "\(stem)-\(suffix).md"
-            suffix += 1
+    /// True when the page's filename is already the title's slug — either
+    /// exactly or with a `-N` disambiguation suffix (a page living at
+    /// `Title-2.md` because `Title.md` was taken should not prompt for a
+    /// rename it can't have). Case-insensitive, matching the filesystem.
+    nonisolated static func filenameMatchesTitle(relativePath: String, title: String) -> Bool {
+        guard relativePath.hasSuffix(".md") else { return false }
+        let filename = relativePath.split(separator: "/").last.map(String.init) ?? relativePath
+        let stem = String(filename.dropLast(3))
+        let slug = slugStem(for: title)
+        if stem.caseInsensitiveCompare(slug) == .orderedSame { return true }
+        guard stem.count > slug.count + 1,
+              stem.lowercased().hasPrefix(slug.lowercased() + "-") else { return false }
+        return stem.dropFirst(slug.count + 1).allSatisfy(\.isNumber)
+    }
+
+    // MARK: - Rename
+
+    enum RenameError: Error, Equatable {
+        /// The page still has an attached editor session (another window).
+        /// The caller must close it before renaming.
+        case pageOpenElsewhere
+    }
+
+    struct RenameResult: Equatable, Sendable {
+        let oldRelativePath: String
+        let newRelativePath: String
+    }
+
+    /// Rename the page at `url` so its filename matches `title`'s slug.
+    /// O(1) by design: the file, its `.history/` dir, and the in-memory
+    /// bookkeeping move; **no inbound links are rewritten**. Links carrying
+    /// the page's ID fragment resolve to the new path immediately through
+    /// `resolve(pathRel:id:)`, and each referencing page's bytes converge
+    /// via `healLinks` the next time it's open and quiet.
+    ///
+    /// The caller must have closed any editor session on the page first
+    /// (mirroring `moveToTrash`) — a live session's Document.url is
+    /// immutable, so the page reopens at the new URL.
+    @discardableResult
+    func renamePage(at url: URL, toMatchTitle title: String) async throws -> RenameResult {
+        let key = url.standardizedFileURL
+        let oldRel = relativePath(of: key)
+        if let coordinator = pageCoordinators[key] {
+            guard !coordinator.hasEditorSubscribers else { throw RenameError.pageOpenElsewhere }
+            try await coordinator.flush()
         }
-        return candidate
+
+        let newRel = availablePagePath(for: title, excludingCurrent: oldRel)
+        guard newRel != oldRel else {
+            return RenameResult(oldRelativePath: oldRel, newRelativePath: oldRel)
+        }
+        let newURL = self.url(for: newRel)
+        let newKey = newURL.standardizedFileURL
+
+        // The move is the first mutating step — a failure here leaves
+        // nothing partial. Case-only renames go through a temp sibling
+        // name; a direct case-only `moveItem` can fail on case-insensitive
+        // APFS.
+        if newRel.caseInsensitiveCompare(oldRel) == .orderedSame {
+            let tmp = key.deletingLastPathComponent()
+                .appendingPathComponent(".rename-tmp-\(UUID().uuidString).md")
+            try FileManager.default.moveItem(at: key, to: tmp)
+            try FileManager.default.moveItem(at: tmp, to: newURL)
+        } else {
+            try FileManager.default.moveItem(at: key, to: newURL)
+        }
+
+        // Awaited inline (unlike trash's fire-and-forget): anything that
+        // reconciles at the new path immediately after needs the journal
+        // and its watermark already there.
+        do {
+            try await log.move(fromPage: oldRel, toPage: newRel)
+        } catch {
+            Diag.log.error("log move (rename) failed from=\(oldRel, privacy: .public) to=\(newRel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        }
+
+        // Content is byte-identical at the new path — move the bookkeeping,
+        // don't forget it. (`moveItem` preserves mtime, so the title cache
+        // entry stays valid.)
+        if let cached = titleCache.removeValue(forKey: key) { titleCache[newKey] = cached }
+        if let history = contentHistory.removeValue(forKey: key) { contentHistory[newKey] = history }
+        if let frontmatter = pageFrontmatter.removeValue(forKey: key) { pageFrontmatter[newKey] = frontmatter }
+        if let trust = pageStampTrust.removeValue(forKey: key) { pageStampTrust[newKey] = trust }
+        if let id = knownPageID(forRel: oldRel) { registerPageID(id, forRel: newRel) }
+        if let entry = linkCacheEntries.removeValue(forKey: oldRel) {
+            var entries = linkCacheEntries
+            entries[newRel] = entry
+            storeLinkEntries(entries)
+        }
+
+        if homeRelativePath == oldRel {
+            homeRelativePath = newRel
+        }
+        try? rescan()
+        return RenameResult(oldRelativePath: oldRel, newRelativePath: newRel)
     }
 
     // MARK: - Trash (soft-deleted pages)
@@ -1068,6 +1360,7 @@ final class Clamshell {
         }
         forgetDiskContent(at: url)
         forgetTitle(at: url)
+        unregisterPageIDs(forRel: rel)
         try? rescan()
         Task { [log, rel, result] in
             do {

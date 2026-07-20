@@ -306,6 +306,7 @@ final class WorkspaceWindow {
         stopCloudSyncPolling()
         pageSession = nil
         cloudSyncSnapshot = nil
+        dismissedRenameSuggestions.removeAll()
     }
 
     private func finishNavigationRequest(_ requestID: Int) {
@@ -362,6 +363,105 @@ final class WorkspaceWindow {
             return false
         }
         return await moveToTrash(entry)
+    }
+
+    // MARK: - Rename to match title
+
+    /// Per-session set of `(relativePath|proposedName)` suggestions the user
+    /// has already dismissed, so a dismissed banner doesn't re-appear on the
+    /// next keystroke. Cleared on navigation.
+    @ObservationIgnored private var dismissedRenameSuggestions: Set<String> = []
+
+    private func renameSuggestionKey(rel: String, proposed: String) -> String { "\(rel)|\(proposed)" }
+
+    /// The filename the current page's title would rename to, when it
+    /// diverges from the current filename. Nil when they already match or
+    /// there's no open page.
+    var pendingRenameProposal: String? {
+        guard let clamshell = workspace.clamshell,
+              let rel = currentPageRelativePath,
+              let doc = openDocument,
+              !Clamshell.filenameMatchesTitle(relativePath: rel, title: doc.title) else {
+            return nil
+        }
+        return clamshell.availablePagePath(for: doc.title, excludingCurrent: rel)
+    }
+
+    /// Called on title change (debounced in `ContentView`) and after a page
+    /// opens: offer to rename the file to match a diverged title, unless the
+    /// user already dismissed this exact suggestion.
+    func evaluateRenameSuggestion() {
+        guard let rel = currentPageRelativePath, let proposed = pendingRenameProposal else { return }
+        let key = renameSuggestionKey(rel: rel, proposed: proposed)
+        guard !dismissedRenameSuggestions.contains(key) else { return }
+        let name = (proposed as NSString).lastPathComponent
+        workspace.banner = Workspace.Banner(
+            message: "Rename file to \"\(name)\" to match its title?",
+            systemImage: "pencil",
+            dismissAfter: nil,
+            action: .init(label: "Rename") { [weak self] in
+                self?.dismissedRenameSuggestions.insert(key)
+                Task { await self?.renameCurrentPageToMatchTitle() }
+            }
+        )
+        dismissedRenameSuggestions.insert(key)
+    }
+
+    /// Rename the visible page's file to match its title. Mirrors the trash
+    /// choreography: refuse when the page is open in another window, close +
+    /// forget the session, rename through Clamshell, then re-point `path` so
+    /// the page reopens at its new URL via `handlePathChange`.
+    @discardableResult
+    func renameCurrentPageToMatchTitle() async -> Bool {
+        guard let clamshell = workspace.clamshell,
+              let session = pageSession else { return false }
+        let oldURL = session.document.url
+        let title = session.document.title
+        let wasHome = clamshell.isHome(relativePath: clamshell.relativePath(of: oldURL))
+
+        if workspace.openCount(of: oldURL) > 1 {
+            workspace.banner = Workspace.Banner(
+                message: "Close other windows showing this page before renaming.",
+                kind: .warning,
+                systemImage: "exclamationmark.triangle"
+            )
+            return false
+        }
+
+        do {
+            try await session.close()
+        } catch {
+            workspace.banner = .saveFailed(page: title, error: error)
+            return false
+        }
+        forgetSession(session)
+        workspace.unregisterOpenURL(oldURL)
+        clearPageSession()
+
+        let result: Clamshell.RenameResult
+        do {
+            result = try await clamshell.renamePage(at: oldURL, toMatchTitle: title)
+        } catch {
+            workspace.error = "Couldn't rename \(title): \(error.localizedDescription)"
+            handlePathChange()
+            return false
+        }
+
+        guard result.newRelativePath != result.oldRelativePath else {
+            handlePathChange()
+            return true
+        }
+
+        let newURL = clamshell.url(for: result.newRelativePath)
+        if wasHome && path.isEmpty {
+            // Home page: path stays `[]`; currentTargetURL() follows the
+            // updated home pointer. Force the reload directly.
+            handlePathChange()
+        } else {
+            path = path.map { $0.standardizedFileURL == oldURL.standardizedFileURL ? newURL : $0 }
+            if openDocument == nil { handlePathChange() }
+        }
+        return true
     }
 
     @discardableResult

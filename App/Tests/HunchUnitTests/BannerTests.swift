@@ -15,4 +15,14 @@ struct BannerTests {
         #expect(banner.message.contains("Draft"))
         #expect(banner.message.contains("disk full"))
     }
+
+    @Test func actionBannersCompareByLabelNotClosure() {
+        let a = Workspace.Banner(message: "m", action: .init(label: "Rename", handler: {}))
+        let b = Workspace.Banner(message: "m", action: .init(label: "Rename", handler: {}))
+        // Different UUIDs → not equal as banners, but the Action itself
+        // compares by label so the closure identity never matters.
+        #expect(a.action == b.action)
+        let c = Workspace.Banner.Action(label: "Undo", handler: {})
+        #expect(a.action != c)
+    }
 }

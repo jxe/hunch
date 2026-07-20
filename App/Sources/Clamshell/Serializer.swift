@@ -4,6 +4,54 @@ import Editor
 
 enum ClamshellPageEnvelope {
     static let frontmatterKey = "clamshell"
+    static let idKey = "clamshell-id"
+
+    /// Page IDs are 6 chars of [a-z0-9]. The exact length matters: subpage
+    /// detection treats `page.md#<id>` as an internal link only when the
+    /// fragment has this exact shape, so a genuine section anchor like
+    /// `#introduction` on an external `.md` link doesn't false-positive.
+    static let pageIDLength = 6
+    private static let pageIDAlphabet = Array("abcdefghijklmnopqrstuvwxyz0123456789")
+
+    static func mintPageID() -> String {
+        String((0..<pageIDLength).map { _ in pageIDAlphabet.randomElement()! })
+    }
+
+    static func isValidPageID(_ candidate: some StringProtocol) -> Bool {
+        candidate.count == pageIDLength && candidate.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber) }
+    }
+
+    /// Split a link destination into its path part and a trailing page-ID
+    /// fragment, when one is present. Fragments that don't have the page-ID
+    /// shape stay attached to the path (they belong to whatever external
+    /// target the link points at).
+    static func splitPageFragment(_ dest: String) -> (path: String, id: String?) {
+        guard let hash = dest.lastIndex(of: "#") else { return (dest, nil) }
+        let fragment = dest[dest.index(after: hash)...]
+        guard isValidPageID(fragment) else { return (dest, nil) }
+        return (String(dest[..<hash]), String(fragment))
+    }
+
+    static func pageID(in frontmatterLines: [String]?) -> String? {
+        guard let frontmatterLines else { return nil }
+        for line in frontmatterLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("\(idKey):") else { continue }
+            let value = String(trimmed.dropFirst(idKey.count + 1)).trimmingCharacters(in: .whitespaces)
+            return isValidPageID(value) ? value : nil
+        }
+        return nil
+    }
+
+    /// Add a `clamshell-id` line when none exists. Serialization preserves
+    /// every non-stamp frontmatter line, so the ID survives all later saves
+    /// without further handling.
+    static func addingPageID(_ id: String, to frontmatterLines: [String]?) -> [String] {
+        var lines = frontmatterLines ?? []
+        guard pageID(in: lines) == nil else { return lines }
+        lines.append("\(idKey): \(id)")
+        return lines
+    }
 
     struct Stamp: Codable, Equatable, Sendable {
         let v: Int
@@ -33,13 +81,20 @@ enum ClamshellPageEnvelope {
         let blocks: [Block]
         let frontmatterLines: [String]?
         let stampTrust: StampTrust
+        let pageID: String?
     }
 
     static func parse(_ source: String) -> Parsed {
         let split = splitFrontmatter(source)
         let blocks = BlockParser.parse(split.body)
         let trust = stampTrust(from: split.frontmatterLines, canonicalBody: BlockSerializer.serialize(blocks))
-        return Parsed(body: split.body, blocks: blocks, frontmatterLines: split.frontmatterLines, stampTrust: trust)
+        return Parsed(
+            body: split.body,
+            blocks: blocks,
+            frontmatterLines: split.frontmatterLines,
+            stampTrust: trust,
+            pageID: pageID(in: split.frontmatterLines)
+        )
     }
 
     static func bodyHash(for body: String) -> String {

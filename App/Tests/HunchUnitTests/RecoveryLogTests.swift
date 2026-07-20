@@ -1490,4 +1490,78 @@ struct RecoveryLogTests {
         #expect(recon.inserts.isEmpty, "no subtrees should auto-restore")
         #expect(recon.restoredHashes.isEmpty, "no hashes flagged for restore")
     }
+
+    // MARK: - Move
+
+    @Test func moveMigratesWatermarkSoNewPathSkipsRefold() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let block = Block.paragraph(text: attr("hello"))
+        try await log.apply(Patch.adds(from: [block]), to: "old.md")
+
+        let mdMtime = Date(timeIntervalSince1970: 200)
+        let initial = await log.reconcileAgainst(page: "old.md", doc: [block], mdMtime: mdMtime)
+        guard case .folded = initial else {
+            Issue.record("first reconcile should establish a watermark via full fold")
+            return
+        }
+
+        try await log.move(fromPage: "old.md", toPage: "new.md")
+
+        let oldDir = root
+            .appendingPathComponent(RecoveryLog.directoryName, isDirectory: true)
+            .appendingPathComponent("old.md", isDirectory: true)
+        #expect(!FileManager.default.fileExists(atPath: oldDir.path))
+        #expect(FileManager.default.fileExists(
+            atPath: deviceLogURL(workspace: root, page: "new.md", deviceID: "dev-A").path
+        ))
+
+        let outcome = await log.reconcileAgainst(page: "new.md", doc: [block], mdMtime: mdMtime)
+        guard case .skipped = outcome else {
+            Issue.record("watermark should travel with the move; got \(outcome)")
+            return
+        }
+    }
+
+    @Test func moveMigratesWatermarkPersistently() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let block = Block.paragraph(text: attr("hello"))
+        let mdMtime = Date(timeIntervalSince1970: 200)
+        do {
+            let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+            try await log.apply(Patch.adds(from: [block]), to: "old.md")
+            _ = await log.reconcileAgainst(page: "old.md", doc: [block], mdMtime: mdMtime)
+            try await log.move(fromPage: "old.md", toPage: "new.md")
+        }
+
+        let fresh = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+        let outcome = await fresh.reconcileAgainst(page: "new.md", doc: [block], mdMtime: mdMtime)
+        guard case .skipped = outcome else {
+            Issue.record("migrated watermark should persist across instances; got \(outcome)")
+            return
+        }
+    }
+
+    @Test func moveContinuesCounterSequenceAtNewPath() async throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
+
+        let first = Block.paragraph(text: attr("one"))
+        try await log.apply(Patch.adds(from: [first]), to: "old.md")
+        try await log.move(fromPage: "old.md", toPage: "new.md")
+
+        let second = Block.paragraph(text: attr("two"))
+        try await log.apply(Patch.adds(from: [second]), to: "new.md")
+
+        let url = deviceLogURL(workspace: root, page: "new.md", deviceID: "dev-A")
+        let minted = try counters(at: url)
+        #expect(minted.count == 2)
+        #expect(zip(minted, minted.dropFirst()).allSatisfy { $1 == $0 + 1 },
+                "counters should continue without reset or gap across the move, got \(minted)")
+    }
 }

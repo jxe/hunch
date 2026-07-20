@@ -74,11 +74,22 @@ final class Workspace {
             case error
         }
 
+        /// A tappable button rendered at the banner's trailing edge. Compared
+        /// only by `label` for `Equatable` (the closure can't be) — the
+        /// per-instance `id` already distinguishes banners.
+        struct Action: Equatable {
+            let label: String
+            let handler: @MainActor () -> Void
+
+            static func == (lhs: Action, rhs: Action) -> Bool { lhs.label == rhs.label }
+        }
+
         let id = UUID()
         let message: String
         var kind: Kind = .info
         var systemImage: String = "arrow.triangle.merge"
         var dismissAfter: Duration? = .seconds(4)
+        var action: Action?
 
         /// Wording reused by every conflict-merge site (live-page presenter
         /// event AND the closed-page scan) so the message can't drift.
@@ -322,6 +333,11 @@ final class Workspace {
         guard let n = openURLCounts[url] else { return }
         if n <= 1 { openURLCounts.removeValue(forKey: url) }
         else { openURLCounts[url] = n - 1 }
+    }
+
+    /// How many windows currently show `url` as their open document.
+    func openCount(of url: URL) -> Int {
+        openURLCounts[url.standardizedFileURL] ?? openURLCounts[url] ?? 0
     }
 
     // MARK: - iCloud conflict resolution

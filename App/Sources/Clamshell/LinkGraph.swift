@@ -93,13 +93,19 @@ struct LinkGraph: Sendable, Equatable {
 nonisolated func outboundLinks(
     in blocks: [Block],
     pageURL: URL,
-    classify: @Sendable (URL, URL) -> String?
+    classify: @Sendable (URL, URL) -> String?,
+    classifySubpage: @Sendable (String) -> String?
 ) -> Set<String> {
     var targets: Set<String> = []
     func walk(_ blocks: [Block]) {
         for block in blocks {
             if case .subpage(_, let pageID) = block.kind {
-                targets.insert(pageID)
+                // Normalize the verbatim destination (which may carry a
+                // page-ID fragment) to a live workspace-relative path so
+                // graph vertices stay comparable.
+                if let rel = classifySubpage(pageID) {
+                    targets.insert(rel)
+                }
             }
             for run in block.text.runs {
                 if let url = run.link, let pageID = classify(url, pageURL) {
@@ -123,6 +129,9 @@ struct LinkCacheEntry: Codable, Sendable {
     let mtime: Date
     let title: String
     let targets: [String]
+    /// The page's own `clamshell-id`, captured from the same parse. Feeds
+    /// the page-ID index; optional so pre-ID persisted caches still decode.
+    let pageID: String?
 }
 
 /// One page's contribution to a graph build: its outbound link targets plus the
@@ -134,6 +143,7 @@ private struct PageScan: Sendable {
     let targets: Set<String>
     let title: String
     let mtime: Date
+    let pageID: String?
 }
 
 extension Clamshell {
@@ -152,13 +162,16 @@ extension Clamshell {
         let classify: @Sendable (URL, URL) -> String? = { [self] url, base in
             self.pagePath(for: url, relativeTo: base)
         }
+        let classifySubpage: @Sendable (String) -> String? = { [self] dest in
+            self.resolveSubpageTarget(dest)
+        }
 
         // Reuse cached title + links where the mtime matches; content-read the rest.
         var scans: [PageScan] = []
         var stale: [(rel: String, url: URL, mtime: Date)] = []
         for page in pages {
             if let hit = cached[page.rel], hit.mtime == page.mtime {
-                scans.append(PageScan(rel: page.rel, url: page.url, targets: Set(hit.targets), title: hit.title, mtime: page.mtime))
+                scans.append(PageScan(rel: page.rel, url: page.url, targets: Set(hit.targets), title: hit.title, mtime: page.mtime, pageID: hit.pageID))
             } else {
                 stale.append(page)
             }
@@ -169,7 +182,8 @@ extension Clamshell {
             var next = 0
             func submit(_ page: (rel: String, url: URL, mtime: Date)) {
                 group.addTask {
-                    let blocks = (try? await self.readEnvelope(at: page.url))?.parsed.blocks ?? []
+                    let parsed = (try? await self.readEnvelope(at: page.url))?.parsed
+                    let blocks = parsed?.blocks ?? []
                     let title = Document.deriveTitle(
                         from: blocks,
                         fallback: page.url.deletingPathExtension().lastPathComponent
@@ -177,9 +191,10 @@ extension Clamshell {
                     return PageScan(
                         rel: page.rel,
                         url: page.url,
-                        targets: outboundLinks(in: blocks, pageURL: page.url, classify: classify),
+                        targets: outboundLinks(in: blocks, pageURL: page.url, classify: classify, classifySubpage: classifySubpage),
                         title: title,
-                        mtime: page.mtime
+                        mtime: page.mtime,
+                        pageID: parsed?.pageID
                     )
                 }
             }
@@ -199,7 +214,7 @@ extension Clamshell {
 
         applyWarmedTitles(scans.map { (url: $0.url, title: $0.title, mtime: $0.mtime) })
         storeLinkEntries(Dictionary(uniqueKeysWithValues: scans.map {
-            ($0.rel, LinkCacheEntry(mtime: $0.mtime, title: $0.title, targets: Array($0.targets)))
+            ($0.rel, LinkCacheEntry(mtime: $0.mtime, title: $0.title, targets: Array($0.targets), pageID: $0.pageID))
         }))
 
         var outbound: [String: Set<String>] = [:]

@@ -695,12 +695,19 @@ enum BlockParser {
         guard inlines.count >= 2,
               inlines[inlines.count - 2] is SoftBreak || inlines[inlines.count - 2] is LineBreak,
               let link = inlines.last as? Markdown.Link,
-              let dest = link.destination, dest.hasSuffix(".md")
+              let dest = link.destination, isSubpageDestination(dest)
         else { return nil }
         let titleParts: [String] = Array(link.inlineChildren).compactMap { ($0 as? Markdown.Text)?.string }
         let title = titleParts.joined()
         inlines.removeLast(2)
         return .subpage(title: title.isEmpty ? dest : title, pageID: dest)
+    }
+
+    /// A subpage destination is a `.md` path, optionally carrying a page-ID
+    /// fragment (`page.md#x7f3q2`). Other fragments belong to external
+    /// targets and don't make the link a subpage.
+    private static func isSubpageDestination(_ dest: String) -> Bool {
+        ClamshellPageEnvelope.splitPageFragment(dest).path.hasSuffix(".md")
     }
 
     private static func detectSubpage(_ inlines: [any InlineMarkup]) -> Block? {
@@ -720,7 +727,7 @@ enum BlockParser {
                 return nil
             }
         }
-        guard let link, let dest = link.destination, dest.hasSuffix(".md") else { return nil }
+        guard let link, let dest = link.destination, isSubpageDestination(dest) else { return nil }
         let titleParts: [String] = Array(link.inlineChildren).compactMap { ($0 as? Markdown.Text)?.string }
         let title = titleParts.joined()
         return .subpage(title: title.isEmpty ? dest : title, pageID: dest)

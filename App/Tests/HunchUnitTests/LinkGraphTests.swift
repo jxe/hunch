@@ -35,13 +35,13 @@ struct LinkGraphTests {
             ]),
             .paragraph(text: linked("site", to: "https://example.com/E.md")),
         ]
-        let targets = outboundLinks(in: blocks, pageURL: workspaceURL.appendingPathComponent("A.md"), classify: classify())
+        let targets = outboundLinks(in: blocks, pageURL: workspaceURL.appendingPathComponent("A.md"), classify: classify(), classifySubpage: { $0 })
         #expect(targets == ["B.md", "C.md", "sub/D.md"])
     }
 
     @Test func extractsLinkRelativeToPageDirectory() {
         let blocks: [Block] = [.paragraph(text: linked("sibling", to: "Beta.md"))]
-        let targets = outboundLinks(in: blocks, pageURL: workspaceURL.appendingPathComponent("notes/Alpha.md"), classify: classify())
+        let targets = outboundLinks(in: blocks, pageURL: workspaceURL.appendingPathComponent("notes/Alpha.md"), classify: classify(), classifySubpage: { $0 })
         #expect(targets == ["notes/Beta.md"])
     }
 

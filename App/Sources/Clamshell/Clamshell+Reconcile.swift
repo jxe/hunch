@@ -265,6 +265,113 @@ extension Clamshell {
         }
     }
 
+    // MARK: - Link healing
+
+    /// One healing pass over a settled document: rewrite subpage / inline
+    /// link destinations to canonical form — the resolved workspace-relative
+    /// path plus the target's current page-ID fragment. This is what makes
+    /// renames converge lazily: a page carrying stale links gets its bytes
+    /// fixed the next time it's open and quiet, and legacy fragment-less
+    /// links pick up fragments the same way. Idempotent — already-canonical
+    /// links produce no rewrite, so the steady-state pass is free.
+    ///
+    /// The commit carries the rewritten blocks' purge/add ops. An
+    /// empty-log commit here would leave the old hashes add-backed and
+    /// missing from the `.md`, and the next reconcile would resurrect the
+    /// stale-link blocks as duplicates.
+    @discardableResult
+    func healLinks(in doc: Document) async -> Int {
+        let pre = doc.children
+        // Per-pass memo of target rel → page ID; `ensurePageID` may commit
+        // the *target* page (legacy mint), so don't repeat it per link.
+        var targetIDs: [String: String?] = [:]
+
+        func pageID(forTarget rel: String) async -> String? {
+            if let cached = targetIDs[rel] { return cached }
+            let id = await ensurePageID(forRel: rel)
+            targetIDs[rel] = id
+            return id
+        }
+
+        func canonicalSubpageDest(_ dest: String, title: String) async -> String? {
+            guard let rel = resolvePageTarget(dest, displayText: title),
+                  FileManager.default.fileExists(atPath: url(for: rel).path) else {
+                return nil
+            }
+            guard let id = await pageID(forTarget: rel) else {
+                let (path, _) = ClamshellPageEnvelope.splitPageFragment(dest)
+                return path == rel ? nil : rel
+            }
+            let canonical = "\(rel)#\(id)"
+            return canonical == dest ? nil : canonical
+        }
+
+        func canonicalInlineURL(_ link: URL, in docURL: URL) async -> URL? {
+            guard let rel = pagePath(for: link, relativeTo: docURL),
+                  FileManager.default.fileExists(atPath: url(for: rel).path) else {
+                return nil
+            }
+            let id = await pageID(forTarget: rel)
+            guard let canonical = relativeMarkdownURL(
+                from: docURL.deletingLastPathComponent(),
+                to: url(for: rel),
+                fragment: id
+            ) else { return nil }
+            return canonical.relativeString == link.relativeString ? nil : canonical
+        }
+
+        var rewrittenCount = 0
+
+        func heal(_ blocks: [Block]) async -> [Block] {
+            var out: [Block] = []
+            out.reserveCapacity(blocks.count)
+            for block in blocks {
+                var healed = block
+                if case .subpage(let title, let dest) = block.kind,
+                   let canonical = await canonicalSubpageDest(dest, title: title) {
+                    healed = Block(id: block.id, kind: .subpage(title: title, pageID: canonical), children: block.children)
+                    rewrittenCount += 1
+                } else {
+                    var offsets: [(lower: Int, upper: Int, url: URL)] = []
+                    let text = block.text
+                    for run in text.runs {
+                        guard let link = run.link,
+                              let canonical = await canonicalInlineURL(link, in: doc.url) else { continue }
+                        let lower = text.characters.distance(from: text.startIndex, to: run.range.lowerBound)
+                        let upper = text.characters.distance(from: text.startIndex, to: run.range.upperBound)
+                        offsets.append((lower, upper, canonical))
+                    }
+                    if !offsets.isEmpty {
+                        var newText = text
+                        for repl in offsets {
+                            let start = newText.index(newText.startIndex, offsetByCharacters: repl.lower)
+                            let end = newText.index(newText.startIndex, offsetByCharacters: repl.upper)
+                            newText[start..<end].link = repl.url
+                        }
+                        healed = block.withText(newText)
+                        rewrittenCount += 1
+                    }
+                }
+                if !healed.children.isEmpty {
+                    healed.children = await heal(healed.children)
+                }
+                out.append(healed)
+            }
+            return out
+        }
+
+        let post = await heal(pre)
+        guard rewrittenCount > 0 else { return 0 }
+        doc.replaceChildrenFromSystemMutation(post)
+        let ops = BlockTreeDiff.derive(pre: pre, post: post)
+        do {
+            try await commit(.fromEditorOps(ops), to: doc)
+        } catch {
+            Diag.log.error("link heal commit failed url=\(doc.url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        }
+        return rewrittenCount
+    }
+
     private static func logUnrestorables(_ entries: [PatchEngine.UnrestorableEntry], url: URL) {
         guard !entries.isEmpty else { return }
         let hashList = entries.map(\.hash).joined(separator: ",")

@@ -27,6 +27,12 @@ append-only writes, no cross-device write contention on any single file).
 - **Live pages** are plain markdown — Hunch's parser handles toggles
   (`▸ Title` paragraphs with indented body) and template buttons via
   convention; see [Parser.swift](Parser.swift) for the surface syntax.
+  Each page carries a durable `clamshell-id: <6 chars>` line in its
+  YAML frontmatter (minted at creation, or on first save for legacy
+  pages). This ID is the page's stable identity across renames: links
+  write it as a fragment (`[Title](My-Page.md#x7f3q2)`) so a rename —
+  even one done in Finder — never breaks a link. See **Renaming &
+  link identity** below.
 - **`Trash/`** mirrors the workspace's directory structure. Restoring a
   trashed page moves it back to its original path (suffixed
   `-restored-2` etc. on collision). The page's `.history/<relpath>/` dir
@@ -527,6 +533,41 @@ again automatically without any log mutation.
 `homeRelativePath` if the trashed page was the home page. The page's
 `.history/<rel>/` directory moves alongside the `.md`, so trash +
 restore is a page-bundle operation.
+
+**Renaming & link identity.** `renamePage(at:toMatchTitle:)` is O(1):
+it moves the `.md`, moves the `.history/<rel>/` bundle (and its
+reconcile watermark / counter, migrated inside `RecoveryLog.move`),
+re-keys the in-memory caches, follows the home pointer, and rescans —
+**it does not rewrite inbound links**. Link integrity comes from the
+representation instead:
+
+- Every page has a durable `clamshell-id` (see the on-disk layout).
+  Links store it as a fragment; `resolve(pathRel:id:)` treats the ID
+  as authoritative — when the index maps the fragment to an existing
+  page, that page wins even if the path part now names a different
+  file (a new page that reused the old name). Fragment-less links keep
+  the historical purely-syntactic path behavior.
+- `resolvePageTarget(_:displayText:)` adds a title fallback for legacy
+  fragment-less links whose path went stale: a unique live page whose
+  title equals the link text resolves the link. Refuses on duplicate
+  titles.
+- Bytes converge lazily: `healLinks(in:)` (a step in `synchronizePage`,
+  so it runs whenever a page is open and quiet) rewrites stale
+  destinations to canonical `rel#id` form and commits through the
+  normal chain with `BlockTreeDiff`-derived purge/add ops — so the
+  journal follows the rewrite and reconcile never resurrects the
+  stale-link block. This also progressively enriches legacy links with
+  fragments. Idempotent: canonical links rewrite nothing.
+
+The page-ID index (`id → rel`) is derived state: rebuilt from the
+persisted link cache at init and on every graph build (the cache's
+`LinkCacheEntry` gained a `pageID` field), and patched on save/load via
+`rememberEnvelope`. It lives behind a `Mutex` because the nonisolated
+`pagePath(for:relativeTo:)` (called off-main from the link-graph
+classify pass) consults it. The subpage-link classifier that feeds the
+graph is `resolveSubpageTarget(_:)` — it normalizes verbatim
+destinations (fragment and all) to a live rel path so graph vertices
+stay comparable.
 
 **One session write API: `enqueueEditorOps(_:)` + `flush()`.** The
 editor submits its transaction diff without knowing about recovery-log

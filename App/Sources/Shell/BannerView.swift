@@ -20,6 +20,23 @@ struct BannerView: View {
             Text(banner.message)
                 .font(.system(size: 13))
                 .lineLimit(2)
+                // Only the text portion dismisses; the action button below
+                // must receive its own taps.
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    dismissTask?.cancel()
+                    onDismiss()
+                }
+            if let action = banner.action {
+                Button(action.label) {
+                    dismissTask?.cancel()
+                    action.handler()
+                    onDismiss()
+                }
+                .font(.system(size: 13, weight: .medium))
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.accentColor)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -29,11 +46,6 @@ struct BannerView: View {
                 .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.10), radius: 6, x: 0, y: 2)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            dismissTask?.cancel()
-            onDismiss()
-        }
         .padding(.top, 8)
         .transition(.move(edge: .top).combined(with: .opacity))
         .task(id: banner.id) {

@@ -140,7 +140,10 @@ actor RecoveryLog {
     }
 
     /// Move a page's history dir. Used by trash / rename / restore so the
-    /// per-device logs travel with their page.
+    /// per-device logs travel with their page. The watermark and counter
+    /// caches move too — the logs are byte-identical at the new path, and
+    /// leaving stale entries behind would force a full journal refold on
+    /// the first open after the move.
     func move(fromPage src: String, toPage dst: String) throws {
         let from = pageDir(rel: src)
         let to = pageDir(rel: dst)
@@ -150,6 +153,14 @@ actor RecoveryLog {
             withIntermediateDirectories: true
         )
         try FileManager.default.moveItem(at: from, to: to)
+        if let counter = nextCounter.removeValue(forKey: src) {
+            nextCounter[dst] = counter
+        }
+        loadWatermarksIfNeeded()
+        if let watermark = pageWatermarks?.removeValue(forKey: src) {
+            pageWatermarks?[dst] = watermark
+            saveWatermarks()
+        }
     }
 
     // MARK: - Persistence: reads

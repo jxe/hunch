@@ -9,6 +9,7 @@ struct ContentView: View {
     @Bindable var workspace: Workspace
     @State private var window: WorkspaceWindow
     @State private var recordingSession = VoiceRecordingSession()
+    @State private var renameSuggestionTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @Bindable var quickActions: QuickActionRouter
@@ -48,6 +49,18 @@ struct ContentView: View {
                 }
                 .onChange(of: workspace.homeURL, initial: true) { _, _ in
                     window.handlePathChange()
+                }
+                // Offer to rename the file when the H1 title diverges from the
+                // filename. Debounced: the title recomputes on every committed
+                // transaction while the user is typing the heading, so wait for
+                // a pause before prompting.
+                .onChange(of: window.openDocument?.title) { _, _ in
+                    renameSuggestionTask?.cancel()
+                    renameSuggestionTask = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(2))
+                        guard !Task.isCancelled else { return }
+                        window.evaluateRenameSuggestion()
+                    }
                 }
                 .sheet(isPresented: $window.showSearch) {
                     PageSearchSheet(

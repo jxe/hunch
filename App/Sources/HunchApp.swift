@@ -54,6 +54,7 @@ struct HunchApp: App {
                 AddToPageMenuButton(workspaceURL: workspace.workspaceURL)
                     .keyboardShortcut("p", modifiers: [.command, .shift])
                 CopyCurrentPageLinkMenuButton(workspaceURL: workspace.workspaceURL)
+                RenameCurrentPageMenuButton(workspaceURL: workspace.workspaceURL)
                 MoveCurrentPageToTrashMenuButton(workspaceURL: workspace.workspaceURL)
 
                 Divider()
@@ -371,6 +372,19 @@ private struct MoveCurrentPageToTrashMenuButton: View {
             Task { await window.moveCurrentPageToTrash() }
         }
         .disabled(workspaceURL == nil || window?.currentPageRelativePath == nil)
+    }
+}
+
+private struct RenameCurrentPageMenuButton: View {
+    let workspaceURL: URL?
+    @FocusedValue(\.workspaceWindow) private var window
+
+    var body: some View {
+        Button("Rename File to Match Title") {
+            guard let window else { return }
+            Task { await window.renameCurrentPageToMatchTitle() }
+        }
+        .disabled(workspaceURL == nil || window?.pendingRenameProposal == nil)
     }
 }
 

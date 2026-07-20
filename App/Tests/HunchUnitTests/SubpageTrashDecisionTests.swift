@@ -65,7 +65,8 @@ struct SubpageTrashDecisionTests {
             classify: { url, base in
                 guard url.relativeString == "Target.md" else { return nil }
                 return base.deletingLastPathComponent().appendingPathComponent(url.relativeString).lastPathComponent
-            }
+            },
+            classifySubpage: { $0 }
         )
         let graph = LinkGraph.derive(
             outbound: [

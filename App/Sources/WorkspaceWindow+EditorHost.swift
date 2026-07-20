@@ -27,8 +27,9 @@ extension WorkspaceWindow: EditorHost {
         workspace.clamshell?.lookupPage(pageID) ?? .missing
     }
 
-    func didDeleteSubpageLink(pageID: String, title: String, from document: Document) {
+    func didDeleteSubpageLink(pageID rawPageID: String, title: String, from document: Document) {
         guard let clamshell = workspace.clamshell,
+              let pageID = clamshell.resolveSubpageTarget(rawPageID),
               clamshell.entry(at: pageID) != nil else {
             return
         }
@@ -55,10 +56,14 @@ extension WorkspaceWindow: EditorHost {
             let classify: @Sendable (URL, URL) -> String? = { [clamshell] url, base in
                 clamshell.pagePath(for: url, relativeTo: base)
             }
+            let classifySubpage: @Sendable (String) -> String? = { [clamshell] dest in
+                clamshell.resolveSubpageTarget(dest)
+            }
             let sourceOutboundAfterDelete = outboundLinks(
                 in: sourceBlocksAfterDelete,
                 pageURL: sourceURL,
-                classify: classify
+                classify: classify,
+                classifySubpage: classifySubpage
             )
 
             guard SubpageTrashDecision.shouldPromptToTrash(
@@ -80,9 +85,19 @@ extension WorkspaceWindow: EditorHost {
 
     func linkURL(forPageID pageID: String, in document: Document) -> URL? {
         guard let clamshell = workspace.clamshell else { return nil }
-        return relativeMarkdownURL(
+        let (rawPath, destID) = ClamshellPageEnvelope.splitPageFragment(pageID)
+        let rel = clamshell.resolvePageTarget(pageID) ?? rawPath
+        let id = destID ?? clamshell.knownPageID(forRel: rel)
+        if id == nil {
+            // Legacy target without an ID yet: mint in the background so the
+            // heal pass can add the fragment later; today's link stays
+            // fragment-less and resolves by path.
+            Task { [clamshell] in await clamshell.ensurePageID(forRel: rel) }
+        }
+        return clamshell.relativeMarkdownURL(
             from: document.url.deletingLastPathComponent(),
-            to: clamshell.url(for: pageID)
+            to: clamshell.url(for: rel),
+            fragment: id
         )
     }
 
@@ -92,7 +107,7 @@ extension WorkspaceWindow: EditorHost {
 
     func loadPageBlocks(_ pageID: String) async -> [Block]? {
         guard let clamshell = workspace.clamshell else { return nil }
-        let page = clamshell.page(atPath: pageID)
+        let page = clamshell.page(atPath: clamshell.resolvePageTarget(pageID) ?? pageID)
         do {
             return try await page.readBlocks()
         } catch {
@@ -172,14 +187,15 @@ extension WorkspaceWindow: EditorHost {
     // — Per-window navigation & durability —
 
     func openPage(pageID: String) {
-        openSubpage(relativePath: pageID)
+        let resolved = workspace.clamshell?.resolvePageTarget(pageID) ?? pageID
+        openSubpage(relativePath: resolved)
     }
 
     func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {
         guard let clamshell = workspace.clamshell,
               let parentSession = session(for: parent) else { return false }
         do {
-            try await clamshell.page(atPath: pageID).trashAfterInlining(into: parentSession)
+            try await clamshell.page(atPath: clamshell.resolvePageTarget(pageID) ?? pageID).trashAfterInlining(into: parentSession)
             return true
         } catch {
             workspace.error = "Failed to move \(pageID) to trash: \(error.localizedDescription)"
@@ -189,11 +205,12 @@ extension WorkspaceWindow: EditorHost {
 
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
+        let rel = clamshell.resolvePageTarget(pageID) ?? pageID
         do {
-            try await clamshell.page(atPath: pageID).append(blocks)
+            try await clamshell.page(atPath: rel).append(blocks)
             return true
         } catch {
-            workspace.error = "Failed to move blocks into \(pageID): \(error.localizedDescription)"
+            workspace.error = "Failed to move blocks into \(rel): \(error.localizedDescription)"
             return false
         }
     }
@@ -201,17 +218,18 @@ extension WorkspaceWindow: EditorHost {
     func appendCurrentPageLink(to pageID: String) async -> Bool {
         guard let source = openDocument,
               let sourcePageID = currentPageRelativePath,
-              sourcePageID != pageID,
               let clamshell = workspace.clamshell else {
             return false
         }
+        let rel = clamshell.resolvePageTarget(pageID) ?? pageID
+        guard sourcePageID != rel else { return false }
 
         let linkBlock = Block.subpage(title: source.title, pageID: sourcePageID)
         do {
-            try await clamshell.page(atPath: pageID).append([linkBlock])
+            try await clamshell.page(atPath: rel).append([linkBlock])
             return true
         } catch {
-            workspace.error = "Failed to add \(source.title) to \(pageID): \(error.localizedDescription)"
+            workspace.error = "Failed to add \(source.title) to \(rel): \(error.localizedDescription)"
             return false
         }
     }
@@ -253,23 +271,3 @@ extension WorkspaceWindow: EditorHost {
     }
 }
 
-private func relativeMarkdownURL(from baseDirectory: URL, to target: URL) -> URL? {
-    let baseComponents = baseDirectory.standardizedFileURL.pathComponents
-    let targetComponents = target.standardizedFileURL.pathComponents
-    var commonCount = 0
-    while commonCount < baseComponents.count,
-          commonCount < targetComponents.count,
-          baseComponents[commonCount] == targetComponents[commonCount] {
-        commonCount += 1
-    }
-
-    let up = Array(repeating: "..", count: baseComponents.count - commonCount)
-    let down = Array(targetComponents.dropFirst(commonCount))
-    let components = up + down
-    guard !components.isEmpty else { return nil }
-    let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-    let encoded = components
-        .map { $0.addingPercentEncoding(withAllowedCharacters: allowed) ?? $0 }
-        .joined(separator: "/")
-    return URL(string: encoded)
-}

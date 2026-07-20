@@ -240,6 +240,12 @@ extension Clamshell {
             Diag.merge.error("presenter reconcile failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         }
 
+        // 4. Heal stale link destinations (renamed targets, missing page-ID
+        //    fragments). Idempotent — canonical links rewrite nothing — and
+        //    committed through the normal chain with purge/add ops so the
+        //    journal follows the rewrite.
+        await healLinks(in: doc)
+
         if let salvaged = conflictSalvaged {
             return .conflictMerged(salvaged: salvaged)
         }
