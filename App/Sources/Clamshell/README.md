@@ -435,7 +435,7 @@ existing instance and build a new one.
 | Get a page | `page(at:)`, `page(atPath:)` → stable lightweight `Page`; `relativePath(of:)`, `url(for:)`, `pagePath(for:relativeTo:)` remain workspace path conversions. |
 | Page | `open(onEvent:)`, `readBlocks()`, `append(_:)`, `restore(_:)`, `resolveConflicts()`, `cloudSyncSnapshot()`, `compactThisDeviceLog()`, `trashAfterInlining(into:)`. Closed-page operations acquire the URL's canonical coordinator document transiently. |
 | Page session | `document`, `enqueueEditorOps(_:)`, `flush()`, `close()`, `cloudSyncSnapshot()`, `compactThisDeviceLog()`. Multiple sessions for one URL share one canonical document and coordinator. |
-| Page list (observable) | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:filter:)` — returns ranked `WorkspaceEntry`s; the app boundary maps to `MentionItem` via `WorkspaceEntry.asMentionItem(homeRelativePath:)`. |
+| Page list and search | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:filter:)` for synchronous title filtering, and async `searchPages(matching:limit:)` for full-text search. Search results carry an internal relative path, title, optional matching passage, modification date, and score; picker rows never display the path. |
 | Workspace lifetime | `drain()` awaits all pending generations and shuts down every coordinator. Generic `Commit` construction and `commit(_:to:)` are engine-internal. |
 | Create | `createPage(title:requestedPath:initialContent:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
@@ -473,6 +473,15 @@ warm-up on first render — search-sheet rows for un-warmed pages
 display the filename until clicked or rendered. Save-time
 `postSaveBookkeeping` (`refreshTitleCache(from:)`) updates the cache
 from the live `Document` directly — no disk read.
+
+**Full-text search is local and disposable.** Each workspace gets a
+SQLite FTS5 database under Application Support rather than inside the
+Markdown workspace. The link-graph refresh shares its parse with the
+search index for changed files, while successful saves and page lifecycle
+operations update the index directly. Queries support ANDed prefix terms
+and quoted phrases, use weighted BM25 ranking, and return a short body
+passage when the body matched. Schema changes, corruption, and runtimes
+without FTS5 fall back safely to title-only search.
 
 **Recovery log is per-device, append-only, no write-time dedup.**
 Editor mutations are projected to a `Patch` and applied as one batched
@@ -667,6 +676,9 @@ append" — `NSFileCoordinator` handles that.
   `PageSession`, backed by [PageCoordinator.swift](PageCoordinator.swift).
   The coordinator remains the internal per-URL state machine for canonical
   document ownership, leases, presenters, persistence, and synchronization.
+- [PageSearchIndex.swift](PageSearchIndex.swift) — the per-workspace SQLite
+  FTS5 index, visible-text extraction, safe live-query compilation, ranking,
+  snippets, and disposable-database recovery.
 - [Commit.swift](Commit.swift) — the `Commit` value type that
   unifies every durable write (editor commit, reconcile catch-up,
   manual restore, conflict-merge, subpage append). One Commit is the

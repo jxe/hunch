@@ -61,6 +61,21 @@ struct NativePickerSection: Hashable {
     }
 }
 
+/// Monotonic token used by native picker controllers to reject an async
+/// response after any newer reload, including a refresh of the same query.
+struct PickerQueryGeneration {
+    private var current = 0
+
+    mutating func begin() -> Int {
+        current += 1
+        return current
+    }
+
+    func accepts(_ generation: Int) -> Bool {
+        generation == current
+    }
+}
+
 struct NativePickerContextAction {
     enum Role {
         case normal
@@ -97,7 +112,7 @@ struct NativeSearchablePicker: View {
     let title: String
     let searchPrompt: String
     let emptyTitle: String
-    let sections: (String) -> [NativePickerSection]
+    let sections: (String) async -> [NativePickerSection]
     let contextActions: (NativePickerItem) -> [NativePickerContextAction]
     let onActivate: (NativePickerItemID) -> Void
     let onClose: () -> Void
@@ -106,7 +121,7 @@ struct NativeSearchablePicker: View {
         title: String,
         searchPrompt: String,
         emptyTitle: String,
-        sections: @escaping (String) -> [NativePickerSection],
+        sections: @escaping (String) async -> [NativePickerSection],
         contextActions: @escaping (NativePickerItem) -> [NativePickerContextAction] = { _ in [] },
         onActivate: @escaping (NativePickerItemID) -> Void,
         onClose: @escaping () -> Void
@@ -170,15 +185,20 @@ struct PageSearchSheet: View {
             sections: { query in
                 guard let clamshell = workspace.clamshell else { return [] }
                 let home = clamshell.homeRelativePath
-                let items = clamshell.pages(matching: query, excluding: excluding)
-                    .map { entry in
-                        let item = entry.asMentionItem(homeRelativePath: home)
-                        let isOrphan = graph?.isOrphan(entry.relativePath) ?? false
+                let results = await clamshell.searchPages(matching: query)
+                let items = results
+                    .filter { result in
+                        guard let excluding else { return true }
+                        return clamshell.url(for: result.relativePath) != excluding.standardizedFileURL
+                    }
+                    .map { result in
+                        let isHome = result.relativePath == home
+                        let isOrphan = graph?.isOrphan(result.relativePath) ?? false
                         return NativePickerItem(
-                            id: .page(item.id),
-                            title: item.title,
-                            subtitle: item.subtitle,
-                            glyph: .page(isHome: item.isHome),
+                            id: .page(result.relativePath),
+                            title: result.title,
+                            subtitle: result.snippet,
+                            glyph: .page(isHome: isHome),
                             trailingSymbol: isOrphan ? "exclamationmark.triangle.fill" : nil
                         )
                     }
@@ -189,7 +209,7 @@ struct PageSearchSheet: View {
                 let mention = MentionItem(
                     id: id,
                     title: item.title,
-                    subtitle: item.subtitle,
+                    subtitle: nil,
                     isHome: {
                         if case .page(let isHome) = item.glyph { return isHome }
                         return false
@@ -229,7 +249,7 @@ private struct MacNativeSearchablePicker: NSViewControllerRepresentable {
     let title: String
     let searchPrompt: String
     let emptyTitle: String
-    let sections: (String) -> [NativePickerSection]
+    let sections: (String) async -> [NativePickerSection]
     let contextActions: (NativePickerItem) -> [NativePickerContextAction]
     let onActivate: (NativePickerItemID) -> Void
     let onClose: () -> Void
@@ -277,18 +297,20 @@ private final class MacNativeSearchablePickerController: NSViewController, NSTab
     private var pickerTitle: String
     private var searchPrompt: String
     private var emptyTitle: String
-    private var makeSections: (String) -> [NativePickerSection]
+    private var makeSections: (String) async -> [NativePickerSection]
     private var makeContextActions: (NativePickerItem) -> [NativePickerContextAction]
     private var activate: (NativePickerItemID) -> Void
     private var close: () -> Void
     private var rows: [Row] = []
     private var expandedSectionKeys: Set<String> = []
+    private var queryTask: Task<Void, Never>?
+    private var queryGeneration = PickerQueryGeneration()
 
     init(
         title: String,
         searchPrompt: String,
         emptyTitle: String,
-        sections: @escaping (String) -> [NativePickerSection],
+        sections: @escaping (String) async -> [NativePickerSection],
         contextActions: @escaping (NativePickerItem) -> [NativePickerContextAction],
         onActivate: @escaping (NativePickerItemID) -> Void,
         onClose: @escaping () -> Void
@@ -312,7 +334,7 @@ private final class MacNativeSearchablePickerController: NSViewController, NSTab
         title: String,
         searchPrompt: String,
         emptyTitle: String,
-        sections: @escaping (String) -> [NativePickerSection],
+        sections: @escaping (String) async -> [NativePickerSection],
         contextActions: @escaping (NativePickerItem) -> [NativePickerContextAction],
         onActivate: @escaping (NativePickerItemID) -> Void,
         onClose: @escaping () -> Void
@@ -416,7 +438,19 @@ private final class MacNativeSearchablePickerController: NSViewController, NSTab
 
     private func reload(selectFirst: Bool) {
         let query = searchField.stringValue
-        let renderedSections = makeSections(query).filter { !$0.items.isEmpty }
+        queryTask?.cancel()
+        let generation = queryGeneration.begin()
+        let makeSections = self.makeSections
+        queryTask = Task { @MainActor [weak self] in
+            let renderedSections = await makeSections(query).filter { !$0.items.isEmpty }
+            guard !Task.isCancelled, let self,
+                  self.queryGeneration.accepts(generation),
+                  self.searchField.stringValue == query else { return }
+            self.apply(renderedSections, query: query, selectFirst: selectFirst)
+        }
+    }
+
+    private func apply(_ renderedSections: [NativePickerSection], query: String, selectFirst: Bool) {
         let itemRows = renderedSections.enumerated().flatMap { index, section in
             visibleItems(for: section, key: sectionKey(for: index, section: section), query: query)
         }
@@ -773,7 +807,7 @@ private struct IOSNativeSearchablePicker: UIViewControllerRepresentable {
     let title: String
     let searchPrompt: String
     let emptyTitle: String
-    let sections: (String) -> [NativePickerSection]
+    let sections: (String) async -> [NativePickerSection]
     let contextActions: (NativePickerItem) -> [NativePickerContextAction]
     let onActivate: (NativePickerItemID) -> Void
     let onClose: () -> Void
@@ -813,19 +847,21 @@ private final class IOSNativeSearchablePickerController: UITableViewController, 
     private var pickerTitle: String
     private var searchPrompt: String
     private var emptyTitle: String
-    private var makeSections: (String) -> [NativePickerSection]
+    private var makeSections: (String) async -> [NativePickerSection]
     private var makeContextActions: (NativePickerItem) -> [NativePickerContextAction]
     private var activate: (NativePickerItemID) -> Void
     private var close: () -> Void
     private var renderedSections: [NativePickerSection] = []
     private var expandedSectionKeys: Set<String> = []
     private var currentQuery = ""
+    private var queryTask: Task<Void, Never>?
+    private var queryGeneration = PickerQueryGeneration()
 
     init(
         title: String,
         searchPrompt: String,
         emptyTitle: String,
-        sections: @escaping (String) -> [NativePickerSection],
+        sections: @escaping (String) async -> [NativePickerSection],
         contextActions: @escaping (NativePickerItem) -> [NativePickerContextAction],
         onActivate: @escaping (NativePickerItemID) -> Void,
         onClose: @escaping () -> Void
@@ -887,7 +923,7 @@ private final class IOSNativeSearchablePickerController: UITableViewController, 
         title: String,
         searchPrompt: String,
         emptyTitle: String,
-        sections: @escaping (String) -> [NativePickerSection],
+        sections: @escaping (String) async -> [NativePickerSection],
         contextActions: @escaping (NativePickerItem) -> [NativePickerContextAction],
         onActivate: @escaping (NativePickerItemID) -> Void,
         onClose: @escaping () -> Void
@@ -916,10 +952,17 @@ private final class IOSNativeSearchablePickerController: UITableViewController, 
     private func reload(selectFirst: Bool) {
         let query = searchController.searchBar.text ?? ""
         currentQuery = query
-        renderedSections = makeSections(query).filter { !$0.items.isEmpty }
-        tableView.reloadData()
-        if selectFirst {
-            selectFirstItem()
+        queryTask?.cancel()
+        let generation = queryGeneration.begin()
+        let makeSections = self.makeSections
+        queryTask = Task { @MainActor [weak self] in
+            let sections = await makeSections(query).filter { !$0.items.isEmpty }
+            guard !Task.isCancelled, let self,
+                  self.queryGeneration.accepts(generation),
+                  self.currentQuery == query else { return }
+            self.renderedSections = sections
+            self.tableView.reloadData()
+            if selectFirst { self.selectFirstItem() }
         }
     }
 

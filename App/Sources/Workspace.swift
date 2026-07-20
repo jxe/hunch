@@ -26,7 +26,7 @@ extension WorkspaceEntry {
         MentionItem(
             id: relativePath,
             title: title,
-            subtitle: relativePath != title + ".md" ? relativePath : nil,
+            subtitle: nil,
             isHome: relativePath == homeRelativePath
         )
     }

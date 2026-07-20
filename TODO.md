@@ -44,13 +44,6 @@ default; restore brings the subtree back).
 
 ---
 
-## Full-text search
-
-`Cmd+P` is title-only today. Add an indexed full-text path across page
-bodies — small enough to live in memory, rebuilt on rescan.
-
----
-
 ## On-device transcript cleanup
 
 Pipe `SFSpeechRecognizer` output through an on-device model (or tune

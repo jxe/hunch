@@ -18,7 +18,7 @@ struct MoveDestinationSheet: View {
             title: "Move to",
             searchPrompt: "Search destinations",
             emptyTitle: "No matching destinations",
-            sections: makeSections(query:),
+            sections: { query in makeSections(query: query) },
             onActivate: activate(_:),
             onClose: onClose
         )

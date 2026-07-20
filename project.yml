@@ -38,6 +38,7 @@ targets:
       - package: Editor
       - package: swift-markdown
         product: Markdown
+      - sdk: libsqlite3.tbd
     info:
       path: App/Info.plist
       properties:

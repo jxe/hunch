@@ -147,6 +147,9 @@ extension Clamshell {
     /// coordinator generations reach disk. See
     /// `Workspace.switchWorkspace()` for the canonical call site.
     func drain() async {
+        linkGraphBuildTask?.cancel()
+        await linkGraphBuildTask?.value
+        linkGraphBuildTask = nil
         let coordinators = Array(pageCoordinators.values)
         for coordinator in coordinators {
             await coordinator.shutdown()

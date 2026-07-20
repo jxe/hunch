@@ -67,7 +67,7 @@ Cmd+Shift+M opens a single picker with two grouped sections: **destinations on t
 
 ### 🔎  Search is local and instant
 
-Cmd+P opens a fuzzy picker over every page in the workspace, indexed in memory from the workspace folder. No network round-trip, no remote ranking model, no spinner — keystroke to result is one frame. Arrow keys + Return; the magnifying-glass toolbar item does the same on iOS. (Full-text search across page bodies is on the roadmap; for now, search is title-only.)
+Cmd+P searches page titles and visible body text through a local, disposable SQLite FTS5 index. It understands word stems, diacritics, partial words, and quoted phrases, ranks title matches first, and shows the best matching passage without exposing workspace paths. No page content leaves the device. Arrow keys + Return open the selected page; the magnifying-glass toolbar item does the same on iOS, with title-only search as a fallback when FTS5 is unavailable.
 
 ### ⌨️  Two modes, no hover-floating-handle UI
 

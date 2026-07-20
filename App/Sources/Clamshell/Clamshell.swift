@@ -82,6 +82,7 @@ final class Clamshell {
     @ObservationIgnored nonisolated let files: FileStore
     @ObservationIgnored nonisolated let trash: TrashStore
     @ObservationIgnored nonisolated let log: RecoveryLog
+    @ObservationIgnored let searchIndex: PageSearchIndex
     // Composed pieces are intentionally `internal` — outside callers go
     // through the Clamshell wrappers (`listLostBlocks`, `restorePage`,
     // etc.) so the composition stays an implementation detail. Tests
@@ -135,10 +136,11 @@ final class Clamshell {
     /// in-memory save patch) lands the value here. Tracked, so the search-row
     /// orphan badge and the per-page backlinks footer re-render when it lands.
     /// Mirrors the title-cache warm: deduped on `isBuildingLinkGraph`,
-    /// generation-guarded so an invalidation mid-build drops the stale result.
+    /// generation-guarded and cancelled when an invalidation makes it stale.
     private(set) var linkGraph: LinkGraph?
     @ObservationIgnored private var isBuildingLinkGraph = false
     @ObservationIgnored private var linkGraphBuildGeneration = 0
+    @ObservationIgnored var linkGraphBuildTask: Task<Void, Never>?
 
     /// Persistent per-page `(mtime, title, outbound targets)` mirror, loaded
     /// from `UserDefaults` at init and rewritten after each full
@@ -175,6 +177,7 @@ final class Clamshell {
         self.files = files
         self.trash = TrashStore(workspaceRoot: root)
         self.log = RecoveryLog(workspaceRoot: root, store: files)
+        self.searchIndex = PageSearchIndex(workspaceRoot: root)
 
         let cacheHash = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8))
             .prefix(8).map { String(format: "%02x", $0) }.joined()
@@ -617,6 +620,8 @@ final class Clamshell {
         perfEnd(scanT, "Clamshell.rescan.scan", "count=\(result.count)")
         scanResult = result
         invalidateLinkGraph()
+        let livePaths = Set(result.map(\.relativePath))
+        Task { [searchIndex] in await searchIndex.prune(keeping: livePaths) }
     }
 
     /// Look up the `WorkspaceEntry` for a workspace-relative path, with the
@@ -647,7 +652,7 @@ final class Clamshell {
 
     /// Filter + rank `entries` for any page-picker surface (search sheet,
     /// @-mention popover, move-to, jump-to). Title-prefix beats
-    /// title-substring beats path-substring; mtime breaks ties. Empty
+    /// title-substring; mtime breaks ties. Empty
     /// query returns the full pool in mtime-descending order.
     /// `excluding` omits a specific URL — typically the currently-open
     /// document (move-to / mention / jump-to). Pass nil to include it.
@@ -674,10 +679,57 @@ final class Clamshell {
             let title = entry.title.lowercased()
             if title.hasPrefix(q) { return (entry, 0) }
             if title.contains(q) { return (entry, 1) }
-            if entry.relativePath.lowercased().contains(q) { return (entry, 2) }
             return nil
         }
         return ranked.sorted { $0.1 < $1.1 }.map(\.0)
+    }
+
+    /// Full-text page search for the global search sheet. The FTS index is
+    /// derived and may still be warming, so merge current title hits behind
+    /// indexed results. Opening the sheet also requests the shared page scan;
+    /// when it lands, `linkGraph` observation makes the picker rerun this query.
+    func searchPages(matching query: String, limit: Int = 100) async -> [PageSearchResult] {
+        let effectiveLimit = min(100, max(1, limit))
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return entries.prefix(effectiveLimit).map {
+                PageSearchResult(
+                    relativePath: $0.relativePath,
+                    title: $0.title,
+                    snippet: nil,
+                    modificationDate: $0.modificationDate,
+                    score: 0
+                )
+            }
+        }
+
+        _ = linkGraphOrBuild()
+        let indexed = await searchIndex.search(trimmed, limit: effectiveLimit)
+        var seen: Set<String> = []
+        var results: [PageSearchResult] = []
+        for hit in indexed {
+            guard let entry = entry(at: hit.relativePath) else { continue }
+            seen.insert(hit.relativePath)
+            results.append(PageSearchResult(
+                relativePath: hit.relativePath,
+                title: entry.title,
+                snippet: hit.snippet,
+                modificationDate: entry.modificationDate,
+                score: hit.score
+            ))
+        }
+
+        for entry in pages(matching: trimmed) where !seen.contains(entry.relativePath) {
+            results.append(PageSearchResult(
+                relativePath: entry.relativePath,
+                title: entry.title,
+                snippet: nil,
+                modificationDate: entry.modificationDate,
+                score: .infinity
+            ))
+            if results.count == effectiveLimit { break }
+        }
+        return results
     }
 
     /// Engine-internal single read path: read **and parse** inside one
@@ -808,24 +860,24 @@ final class Clamshell {
         guard !isBuildingLinkGraph else { return nil }
         isBuildingLinkGraph = true
         let generation = linkGraphBuildGeneration
-        Task { [weak self] in
+        linkGraphBuildTask = Task { [weak self] in
             guard let self else { return }
             let built = await self.buildLinkGraph()
+            guard !Task.isCancelled,
+                  self.linkGraphBuildGeneration == generation else { return }
             self.isBuildingLinkGraph = false
-            if self.linkGraphBuildGeneration == generation {
-                self.linkGraph = built
-            } else {
-                // Invalidated mid-build — rebuild against the current state so we
-                // converge instead of stranding `linkGraph` at nil.
-                _ = self.linkGraphOrBuild()
-            }
+            self.linkGraphBuildTask = nil
+            self.linkGraph = built
         }
         return nil
     }
 
-    /// Drop the cached graph and bump the generation so any in-flight build
-    /// discards its result. Called on `rescan()` (page-set change).
+    /// Drop the cached graph, cancel any in-flight build, and bump the
+    /// generation so stale work cannot publish. Called on `rescan()`.
     private func invalidateLinkGraph() {
+        linkGraphBuildTask?.cancel()
+        linkGraphBuildTask = nil
+        isBuildingLinkGraph = false
         linkGraphBuildGeneration += 1
         linkGraph = nil
     }
@@ -1122,6 +1174,13 @@ final class Clamshell {
         Task { [log, rel, mtime] in
             await log.recordOwnSave(page: rel, mdMtime: mtime)
         }
+        let indexedPage = SearchIndexedPage(
+            relativePath: rel,
+            modificationDate: mtime ?? .distantPast,
+            title: document.title,
+            body: searchableText(in: document.children)
+        )
+        Task { [searchIndex] in await searchIndex.upsert(indexedPage) }
         if titleChanged {
             // Title overlay changed → entries' surface mtime is now stale.
             // A scan picks up the new mtime for this URL; subscribers
@@ -1193,6 +1252,13 @@ final class Clamshell {
         rememberEnvelope(ClamshellPageEnvelope.parse(body), for: url)
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
         titleCache[url] = CachedTitle(title: title, modificationDate: mtime)
+        let indexedPage = SearchIndexedPage(
+            relativePath: path,
+            modificationDate: mtime ?? .distantPast,
+            title: title,
+            body: searchableText(in: blocks)
+        )
+        Task { [searchIndex] in await searchIndex.upsert(indexedPage) }
         try? rescan()
         return path
     }
@@ -1388,6 +1454,7 @@ final class Clamshell {
             entries[newRel] = entry
             storeLinkEntries(entries)
         }
+        await searchIndex.rename(from: oldRel, to: newRel)
 
         if homeRelativePath == oldRel {
             homeRelativePath = newRel
@@ -1412,6 +1479,7 @@ final class Clamshell {
         forgetDiskContent(at: url)
         forgetTitle(at: url)
         unregisterPageIDs(forRel: rel)
+        Task { [searchIndex] in await searchIndex.remove(relativePath: rel) }
         try? rescan()
         Task { [log, rel, result] in
             do {
@@ -1437,6 +1505,19 @@ final class Clamshell {
             Diag.log.error("log move (restore) failed from=\(entry.trashRelativePath, privacy: .public) to=\(restoredRel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         }
         try? rescan()
+        if let restoredEntry = self.entry(at: restoredRel),
+           let envelope = try? await readEnvelope(at: restoredURL) {
+            let parsed = envelope.parsed
+            await searchIndex.upsert(SearchIndexedPage(
+                relativePath: restoredRel,
+                modificationDate: restoredEntry.modificationDate,
+                title: Document.deriveTitle(
+                    from: parsed.blocks,
+                    fallback: restoredURL.deletingPathExtension().lastPathComponent
+                ),
+                body: searchableText(in: parsed.blocks)
+            ))
+        }
         return restoredURL
     }
 

@@ -149,6 +149,31 @@ final class HunchHomeToolbarUITests: XCTestCase {
         assertHomeToolbarVisible()
     }
 
+    func testSearchFindsBodyTextWithoutShowingPathAndOpensPage() {
+        XCTAssertTrue(app.buttons["Search Pages"].waitForExistence(timeout: 3))
+        app.buttons["Search Pages"].tap()
+
+        let search = app.searchFields["Search pages"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap()
+        search.typeText("body")
+
+        let result = app.tables.cells.firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 5), "Expected body-only full-text result")
+        let passage = result.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", "Child body"))
+            .firstMatch
+        XCTAssertTrue(passage.waitForExistence(timeout: 2), "Expected the matching body passage")
+        let renderedText = result.staticTexts.allElementsBoundByAccessibilityElement
+            .map(\.label)
+            .joined(separator: " ")
+        XCTAssertTrue(renderedText.contains("Child"))
+        XCTAssertFalse(renderedText.localizedCaseInsensitiveContains("child.md"), "Search must not expose the navigation path")
+
+        result.tap()
+        XCTAssertTrue(row(containing: "Child body").waitForExistence(timeout: 3))
+    }
+
     private func assertHomeToolbarVisible(file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(app.buttons["Search Pages"].exists, "Expected Search Pages toolbar button", file: file, line: line)
         XCTAssertTrue(app.buttons["Undo"].exists, "Expected Undo toolbar button", file: file, line: line)

@@ -144,6 +144,9 @@ private struct PageScan: Sendable {
     let title: String
     let mtime: Date
     let pageID: String?
+    /// Non-nil only when this build had to read the page. Cached link hits do
+    /// not retain body text in UserDefaults; FTS5 owns that derived content.
+    let searchText: String?
 }
 
 extension Clamshell {
@@ -159,6 +162,7 @@ extension Clamshell {
         let allPageIDs = Set(pages.map(\.rel))
         let home = homeRelativePath
         let cached = cachedLinkEntries()
+        let indexedMtimes = await searchIndex.indexedModificationDates()
         let classify: @Sendable (URL, URL) -> String? = { [self] url, base in
             self.pagePath(for: url, relativeTo: base)
         }
@@ -170,8 +174,17 @@ extension Clamshell {
         var scans: [PageScan] = []
         var stale: [(rel: String, url: URL, mtime: Date)] = []
         for page in pages {
-            if let hit = cached[page.rel], hit.mtime == page.mtime {
-                scans.append(PageScan(rel: page.rel, url: page.url, targets: Set(hit.targets), title: hit.title, mtime: page.mtime, pageID: hit.pageID))
+            if let hit = cached[page.rel], hit.mtime == page.mtime,
+               indexedMtimes[page.rel] == page.mtime {
+                scans.append(PageScan(
+                    rel: page.rel,
+                    url: page.url,
+                    targets: Set(hit.targets),
+                    title: hit.title,
+                    mtime: page.mtime,
+                    pageID: hit.pageID,
+                    searchText: nil
+                ))
             } else {
                 stale.append(page)
             }
@@ -194,23 +207,45 @@ extension Clamshell {
                         targets: outboundLinks(in: blocks, pageURL: page.url, classify: classify, classifySubpage: classifySubpage),
                         title: title,
                         mtime: page.mtime,
-                        pageID: parsed?.pageID
+                        pageID: parsed?.pageID,
+                        searchText: searchableText(in: blocks)
                     )
                 }
             }
-            while next < stale.count, next < limit {
+            while next < stale.count, next < limit, !Task.isCancelled {
                 submit(stale[next]); next += 1
             }
             var results: [PageScan] = []
             while let result = await group.next() {
                 results.append(result)
-                if next < stale.count {
+                if next < stale.count, !Task.isCancelled {
                     submit(stale[next]); next += 1
                 }
             }
             return results
         }
         scans.append(contentsOf: readScans)
+
+        guard !Task.isCancelled else {
+            return LinkGraph.derive(outbound: [:], allPageIDs: allPageIDs, home: home)
+        }
+
+        await searchIndex.reconcile(
+            readScans.compactMap { scan in
+                guard let body = scan.searchText else { return nil }
+                return SearchIndexedPage(
+                    relativePath: scan.rel,
+                    modificationDate: scan.mtime,
+                    title: scan.title,
+                    body: body
+                )
+            },
+            keeping: allPageIDs
+        )
+
+        guard !Task.isCancelled else {
+            return LinkGraph.derive(outbound: [:], allPageIDs: allPageIDs, home: home)
+        }
 
         applyWarmedTitles(scans.map { (url: $0.url, title: $0.title, mtime: $0.mtime) })
         storeLinkEntries(Dictionary(uniqueKeysWithValues: scans.map {
