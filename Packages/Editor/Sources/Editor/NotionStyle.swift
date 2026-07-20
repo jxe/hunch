@@ -183,6 +183,10 @@ public enum NotionStyle {
     // MARK: Toggle / subpage
     static let chevronSize: CGFloat = 12
     static let pageIconSize: CGFloat = 14
+    /// A title emoji standing in for the page icon reads small next to the
+    /// SF Symbol at the same point size; render it a touch larger. It sits
+    /// in the same fixed-height marker frame, so the row height is unchanged.
+    static let subpageEmojiIconSize: CGFloat = 17
 
     /// Visual shift (in pt) to apply to a right-aligned marker so its horizontal center
     /// matches the bullet marker's center. Bullet is `bulletMarkerDiameter` wide and sits

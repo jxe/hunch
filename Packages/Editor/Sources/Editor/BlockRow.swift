@@ -608,13 +608,17 @@ func subpageRowBody(title: String, missing: Bool, depth: Int) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
         Group {
             if let icon {
+                // Slightly larger than the SF Symbol so the emoji reads at a
+                // comparable weight; the fixed frame height below keeps the
+                // row from growing.
                 Text(icon.emoji)
+                    .font(.system(size: NotionStyle.subpageEmojiIconSize))
             } else {
                 Image(systemName: missing ? "doc.badge.exclamationmark" : "doc.text")
+                    .font(.system(size: NotionStyle.pageIconSize))
                     .foregroundStyle(NotionStyle.mutedForeground)
             }
         }
-        .font(.system(size: NotionStyle.pageIconSize))
         .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
         .offset(x: NotionStyle.markerCenteringOffset(markerWidth: NotionStyle.pageIconSize))
         .alignmentGuide(.firstTextBaseline) { dimensions in
