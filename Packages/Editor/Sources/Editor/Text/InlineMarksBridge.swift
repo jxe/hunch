@@ -349,7 +349,7 @@ enum InlineMarksBridge {
     static func interFont(size: CGFloat, bold: Bool, italic: Bool) -> PlatformFont {
         let weight: PlatformFontWeight = bold ? .semibold : .regular
         var attributes: [PlatformFontDescriptor.AttributeName: Any] = [
-            .family: "Inter",
+            .family: NotionStyle.bodyFontFamily,
             .traits: [PlatformFontDescriptor.TraitKey.weight: weight.rawValue]
         ]
         if italic {

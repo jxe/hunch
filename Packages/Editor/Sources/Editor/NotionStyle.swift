@@ -77,6 +77,9 @@ public enum NotionStyle {
     #endif
 
     // MARK: Fonts
+    /// Family name declared by the bundled Inter variable-font file.
+    static let bodyFontFamily = "Inter Variable"
+
     /// Inter at the requested size and weight, built via a platform font descriptor
     /// so SwiftUI never has to call `.weight()` on a `Font.custom(...)` — that path
     /// emits "Unable to update Font Descriptor's weight" warnings on iOS for every
@@ -86,7 +89,7 @@ public enum NotionStyle {
     public static func body(size: CGFloat = 16, weight: Font.Weight = .regular) -> Font {
         let platformWeight = platformFontWeight(for: weight)
         let attributes: [PlatformFontDescriptor.AttributeName: Any] = [
-            .family: "Inter",
+            .family: bodyFontFamily,
             .traits: [PlatformFontDescriptor.TraitKey.weight: platformWeight.rawValue]
         ]
         let descriptor = PlatformFontDescriptor(fontAttributes: attributes)
