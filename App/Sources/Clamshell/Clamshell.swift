@@ -1236,16 +1236,67 @@ final class Clamshell {
     }
 
     /// The filename stem a title slugifies to. Shared by `availablePagePath`
-    /// and `filenameMatchesTitle` so the two can never drift.
+    /// and `filenameMatchesTitle` so the two can never drift. Emoji are
+    /// transliterated to their Unicode names (🎉 → `party-popper`) so an
+    /// emoji-only or emoji-prefixed title yields a readable filename instead
+    /// of `Untitled`.
     nonisolated static func slugStem(for title: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let chars = title.unicodeScalars.map { scalar -> Character in
+        let chars = expandingEmoji(in: title).unicodeScalars.map { scalar -> Character in
             allowed.contains(scalar) ? Character(scalar) : "-"
         }
         let collapsed = String(chars)
             .split(separator: "-", omittingEmptySubsequences: true)
             .joined(separator: "-")
         return collapsed.isEmpty ? "Untitled" : collapsed
+    }
+
+    /// Replace each emoji grapheme cluster with its lowercased Unicode
+    /// name(s), leaving everything else untouched. The name transform
+    /// (`.toUnicodeName`, ICU "Any-Name") also renames accented Latin
+    /// letters, so it's applied *only* to clusters detected as emoji —
+    /// otherwise `café` would expand to `latin small letter e with acute`.
+    private nonisolated static func expandingEmoji(in title: String) -> String {
+        var out = ""
+        for cluster in title {
+            if let name = emojiName(cluster) {
+                out += " \(name) "
+            } else {
+                out.append(cluster)
+            }
+        }
+        return out
+    }
+
+    private nonisolated static func emojiName(_ cluster: Character) -> String? {
+        // ASCII digits / `#` / `*` report `isEmoji` (they're keycap bases);
+        // gate on emoji-presentation or a non-ASCII emoji scalar so those
+        // and plain text are left alone.
+        let isEmoji = cluster.unicodeScalars.contains {
+            $0.properties.isEmojiPresentation || ($0.properties.isEmoji && !$0.isASCII)
+        }
+        guard isEmoji,
+              let named = String(cluster).applyingTransform(.toUnicodeName, reverse: false) else {
+            return nil
+        }
+        // `named` is one or more `\N{UNICODE NAME}` groups. Keep the
+        // human-meaningful ones; drop combining scaffolding (skin-tone
+        // modifiers, joiners, variation selectors) and flag halves.
+        var words: [String] = []
+        var rest = Substring(named)
+        while let open = rest.firstIndex(of: "{"), let close = rest[open...].firstIndex(of: "}") {
+            let name = rest[rest.index(after: open)..<close]
+            let upper = name.uppercased()
+            let isScaffolding = upper.contains("VARIATION SELECTOR")
+                || upper.contains("ZERO WIDTH")
+                || upper.contains("EMOJI MODIFIER")
+                || upper.contains("REGIONAL INDICATOR")
+            if !isScaffolding {
+                words.append(name.lowercased())
+            }
+            rest = rest[rest.index(after: close)...]
+        }
+        return words.isEmpty ? nil : words.joined(separator: " ")
     }
 
     /// True when the page's filename is already the title's slug — either

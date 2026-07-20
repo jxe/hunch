@@ -35,6 +35,17 @@ struct ClamshellRenameTests {
         #expect(!Clamshell.filenameMatchesTitle(relativePath: "My-Page", title: "My Page"), "not a .md path")
     }
 
+    @Test func slugTransliteratesEmoji() {
+        #expect(Clamshell.slugStem(for: "🎉") == "party-popper")
+        #expect(Clamshell.slugStem(for: "🎉 Party Time") == "party-popper-Party-Time")
+        #expect(Clamshell.slugStem(for: "Notes 👍🏽") == "Notes-thumbs-up-sign", "skin-tone modifier dropped")
+        #expect(Clamshell.slugStem(for: "👨‍👩‍👧") == "man-woman-girl", "ZWJ sequence expands, joiners dropped")
+        #expect(Clamshell.slugStem(for: "café") == "café" || Clamshell.slugStem(for: "café") == "caf", "accented Latin is NOT transliterated")
+        #expect(Clamshell.slugStem(for: "🇯🇵") == "Untitled", "flag scaffolding dropped, falls back")
+        // Rename matching stays consistent with the emoji-aware slug.
+        #expect(Clamshell.filenameMatchesTitle(relativePath: "party-popper.md", title: "🎉"))
+    }
+
     // MARK: - Rename mechanics
 
     @Test func basicRenameMovesFileHistoryAndBookkeeping() async throws {
