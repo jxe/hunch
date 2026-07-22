@@ -1303,18 +1303,25 @@ final class Clamshell {
 
     /// The filename stem a title slugifies to. Shared by `availablePagePath`
     /// and `filenameMatchesTitle` so the two can never drift. Emoji are
-    /// transliterated to their Unicode names (🎉 → `party-popper`) so an
-    /// emoji-only or emoji-prefixed title yields a readable filename instead
-    /// of `Untitled`.
+    /// omitted when the title has other slug-worthy text; an emoji-only title
+    /// is transliterated to a Unicode name (🎉 → `party-popper`) rather
+    /// than falling back to `Untitled`.
     nonisolated static func slugStem(for title: String) -> String {
+        let textOnly = String(title.filter { !isEmojiCluster($0) })
+        let textSlug = slugCharacters(in: textOnly)
+        if !textSlug.isEmpty { return textSlug }
+        let emojiSlug = slugCharacters(in: expandingEmoji(in: title))
+        return emojiSlug.isEmpty ? "Untitled" : emojiSlug
+    }
+
+    private nonisolated static func slugCharacters(in value: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let chars = expandingEmoji(in: title).unicodeScalars.map { scalar -> Character in
+        let chars = value.unicodeScalars.map { scalar -> Character in
             allowed.contains(scalar) ? Character(scalar) : "-"
         }
-        let collapsed = String(chars)
+        return String(chars)
             .split(separator: "-", omittingEmptySubsequences: true)
             .joined(separator: "-")
-        return collapsed.isEmpty ? "Untitled" : collapsed
     }
 
     /// Replace each emoji grapheme cluster with its lowercased Unicode
@@ -1338,10 +1345,7 @@ final class Clamshell {
         // ASCII digits / `#` / `*` report `isEmoji` (they're keycap bases);
         // gate on emoji-presentation or a non-ASCII emoji scalar so those
         // and plain text are left alone.
-        let isEmoji = cluster.unicodeScalars.contains {
-            $0.properties.isEmojiPresentation || ($0.properties.isEmoji && !$0.isASCII)
-        }
-        guard isEmoji,
+        guard isEmojiCluster(cluster),
               let named = String(cluster).applyingTransform(.toUnicodeName, reverse: false) else {
             return nil
         }
@@ -1363,6 +1367,20 @@ final class Clamshell {
             rest = rest[rest.index(after: close)...]
         }
         return words.isEmpty ? nil : words.joined(separator: " ")
+    }
+
+    private nonisolated static func isEmojiCluster(_ cluster: Character) -> Bool {
+        let scalars = cluster.unicodeScalars
+        if scalars.contains(where: {
+            $0.properties.isEmojiPresentation || ($0.properties.isEmoji && !$0.isASCII)
+        }) {
+            return true
+        }
+
+        // Keycaps are an ASCII emoji base followed by a variation selector
+        // and/or the combining enclosing keycap scalar.
+        return scalars.contains { $0.value == 0xFE0F || $0.value == 0x20E3 }
+            && scalars.contains { $0.properties.isEmoji }
     }
 
     /// True when the page's filename is already the title's slug — either
@@ -1442,9 +1460,8 @@ final class Clamshell {
         }
 
         // Content is byte-identical at the new path — move the bookkeeping,
-        // don't forget it. (`moveItem` preserves mtime, so the title cache
-        // entry stays valid.)
-        if let cached = titleCache.removeValue(forKey: key) { titleCache[newKey] = cached }
+        // don't forget it. (`moveItem` preserves mtime.)
+        _ = titleCache.removeValue(forKey: key)
         if let history = contentHistory.removeValue(forKey: key) { contentHistory[newKey] = history }
         if let frontmatter = pageFrontmatter.removeValue(forKey: key) { pageFrontmatter[newKey] = frontmatter }
         if let trust = pageStampTrust.removeValue(forKey: key) { pageStampTrust[newKey] = trust }
@@ -1460,6 +1477,14 @@ final class Clamshell {
             homeRelativePath = newRel
         }
         try? rescan()
+
+        // A page can be renamed before its lazily-warmed title has entered
+        // `titleCache`. Seed the destination from the title the caller just
+        // confirmed, using the scan's timestamp representation so the cache
+        // survives its next lookup and pickers immediately expose/search the
+        // exact human title rather than the generated filename.
+        let scannedMtime = entry(at: newRel)?.modificationDate
+        titleCache[newKey] = CachedTitle(title: title, modificationDate: scannedMtime)
         return RenameResult(oldRelativePath: oldRel, newRelativePath: newRel)
     }
 

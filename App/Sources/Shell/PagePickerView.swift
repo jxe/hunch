@@ -305,6 +305,7 @@ private final class MacNativeSearchablePickerController: NSViewController, NSTab
     private var expandedSectionKeys: Set<String> = []
     private var queryTask: Task<Void, Never>?
     private var queryGeneration = PickerQueryGeneration()
+    private var appliedQuery = ""
 
     init(
         title: String,
@@ -436,6 +437,23 @@ private final class MacNativeSearchablePickerController: NSViewController, NSTab
         reload(selectFirst: true)
     }
 
+    func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        doCommandBy commandSelector: Selector
+    ) -> Bool {
+        switch commandSelector {
+        case #selector(NSResponder.moveDown(_:)):
+            selectFirstItem()
+            view.window?.makeFirstResponder(tableView)
+            return true
+        case #selector(NSResponder.insertNewline(_:)):
+            return activateSoleResult()
+        default:
+            return false
+        }
+    }
+
     private func reload(selectFirst: Bool) {
         let query = searchField.stringValue
         queryTask?.cancel()
@@ -451,6 +469,7 @@ private final class MacNativeSearchablePickerController: NSViewController, NSTab
     }
 
     private func apply(_ renderedSections: [NativePickerSection], query: String, selectFirst: Bool) {
+        appliedQuery = query
         let itemRows = renderedSections.enumerated().flatMap { index, section in
             visibleItems(for: section, key: sectionKey(for: index, section: section), query: query)
         }
@@ -519,6 +538,17 @@ private final class MacNativeSearchablePickerController: NSViewController, NSTab
     private func activateSelection() {
         guard let item = item(at: tableView.selectedRow) else { return }
         activate(item.id)
+    }
+
+    private func activateSoleResult() -> Bool {
+        guard appliedQuery == searchField.stringValue else { return false }
+        let items = rows.compactMap { row -> NativePickerItem? in
+            if case .item(let item) = row { return item }
+            return nil
+        }
+        guard items.count == 1, let item = items.first else { return false }
+        activate(item.id)
+        return true
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {

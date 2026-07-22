@@ -37,8 +37,9 @@ struct ClamshellRenameTests {
 
     @Test func slugTransliteratesEmoji() {
         #expect(Clamshell.slugStem(for: "🎉") == "party-popper")
-        #expect(Clamshell.slugStem(for: "🎉 Party Time") == "party-popper-Party-Time")
-        #expect(Clamshell.slugStem(for: "Notes 👍🏽") == "Notes-thumbs-up-sign", "skin-tone modifier dropped")
+        #expect(Clamshell.slugStem(for: "🎉 Party Time") == "Party-Time")
+        #expect(Clamshell.slugStem(for: "Notes 👍🏽") == "Notes")
+        #expect(Clamshell.slugStem(for: "Plan 1️⃣") == "Plan", "whole emoji clusters are omitted")
         #expect(Clamshell.slugStem(for: "👨‍👩‍👧") == "man-woman-girl", "ZWJ sequence expands, joiners dropped")
         #expect(Clamshell.slugStem(for: "café") == "café" || Clamshell.slugStem(for: "café") == "caf", "accented Latin is NOT transliterated")
         #expect(Clamshell.slugStem(for: "🇯🇵") == "Untitled", "flag scaffolding dropped, falls back")
@@ -80,6 +81,25 @@ struct ClamshellRenameTests {
         #expect(clamshell.resolveSubpageTarget("Old-Title.md#\(id)") == "New-Title.md")
         // The ID survives inside the moved file.
         #expect(try pageID(of: "New-Title.md", in: clamshell) == id)
+    }
+
+    @Test func renameSeedsExactTitleForPickerSearchWhenCacheIsCold() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        let oldURL = clamshell.url(for: "crossed-swords-March-Out-My-Work.md")
+        try "# ⚔️ March Out My Work\n".write(to: oldURL, atomically: true, encoding: .utf8)
+        try clamshell.rescan()
+
+        let result = try await clamshell.renamePage(
+            at: oldURL,
+            toMatchTitle: "⚔️ March Out My Work"
+        )
+
+        #expect(result.newRelativePath == "March-Out-My-Work.md")
+        #expect(clamshell.entry(at: result.newRelativePath)?.title == "⚔️ March Out My Work")
+        #expect(clamshell.pages(matching: "March Out My Work").map(\.relativePath) == [result.newRelativePath])
     }
 
     @Test func renameCollisionDisambiguates() async throws {

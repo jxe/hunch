@@ -54,6 +54,7 @@ struct HunchApp: App {
                 AddToPageMenuButton(workspaceURL: workspace.workspaceURL)
                     .keyboardShortcut("p", modifiers: [.command, .shift])
                 CopyCurrentPageLinkMenuButton(workspaceURL: workspace.workspaceURL)
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
                 RenameCurrentPageMenuButton(workspaceURL: workspace.workspaceURL)
                 MoveCurrentPageToTrashMenuButton(workspaceURL: workspace.workspaceURL)
 
