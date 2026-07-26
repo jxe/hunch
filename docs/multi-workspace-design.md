@@ -1,5 +1,7 @@
 # Multi-workspace support — design sketch
 
+> **Superseded** by the Arbor design (`arbor://` links + mounts; see the arbor repo's `spec/urls.md` and `plan-native.md`). The `hunch://<uuid>` scheme and workspace registry described here will not be built. Retained for history.
+
 > Stashed design notes — not implemented yet. Captures the shape of the
 > change so we can return to it.
 
