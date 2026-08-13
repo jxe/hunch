@@ -300,6 +300,9 @@ final class PageSpeechRecorder {
             try await analyzer.finalizeAndFinish(through: lastSample)
             let transcript = try await resultTask.value
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !transcript.isEmpty else {
+                throw PageSpeechRecorderError.noTranscribableSpeech
+            }
             Diag.speech.log("transcription analysis finished file=\(url.lastPathComponent, privacy: .public) characters=\(transcript.count, privacy: .public)")
             return transcript
         } catch {
@@ -338,6 +341,7 @@ enum PageSpeechRecorderError: LocalizedError {
     case speechPermissionDenied
     case recordingFailed(underlying: String?)
     case noAudioCaptured
+    case noTranscribableSpeech
     case transcriptionUnavailable
     case unsupportedLocale
 
@@ -355,6 +359,8 @@ enum PageSpeechRecorderError: LocalizedError {
             }
         case .noAudioCaptured:
             "No audio was captured. The recording stopped before Hunch received any microphone samples."
+        case .noTranscribableSpeech:
+            "No speech could be transcribed from the recording."
         case .transcriptionUnavailable:
             "Speech transcription is not available on this device."
         case .unsupportedLocale:

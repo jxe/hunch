@@ -159,4 +159,33 @@ struct PendingVoiceRecordingStoreTests {
 
         #expect(try store.pendingRecordings().map(\.pageID) == ["earlier.md", "later.md"])
     }
+
+    @Test func discardsRecordingsThatCannotProduceATranscript() {
+        #expect(
+            PendingVoiceRecordingFailureDisposition(
+                error: PageSpeechRecorderError.noAudioCaptured
+            ) == .discard
+        )
+        #expect(
+            PendingVoiceRecordingFailureDisposition(
+                error: PageSpeechRecorderError.noTranscribableSpeech
+            ) == .discard
+        )
+        #expect(
+            PendingVoiceRecordingFailureDisposition(
+                error: VoiceRecordingSessionError.emptyTranscript
+            ) == .discard
+        )
+    }
+
+    @Test func preservesRecordingsAfterRetryableFailures() {
+        #expect(
+            PendingVoiceRecordingFailureDisposition(
+                error: PageSpeechRecorderError.transcriptionUnavailable
+            ) == .preserve
+        )
+        #expect(
+            PendingVoiceRecordingFailureDisposition(error: CancellationError()) == .preserve
+        )
+    }
 }

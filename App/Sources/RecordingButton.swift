@@ -91,7 +91,7 @@ final class VoiceRecordingSession {
             try await deliver(transcript, to: .page(pageID: recording.pageID), using: window)
             try recoveryStore.remove(recording)
         } catch {
-            if isNoAudioError(error) {
+            if PendingVoiceRecordingFailureDisposition(error: error) == .discard {
                 try? recoveryStore.remove(recording)
             } else {
                 deferredRecoveryIDs.insert(recording.id)
@@ -145,7 +145,8 @@ final class VoiceRecordingSession {
             activeRecording = nil
         } catch {
             recorder.cancel(discardingAudio: false)
-            if isNoAudioError(error), let activeRecording {
+            if PendingVoiceRecordingFailureDisposition(error: error) == .discard,
+               let activeRecording {
                 try? recoveryStore.remove(activeRecording)
             }
             activeRecording = nil
@@ -210,14 +211,8 @@ final class VoiceRecordingSession {
             .first { !deferredRecoveryIDs.contains($0.id) }
     }
 
-    private func isNoAudioError(_ error: Error) -> Bool {
-        guard let error = error as? PageSpeechRecorderError else { return false }
-        if case .noAudioCaptured = error { return true }
-        return false
-    }
-
     private func recoveryFailureMessage(for error: Error) -> String {
-        if isNoAudioError(error) {
+        if PendingVoiceRecordingFailureDisposition(error: error) == .discard {
             return error.localizedDescription
         }
         if error is CancellationError {
@@ -244,7 +239,28 @@ final class VoiceRecordingSession {
     }
 }
 
-private enum VoiceRecordingSessionError: LocalizedError {
+enum PendingVoiceRecordingFailureDisposition: Equatable {
+    case discard
+    case preserve
+
+    init(error: Error) {
+        if let recorderError = error as? PageSpeechRecorderError {
+            switch recorderError {
+            case .noAudioCaptured, .noTranscribableSpeech:
+                self = .discard
+            default:
+                self = .preserve
+            }
+        } else if let sessionError = error as? VoiceRecordingSessionError,
+                  case .emptyTranscript = sessionError {
+            self = .discard
+        } else {
+            self = .preserve
+        }
+    }
+}
+
+enum VoiceRecordingSessionError: LocalizedError {
     case workspaceUnavailable
     case couldNotAppendToPage(underlying: String)
     case emptyTranscript
