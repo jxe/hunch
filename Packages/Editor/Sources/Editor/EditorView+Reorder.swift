@@ -106,7 +106,7 @@ extension EditorView {
         isCopy: Bool
     ) -> ReorderLift? {
         guard let block = document.find(blockID),
-              let sourceFrame = layoutCache.frame(of: blockID)
+              let sourceFrame = reorderSourceFrame(for: blockID)
         else { return nil }
         let ids = dragIDs(for: blockID)
         let parentID = document.parent(of: blockID)
@@ -135,6 +135,13 @@ extension EditorView {
         )
     }
 
+    /// Prefer the live frame used by iOS source hit-testing. The cumulative
+    /// frame remains a fallback for platforms or moments where the row has
+    /// not published realized geometry yet.
+    private func reorderSourceFrame(for blockID: BlockID) -> CGRect? {
+        layoutCache.realizedFrame(of: blockID) ?? layoutCache.frame(of: blockID)
+    }
+
     /// Per-event update: creates the lift if missing (macOS click-and-drag
     /// path), re-anchors `touchOffset` if a previous `preliftReorder` left it
     /// pending, then updates `location` and recomputes `dropHoverIndex`.
@@ -155,7 +162,7 @@ extension EditorView {
     func tickReorderLift(blockID: BlockID, at location: CGPoint, anchorAt anchorPoint: CGPoint, snapshot: [Block]) {
         let isCopy = currentReorderCopyIntent()
         if state.reorderLift == nil {
-            guard let sourceFrame = layoutCache.frame(of: blockID),
+            guard let sourceFrame = reorderSourceFrame(for: blockID),
                   let lift = makeReorderLift(
                       blockID: blockID,
                       touchOffset: CGSize(

@@ -40,7 +40,7 @@ Only UIKit-level `require(toFail:)` lets pan and long-press coexist correctly.
 
 **Coexistence** — the bridge's `gestureRecognizerShouldRecognizeSimultaneouslyWith` returns `true`, so other recognizers (per-row swipe-actions, tap-to-edit) can recognize alongside our long-press.
 
-**Source frame freeze** — when the lift first materialises, `preliftReorder` / `tickReorderLift` captures `sourceFrame`, `sourceIndex`, `sourceEndIndex`, and `touchOffset` once and re-uses them for the duration of the drag. Subsequent events update only `lift.location`. If we instead read `rowFrames[id]` on each event, the lift would drift downward as the 42pt drift gap animates open above the source — every recomputed `touchOffset.height = startLocation.y - sourceFrame.minY` would be smaller than the last.
+**Source frame freeze** — when the lift first materialises, `preliftReorder` / `tickReorderLift` captures the source row's live realized frame (falling back to cumulative geometry only if it is unavailable), plus `sourceIndex`, `sourceEndIndex`, and `touchOffset`, then re-uses them for the duration of the drag. Source hit-testing and initial lift anchoring therefore agree even when cached heights for mixed or off-screen content above the row are stale. Subsequent events update only `lift.location`. If we instead read the live frame on each event, the lift would drift downward as the 42pt drift gap animates open above the source — every recomputed `touchOffset.height = startLocation.y - sourceFrame.minY` would be smaller than the last.
 
 **Haptics** — `Haptics.light()` fires on lift begin and on each `dropHoverIndex` slot transition.
 

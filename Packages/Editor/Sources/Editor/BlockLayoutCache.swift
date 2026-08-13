@@ -361,6 +361,16 @@ class RowSurfaceLayoutCache<ID: Hashable> {
         realizedBlockIDAtInternalY(pageY - contentOriginY)
     }
 
+    /// Actual frame of a currently materialized row in
+    /// `PageHoverCoordinateSpace`. Reorder-source selection and lift anchoring
+    /// must use the same live geometry: otherwise the correct row can be
+    /// selected from `realizedInternalFrames` while its lift is positioned
+    /// from stale cumulative heights above it.
+    func realizedFrame(of id: ID) -> CGRect? {
+        guard let frame = realizedInternalFrames[id] else { return nil }
+        return frame.offsetBy(dx: contentOriginX, dy: contentOriginY)
+    }
+
     /// Find the row whose leading gutter contains `point`.
     ///
     /// macOS page-level reorder gestures are mounted on the stable scroll

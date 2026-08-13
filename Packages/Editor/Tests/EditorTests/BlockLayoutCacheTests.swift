@@ -105,6 +105,7 @@ struct RowSurfaceLayoutCacheTests {
 
         #expect(cache.blockIDAtY(315) == nil)
         #expect(cache.realizedBlockIDAtPageY(315) == "target")
+        #expect(cache.realizedFrame(of: "target") == CGRect(x: 0, y: 300, width: 320, height: 30))
         #expect(cache.realizedBlockIDAtPageY(296) == nil) // inter-row spacing
 
         cache.removeRealizedInternalFrame(for: "target")
@@ -113,6 +114,23 @@ struct RowSurfaceLayoutCacheTests {
         cache.setRealizedInternalFrame(CGRect(x: 0, y: 200, width: 320, height: 30), for: "target")
         cache.updateOrder(["heading", "tall"])
         #expect(cache.realizedInternalFrames["target"] == nil)
+        #expect(cache.realizedFrame(of: "target") == nil)
+    }
+
+    @Test func realizedFrameIncludesScrolledPageOrigin() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["target"])
+        cache.contentOriginX = 24
+        cache.contentOriginY = -680
+        cache.setRealizedInternalFrame(
+            CGRect(x: 8, y: 900, width: 288, height: 44),
+            for: "target"
+        )
+
+        #expect(
+            cache.realizedFrame(of: "target")
+                == CGRect(x: 32, y: 220, width: 288, height: 44)
+        )
     }
 }
 
