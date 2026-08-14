@@ -75,6 +75,36 @@ struct RecoveryLogTests {
 
     // MARK: - Persistence
 
+    @MainActor
+    @Test func literalPreRefactorJSONLFoldsAndRestoresWithoutHashDrift() throws {
+        let root = makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let history = root
+            .appendingPathComponent(RecoveryLog.directoryName, isDirectory: true)
+            .appendingPathComponent("page.md", isDirectory: true)
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        let fixtureURL = history.appendingPathComponent("old-device.jsonl")
+        let fixture = "{\"op\":\"add\",\"h\":\"f22d3f2e0f58dfcb24fd8f482629178b6b45cf62695b1921085df4c79911a9ca\",\"p\":null,\"m\":\"Hello\",\"t\":1700000000}\n"
+        try fixture.write(to: fixtureURL, atomically: true, encoding: .utf8)
+
+        let log = RecoveryLog(workspaceRoot: root, deviceID: "current-device")
+        let intent = PatchEngine.intent(from: log.readJournal(page: "page.md"))
+        let expectedHash = "f22d3f2e0f58dfcb24fd8f482629178b6b45cf62695b1921085df4c79911a9ca"
+        guard case .alive = intent.byHash[expectedHash] else {
+            Issue.record("literal legacy add should fold as alive")
+            return
+        }
+
+        let reconciliation = PatchEngine.reconcile(intent: intent, doc: [])
+        let restored = Document(id: DocumentID("legacy-fixture"), children: [])
+        PatchEngine.apply(reconciliation, to: restored)
+        #expect(restored.children.count == 1)
+        #expect(restored.children.first?.atomicHash == expectedHash)
+
+        let serialized = BlockSerializer.serializeAtomic(try #require(restored.children.first))
+        #expect(BlockParser.parse(serialized).first?.atomicHash == expectedHash)
+    }
+
     @Test func firstRecordAppendsOnePerAtomicBlock() async throws {
         let root = makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -478,13 +508,13 @@ struct RecoveryLogTests {
 
         let keep = Block.paragraph(text: attr("Keep"))
         let lose = Block.paragraph(text: attr("Lose"))
-        let doc = Document(url: url, children: [keep, lose], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [keep, lose])
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: url)
 
         // Editor deletes `lose` — splice, derive ops, fire the canonical
         // editor save path so the purge is logged and the .md saved.
         doc.replaceChildrenFromSystemMutation([keep])
-        try await clamshell.commit(.fromEditorOps([.remove(hash: lose.atomicHash)]), to: doc)
+        try await clamshell.commit(.fromEditorChanges([.removed(block: lose)]), to: doc, at: url)
 
         let lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty, "explicit purge should suppress the deleted block")
@@ -502,14 +532,13 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let doc = Document(
-            url: url,
+            id: DocumentID("p"),
             children: [
                 Block.paragraph(text: attr("Keep")),
                 Block.paragraph(text: attr("Lose"))
-            ],
-            modificationDate: nil
+            ]
         )
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: url)
 
         // Simulate an external editor / iCloud stomp: overwrite .md directly,
         // bypassing the Clamshell save + editor op-stream so no purge fires.
@@ -532,12 +561,12 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let ghost = Block.paragraph(text: attr("ghost"))
-        let doc = Document(url: url, children: [ghost], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [ghost])
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: url)
 
         // Editor deletes the ghost: empty children + purge op.
         doc.replaceChildrenFromSystemMutation([])
-        try await clamshell.commit(.fromEditorOps([.remove(hash: ghost.atomicHash)]), to: doc)
+        try await clamshell.commit(.fromEditorChanges([.removed(block: ghost)]), to: doc, at: url)
 
         // Intermediate: explicitly purged, so nothing is "lost".
         var lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
@@ -548,7 +577,7 @@ struct RecoveryLogTests {
         try await Task.sleep(for: .milliseconds(20))
         let revived = Block.paragraph(text: attr("ghost"))
         doc.replaceChildrenFromSystemMutation([revived])
-        try await clamshell.commit(.fromEditorOps([.insert(hash: revived.atomicHash, parent: nil, block: revived)]), to: doc)
+        try await clamshell.commit(.fromEditorChanges([.inserted(block: revived, parent: nil)]), to: doc, at: url)
         lost = await clamshell.listLostBlocks(filter: .page(relativePath: "p.md"))
         #expect(lost.isEmpty, "alive in .md, latest-record is add → not lost")
     }
@@ -568,8 +597,8 @@ struct RecoveryLogTests {
 
         let body = Block.paragraph(text: attr("inside"))
         let toggle = Block.toggle(title: attr("Outer"), children: [body])
-        let doc = Document(url: url, children: [toggle], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [toggle])
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: url)
 
         let toggleHash = toggle.atomicHash
         let bodyHash = body.atomicHash
@@ -588,8 +617,8 @@ struct RecoveryLogTests {
         let clamshell = Clamshell(root: root)
         let url = root.appendingPathComponent("p.md")
 
-        let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: []), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [])
+        try await clamshell.commit(Commit(logEntries: []), to: doc, at: url)
         // (empty page on disk, journal empty)
 
         let foreignBlock = Block.paragraph(text: attr("ghost"))
@@ -622,8 +651,8 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         // Plant an empty live page so the live-set check excludes nothing.
-        let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: []), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [])
+        try await clamshell.commit(Commit(logEntries: []), to: doc, at: url)
 
         // Hand-write a foreign device's log entry.
         let foreignBlock = Block.paragraph(text: attr("from another device"))
@@ -653,11 +682,10 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let doc = Document(
-            url: url,
-            children: [Block.paragraph(text: attr("alive"))],
-            modificationDate: nil
+            id: DocumentID("p"),
+            children: [Block.paragraph(text: attr("alive"))]
         )
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: url)
 
         let liveHistoryDir = root
             .appendingPathComponent(RecoveryLog.directoryName)
@@ -742,11 +770,11 @@ struct RecoveryLogTests {
 
         let keep = Block.paragraph(text: attr("Keep"))
         let lose = Block.paragraph(text: attr("Lose"))
-        let doc = Document(url: url, children: [keep, lose], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [keep, lose])
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: url)
 
         doc.replaceChildrenFromSystemMutation([keep])
-        try await clamshell.commit(.fromEditorOps([.remove(hash: lose.atomicHash)]), to: doc)
+        try await clamshell.commit(.fromEditorChanges([.removed(block: lose)]), to: doc, at: url)
 
         let purged = await clamshell.listPurgedBlocks(
             filter: .page(relativePath: "p.md"),
@@ -783,8 +811,8 @@ struct RecoveryLogTests {
         try (addLine + purgeLine).write(to: logURL, atomically: true, encoding: .utf8)
 
         // Plant the live .md so it's a valid scan target.
-        let live = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: []), to: live)
+        let live = Document(id: DocumentID("p"), children: [])
+        try await clamshell.commit(Commit(logEntries: []), to: live, at: url)
 
         // Default 30-day cap excludes the ancient purge.
         let recent = await clamshell.listPurgedBlocks(filter: .page(relativePath: "p.md"))
@@ -807,11 +835,11 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let block = Block.paragraph(text: attr("phoenix"))
-        let doc = Document(url: url, children: [block], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [block])
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: url)
 
         doc.replaceChildrenFromSystemMutation([])
-        try await clamshell.commit(.fromEditorOps([.remove(hash: block.atomicHash)]), to: doc)
+        try await clamshell.commit(.fromEditorChanges([.removed(block: block)]), to: doc, at: url)
 
         // External writer brings the hash back into the log via a foreign
         // device's add with a counter strictly greater than anything our
@@ -843,11 +871,11 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let doomed = Block.paragraph(text: attr("doomed"))
-        let doc = Document(url: url, children: [doomed], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [doomed])
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: url)
 
         doc.replaceChildrenFromSystemMutation([])
-        try await clamshell.commit(.fromEditorOps([.remove(hash: doomed.atomicHash)]), to: doc)
+        try await clamshell.commit(.fromEditorChanges([.removed(block: doomed)]), to: doc, at: url)
 
         // It's now purged.
         let purgedBefore = await clamshell.listPurgedBlocks(
@@ -923,11 +951,11 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         let block = Block.paragraph(text: attr("phoenix"))
-        let doc = Document(url: url, children: [block], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [block])
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: url)
 
         doc.replaceChildrenFromSystemMutation([])
-        try await clamshell.commit(.fromEditorOps([.remove(hash: block.atomicHash)]), to: doc)
+        try await clamshell.commit(.fromEditorChanges([.removed(block: block)]), to: doc, at: url)
 
         // Foreign device: counter 9999 but wall-clock 100s in the *past*.
         let h = block.atomicHash
@@ -1241,8 +1269,8 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         // Empty live page; hydrate our nextCounter low.
-        let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: []), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [])
+        try await clamshell.commit(Commit(logEntries: []), to: doc, at: url)
 
         // Foreign device's add for hash H lands on disk with counter 500.
         let block = Block.paragraph(text: attr("to-purge"))
@@ -1286,8 +1314,8 @@ struct RecoveryLogTests {
         let url = root.appendingPathComponent("p.md")
 
         // Seed with an empty live page so the live-set excludes nothing.
-        let doc = Document(url: url, children: [], modificationDate: nil)
-        try await clamshell.commit(Commit(logEntries: []), to: doc)
+        let doc = Document(id: DocumentID("p"), children: [])
+        try await clamshell.commit(Commit(logEntries: []), to: doc, at: url)
 
         // Plant a legacy add with t = far future (no `c` field).
         let block = Block.paragraph(text: attr("legacy-ghost"))
@@ -1383,11 +1411,11 @@ struct RecoveryLogTests {
         #expect(lineCount(at: url) == 3, "second session's add should append, not skip")
     }
 
-    // MARK: - PR 2: editor op-batch append
+    // MARK: - Semantic editor-change projection
 
     /// Applying an ops patch writes mixed inserts and removes as one ordered
     /// batch with sequential per-page counters. The remove-then-insert
-    /// ordering from `BlockTreeDiff.derive` is preserved on disk.
+    /// Clamshell's purge-then-add ordering is preserved on disk.
     @MainActor
     @Test func appendOpsWritesMixedBatchSequentially() async throws {
         let root = makeWorkspace()
@@ -1396,11 +1424,11 @@ struct RecoveryLogTests {
 
         let gone = Block.paragraph(text: attr("gone"))
         let arriving = Block.paragraph(text: attr("arriving"))
-        let ops: [EditorOp] = [
-            .remove(hash: gone.atomicHash),
-            .insert(hash: arriving.atomicHash, parent: nil, block: arriving),
+        let changes: [DocumentChange] = [
+            .removed(block: gone),
+            .inserted(block: arriving, parent: nil),
         ]
-        try await log.apply(Patch.from(ops: ops), to: "p.md")
+        try await log.apply(Patch.from(changes: changes), to: "p.md")
 
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         let text = try String(contentsOf: url, encoding: .utf8)
@@ -1425,7 +1453,7 @@ struct RecoveryLogTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let log = RecoveryLog(workspaceRoot: root, deviceID: "dev-A")
 
-        try await log.apply(Patch.from(ops: []), to: "p.md")
+        try await log.apply(Patch.from(changes: []), to: "p.md")
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
         #expect(!FileManager.default.fileExists(atPath: url.path),
                 "empty batch should not create the log file")
@@ -1442,9 +1470,9 @@ struct RecoveryLogTests {
 
         let block = Block.paragraph(text: attr("retype"))
         try await log.apply(Patch.adds(from: [block]), to: "p.md")
-        try await log.apply(Patch.from(ops: [.remove(hash: block.atomicHash)]), to: "p.md")
-        try await log.apply(Patch.from(ops: [
-            .insert(hash: block.atomicHash, parent: nil, block: block)
+        try await log.apply(Patch.from(changes: [.removed(block: block)]), to: "p.md")
+        try await log.apply(Patch.from(changes: [
+            .inserted(block: block, parent: nil)
         ]), to: "p.md")
 
         let url = deviceLogURL(workspace: root, page: "p.md", deviceID: "dev-A")
@@ -1452,7 +1480,7 @@ struct RecoveryLogTests {
     }
 
     /// Same-device Turn Into: paragraph → bullet on a stable BlockID.
-    /// `BlockTreeDiff.derive` must tombstone the old paragraph hash so
+    /// Clamshell's semantic-change projection must tombstone the old paragraph hash so
     /// reconcile against the post-change live doc doesn't resurrect the
     /// pre-edit paragraph as a "lost block." Repros the iPhone bug where a
     /// voice-recorded paragraph converted to a bullet came back at the
@@ -1469,8 +1497,8 @@ struct RecoveryLogTests {
         try await log.apply(Patch.adds(from: [paragraph]), to: "p.md")
 
         let bullet = Block(id: id, kind: .bullet(text: attr("voice note")))
-        let ops = BlockTreeDiff.derive(pre: [paragraph], post: [bullet])
-        try await log.apply(Patch.from(ops: ops), to: "p.md")
+        let changes = RecoveryChangeDiff.derive(pre: [paragraph], post: [bullet])
+        try await log.apply(Patch.from(changes: changes), to: "p.md")
 
         let journal = log.readJournal(page: "p.md")
         let intent = PatchEngine.intent(from: journal)

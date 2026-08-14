@@ -168,7 +168,7 @@ extension Clamshell {
     /// later external reload preserves the peer edit's exact placement.
     /// Priority for the returned event: conflictMerged > restored.
     func synchronizePage(_ page: PageCoordinator, document doc: Document) async -> PresenterEvent? {
-        let url = doc.url
+        let url = page.url
 
         precondition(page.document === doc)
 
@@ -191,16 +191,16 @@ extension Clamshell {
         //    swap the doc's children in place; no event — @Observable
         //    re-renders carry the new content to the UI.
         if conflictSalvaged == nil {
-            switch classifyDiskContent(at: url, expectingModificationDate: doc.modificationDate) {
+            switch classifyDiskContent(at: url, expectingModificationDate: page.modificationDate) {
             case .unchanged, .unreadable:
                 break
             case .echo:
                 if let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
-                    doc.modificationDate = mtime
+                    page.modificationDate = mtime
                 }
             case .stomp:
                 do {
-                    try await commit(Commit(logEntries: []), to: doc)
+                    try await commit(Commit(logEntries: []), to: doc, at: url)
                 } catch {
                     Diag.log.error("stomp rewrite failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 }
@@ -223,7 +223,7 @@ extension Clamshell {
                     recordDiskContent(raw, at: url)
                     rememberEnvelope(parsed, for: url)
                     doc.replaceChildrenFromExternalReload(parsed.blocks)
-                    doc.modificationDate = mtime
+                    page.modificationDate = mtime
                 } catch {
                     Diag.merge.error("presenter reload failed url=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 }
@@ -247,7 +247,7 @@ extension Clamshell {
         //    fragments). Idempotent — canonical links rewrite nothing — and
         //    committed through the normal chain with purge/add ops so the
         //    journal follows the rewrite.
-        await healLinks(in: doc)
+        await healLinks(in: doc, at: url)
 
         if let salvaged = conflictSalvaged {
             return .conflictMerged(salvaged: salvaged)

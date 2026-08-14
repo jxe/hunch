@@ -12,7 +12,7 @@ import Foundation
 struct DocumentMutationTests {
     private func makeDoc() -> Document {
         Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .paragraph(text: AttributedString("first")),
                 .bullet(text: AttributedString("a"), children: [
@@ -135,7 +135,7 @@ struct DocumentMutationTests {
         let heading = Block.heading(level: .h1, text: AttributedString("H"), children: [bodyA, bodyB])
         let trailing = Block.paragraph(text: AttributedString("after"))
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [heading, trailing]
         )
 
@@ -152,7 +152,7 @@ struct DocumentMutationTests {
         let inner = Block.heading(level: .h2, text: AttributedString("inner"), children: [leaf])
         let outer = Block.toggle(title: AttributedString("outer"), children: [inner])
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [outer]
         )
 
@@ -196,7 +196,7 @@ struct DocumentMutationTests {
 
     @Test func canIndentReturnsTrueWhenPreviousSiblingExists() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .bullet(text: AttributedString("first")),
                 .bullet(text: AttributedString("second"))
@@ -212,7 +212,7 @@ struct DocumentMutationTests {
 
     @Test func indentReparentsToPreviousSibling() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .bullet(text: AttributedString("first")),
                 .bullet(text: AttributedString("second"))
@@ -246,7 +246,7 @@ struct DocumentMutationTests {
 
     @Test func canDropRefusesHeadingIntoSameLevelHeadingChildren() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .heading(level: .h2, text: AttributedString("Outer"))
             ]
@@ -261,7 +261,7 @@ struct DocumentMutationTests {
 
     @Test func moveSubtreesShiftsTopLevel() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .paragraph(text: AttributedString("a")),
                 .paragraph(text: AttributedString("b")),
@@ -287,7 +287,7 @@ struct DocumentMutationTests {
         // Slide-down y from end of A exits A and lands before B. Option-arrow
         // movement must not implicitly indent into structural containers.
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .bullet(text: AttributedString("A"), children: [
                     .bullet(text: AttributedString("x")),
@@ -310,7 +310,7 @@ struct DocumentMutationTests {
         // Slide-up y from top of B exits B and lands after A. Option-arrow
         // movement must not implicitly indent into structural containers.
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .bullet(text: AttributedString("A"), children: [
                     .bullet(text: AttributedString("x"))
@@ -333,7 +333,7 @@ struct DocumentMutationTests {
         // Slide-down x should land at the beginning of the heading body, not
         // after the heading where heading-containment would append it.
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .bullet(text: AttributedString("x")),
                 .heading(level: .h1, text: AttributedString("Out"), children: [
@@ -355,7 +355,7 @@ struct DocumentMutationTests {
         // Sliding x down should move it into B's body. If it exits to the
         // root slot between A and B, heading-containment folds it back into A.
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .heading(level: .h1, text: AttributedString("A"), children: [
                     .bullet(text: AttributedString("x"))
@@ -381,7 +381,7 @@ struct DocumentMutationTests {
         // Slide-down x skips the whole toggle subtree instead of indenting into
         // it. Toggles require explicit Tab/drop-on-toggle to receive children.
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .bullet(text: AttributedString("x")),
                 .toggle(title: AttributedString("Out"), children: [
@@ -403,7 +403,7 @@ struct DocumentMutationTests {
         // Slide-up x enters the end of the heading body because headings are
         // section envelopes whose children render visually flush.
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .heading(level: .h1, text: AttributedString("Out"), children: [
                     .bullet(text: AttributedString("a")),
@@ -423,7 +423,7 @@ struct DocumentMutationTests {
 
     @Test func slideSiblingsDownInsideToggleReordersInsteadOfIndentingIntoNextChild() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .toggle(title: AttributedString("Out"), children: [
                     .bullet(text: AttributedString("a")),
@@ -443,7 +443,7 @@ struct DocumentMutationTests {
 
     @Test func slideSiblingsAtToggleBoundariesCanExitToggle() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .paragraph(text: AttributedString("before")),
                 .toggle(title: AttributedString("Out"), children: [
@@ -469,7 +469,7 @@ struct DocumentMutationTests {
 
     @Test func outdentOnlyChildOfToggleLeavesToggleEmpty() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .toggle(title: AttributedString("Out"), children: [
                     .bullet(text: AttributedString("a"))
@@ -492,7 +492,7 @@ struct DocumentMutationTests {
         // Slide-down x from end of A → P is a leaf, can't accept; falls back
         // to outdent: x becomes a top-level sibling between A and P.
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .bullet(text: AttributedString("A"), children: [
                     .bullet(text: AttributedString("x"))
@@ -584,7 +584,7 @@ struct DocumentMutationTests {
         let attr = boldedHello()
         let (head, _) = sliceMimickingSplit(attr, at: attr.characters.count)
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [.paragraph(text: attr)]
         )
         let id = doc.children[0].id

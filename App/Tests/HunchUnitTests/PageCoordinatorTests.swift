@@ -4,7 +4,7 @@ import Foundation
 import Editor
 
 /// Pins the synchronous-enqueue contract of the page coordinator: a write
-/// generation is installed before `enqueueEditorOps` returns, so `flush` and
+/// generation is installed before `enqueueEditorChanges` returns, so `flush` and
 /// close-then-trash sequencing cannot overlook a commit between its firing
 /// and its bytes landing. Also pins coalescing, ordering, and self-cleanup.
 @Suite("PageCoordinator persistence semantics")
@@ -37,17 +37,18 @@ struct PageCoordinatorTests {
         let clamshell = Clamshell(root: root)
 
         let block = Block.paragraph(text: attr("keystroke"))
-        let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
+        let doc = Document(id: DocumentID("p"), children: [block])
+        let url = clamshell.url(for: "p.md")
 
-        let page = clamshell.coordinator(for: doc)
+        let page = clamshell.coordinator(for: url)
         page.enqueue(
-            .fromEditorOps([.insert(hash: block.atomicHash, parent: nil, block: block)]),
+            .fromEditorChanges([.inserted(block: block, parent: nil)]),
             for: doc
         )
         #expect(page.hasPendingWrite, "enqueue must install the write generation before returning")
 
         try await page.flush()
-        let mdText = try String(contentsOf: doc.url, encoding: .utf8)
+        let mdText = try String(contentsOf: url, encoding: .utf8)
         #expect(mdText.contains("keystroke"), "flush must await the enqueued write")
     }
 
@@ -59,9 +60,9 @@ struct PageCoordinatorTests {
         let clamshell = Clamshell(root: root)
 
         let block = Block.paragraph(text: attr("body"))
-        let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
+        let doc = Document(id: DocumentID("p"), children: [block])
 
-        let page = clamshell.coordinator(for: doc)
+        let page = clamshell.coordinator(for: clamshell.url(for: "p.md"))
         let task = page.enqueue(Commit(logEntries: []), for: doc)
         try await task.value
         #expect(!page.hasPendingWrite, "a finished coordinator write must clear its own slot")
@@ -76,15 +77,16 @@ struct PageCoordinatorTests {
 
         let a = Block.paragraph(text: attr("alpha"))
         let b = Block.paragraph(text: attr("beta"))
-        let doc = Document(url: clamshell.url(for: "p.md"), children: [a, b])
+        let doc = Document(id: DocumentID("p"), children: [a, b])
+        let url = clamshell.url(for: "p.md")
 
-        let page = clamshell.coordinator(for: doc)
+        let page = clamshell.coordinator(for: url)
         let first = page.enqueue(
-            .fromEditorOps([.insert(hash: a.atomicHash, parent: nil, block: a)]),
+            .fromEditorChanges([.inserted(block: a, parent: nil)]),
             for: doc
         )
         let second = page.enqueue(
-            .fromEditorOps([.insert(hash: b.atomicHash, parent: nil, block: b)]),
+            .fromEditorChanges([.inserted(block: b, parent: nil)]),
             for: doc
         )
         #expect(first == second, "an un-started tail for the same Document must coalesce")
@@ -99,7 +101,7 @@ struct PageCoordinatorTests {
         if case .alive = intent.byHash[b.atomicHash] {} else {
             Issue.record("second batch's add must survive coalescing")
         }
-        let mdText = try String(contentsOf: doc.url, encoding: .utf8)
+        let mdText = try String(contentsOf: url, encoding: .utf8)
         #expect(mdText.contains("alpha") && mdText.contains("beta"))
     }
 
@@ -111,21 +113,22 @@ struct PageCoordinatorTests {
         let clamshell = Clamshell(root: root)
 
         let id = BlockID()
-        let doc = Document(url: clamshell.url(for: "p.md"), children: [])
-        let page = clamshell.coordinator(for: doc)
+        let doc = Document(id: DocumentID("p"), children: [])
+        let url = clamshell.url(for: "p.md")
+        let page = clamshell.coordinator(for: url)
         var lastHash = ""
         for text in ["a", "ab", "abc"] {
             let block = Block(id: id, kind: .paragraph(text: attr(text)))
             doc.replaceChildrenFromSystemMutation([block])
             page.enqueue(
-                .fromEditorOps([.insert(hash: block.atomicHash, parent: nil, block: block)]),
+                .fromEditorChanges([.inserted(block: block, parent: nil)]),
                 for: doc
             )
             lastHash = block.atomicHash
         }
 
         try await page.flush()
-        let mdText = try String(contentsOf: doc.url, encoding: .utf8)
+        let mdText = try String(contentsOf: url, encoding: .utf8)
         #expect(mdText.contains("abc"), "final .md must reflect the last enqueued commit")
         let intent = PatchEngine.intent(from: clamshell.log.readJournal(page: "p.md"))
         if case .alive = intent.byHash[lastHash] {} else {
@@ -149,7 +152,11 @@ struct PageCoordinatorTests {
 
             let block = Block.paragraph(text: attr("shared canonical"))
             transient.replaceChildrenFromSystemMutation(transient.children + [block])
-            try await clamshell.commit(.fromEditorOps([.insert(hash: block.atomicHash, parent: nil, block: block)]), to: transient)
+            try await clamshell.commit(
+                .fromEditorChanges([.inserted(block: block, parent: nil)]),
+                to: transient,
+                at: url
+            )
             try await open.close()
         }
 
@@ -172,7 +179,7 @@ struct PageCoordinatorTests {
 
         let block = Block.paragraph(text: attr("last keystroke"))
         open.document.replaceChildrenFromSystemMutation(open.document.children + [block])
-        open.enqueueEditorOps([.insert(hash: block.atomicHash, parent: nil, block: block)])
+        open.enqueueEditorChanges([.inserted(block: block, parent: nil)])
 
         await clamshell.drain()
 
@@ -246,7 +253,7 @@ struct PageCoordinatorTests {
             logFrontier: ["iphone-peer": 11]
         )
         try peerEnvelope.write(to: url, atomically: true, encoding: .utf8)
-        document.modificationDate = .distantPast
+        coordinator.modificationDate = .distantPast
 
         let event = await clamshell.synchronizePage(coordinator, document: document)
         if case .some = event {

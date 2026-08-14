@@ -36,9 +36,13 @@ struct LinkHealingTests {
             .subpage(title: "B", pageID: dest),
             .paragraph(text: inline),
         ]
-        let doc = Document(url: clamshell.url(for: "A.md"), children: blocks)
-        let ops = BlockTreeDiff.derive(pre: [], post: blocks)
-        try await clamshell.commit(.fromEditorOps(ops), to: doc)
+        let doc = Document(id: DocumentID("A"), children: blocks)
+        let changes = RecoveryChangeDiff.derive(pre: [], post: blocks)
+        try await clamshell.commit(
+            .fromEditorChanges(changes),
+            to: doc,
+            at: clamshell.url(for: "A.md")
+        )
         return doc
     }
 
@@ -61,7 +65,7 @@ struct LinkHealingTests {
         clamshell.registerPageID(id, forRel: "B-New.md")
         try clamshell.rescan()
 
-        let healed = await clamshell.healLinks(in: doc)
+        let healed = await clamshell.healLinks(in: doc, at: clamshell.url(for: "A.md"))
         #expect(healed == 2, "subpage row + inline link should both rewrite")
 
         // Live doc and disk both carry the canonical destinations.
@@ -72,7 +76,7 @@ struct LinkHealingTests {
         #expect(newDest == "B-New.md#\(id)")
         let inlineLink = try #require(doc.children[1].text.runs.compactMap(\.link).first)
         #expect(inlineLink.relativeString == "B-New.md#\(id)")
-        let diskText = try String(contentsOf: doc.url, encoding: .utf8)
+        let diskText = try String(contentsOf: clamshell.url(for: "A.md"), encoding: .utf8)
         #expect(diskText.contains("B-New.md#\(id)"))
         #expect(!diskText.contains("(B.md#\(id))"), "stale destination must be gone from disk")
 
@@ -112,7 +116,7 @@ struct LinkHealingTests {
         try clamshell.rescan()
         let doc = try await makeLinkingPage(to: "B.md", inlineTo: "B.md", in: clamshell)
 
-        let healed = await clamshell.healLinks(in: doc)
+        let healed = await clamshell.healLinks(in: doc, at: clamshell.url(for: "A.md"))
         #expect(healed == 2)
 
         // The heal minted B's ID and enriched both links with it.
@@ -124,7 +128,7 @@ struct LinkHealingTests {
         #expect(dest == "B.md#\(mintedID)")
 
         // Idempotent: a second pass rewrites nothing.
-        let again = await clamshell.healLinks(in: doc)
+        let again = await clamshell.healLinks(in: doc, at: clamshell.url(for: "A.md"))
         #expect(again == 0)
     }
 
@@ -139,10 +143,14 @@ struct LinkHealingTests {
             .subpage(title: "Gone", pageID: "Gone.md"),
             .paragraph(text: external),
         ]
-        let doc = Document(url: clamshell.url(for: "A.md"), children: blocks)
-        try await clamshell.commit(.fromEditorOps(BlockTreeDiff.derive(pre: [], post: blocks)), to: doc)
+        let doc = Document(id: DocumentID("A"), children: blocks)
+        try await clamshell.commit(
+            .fromEditorChanges(RecoveryChangeDiff.derive(pre: [], post: blocks)),
+            to: doc,
+            at: clamshell.url(for: "A.md")
+        )
 
-        let healed = await clamshell.healLinks(in: doc)
+        let healed = await clamshell.healLinks(in: doc, at: clamshell.url(for: "A.md"))
         #expect(healed == 0)
         guard case .subpage(_, let dest) = doc.children[0].kind else { return }
         #expect(dest == "Gone.md", "a broken link stays verbatim until its target reappears")
@@ -166,10 +174,14 @@ struct LinkHealingTests {
         _ = await clamshell.buildLinkGraph()
 
         let blocks: [Block] = [.subpage(title: "Unique Peony", pageID: "Old-Name.md")]
-        let doc = Document(url: clamshell.url(for: "A.md"), children: blocks)
-        try await clamshell.commit(.fromEditorOps(BlockTreeDiff.derive(pre: [], post: blocks)), to: doc)
+        let doc = Document(id: DocumentID("A"), children: blocks)
+        try await clamshell.commit(
+            .fromEditorChanges(RecoveryChangeDiff.derive(pre: [], post: blocks)),
+            to: doc,
+            at: clamshell.url(for: "A.md")
+        )
 
-        let healed = await clamshell.healLinks(in: doc)
+        let healed = await clamshell.healLinks(in: doc, at: clamshell.url(for: "A.md"))
         #expect(healed == 1)
         guard case .subpage(_, let dest) = doc.children[0].kind else { return }
         #expect(dest == "Peony.md#\(id)")

@@ -192,8 +192,8 @@ extension EditorView {
         // fresh state. Also drops the layout cache's structural-row
         // cache — any forward/undo/redo can shift which blocks are visible.
         let layoutCache = self.layoutCache
-        document.didCommitTransaction = { ops in
-            host.persistCommit(ops: ops, in: document)
+        document.didCommitTransaction = { changes in
+            host.persistCommit(changes: changes, in: document)
         }
         document.removeEditorHooks(documentHookToken)
         documentHookToken = document.installEditorHooks(Document.EditorHooks(

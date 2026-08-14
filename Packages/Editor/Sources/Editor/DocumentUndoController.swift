@@ -113,7 +113,7 @@ public final class DocumentUndoController {
     /// document directly. Emission happens inside `Document.transaction`
     /// via `didCommitTransaction`.
     @discardableResult
-    func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: () -> Void) -> [EditorOp] {
+    func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: () -> Void) -> [DocumentChange] {
         guard let document else { return [] }
         let opensGroup = undoManager.groupingLevel == 0
         if opensGroup { undoManager.beginUndoGrouping() }

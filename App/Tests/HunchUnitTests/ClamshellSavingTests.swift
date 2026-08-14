@@ -35,13 +35,14 @@ struct ClamshellSavingTests {
 
         let id = BlockID()
         let v0 = Block(id: id, kind: .paragraph(text: attr("hello")))
-        let doc = Document(url: clamshell.url(for: "p.md"), children: [v0])
+        let doc = Document(id: DocumentID("p"), children: [v0])
 
         // Initial insert (e.g. user created the block). This drives a save +
         // log apply.
         try await clamshell.commit(
-            .fromEditorOps([.insert(hash: v0.atomicHash, parent: nil, block: v0)]),
-            to: doc
+            .fromEditorChanges([.inserted(block: v0, parent: nil)]),
+            to: doc,
+            at: clamshell.url(for: "p.md")
         )
 
         // Simulate typing: the editor's textBinding setter updates the model.
@@ -51,15 +52,16 @@ struct ClamshellSavingTests {
         // Editor's `commitLiveText` (blur, focus change, navigation, scenePhase,
         // mutate) opens a transaction whose pre→post diff fires onCommit.
         try await clamshell.commit(
-            .fromEditorOps([
-                .remove(hash: v0.atomicHash),
-                .insert(hash: v1.atomicHash, parent: nil, block: v1)
+            .fromEditorChanges([
+                .removed(block: v0),
+                .inserted(block: v1, parent: nil)
             ]),
-            to: doc
+            to: doc,
+            at: clamshell.url(for: "p.md")
         )
 
         // 1. .md reflects the latest commit.
-        let mdText = try String(contentsOf: doc.url, encoding: .utf8)
+        let mdText = try String(contentsOf: clamshell.url(for: "p.md"), encoding: .utf8)
         #expect(mdText.contains("hello world"))
 
         // 2. Journal: v0 tombstoned, v1 alive.
@@ -92,12 +94,16 @@ struct ClamshellSavingTests {
         let clamshell = Clamshell(root: root)
 
         let block = Block.paragraph(text: attr("body"))
-        let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
+        let doc = Document(id: DocumentID("p"), children: [block])
 
-        try await clamshell.commit(Commit(logEntries: []), to: doc)
+        try await clamshell.commit(
+            Commit(logEntries: []),
+            to: doc,
+            at: clamshell.url(for: "p.md")
+        )
 
-        #expect(FileManager.default.fileExists(atPath: doc.url.path), "empty log entries should still save the .md")
-        let mdText = try String(contentsOf: doc.url, encoding: .utf8)
+        #expect(FileManager.default.fileExists(atPath: clamshell.url(for: "p.md").path), "empty log entries should still save the .md")
+        let mdText = try String(contentsOf: clamshell.url(for: "p.md"), encoding: .utf8)
         #expect(mdText.contains("body"))
         #expect(ClamshellPageEnvelope.parse(mdText).stampTrust == .trusted([:]))
     }
@@ -117,37 +123,40 @@ struct ClamshellSavingTests {
         let v0 = Block(id: id, kind: .paragraph(text: attr("a")))
         let v1 = Block(id: id, kind: .paragraph(text: attr("ab")))
         let v2 = Block(id: id, kind: .paragraph(text: attr("abc")))
-        let doc = Document(url: clamshell.url(for: "p.md"), children: [v0])
+        let doc = Document(id: DocumentID("p"), children: [v0])
 
         let t1 = Task { @MainActor in
             try await clamshell.commit(
-                .fromEditorOps([.insert(hash: v0.atomicHash, parent: nil, block: v0)]),
-                to: doc
+            .fromEditorChanges([.inserted(block: v0, parent: nil)]),
+            to: doc,
+            at: clamshell.url(for: "p.md")
             )
         }
         doc.replaceChildrenFromSystemMutation([v1])
         let t2 = Task { @MainActor in
             try await clamshell.commit(
-                .fromEditorOps([.remove(hash: v0.atomicHash),
-                                .insert(hash: v1.atomicHash, parent: nil, block: v1)]),
-                to: doc
+                .fromEditorChanges([.removed(block: v0),
+                                    .inserted(block: v1, parent: nil)]),
+                to: doc,
+                at: clamshell.url(for: "p.md")
             )
         }
         doc.replaceChildrenFromSystemMutation([v2])
         let t3 = Task { @MainActor in
             try await clamshell.commit(
-                .fromEditorOps([.remove(hash: v1.atomicHash),
-                                .insert(hash: v2.atomicHash, parent: nil, block: v2)]),
-                to: doc
+                .fromEditorChanges([.removed(block: v1),
+                                    .inserted(block: v2, parent: nil)]),
+                to: doc,
+                at: clamshell.url(for: "p.md")
             )
         }
 
         _ = try await t1.value
         _ = try await t2.value
         _ = try await t3.value
-        try await clamshell.coordinator(for: doc).flush()
+        try await clamshell.coordinator(for: clamshell.url(for: "p.md")).flush()
 
-        let mdText = try String(contentsOf: doc.url, encoding: .utf8)
+        let mdText = try String(contentsOf: clamshell.url(for: "p.md"), encoding: .utf8)
         #expect(mdText.contains("abc"), "final .md reflects last commit")
 
         let intent = PatchEngine.intent(from: clamshell.log.readJournal(page: "p.md"))
@@ -173,10 +182,10 @@ struct ClamshellSavingTests {
         let clamshell = Clamshell(root: root)
 
         let block = Block.paragraph(text: attr("standalone"))
-        let doc = Document(url: clamshell.url(for: "p.md"), children: [block])
+        let doc = Document(id: DocumentID("p"), children: [block])
 
-        try await clamshell.coordinator(for: doc).flush()
-        #expect(!FileManager.default.fileExists(atPath: doc.url.path),
+        try await clamshell.coordinator(for: clamshell.url(for: "p.md")).flush()
+        #expect(!FileManager.default.fileExists(atPath: clamshell.url(for: "p.md").path),
                 "flush does not trigger a save on a quiescent URL")
     }
 
@@ -260,14 +269,16 @@ struct ClamshellSavingTests {
         doc.replaceChildrenFromSystemMutation(doc.children + [alpha])
         try await clamshell.commit(
             Commit(logEntries: Patch.adds(from: [alpha]).entries),
-            to: first.document
+            to: first.document,
+            at: url
         )
 
         let beta = Block.paragraph(text: attr("beta"))
         second.document.replaceChildrenFromSystemMutation(second.document.children + [beta])
         try await clamshell.commit(
             Commit(logEntries: Patch.adds(from: [beta]).entries),
-            to: second.document
+            to: second.document,
+            at: url
         )
 
         let mdText = try String(contentsOf: url, encoding: .utf8)
@@ -361,15 +372,15 @@ struct ClamshellSavingTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        let rootDoc = Document(url: clamshell.url(for: "Home.md"), children: [])
-        let rootTargets = clamshell.page(at: rootDoc.url).cloudSyncSnapshot().items.map(\.target)
+        let homeURL = clamshell.url(for: "Home.md")
+        let rootTargets = clamshell.page(at: homeURL).cloudSyncSnapshot().items.map(\.target)
         #expect(rootTargets.map(\.kind) == [.page, .thisDeviceLog])
-        #expect(rootTargets[0].url == rootDoc.url.standardizedFileURL)
+        #expect(rootTargets[0].url == homeURL.standardizedFileURL)
         #expect(relativePath(rootTargets[1].url, under: root) == ".history/Home.md/\(DeviceID.current).jsonl")
 
-        let nestedDoc = Document(url: clamshell.url(for: "Projects/Ideas.md"), children: [])
-        let nestedTargets = clamshell.page(at: nestedDoc.url).cloudSyncSnapshot().items.map(\.target)
-        #expect(nestedTargets[0].url == nestedDoc.url.standardizedFileURL)
+        let ideasURL = clamshell.url(for: "Projects/Ideas.md")
+        let nestedTargets = clamshell.page(at: ideasURL).cloudSyncSnapshot().items.map(\.target)
+        #expect(nestedTargets[0].url == ideasURL.standardizedFileURL)
         #expect(relativePath(nestedTargets[1].url, under: root) == ".history/Projects/Ideas.md/\(DeviceID.current).jsonl")
     }
 
@@ -388,21 +399,22 @@ struct ClamshellSavingTests {
         let clamshell = Clamshell(root: root)
 
         let block = Block.paragraph(text: attr("sized body"))
-        let doc = Document(url: clamshell.url(for: "Sized.md"), children: [block])
-        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc)
+        let doc = Document(id: DocumentID("sized"), children: [block])
+        let sizedURL = clamshell.url(for: "Sized.md")
+        try await clamshell.commit(Commit(logEntries: Patch.adds(from: doc.children).entries), to: doc, at: sizedURL)
 
-        let snapshot = clamshell.page(at: doc.url).cloudSyncSnapshot()
+        let snapshot = clamshell.page(at: sizedURL).cloudSyncSnapshot()
         let pageItem = try #require(snapshot.items.first { $0.target.kind == .page })
         let logItem = try #require(snapshot.items.first { $0.target.kind == .thisDeviceLog })
-        let pageBytes = Int64(try Data(contentsOf: doc.url).count)
+        let pageBytes = Int64(try Data(contentsOf: sizedURL).count)
         let logBytes = Int64(try Data(contentsOf: logItem.url).count)
         #expect(pageItem.byteCount == pageBytes)
         #expect(logItem.byteCount == logBytes)
         #expect(logBytes > 0)
 
-        let missingLogDoc = Document(url: clamshell.url(for: "NoLog.md"), children: [])
-        try "# No log\n".write(to: missingLogDoc.url, atomically: true, encoding: .utf8)
-        let missingSnapshot = clamshell.page(at: missingLogDoc.url).cloudSyncSnapshot()
+        let noLogURL = clamshell.url(for: "NoLog.md")
+        try "# No log\n".write(to: noLogURL, atomically: true, encoding: .utf8)
+        let missingSnapshot = clamshell.page(at: noLogURL).cloudSyncSnapshot()
         let missingLogItem = try #require(missingSnapshot.items.first { $0.target.kind == .thisDeviceLog })
         #expect(missingLogItem.status == .missingNeutral)
         #expect(missingLogItem.byteCount == nil)

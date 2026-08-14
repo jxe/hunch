@@ -136,26 +136,20 @@ public protocol EditorHost: AnyObject {
     /// move-to, or undo/redo of any of the above. The editor fires this
     /// from a single emission point (`Document.didCommitTransaction`).
     ///
-    /// When the change came through `mutate`, `ops` carries the pre→post diff
-    /// from `BlockTreeDiff.derive(pre:post:)`: `.insert(hash, parent, block)`
-    /// for new (or content-changed) blocks and `.remove(hash)` for hashes
-    /// that are no longer the live hash of any post id. When the change came
-    /// from a typing commit, `ops` is `[.remove(preHash), .insert(nowHash, …)]`
-    /// for the single active block.
+    /// `changes` carries semantic pre→post block snapshots. The editor does
+    /// not expose or derive host storage identity.
     ///
-    /// When `ops` is empty, the change is a pure reorder/move (same id, same
-    /// hash) — nothing to log, but the host should still persist the new tree
-    /// shape. The host writes log records (when non-empty) and the rendered
-    /// document as one ordered unit per call.
+    /// When `changes` is empty, the change is a pure reorder/move. The host
+    /// should still persist the new tree shape.
     ///
     /// Called *synchronously* on the mutation-commit thread — the editor's
     /// typing path can't await mid-`Document.transaction`. The host
-    /// translates the ops into whatever storage primitive it owns; in
+    /// translates the changes into whatever storage primitive it owns; in
     /// practice the host spawns a Task and awaits durability internally,
     /// reaching that Task through `flush(_:)`. From the editor's side
     /// this is fire-and-forget on the typing thread; the host's
     /// `flush(_:)` is the only way to await durability.
-    func persistCommit(ops: [EditorOp], in document: Document)
+    func persistCommit(changes: [DocumentChange], in document: Document)
 
     /// Await durability of any writes already in flight for `document`.
     /// With the commit-time atomic save model, every `persistCommit`
@@ -164,7 +158,7 @@ public protocol EditorHost: AnyObject {
     /// Editor calls this on focus-loss (so the commit that just fired is
     /// durable before the row unmounts) and the host calls it directly
     /// from scene-phase / navigation-away / close paths. The doc is
-    /// passed explicitly (symmetric with `persistCommit(ops:in:)`) so
+    /// passed explicitly (symmetric with `persistCommit(changes:in:)`) so
     /// the host doesn't have to infer "current doc" from its own state.
     /// Non-throwing: the host owns error surfacing (banner, retry) —
     /// the editor has nothing useful to do with a flush failure.

@@ -8,7 +8,7 @@ struct EditorViewSubpageDeleteTests {
     @Test func deletingSelectedSubpageNotifiesHostOnce() {
         let subpage = Block.subpage(title: "Child", pageID: "Child.md")
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 subpage,
                 .paragraph(text: AttributedString("after"))
@@ -31,7 +31,7 @@ struct EditorViewSubpageDeleteTests {
         let child = Block.subpage(title: "Nested", pageID: "Nested.md")
         let parent = Block.toggle(title: AttributedString("Parent"), children: [child])
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 parent,
                 .paragraph(text: AttributedString("after"))
@@ -52,7 +52,7 @@ struct EditorViewSubpageDeleteTests {
     @Test func cuttingSubpageDoesNotNotifyHost() {
         let subpage = Block.subpage(title: "Child", pageID: "Child.md")
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 subpage,
                 .paragraph(text: AttributedString("after"))
@@ -98,7 +98,7 @@ private final class RecordingHost: EditorHost {
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
-    func persistCommit(ops: [EditorOp], in document: Document) {}
+    func persistCommit(changes: [DocumentChange], in document: Document) {}
     func flush(_ document: Document) async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "blocks" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }

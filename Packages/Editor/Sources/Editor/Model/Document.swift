@@ -1,6 +1,18 @@
 import Foundation
 import Observation
 
+/// Stable identity supplied by the host. The editor does not interpret or
+/// derive storage locations from this value.
+public struct DocumentID: Hashable, Sendable, CustomStringConvertible {
+    private let rawValue: String
+
+    public init(_ rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public var description: String { rawValue }
+}
+
 /// A tree-shaped insertion address: "before child[position] of `parent`".
 /// `parent == nil` is the document root. `position` is in `0...parent.children.count`.
 public struct DropPath: Hashable, Sendable {
@@ -28,19 +40,16 @@ public struct DropPath: Hashable, Sendable {
 /// replacement methods.
 @Observable @MainActor
 public final class Document: @MainActor Identifiable {
-    public let url: URL
+    public let id: DocumentID
+    public var fallbackTitle: String?
     public internal(set) var children: [Block] {
         didSet { _parentCache = nil }
     }
-    public var modificationDate: Date?
 
-    public var id: URL { url }
-
-    /// Derived from `children` (first top-level H1) with the URL's filename
-    /// (sans extension) as fallback. Single source of truth — no separate
-    /// stored field, no risk of drift after children mutate.
+    /// Derived from `children` (first top-level H1), then the host-supplied
+    /// fallback title, then a neutral package fallback.
     public var title: String {
-        Document.deriveTitle(from: children, fallback: url.deletingPathExtension().lastPathComponent)
+        Document.deriveTitle(from: children, fallback: fallbackTitle ?? "Untitled")
     }
 
     @ObservationIgnored
@@ -60,13 +69,13 @@ public final class Document: @MainActor Identifiable {
 
     /// Editor-supplied hook fired after every `transaction` — forward, undo,
     /// or redo — with the diff that takes the doc *from* the prior state *to*
-    /// the new state. Forward: the transaction's own pre→post ops. Undo: the
-    /// inverted ops. Redo: the forward ops fire again. Same hook for all
+    /// the new state. Forward: the transaction's own pre→post changes. Undo:
+    /// the inverted changes. Redo: the forward changes fire again. Same hook for all
     /// three flavours so the editor's emission to the host is symmetric
     /// across the round-trip, and `EditorState` revalidation happens once in
     /// one place regardless of direction.
     @ObservationIgnored
-    public var didCommitTransaction: (([EditorOp]) -> Void)?
+    public var didCommitTransaction: (([DocumentChange]) -> Void)?
 
     /// Editor-supplied hook fired after a system replacement swaps the tree
     /// wholesale (external-edit reloads, conflict merges). Fresh parse →
@@ -83,7 +92,7 @@ public final class Document: @MainActor Identifiable {
 
     struct EditorHooks {
         var preMutation: () -> Void
-        var didCommitTransaction: ([EditorOp]) -> Void
+        var didCommitTransaction: ([DocumentChange]) -> Void
         var didReplaceChildren: () -> Void
     }
 
@@ -108,10 +117,10 @@ public final class Document: @MainActor Identifiable {
     @ObservationIgnored
     private var inTransaction: Bool = false
 
-    public init(url: URL, children: [Block], modificationDate: Date? = nil) {
-        self.url = url
+    public init(id: DocumentID, children: [Block], fallbackTitle: String? = nil) {
+        self.id = id
         self.children = children
-        self.modificationDate = modificationDate
+        self.fallbackTitle = fallbackTitle
     }
 
     // MARK: - Transaction (unified mutation + undo entry point)
@@ -127,7 +136,8 @@ public final class Document: @MainActor Identifiable {
     /// Fires `preMutation` (editor flush) before the change, then
     /// `enforceHeadingContainment` after — both inside the same atomic
     /// boundary so the registered undo restores a valid tree. Computes the
-    /// pre→post `[EditorOp]` diff, fires `didCommitTransaction(ops)`, and
+    /// pre→post `[DocumentChange]` diff, fires
+    /// `didCommitTransaction(changes)`, and
     /// returns the diff. Nested transactions absorb into the outer (no new
     /// undo entry, no diff fired) so callers don't double-emit.
     @discardableResult
@@ -135,7 +145,7 @@ public final class Document: @MainActor Identifiable {
         name: String,
         coalesceKey: AnyHashable? = nil,
         _ change: () -> Void
-    ) -> [EditorOp] {
+    ) -> [DocumentChange] {
         // Nested call: absorb into the outer. The outer's snapshot already
         // covers everything before its `change` closure runs, and its
         // `preMutation` already fired. Just apply the change.
@@ -169,7 +179,7 @@ public final class Document: @MainActor Identifiable {
         }
         change()
         enforceHeadingContainment()
-        let ops = BlockTreeDiff.derive(pre: before, post: children)
+        let changes = DocumentChangeDiff.derive(pre: before, post: children)
         let activeUndoManager = transactionUndoManagerOverride ?? undoManager
         if !shouldCoalesce, let undoManager = activeUndoManager {
             let opensGroup = !undoManager.groupsByEvent
@@ -192,11 +202,11 @@ public final class Document: @MainActor Identifiable {
             lastTransactionKey = coalesceKey
         }
         lastTransactionTime = now
-        didCommitTransaction?(ops)
+        didCommitTransaction?(changes)
         for hooks in editorHookSets.values {
-            hooks.didCommitTransaction(ops)
+            hooks.didCommitTransaction(changes)
         }
-        return ops
+        return changes
     }
 
     @discardableResult
@@ -205,7 +215,7 @@ public final class Document: @MainActor Identifiable {
         coalesceKey: AnyHashable? = nil,
         undoManager: UndoManager?,
         _ change: () -> Void
-    ) -> [EditorOp] {
+    ) -> [DocumentChange] {
         let prior = transactionUndoManagerOverride
         transactionUndoManagerOverride = undoManager
         defer { transactionUndoManagerOverride = prior }

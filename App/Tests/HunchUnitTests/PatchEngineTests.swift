@@ -707,7 +707,7 @@ struct PatchEngineTests {
             addRecord(lostSection, counter: 1, t: 200),
             addRecord(loggedSubpage, parent: lostSection, counter: 2, t: 200),
         ])))
-        let doc = Document(url: URL(fileURLWithPath: "/tmp/p.md"), children: [currentSection])
+        let doc = Document(id: DocumentID("p"), children: [currentSection])
 
         let recon = PatchEngine.reconcile(
             intent: intent,
@@ -757,7 +757,7 @@ struct PatchEngineTests {
             addRecord(child, parent: oldHeading, counter: 2, t: 100),
             purgeRecord(oldHeading, counter: 3, t: 200),
         ])))
-        let doc = Document(url: URL(fileURLWithPath: "/tmp/p.md"), children: [oldHeading])
+        let doc = Document(id: DocumentID("p"), children: [oldHeading])
 
         let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
         #expect(recon.removes.count == 1)
@@ -782,7 +782,7 @@ struct PatchEngineTests {
             addRecord(newHeading, counter: 4, t: 200),
             addRecord(child, parent: newHeading, counter: 5, t: 200),
         ])))
-        let doc = Document(url: URL(fileURLWithPath: "/tmp/p.md"), children: [oldHeading])
+        let doc = Document(id: DocumentID("p"), children: [oldHeading])
 
         let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
         PatchEngine.apply(recon, to: doc)
@@ -803,7 +803,7 @@ struct PatchEngineTests {
             purgeRecord(oldHeading, counter: 3, t: 200),
             purgeRecord(child, counter: 4, t: 200),
         ])))
-        let doc = Document(url: URL(fileURLWithPath: "/tmp/p.md"), children: [oldHeading])
+        let doc = Document(id: DocumentID("p"), children: [oldHeading])
 
         let recon = PatchEngine.reconcile(intent: intent, doc: doc.children)
         PatchEngine.apply(recon, to: doc)

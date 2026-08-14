@@ -6,12 +6,13 @@ import Editor
 // A `Commit` is one durable unit of work for a single page: log entries to
 // append (zero or more) plus the implicit "serialize and write the current
 // `.md`." Caller mutates the live `Document` first; `Commit` does not carry
-// in-memory mutations. `Clamshell.commit(_:to:)` (the per-URL coordinator)
+// in-memory mutations. `Clamshell.commit(_:to:at:)` (the per-URL coordinator)
 // applies log entries strictly before the file write, awaited end-to-end,
 // so the "log at-or-ahead of disk" invariant holds across crashes.
 //
 // Four call sites build a `Commit`:
-//   - Editor: `Commit.fromEditorOps(ops)` projects `[EditorOp]` to add/purge.
+//   - Editor: `Commit.fromEditorChanges(changes)` projects semantic changes to
+//     Clamshell-owned add/purge records.
 //   - Reconcile: `Reconciliation.asCommit()` projects observations +
 //     unrestorable quarantines (the doc is mutated separately via
 //     `PatchEngine.apply`).
@@ -26,7 +27,7 @@ import Editor
 ///
 /// `logEntries` is zero or more `Patch.Entry`s to append before the `.md`
 /// write — may be empty for a pure-reorder commit. Caller is responsible
-/// for the in-memory state of `doc.children`: `commit(_:to:)` serializes
+/// for the in-memory state of `doc.children`: `commit(_:to:at:)` serializes
 /// whatever is there at commit time.
 struct Commit: Sendable {
     let logEntries: [Patch.Entry]
@@ -35,13 +36,13 @@ struct Commit: Sendable {
         self.logEntries = logEntries
     }
 
-    /// Editor's `[EditorOp]` → adds + purges. Empty `ops` means a pure
+    /// Editor's semantic changes → adds + purges. Empty changes mean a pure
     /// reorder/move (same hashes, different positions); the resulting
     /// Commit has no log entries but still triggers a `.md` write so the
     /// new shape lands.
-    static func fromEditorOps(_ ops: [EditorOp]) -> Commit {
-        if ops.isEmpty { return Commit(logEntries: []) }
-        return Commit(logEntries: Patch.from(ops: ops).entries)
+    static func fromEditorChanges(_ changes: [DocumentChange]) -> Commit {
+        if changes.isEmpty { return Commit(logEntries: []) }
+        return Commit(logEntries: Patch.from(changes: changes).entries)
     }
 }
 

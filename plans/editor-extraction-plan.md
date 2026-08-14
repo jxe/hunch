@@ -38,10 +38,10 @@ format is.
 
 | Milestone | Result | Effort | Risk | Depends on | Status |
 |---|---|---:|---:|---|---|
-| 0 | Baseline and behavior inventory | S | LOW | — | TODO |
-| 1 | Storage-neutral document identity | L | HIGH | 0 | TODO |
-| 2 | Semantic edit boundary; Clamshell-owned recovery identity | L | HIGH | 1 | TODO |
-| 3 | Small required host API plus explicit capabilities | L | HIGH | 2 | TODO |
+| 0 | Baseline and behavior inventory | S | LOW | — | DONE |
+| 1 | Storage-neutral document identity | L | HIGH | 0 | DONE |
+| 2 | Semantic edit boundary; Clamshell-owned recovery identity | L | HIGH | 1 | DONE |
+| 3 | Neutral defaults for optional host hooks | S | LOW | 2 | TODO |
 | 4 | Host-supplied block actions | M | MED | 3 | TODO |
 | 5 | Neutral configuration, styling, and public surface | L | MED | 4 | TODO |
 | 6 | Standalone docs, example, dependency policy, and verification | L | MED | 5 | TODO |
@@ -58,8 +58,9 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`.
   Until then, all code continues to use `Editor` and `import Editor`.
 - A minimal host must not implement unrelated page, image, preview, move, or
   mention features. Only edit persistence and durability waiting remain
-  mandatory; optional features have neutral defaults and explicit capability
-  flags that control their UI.
+  mandatory; all other host hooks have neutral defaults. Do not introduce a
+  comprehensive capability matrix before a real consumer demonstrates that
+  one is needed.
 - “Host-supplied block actions” means the reusable editor owns action
   presentation, selection snapshots, progress/error UI, stale-result checks,
   one undoable transaction, and persistence. The host supplies action metadata
@@ -71,9 +72,11 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`.
 - Hunch’s exact recovery hashes and journal compatibility are durable storage
   concerns. They must not accidentally change while the editor API is cleaned
   up.
-- Do not build a general plugin system or a comprehensive design-system API.
-  Add only the capabilities, actions, and theme/configuration values required
-  to remove current host policy from the reusable package.
+- Do not build a general plugin system, capability matrix, or comprehensive
+  design-system API. Add only the host actions and theme/configuration values
+  required to remove current Hunch policy from the reusable package. Add a
+  narrow support signal later only when a concrete visible affordance cannot
+  degrade honestly without one.
 
 ## Current boundary
 
@@ -139,7 +142,7 @@ contention. The executor may choose a unique path under `/tmp`.
 | Hunch macOS tests | `xcodebuild test -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -derivedDataPath /tmp/hunch-editor-plan-macos CODE_SIGNING_ALLOWED=NO` | Exit 0; Hunch unit tests pass |
 | Hunch macOS build | `xcodebuild build -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -derivedDataPath /tmp/hunch-editor-plan-macos-build CODE_SIGNING_ALLOWED=NO` | Exit 0 |
 | Hunch iOS build | `xcodebuild build -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/hunch-editor-plan-ios CODE_SIGNING_ALLOWED=NO` | Exit 0 |
-| Focused iOS UI tests | Use the existing `HunchUITests` scheme with `-only-testing:` for `HunchDragAndDropUITests`, `HunchEditScrollUITests`, and `HunchSplitKeyboardUITests` on an installed iOS 26 simulator | Exit 0 for all three suites |
+| Focused iOS UI tests | Use the existing `HunchUITests` scheme with `-only-testing:` for `HunchDragAndDropUITests`, `HunchEditScrollUITests`, and `HunchSplitKeyboardUITests` on the installed iOS 27 simulator only | No new failures beyond those recorded in `plans/editor-extraction-baseline.md` |
 
 If `xcodegen generate` changes `Hunch.xcodeproj/project.pbxproj`, include the
 generated change when it is a consequence of an intentional `project.yml`
@@ -373,28 +376,16 @@ even if Clamshell emits no recovery-log record.
 
 ---
 
-## Milestone 3 — Make the minimum host genuinely minimal
+## Milestone 3 — Give optional host hooks neutral defaults
 
 ### Goal
 
-A basic consumer implements persistence and flush only. Optional capabilities
-are explicit, unsupported UI is absent, and Hunch opts into its complete feature
-set.
+A basic consumer implements persistence and flush only. Existing Hunch
+integrations continue to work, while unrelated page, mention, move, image,
+preview, navigation, and paste hooks become optional through honest neutral
+defaults.
 
 ### Target API shape
-
-Add a public `EditorCapabilities: OptionSet` with a deliberately small initial
-set:
-
-```swift
-public struct EditorCapabilities: OptionSet, Sendable {
-    public static let pages: Self
-    public static let mentions: Self
-    public static let crossPageMove: Self
-    public static let images: Self
-    public static let linkPreviews: Self
-}
-```
 
 `EditorHost` keeps only these methods mandatory:
 
@@ -404,62 +395,67 @@ func flush(_ document: Document) async
 ```
 
 All other existing methods receive safe defaults in a public protocol
-extension. `capabilities` defaults to `[]`. Hunch explicitly returns every
-capability it supports. Do not infer capability availability by probing a
-method and interpreting `nil` or `false`.
+extension: empty collections for suggestions, `.missing` or `nil` for lookup
+and resolution, `false` for host mutations, no-op navigation/callbacks, empty
+image results, and nil previews. Copy and paste receive useful package-owned
+plain-text defaults rather than blank-string stubs.
+
+Do not add `EditorCapabilities`, an `OptionSet`, capability subprotocols, or a
+parallel feature registry in this milestone. Swift's protocol type checking is
+the conformance proof: only persistence and flush remain requirements without
+default implementations. A separate `MinimalHost` test type is unnecessary.
 
 ### Work
 
-1. Add the option set and neutral defaults. Preserve the class-bound stable
-   host identity.
-2. Gate every optional affordance at its source: menus, swipe actions,
-   context/turn-into actions, mention completion, drop targets, pasted-image
-   handling, preview tasks, and broken-page navigation. Unsupported features
-   should not appear and then silently fail.
-3. Keep ordinary text copy/paste usable without a host codec. Provide a
-   package-owned plain-text fallback; advertise custom serialization only when
-   the host has opted into the relevant broader capability or hook. Do not add
-   a capability flag merely to preserve a blank-string no-op.
-4. Replace the editor-coordinated `loadPageBlocks` then
-   `inlineAndTrashPage` sequence with one page-capability operation whose
-   contract makes the host responsible for the complete load → editor
-   transaction → durability wait → trash sequence. The editor may pass the
-   `Document`, source block ID, and requested conversion target, but it must not
-   independently delete/trash host data after an `await`.
-5. Keep page APIs grouped in the single protocol for this release. Do not split
-   into capability subprotocols yet; the option set and defaults are the
-   smallest correction. Revisit subprotocols only if a real consumer needs
-   replaceable implementations or the option set permits invalid combinations.
-6. Add a `MinimalHost` test fixture implementing only the two required methods.
-   Compile an `EditorView` with it. Add Hunch tests asserting all expected
-   capabilities and their visible commands/actions.
+1. Add public neutral defaults for every host method except `persistCommit` and
+   `flush`. Preserve the class-bound stable host identity and all existing
+   method signatures so Hunch's conformer does not need a parallel migration.
+2. Give copy and paste package-owned plain-text behavior when a host does not
+   override the codecs. Keep custom Markdown or other rich serialization as an
+   ordinary override, not a declared capability.
+3. Audit each optional method's call site. Where existing editor state or the
+   returned data naturally suppresses work—empty suggestions, missing page
+   lookups, nil previews, failed image persistence—keep that simple behavior.
+   Do not build new gating infrastructure pre-emptively.
+4. Identify any affordance that would remain visibly misleading with the
+   neutral default, such as an action that can only appear and then silently
+   cancel. First try to hide it using existing state or returned data. Add one
+   narrowly named support property only if the code demonstrates that no honest
+   natural condition exists; do not generalize it into a capability system.
+5. Keep page APIs and the existing load → inline → durability wait → trash
+   sequence unchanged in this milestone. Reconsider that contract only if a
+   concrete correctness bug or second host requires it.
+6. Update the README host table and quickstart to distinguish the two required
+   methods from optional hooks and to document every neutral default. Rely on
+   compiler type checking, package tests, and Hunch builds rather than adding a
+   synthetic minimal-host fixture.
 
 ### Files
 
 - `Packages/Editor/Sources/Editor/EditorHost.swift`
 - `Packages/Editor/Sources/Editor/EditorView.swift` and focused extension files
-- `Packages/Editor/Sources/Editor/BlockRow.swift`
-- `Packages/Editor/Sources/Editor/ImageBlockView.swift`
-- `Packages/Editor/Sources/Editor/EditorCommands.swift`
-- `Packages/Editor/Tests/EditorTests/`
-- `App/Sources/WorkspaceWindow+EditorHost.swift`
-- Relevant Hunch unit/UI tests
+  only where the call-site audit proves a visible dead affordance
+- `Packages/Editor/README.md`
+- Focused existing Editor or Hunch tests only when behavior changes
 
 ### Gate
 
-- A compiled minimal-host fixture has no page, mention, move, image, or preview
-  stubs.
 - Searching `EditorHost` shows only persistence and flush without default
   implementations.
-- Hunch opts in explicitly and retains all existing functionality.
-- The full verification matrix passes, including the focused iOS UI suites.
+- No `EditorCapabilities`, feature `OptionSet`, or synthetic `MinimalHost`
+  fixture exists.
+- The package type-checks, Editor package tests pass, and Hunch's existing full
+  conformer and both platform builds still compile unchanged in behavior.
+- The focused iOS 27 checks introduce no failure beyond the recorded baseline.
 
 ### STOP conditions
 
-- Stop if a capability is checked only after presenting the unsupported UI.
-- Stop if the atomic page operation forces a package consumer to know
-  Clamshell concepts such as trash directories or Markdown paths. The operation
-  should describe user intent; Hunch supplies storage semantics.
+- Stop before adding a general feature registry, capability matrix, or family
+  of support flags. Bring the concrete dead affordance back for a design
+  decision instead.
+- Stop if a neutral default could lose user content, claim a host mutation
+  succeeded, or weaken persistence. Optional write operations must fail closed;
+  persistence and flush never receive defaults.
 
 ---
 
@@ -495,7 +491,7 @@ the eventual package brand into type names now.
 ### Work
 
 1. Add the action value types and a default-empty host hook. Availability is
-   covered by the host action list; do not add one option-set flag per action.
+   covered by the host action list; do not add a separate feature flag per action.
 2. Render host actions in the existing block action surfaces after native
    editor actions. Preserve keyboard accessibility and stable ordering.
 3. Add a neutral focused-command entry point that invokes an action by stable
@@ -632,16 +628,16 @@ consumer-friendly dependency declarations.
 1. Add a tiny, self-contained example app under
    `Packages/Editor/Examples/EditorDemo/`. It must use only the public API and a
    host implementing the two required persistence methods. Use an in-memory
-   document, demonstrate optional capabilities separately, and make the sample
-   build on macOS and iOS Simulator.
+   document, demonstrate selected optional host hooks separately, and make the
+   sample build on macOS and iOS Simulator.
 2. Make the README quickstart match the compiled minimal host. Prefer sharing
    or checking the sample source rather than maintaining an untested duplicate.
 3. Rewrite `Packages/Editor/README.md` so it stands alone: installation,
    supported platforms/toolchain, minimal quickstart, model and mutation
-   semantics, capabilities table, block actions, theme/configuration, resource
-   behavior, threading/actor expectations, and versioning policy. Remove links
-   that climb into Hunch’s `App/` tree; link to Hunch’s public repository as an
-   external example only where useful.
+   semantics, optional host hooks and defaults, block actions,
+   theme/configuration, resource behavior, threading/actor expectations, and
+   versioning policy. Remove links that climb into Hunch’s `App/` tree; link to
+   Hunch’s public repository as an external example only where useful.
 4. Add a package-local `CONTRIBUTING.md`, `LICENSE` copy, and a concise
    architecture/maintenance note. Do not add speculative docs or a changelog
    before releases exist.
@@ -785,7 +781,8 @@ clearance; stop and ask for a different candidate if material ambiguity remains.
 - [ ] Recovery hashing and on-disk compatibility are owned and tested by
   Clamshell/Hunch.
 - [ ] A minimal host implements persistence and flush only.
-- [ ] Optional UI follows explicit capabilities.
+- [ ] Optional host hooks have documented neutral defaults; any support signal
+  is narrowly justified by a concrete otherwise-dead affordance.
 - [ ] Product actions are host-supplied; Foundation Models is not a package
   dependency.
 - [ ] The package contains no Hunch/Console/Notion policy or global Hunch

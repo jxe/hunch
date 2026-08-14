@@ -72,8 +72,7 @@ Two flavours: **authoritative** (`add`, `purge`) and **tentative**
 
 - **`add`** claims authorship. The block became alive via a direct
   edit on this device. `h` is the full SHA-256 of the canonical block
-  (see
-  [BlockFingerprint](../../../Packages/Editor/Sources/Editor/BlockFingerprint.swift)).
+  (see [BlockRecoveryIdentity.swift](BlockRecoveryIdentity.swift)).
   `p` is the parent hash *at first observation* (may go stale; see
   below). `m` is the atomic markdown — the block on its own, no
   children. Authoritative for `.alive` classification → eligible for
@@ -89,11 +88,11 @@ Two flavours: **authoritative** (`add`, `purge`) and **tentative**
   external edits (vim'd a block into `.md`): the journal still has
   a snapshot for recovery, but we don't take ownership we don't have.
 - **`purge`** is a tombstone, appended at the moment of structural
-  removal. The editor's `mutate(_:_:)` derives a pre→post `[EditorOp]`
-  diff via `BlockTreeDiff.derive(_:_:)` and fires
-  `host.persistCommit(ops:in:)` (the editor-facing `EditorHost`
+  removal or content-identity replacement. The editor's transaction
+  boundary derives a pre→post `[DocumentChange]` semantic diff and fires
+  `host.persistCommit(changes:in:)` (the editor-facing `EditorHost`
   protocol method); the host bridges that to
-  `PageSession.enqueueEditorOps(_:)`, which projects the batch onto
+  `PageSession.enqueueEditorChanges(_:)`, which projects the batch onto
   a `Patch` (inserts → `.add`, removes → `.purge`) and routes it to
   `RecoveryLog.apply(_:to:)` for one ordered append with sequential
   counters. Authoritative — drives `.tombstoned` and triggers engine
@@ -128,7 +127,7 @@ the three callers' natural shapes onto the unified type:
 - `Patch.observations(from blocks: [Block])` — full-doc walks for
   merged or externally observed content this device should snapshot but
   not claim as authored, such as conflict-merge writes. Emits `observe`.
-- `Patch.from(ops: [EditorOp])` — editor structural diffs. Emits
+- `Patch.from(changes: [DocumentChange])` — editor semantic diffs. Emits
   `add` / `purge`.
 - `Patch.Entry.observe(hash:parent:markdown:)` — used by reconcile
   to write snapshots of unclaimed blocks (see "Reconciliation" below).
@@ -260,7 +259,7 @@ the home-page critical path clear of the per-device JSONL iCloud reads.
 Presenter-wakeup reconcile fires from two presenters installed per
 open page:
 
-- **Document presenter** (`DocumentFilePresenter`) — watches `doc.url`
+- **Document presenter** (`DocumentFilePresenter`) — watches the coordinator's URL
   itself. Fires when an external editor or iCloud-delivered foreign
   edit writes the `.md`. Triggers Phase 2 reload (classify echo /
   stomp / external; in-place children swap for external) plus Phase 3
@@ -394,10 +393,10 @@ let session = try await page.open { event in
 // Editor-driven write — commit-time atomic save. Non-empty log entries
 // are applied to the recovery log; then the .md is serialized and
 // written. Calls for the same URL chain so concurrent commits land in
-// order. `enqueueEditorOps` installs the coordinator generation
+// order. `enqueueEditorChanges` installs the coordinator generation
 // synchronously and returns its durability task (the host's sync
 // persistCommit hook uses it, so flush cannot overlook the edit).
-let durability = session.enqueueEditorOps(ops)
+let durability = session.enqueueEditorChanges(changes)
 try await durability.value
 
 // Force-flush any in-flight commits (blur, scenePhase background,
@@ -434,7 +433,7 @@ existing instance and build a new one.
 |-------|---------|
 | Get a page | `page(at:)`, `page(atPath:)` → stable lightweight `Page`; `relativePath(of:)`, `url(for:)`, `pagePath(for:relativeTo:)` remain workspace path conversions. |
 | Page | `open(onEvent:)`, `readBlocks()`, `append(_:)`, `restore(_:)`, `resolveConflicts()`, `cloudSyncSnapshot()`, `compactThisDeviceLog()`, `trashAfterInlining(into:)`. Closed-page operations acquire the URL's canonical coordinator document transiently. |
-| Page session | `document`, `enqueueEditorOps(_:)`, `flush()`, `close()`, `cloudSyncSnapshot()`, `compactThisDeviceLog()`. Multiple sessions for one URL share one canonical document and coordinator. |
+| Page session | `document`, `enqueueEditorChanges(_:)`, `flush()`, `close()`, `cloudSyncSnapshot()`, `compactThisDeviceLog()`. Multiple sessions for one URL share one canonical document and coordinator. |
 | Page list and search | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:filter:)` for synchronous title filtering, and async `searchPages(matching:limit:)` for full-text search. Search results carry an internal relative path, title, optional matching passage, modification date, and score; picker rows never display the path. |
 | Workspace lifetime | `drain()` awaits all pending generations and shuts down every coordinator. Generic `Commit` construction and `commit(_:to:)` are engine-internal. |
 | Create | `createPage(title:requestedPath:initialContent:)` |
@@ -488,9 +487,9 @@ Editor mutations are projected to a `Patch` and applied as one batched
 write per mutation. The log actor mints sequential per-page Lamport
 counters, encodes JSONL, appends to our device's file. There's no
 device-hash cache short-circuiting duplicates: callers either filter
-upstream (the editor's `BlockTreeDiff` only emits ops for structural
-changes; reconcile's `unloggedObservations` filters against journal
-intent) or accept a small amount of log bloat (full-doc-walk commits
+upstream (Clamshell's semantic-change projection filters unchanged
+recovery identities; reconcile's `unloggedObservations` filters against
+journal intent) or accept a small amount of log bloat (full-doc-walk commits
 from conflict-merge or closed-page restore). Intent is unchanged for
 duplicates of the same op: duplicate `add`s for the same hash resolve
 to the same alive intent, and duplicate `observe`s preserve snapshots
@@ -501,7 +500,7 @@ log apply + file write inside a single Task, log first. At any point
 a crash can happen, the log is at-or-ahead of the file → reconcile
 heals on next open. The editor's `EditorHost.persistCommit` protocol
 method stays synchronous (typing path can't await) — the host bridge
-calls `PageSession.enqueueEditorOps(_:)`, which installs the generation
+calls `PageSession.enqueueEditorChanges(_:)`, which installs the generation
 before returning, then awaits the returned task only for the failure
 banner; only the coordinator writer pays the I/O. Because the enqueue
 is synchronous, `PageSession.flush()` (which awaits the current write tail)
@@ -563,7 +562,7 @@ representation instead:
 - Bytes converge lazily: `healLinks(in:)` (a step in `synchronizePage`,
   so it runs whenever a page is open and quiet) rewrites stale
   destinations to canonical `rel#id` form and commits through the
-  normal chain with `BlockTreeDiff`-derived purge/add ops — so the
+  normal chain with semantic-change-derived purge/add records — so the
   journal follows the rewrite and reconcile never resurrects the
   stale-link block. This also progressively enriches legacy links with
   fragments. Idempotent: canonical links rewrite nothing.
@@ -578,7 +577,7 @@ graph is `resolveSubpageTarget(_:)` — it normalizes verbatim
 destinations (fragment and all) to a live rel path so graph vertices
 stay comparable.
 
-**One session write API: `enqueueEditorOps(_:)` + `flush()`.** The
+**One session write API: `enqueueEditorChanges(_:)` + `flush()`.** The
 editor submits its transaction diff without knowing about recovery-log
 patches or `Commit`. Internally, every durable write — editor commit,
 reconcile catch-up, manual restore, conflict merge, subpage append —
@@ -594,29 +593,31 @@ strongly until it returns (see `Workspace.switchWorkspace`).
 Post-save bookkeeping (mtime refresh, title cache, page rescan) fires
 internally on every successful commit.
 
-**Editor mutations stream as ops.** Every `Document.transaction`
-(forward and undo/redo) derives a pre→post `[EditorOp]` diff via
-`BlockTreeDiff.derive(_:_:)` and fires
+**Editor mutations stream as semantic changes.** Every `Document.transaction`
+(forward and undo/redo) derives a pre→post `[DocumentChange]` diff and fires
 `Document.didCommitTransaction`, which the editor wires to
-`EditorHost.persistCommit(ops:in:)`. The host's adapter projects the
-ops onto a `Commit.fromEditorOps(ops)` through
-`PageSession.enqueueEditorOps(_:)` synchronously (inserts → `.add`,
+`EditorHost.persistCommit(changes:in:)`. The host's adapter projects the
+changes onto a `Commit.fromEditorChanges(changes)` through
+`PageSession.enqueueEditorChanges(_:)` synchronously (inserts → `.add`,
 removes → `.purge`) — the editor's sync hook surface is preserved,
 and durability is awaited in a follow-up Task only for the failure
-banner. Typing goes through the same path:
+banner. Clamshell owns the canonical SHA-256 recovery identity and filters
+semantic snapshots whose on-disk identity is unchanged. Typing goes through the same path:
 `commitLiveText` opens a `transaction(name:"Type", coalesceKey:)` and
 the resulting diff flows through the same hook. Undo and redo fire it
 too with the (inverted) diff so the journal stays symmetric. No
-pre/post tree snapshot on the host side, no diff inference — the op
-stream is the log update.
+pre/post tree snapshot on the host side and no recovery-hash policy in
+Editor — the semantic change stream is the storage adapter's input.
 
-**Deletes are explicit, not inferred.** The op diff emits a
-`.remove(hash)` for every block id present in pre but absent in post.
-`Patch.from(ops:)` projects those to `.purge` entries that
+**Deletes and content replacements are explicit, not inferred by the host.**
+The semantic diff emits `.removed(block:)` for every deleted block and for
+the old snapshot of content changed under a stable block ID.
+`Patch.from(changes:)` projects recovery-distinct removals to `.purge` entries that
 `log.apply` writes as `purge` records. Save paths never infer
 tombstones from comparing prior state to current state. Consequences:
-- Typing inside a block (same id, different hash) does NOT fire a
-  purge — text editing is not deletion.
+- Typing inside a block produces old/new semantic snapshots. Clamshell
+  purges the old recovery hash and adds the new one; formatting or
+  whitespace changes with the same canonical recovery identity are filtered.
 - External edits to the `.md` (iCloud / other markdown apps) surface
   missing blocks as "lost" in the Recover sheet, never as "Deleted on
   purpose" — Hunch can't infer intent from a write it didn't author.
@@ -683,7 +684,7 @@ append" — `NSFileCoordinator` handles that.
   unifies every durable write (editor commit, reconcile catch-up,
   manual restore, conflict-merge, subpage append). One Commit is the
   recovery-log entries associated with a document snapshot. Factories:
-  `Commit.fromEditorOps(_:)`, `Reconciliation.asCommit()`; the other
+  `Commit.fromEditorChanges(_:)`, `Reconciliation.asCommit()`; the other
   call sites build the value directly.
 - [Clamshell+Reconcile.swift](Clamshell+Reconcile.swift) — engine
   orchestration: open-doc reconcile, live-doc reconcile for presenter

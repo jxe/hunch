@@ -143,10 +143,11 @@ struct PageIDTests {
         try "# Legacy\n\nbody\n".write(to: url, atomically: true, encoding: .utf8)
 
         let block = Block.paragraph(text: attr("added"))
-        let doc = Document(url: url, children: [block])
+        let doc = Document(id: DocumentID("legacy"), children: [block])
         try await clamshell.commit(
-            .fromEditorOps([.insert(hash: block.atomicHash, parent: nil, block: block)]),
-            to: doc
+            .fromEditorChanges([.inserted(block: block, parent: nil)]),
+            to: doc,
+            at: url
         )
         let first = ClamshellPageEnvelope.parse(try String(contentsOf: url, encoding: .utf8)).pageID
         #expect(first != nil, "legacy page should gain an ID on first save")
@@ -154,8 +155,9 @@ struct PageIDTests {
         let v1 = Block.paragraph(text: attr("added more"))
         doc.replaceChildrenFromSystemMutation([v1])
         try await clamshell.commit(
-            .fromEditorOps([.remove(hash: block.atomicHash), .insert(hash: v1.atomicHash, parent: nil, block: v1)]),
-            to: doc
+            .fromEditorChanges([.removed(block: block), .inserted(block: v1, parent: nil)]),
+            to: doc,
+            at: url
         )
         let second = ClamshellPageEnvelope.parse(try String(contentsOf: url, encoding: .utf8)).pageID
         #expect(second == first, "ID must be stable across saves")

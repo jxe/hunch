@@ -17,9 +17,10 @@ extension WorkspaceWindow: EditorHost {
     // — Workspace-scoped forwarders —
 
     func suggestPages(_ query: String, in document: Document) -> [MentionItem] {
-        guard let clamshell = workspace.clamshell else { return [] }
+        guard let clamshell = workspace.clamshell,
+              let pageURL = pageURL(for: document) else { return [] }
         let home = clamshell.homeRelativePath
-        return clamshell.pages(matching: query, excluding: document.url)
+        return clamshell.pages(matching: query, excluding: pageURL)
             .map { $0.asMentionItem(homeRelativePath: home) }
     }
 
@@ -29,13 +30,13 @@ extension WorkspaceWindow: EditorHost {
 
     func didDeleteSubpageLink(pageID rawPageID: String, title: String, from document: Document) {
         guard let clamshell = workspace.clamshell,
+              let sourceURL = pageURL(for: document),
               let pageID = clamshell.resolveSubpageTarget(rawPageID),
               clamshell.entry(at: pageID) != nil else {
             return
         }
 
-        let sourcePageID = clamshell.relativePath(of: document.url)
-        let sourceURL = document.url
+        let sourcePageID = clamshell.relativePath(of: sourceURL)
         let sourceBlocksAfterDelete = document.children
 
         Task { @MainActor [weak self, pageID, title, sourcePageID, sourceURL, sourceBlocksAfterDelete] in
@@ -80,11 +81,13 @@ extension WorkspaceWindow: EditorHost {
     }
 
     func resolvePageID(from url: URL, in document: Document) -> String? {
-        workspace.clamshell?.pagePath(for: url, relativeTo: document.url)
+        guard let pageURL = pageURL(for: document) else { return nil }
+        return workspace.clamshell?.pagePath(for: url, relativeTo: pageURL)
     }
 
     func linkURL(forPageID pageID: String, in document: Document) -> URL? {
-        guard let clamshell = workspace.clamshell else { return nil }
+        guard let clamshell = workspace.clamshell,
+              let pageURL = pageURL(for: document) else { return nil }
         let (rawPath, destID) = ClamshellPageEnvelope.splitPageFragment(pageID)
         let rel = clamshell.resolvePageTarget(pageID) ?? rawPath
         let id = destID ?? clamshell.knownPageID(forRel: rel)
@@ -95,7 +98,7 @@ extension WorkspaceWindow: EditorHost {
             Task { [clamshell] in await clamshell.ensurePageID(forRel: rel) }
         }
         return clamshell.relativeMarkdownURL(
-            from: document.url.deletingLastPathComponent(),
+            from: pageURL.deletingLastPathComponent(),
             to: clamshell.url(for: rel),
             fragment: id
         )
@@ -116,14 +119,14 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
-    func persistCommit(ops: [EditorOp], in document: Document) {
+    func persistCommit(changes: [DocumentChange], in document: Document) {
         guard let session = session(for: document) else { return }
         // Editor's `didCommitTransaction` is sync (typing path can't
         // await). The enqueue is synchronous too, so the page coordinator
         // reflects this commit before we return — `PageSession.flush()` callers
         // (blur, nav, scenePhase) can never observe false quiescence.
         // The Task only awaits durability for the failure banner.
-        let task = session.enqueueEditorOps(ops)
+        let task = session.enqueueEditorChanges(changes)
         Task { @MainActor in
             defer { if openDocument === document { refreshCloudSyncSnapshot() } }
             do {

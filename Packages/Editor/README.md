@@ -152,7 +152,7 @@ final class MyHost: EditorHost {
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
-    func persistCommit(ops: [EditorOp], in document: Document) {}
+    func persistCommit(changes: [DocumentChange], in document: Document) {}
     func flush(_ document: Document) async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
@@ -163,8 +163,9 @@ final class MyHost: EditorHost {
 
 struct ContentView: View {
     @State var document = Document(
-        url: URL(fileURLWithPath: "/dev/null"),
-        children: [.paragraph(text: AttributedString(""))]
+        id: DocumentID("welcome-note"),
+        children: [.paragraph(text: AttributedString(""))],
+        fallbackTitle: "Welcome"
     )
     @State var editorState = EditorState()
     @State var host = MyHost()
@@ -175,10 +176,12 @@ struct ContentView: View {
 }
 ```
 
-All methods are required. `persistCommit` is how the editor reports
-edits — silently dropping it would leave a host with no persistence,
-which is rarely what you want; if you really don't care, give it an
-empty body.
+All methods are required. `DocumentID` is opaque to the editor: it can name a
+database row, remote object, or in-memory session and never needs to encode a
+file URL. `persistCommit` reports semantic block snapshots through
+`DocumentChange`; translating those changes into storage records is host policy.
+Silently dropping the callback would leave a host with no persistence, so a
+non-persisting integration must provide an explicit empty body.
 
 That's a working editor. Most methods can be no-ops in early integration
 — the editor degrades gracefully (paste is single-paragraph-only, @-mention
@@ -260,18 +263,18 @@ public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
 
 ```swift
 @Observable @MainActor
-public final class Document {
-    public let url: URL
+public final class Document: Identifiable {
+    public let id: DocumentID
     public internal(set) var children: [Block]   // root-level siblings; written via transaction or named replacement helpers
-    public var modificationDate: Date?
-    public var title: String { … }                // derived from first H1, falls back to url.lastPathComponent
+    public var fallbackTitle: String?
+    public var title: String { … }                // first H1, then fallbackTitle, then "Untitled"
 
-    public init(url: URL, children: [Block], modificationDate: Date? = nil)
+    public init(id: DocumentID, children: [Block], fallbackTitle: String? = nil)
 
     // Atomic mutation entry point — fires preMutation, snapshots for undo,
-    // enforces heading containment. The editor's structural ops route
+    // enforces heading containment. The editor's semantic changes route
     // through here; hosts rarely call it directly.
-    public func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: (Document) -> Void)
+    public func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: () -> Void) -> [DocumentChange]
 
     // Bulk non-undoable replacements — for system-owned tree swaps where
     // the new content is the authoritative state.
@@ -299,7 +302,7 @@ public final class Document {
     // Editor-installed hooks (set on mount):
     public weak var undoManager: UndoManager?
     public var preMutation: (() -> Void)?                       // flush in-flight NSTextView text before snapshot
-    public var didCommitTransaction: (([EditorOp]) -> Void)?    // fires after every transaction (forward / undo / redo) with the diff
+    public var didCommitTransaction: (([DocumentChange]) -> Void)? // fires after every transaction (forward / undo / redo) with semantic snapshots
     public var didReplaceChildren: (() -> Void)?                // revalidate selection after system replacements swap the tree wholesale
 }
 ```
@@ -311,15 +314,16 @@ public final class Document {
   resolution, reload, reconcile-style system mutation), use the narrowly
   named replacement helper for that path.
 - **`title` is derived.** No stored field, no risk of drift after children
-  mutate — pulled from the first top-level H1 with the URL's filename
-  (sans extension) as fallback.
-- **`url` is host-meaningful only.** The editor doesn't read or write to
-  it; pass any stable URL (`/dev/null` for ephemeral cases works).
+  mutate — pulled from the first top-level H1, then `fallbackTitle`, then
+  `"Untitled"`.
+- **`id` is storage-neutral.** `DocumentID` is an opaque host-supplied
+  identity. A document can live entirely in memory or behind a remote store;
+  the host retains URLs, modification dates, and other storage metadata.
 - **Hosts mostly read**: typically `children` (to serialize on save) and
   `title` (sidebar, window title). Structural mutation goes through the
   editor's `EditorView.mutate(_:_:)`, which wraps `document.transaction`,
-  derives the pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
-  `host.persistCommit(ops:on:)` afterward.
+  derives a storage-neutral pre→post `[DocumentChange]` diff, and fires
+  `host.persistCommit(changes:in:)` afterward.
 
 ---
 
@@ -416,7 +420,7 @@ stubbed out for early integration.
 | `appendToPage` | `(_ pageID: String, _ blocks: [Block]) async -> Bool` | User drops blocks onto a subpage row. Async so the host can sequence log-then-file durability before returning. | true = host wrote them (proceed with local removal). false = no-op. |
 | `moveDestination` | `(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination?` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, returns the user's `MoveDestination` (`.page` or `.block`) or nil to cancel. | Async — editor `await`s the picker result at the call site. |
 | `navigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |
-| `persistCommit` | `(ops: [EditorOp], in: Document) -> Void` | Once per `Document.transaction` (the unified mutation entry point): structural ops via `EditorView.mutate(_:_:)`, typing commits via `BlockTextEditor.Coordinator.commitLiveText`, autotransforms, paste, move-to, and undo/redo all funnel through it. Called *synchronously* on the mutation-commit thread (the editor can't await mid-transaction). `ops` is the pre→post diff from `BlockTreeDiff.derive(_:_:)`: `.insert(hash, parent, block)` for new or content-changed blocks, `.remove(hash)` for hashes that are no longer the live hash of any post id. On undo the diff is inverted (`(.remove(pre), .insert(post))` becomes `(.remove(post), .insert(pre))`) so the journal symmetrically tombstones the just-undone hashes. Empty `ops` means a pure reorder/move (same id, same hash) — the host should still persist the new tree shape. | Host should treat the call as the unit of save: apply non-empty `ops` to its recovery log, then write the rendered document, in that order. The host typically spawns a Task internally to do this async work and awaits it via `flush(_:)` — the editor's sync hook stays a sync hook. |
+| `persistCommit` | `(changes: [DocumentChange], in: Document) -> Void` | Once per `Document.transaction` (the unified mutation entry point): structural edits via `EditorView.mutate(_:_:)`, typing commits via `BlockTextEditor.Coordinator.commitLiveText`, autotransforms, paste, move-to, and undo/redo all funnel through it. Called *synchronously* on the mutation-commit thread (the editor can't await mid-transaction). `changes` carries removed and inserted block snapshots plus stable-child parent-reference updates; it contains no storage hashes or journal operations. On undo the semantic before/after snapshots are inverted. Empty changes means a pure reorder/move — the host should still persist the new tree shape. | Host should treat the call as its unit of save, translating semantic snapshots into whatever persistence model it owns. The host typically schedules async work internally and awaits it via `flush(_:)`; the editor's sync hook stays synchronous. |
 | `flush` | `(_ document: Document) async -> Void` | Editor loses focus (window/key/scene transitions, document switch). Host also calls it directly from scene-phase / navigation paths. Async so callers can await durability where it matters. | Host should force-save the current document. |
 | `serializeBlocksForPasteboard` | `(_ blocks: [Block]) -> String` | User cuts or copies. | Host returns a string for the system pasteboard (markdown, RTF, plain — host's choice). Empty string cancels the copy. |
 | `parseBlocksFromPasteboard` | `(_ string: String) -> [Block]?` | User pastes. | Host returns blocks parsed from the pasteboard string. nil cancels the paste. |

@@ -12,7 +12,7 @@ struct EditorViewIndentTests {
         let second = Block.bullet(text: AttributedString("second"))
         let after = Block.paragraph(text: AttributedString("after"))
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [container, first, second, after]
         )
         let state = EditorState()
@@ -34,7 +34,7 @@ struct EditorViewIndentTests {
         let parent = Block.bullet(text: AttributedString("parent"), children: [first, second])
         let after = Block.paragraph(text: AttributedString("after"))
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [before, parent, after]
         )
         let state = EditorState()
@@ -53,7 +53,7 @@ struct EditorViewIndentTests {
         let second = Block.bullet(text: AttributedString("second"))
         let after = Block.paragraph(text: AttributedString("after"))
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [first, second, after]
         )
         let state = EditorState()
@@ -71,7 +71,7 @@ struct EditorViewIndentTests {
         let heading = Block.heading(level: .h2, text: AttributedString("heading"), children: [first, second])
         let after = Block.paragraph(text: AttributedString("after"))
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [heading, after]
         )
         let state = EditorState()
@@ -98,7 +98,7 @@ private final class TestHost: EditorHost {
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool { true }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
-    func persistCommit(ops: [EditorOp], in document: Document) {}
+    func persistCommit(changes: [DocumentChange], in document: Document) {}
     func flush(_ document: Document) async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }

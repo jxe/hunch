@@ -99,7 +99,7 @@ struct LogJournal: Sendable {
 // MARK: - Patch
 //
 // A `Patch` is a batch of intent transitions waiting to land on a page's
-// recovery log. Editor mutations (`BlockTreeDiff` → adds + purges), engine
+// recovery log. Editor changes (semantic snapshots → adds + purges), engine
 // outputs (reconcile's `toAppend` observations + `unrestorable`
 // quarantines), and other persistence callers all project to a `Patch`.
 // Each entry becomes one log record on disk after `RecoveryLog` mints its
@@ -169,18 +169,9 @@ struct Patch: Sendable {
         return Patch(entries: out)
     }
 
-    /// Project a batch of editor structural ops onto a Patch: inserts
-    /// become `.add` entries, removes become `.purge` entries, order
-    /// preserved.
-    static func from(ops: [EditorOp]) -> Patch {
-        Patch(entries: ops.map { op in
-            switch op {
-            case .insert(let h, let p, let block):
-                return .add(hash: h, parent: p, markdown: BlockSerializer.serializeAtomic(block))
-            case .remove(let h):
-                return .purge(hash: h)
-            }
-        })
+    /// Project editor-semantic changes onto Clamshell recovery records.
+    static func from(changes: [DocumentChange]) -> Patch {
+        Patch(entries: RecoveryChangeProjection.entries(for: changes))
     }
 
     private static func walk(_ blocks: [Block], parent: String?, op: Op, into out: inout [Entry]) {
@@ -819,7 +810,7 @@ enum PatchEngine {
         collectAtomicHashes(survivor, into: &liveHashes)
 
         let doc = Document(
-            url: URL(fileURLWithPath: "/conflict-merge"),
+            id: DocumentID("conflict-merge"),
             children: survivor
         )
 

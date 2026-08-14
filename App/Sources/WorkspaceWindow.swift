@@ -22,6 +22,7 @@ final class WorkspaceWindow {
     /// workspaces without a home page set. Computed from `pageSession` (a
     /// tracked stored property) so the two can't drift.
     var openDocument: Document? { pageSession?.document }
+    var currentPageURL: URL? { pageSession?.page.url }
     private(set) var cloudSyncSnapshot: Clamshell.CloudSyncSnapshot?
     private(set) var isCompactingLog = false
 
@@ -62,7 +63,7 @@ final class WorkspaceWindow {
     }
 
     var currentPageRelativePath: String? {
-        guard let url = openDocument?.url else { return nil }
+        guard let url = currentPageURL else { return nil }
         return workspace.clamshell?.relativePath(of: url)
     }
 
@@ -103,7 +104,7 @@ final class WorkspaceWindow {
     /// reconcile outcomes are surfaced via `postReconcileBanner`.
     func handlePathChange() {
         let topURL = currentTargetURL()
-        if let topURL, openDocument?.url.standardizedFileURL == topURL { return }
+        if let topURL, currentPageURL?.standardizedFileURL == topURL { return }
         if navigationTask != nil, loadingTargetURL == topURL { return }
 
         navigationTask?.cancel()
@@ -124,7 +125,7 @@ final class WorkspaceWindow {
                         workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
                     }
                     self.forgetSession(outgoing)
-                    workspace.unregisterOpenURL(outgoing.document.url)
+                    workspace.unregisterOpenURL(outgoing.page.url)
                 }
             } else {
                 finishNavigationRequest(requestID)
@@ -146,7 +147,7 @@ final class WorkspaceWindow {
                     workspace.banner = .saveFailed(page: outgoing.document.title, error: error)
                 }
                 self.forgetSession(outgoing)
-                workspace.unregisterOpenURL(outgoing.document.url)
+                workspace.unregisterOpenURL(outgoing.page.url)
                 perfEnd(drain, "handlePathChange.drainOutgoing")
             }
             guard !Task.isCancelled, self.navigationRequestID == requestID else { return }
@@ -213,7 +214,7 @@ final class WorkspaceWindow {
                 }
                 forgetSession(outgoing)
             }
-            workspace.unregisterOpenURL(outgoing.document.url)
+            workspace.unregisterOpenURL(outgoing.page.url)
         }
         clearPageSession()
         path = []
@@ -235,11 +236,15 @@ final class WorkspaceWindow {
     /// helpers rather than swapping, so once `EditorPage` is mounted the
     /// Document reference is stable for its lifetime.
     func documentForPage(url: URL) -> Document? {
-        openDocument?.url.standardizedFileURL == url.standardizedFileURL ? openDocument : nil
+        currentPageURL?.standardizedFileURL == url.standardizedFileURL ? openDocument : nil
     }
 
     func session(for document: Document) -> Clamshell.PageSession? {
         sessionsByDocument[ObjectIdentifier(document)]
+    }
+
+    func pageURL(for document: Document) -> URL? {
+        session(for: document)?.page.url
     }
 
     // MARK: - iCloud sync snapshot
@@ -318,7 +323,7 @@ final class WorkspaceWindow {
     // The save lifecycle (commit-time atomic save, per-URL PageCoordinator,
     // post-save bookkeeping) lives on `Clamshell`. The host's
     // `EditorHost.persistCommit` conformance calls
-    // `PageSession.enqueueEditorOps(ops)`
+    // `PageSession.enqueueEditorChanges(changes)`
     // synchronously at every edit-session commit point (so the coordinator is
     // never blind to a just-fired commit), and `PageSession.flush()`
     // awaits its writer on blur / scenePhase / navigation away. Clamshell
@@ -330,7 +335,7 @@ final class WorkspaceWindow {
     @discardableResult
     func moveToTrash(_ entry: WorkspaceEntry) async -> Bool {
         guard let clamshell = workspace.clamshell else { return false }
-        if let outgoing = pageSession, outgoing.document.url == entry.url {
+        if let outgoing = pageSession, outgoing.page.url == entry.url {
             // Drain the open document BEFORE trashing so its last edits
             // are durable, then close the page and drop the presenter so
             // the trash op below never races a save against a now-
@@ -342,7 +347,7 @@ final class WorkspaceWindow {
                 return false
             }
             forgetSession(outgoing)
-            workspace.unregisterOpenURL(outgoing.document.url)
+            workspace.unregisterOpenURL(outgoing.page.url)
             clearPageSession()
         }
         path.removeAll { $0 == entry.url }
@@ -415,7 +420,7 @@ final class WorkspaceWindow {
     func renameCurrentPageToMatchTitle() async -> Bool {
         guard let clamshell = workspace.clamshell,
               let session = pageSession else { return false }
-        let oldURL = session.document.url
+        let oldURL = session.page.url
         let title = session.document.title
         let wasHome = clamshell.isHome(relativePath: clamshell.relativePath(of: oldURL))
 

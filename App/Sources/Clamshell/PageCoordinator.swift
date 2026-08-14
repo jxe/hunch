@@ -62,9 +62,9 @@ extension Clamshell {
         }
 
         @discardableResult
-        func enqueueEditorOps(_ ops: [EditorOp]) -> Task<Void, Error> {
+        func enqueueEditorChanges(_ changes: [DocumentChange]) -> Task<Void, Error> {
             precondition(!isClosed, "Cannot persist through a closed PageSession")
-            return coordinator.enqueue(.fromEditorOps(ops), for: document)
+            return coordinator.enqueue(.fromEditorChanges(changes), for: document)
         }
 
         func flush() async throws {
@@ -97,6 +97,7 @@ extension Clamshell {
         let owner: Clamshell
 
         private(set) var document: Document?
+        var modificationDate: Date?
         private var loadTask: Task<Document, Error>?
 
         private var subscribers: [UUID: @MainActor (PresenterEvent) -> Void] = [:]
@@ -138,10 +139,16 @@ extension Clamshell {
 
         private var writeTail: WriteEntry?
 
-        init(owner: Clamshell, url: URL, document: Document? = nil) {
+        init(
+            owner: Clamshell,
+            url: URL,
+            document: Document? = nil,
+            modificationDate: Date? = nil
+        ) {
             self.owner = owner
             self.url = url.standardizedFileURL
             self.document = document
+            self.modificationDate = modificationDate
         }
 
         var hasEditorSubscribers: Bool { !subscribers.isEmpty }
@@ -155,8 +162,6 @@ extension Clamshell {
         }
 
         func bindCanonicalDocument(_ candidate: Document) {
-            let candidateURL = candidate.url.standardizedFileURL
-            precondition(candidateURL == url)
             if let document {
                 precondition(document === candidate, "A PageCoordinator cannot own competing Document instances")
             } else {
@@ -179,7 +184,12 @@ extension Clamshell {
                 let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
                 owner.recordDiskContent(raw, at: url)
                 owner.rememberEnvelope(parsed, for: url)
-                return Document(url: url, children: parsed.blocks, modificationDate: mtime)
+                self.modificationDate = mtime
+                return Document(
+                    id: DocumentID(parsed.pageID ?? UUID().uuidString),
+                    children: parsed.blocks,
+                    fallbackTitle: url.deletingPathExtension().lastPathComponent
+                )
             }
             loadTask = task
             do {
@@ -274,7 +284,7 @@ extension Clamshell {
                 tail.logEntries.append(contentsOf: commit.logEntries)
                 tail.throughGeneration = generation
                 tail.children = candidate.children
-                tail.modificationDate = candidate.modificationDate
+                tail.modificationDate = modificationDate
                 return tail.task
             }
 
@@ -283,7 +293,7 @@ extension Clamshell {
                 generation: generation,
                 logEntries: commit.logEntries,
                 children: candidate.children,
-                modificationDate: candidate.modificationDate
+                modificationDate: modificationDate
             )
             entry.task = Task<Void, Error> { @MainActor [weak self, entry] in
                 _ = try? await previous?.value
@@ -307,9 +317,7 @@ extension Clamshell {
                         logEntries: logEntries
                     )
                     self.durableGeneration = max(self.durableGeneration, generation)
-                    if self.currentGeneration == generation {
-                        self.document?.modificationDate = savedMtime
-                    }
+                    if self.currentGeneration == generation { self.modificationDate = savedMtime }
                     self.startSyncLoopIfNeeded()
                 } catch {
                     Diag.log.error("commit failed url=\(self.url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")

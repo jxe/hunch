@@ -57,10 +57,9 @@ extension Clamshell {
     /// deferred so it doesn't block first paint) and by presenter wakeups.
     @discardableResult
     func reconcileLive(_ doc: Document) async throws -> PatchEngine.ReconcileSummary? {
-        guard let page = pageCoordinators[doc.url.standardizedFileURL],
-              page.document === doc,
+        guard let page = coordinator(owning: doc),
               let generation = page.settledGeneration else {
-            Diag.merge.log("reconcileLive deferred url=\(doc.url.lastPathComponent, privacy: .public)")
+            Diag.merge.log("reconcileLive deferred document=\(doc.id.description, privacy: .public)")
             return nil
         }
         return try await runReconcile(on: doc, page: page, generation: generation)
@@ -85,12 +84,12 @@ extension Clamshell {
         page: PageCoordinator,
         generation: UInt64
     ) async throws -> PatchEngine.ReconcileSummary? {
-        let url = doc.url
+        let url = page.url
         let rel = relativePath(of: url)
         let foldT = perfStart()
         let docChildren = doc.children
-        let mdMtime = doc.modificationDate
-        let inputs = reconcileInputs(for: doc)
+        let mdMtime = page.modificationDate
+        let inputs = reconcileInputs(at: url)
         let outcome = await log.reconcileAgainst(
             page: rel,
             doc: docChildren,
@@ -139,7 +138,7 @@ extension Clamshell {
             // reconciles are the steady-state hot path.
             let reconCommit = recon.asCommit()
             if !reconCommit.logEntries.isEmpty || recon.didChange {
-                try await commit(reconCommit, to: doc)
+                try await commit(reconCommit, to: doc, at: url)
             }
 
             return PatchEngine.ReconcileSummary(restoredHashes: recon.restoredHashes)
@@ -258,7 +257,7 @@ extension Clamshell {
         }
         let restoreCommit = Commit(logEntries: logEntries)
         do {
-            try await commit(restoreCommit, to: doc)
+            try await commit(restoreCommit, to: doc, at: url(for: source))
         } catch {
             Diag.merge.error("restore commit failed page=\(source, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             throw error
@@ -280,7 +279,7 @@ extension Clamshell {
     /// missing from the `.md`, and the next reconcile would resurrect the
     /// stale-link blocks as duplicates.
     @discardableResult
-    func healLinks(in doc: Document) async -> Int {
+    func healLinks(in doc: Document, at pageURL: URL) async -> Int {
         let pre = doc.children
         // Per-pass memo of target rel → page ID; `ensurePageID` may commit
         // the *target* page (legacy mint), so don't repeat it per link.
@@ -336,7 +335,7 @@ extension Clamshell {
                     let text = block.text
                     for run in text.runs {
                         guard let link = run.link,
-                              let canonical = await canonicalInlineURL(link, in: doc.url) else { continue }
+                              let canonical = await canonicalInlineURL(link, in: pageURL) else { continue }
                         let lower = text.characters.distance(from: text.startIndex, to: run.range.lowerBound)
                         let upper = text.characters.distance(from: text.startIndex, to: run.range.upperBound)
                         offsets.append((lower, upper, canonical))
@@ -363,11 +362,11 @@ extension Clamshell {
         let post = await heal(pre)
         guard rewrittenCount > 0 else { return 0 }
         doc.replaceChildrenFromSystemMutation(post)
-        let ops = BlockTreeDiff.derive(pre: pre, post: post)
+        let changes = RecoveryChangeDiff.derive(pre: pre, post: post)
         do {
-            try await commit(.fromEditorOps(ops), to: doc)
+            try await commit(.fromEditorChanges(changes), to: doc, at: pageURL)
         } catch {
-            Diag.log.error("link heal commit failed url=\(doc.url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            Diag.log.error("link heal commit failed url=\(pageURL.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         }
         return rewrittenCount
     }

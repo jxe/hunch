@@ -60,8 +60,12 @@ struct ClamshellRenameTests {
 
         // Give the page a journal so the history dir exists.
         let block = Block.paragraph(text: attr("body"))
-        let doc = Document(url: clamshell.url(for: rel), children: [block])
-        try await clamshell.commit(.fromEditorOps([.insert(hash: block.atomicHash, parent: nil, block: block)]), to: doc)
+        let doc = Document(id: DocumentID("rename"), children: [block])
+        try await clamshell.commit(
+            .fromEditorChanges([.inserted(block: block, parent: nil)]),
+            to: doc,
+            at: clamshell.url(for: rel)
+        )
 
         let result = try await clamshell.renamePage(at: clamshell.url(for: rel), toMatchTitle: "New Title")
         #expect(result.oldRelativePath == "Old-Title.md")
@@ -201,9 +205,14 @@ struct ClamshellRenameTests {
         var inline = attr("see B")
         inline.link = URL(string: "B.md")
         let blocks: [Block] = [.subpage(title: "B", pageID: "B.md"), .paragraph(text: inline)]
-        let doc = Document(url: clamshell.url(for: "A.md"), children: blocks)
-        try await clamshell.commit(.fromEditorOps(BlockTreeDiff.derive(pre: [], post: blocks)), to: doc)
-        #expect(await clamshell.healLinks(in: doc) == 2)
+        let doc = Document(id: DocumentID("A"), children: blocks)
+        let aURL = clamshell.url(for: "A.md")
+        try await clamshell.commit(
+            .fromEditorChanges(RecoveryChangeDiff.derive(pre: [], post: blocks)),
+            to: doc,
+            at: aURL
+        )
+        #expect(await clamshell.healLinks(in: doc, at: aURL) == 2)
 
         // Rename B. A's bytes still carry the old path + fragment.
         _ = try await clamshell.renamePage(at: clamshell.url(for: "B.md"), toMatchTitle: "Better Name")
@@ -220,10 +229,10 @@ struct ClamshellRenameTests {
         }
 
         // A's next quiet moment heals the bytes.
-        #expect(await clamshell.healLinks(in: doc) == 2)
+        #expect(await clamshell.healLinks(in: doc, at: aURL) == 2)
         guard case .subpage(_, let healedDest) = doc.children[0].kind else { return }
         #expect(healedDest == "Better-Name.md#\(id)")
-        let diskText = try String(contentsOf: doc.url, encoding: .utf8)
+        let diskText = try String(contentsOf: aURL, encoding: .utf8)
         #expect(diskText.contains("Better-Name.md#\(id)"))
     }
 }

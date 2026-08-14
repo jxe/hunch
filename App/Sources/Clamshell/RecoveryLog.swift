@@ -87,7 +87,7 @@ actor RecoveryLog {
     ///
     /// No dedup: every entry emits a record. Callers that care about not
     /// re-logging known content filter upstream (the editor via
-    /// `BlockTreeDiff.derive`, reconcile via `PatchEngine.unloggedObservations`).
+    /// semantic editor changes, reconcile via `PatchEngine.unloggedObservations`).
     /// Duplicate `add` records for the same hash are harmless — intent is
     /// computed as a latest-`(counter, deviceID)`-wins fold, so the union
     /// collapses to the same intent regardless of duplicate count. The log

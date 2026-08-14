@@ -328,12 +328,12 @@ final class Clamshell {
         CloudSyncSnapshot(items: cloudSyncTargets(for: pageURL).map { snapshot(for: $0) })
     }
 
-    private func compactThisDeviceLog(for doc: Document) async throws -> LogCompactionResult {
-        let relativePath = relativePath(of: doc.url)
+    private func compactThisDeviceLog(for coordinator: PageCoordinator) async throws -> LogCompactionResult {
+        let relativePath = relativePath(of: coordinator.url)
         return try await log.compactOwnLog(
             page: relativePath,
-            mdMtime: doc.modificationDate,
-            trustedFrontier: trustedFrontierForPage(at: doc.url)
+            mdMtime: coordinator.modificationDate,
+            trustedFrontier: trustedFrontierForPage(at: coordinator.url)
         )
     }
 
@@ -535,7 +535,7 @@ final class Clamshell {
         do {
             try await coordinator(for: url).withTransientDocument { doc in
                 if knownPageID(forRel: rel) == nil {
-                    try await commit(Commit(logEntries: []), to: doc)
+                    try await commit(Commit(logEntries: []), to: doc, at: url)
                 }
             }
         } catch {
@@ -751,11 +751,11 @@ final class Clamshell {
     /// when the cached title for the URL actually changed (so
     /// `postSaveBookkeeping` knows when to fire a rescan).
     @discardableResult
-    private func refreshTitleCache(from document: Document) -> Bool {
-        let previous = titleCache[document.url]
-        let titleChanged = previous?.title != document.title
-        if titleChanged || previous?.modificationDate != document.modificationDate {
-            titleCache[document.url] = CachedTitle(title: document.title, modificationDate: document.modificationDate)
+    private func refreshTitleCache(url: URL, title: String, modificationDate: Date?) -> Bool {
+        let previous = titleCache[url]
+        let titleChanged = previous?.title != title
+        if titleChanged || previous?.modificationDate != modificationDate {
+            titleCache[url] = CachedTitle(title: title, modificationDate: modificationDate)
         }
         return titleChanged
     }
@@ -886,16 +886,16 @@ final class Clamshell {
     /// no disk read, no full rebuild. Skips when the graph isn't built yet (a
     /// lazy build picks up the new state) or when the page's outbound links are
     /// unchanged (the common keystroke case). Called from `postSaveBookkeeping`.
-    private func refreshLinkGraph(forSaved document: Document) {
+    private func refreshLinkGraph(forSavedURL url: URL, children: [Block]) {
         guard let current = linkGraph else { return }
-        let rel = relativePath(of: document.url)
+        let rel = relativePath(of: url)
         let classify: @Sendable (URL, URL) -> String? = { [self] url, base in
             self.pagePath(for: url, relativeTo: base)
         }
         let classifySubpage: @Sendable (String) -> String? = { [self] dest in
             self.resolveSubpageTarget(dest)
         }
-        let targets = outboundLinks(in: document.children, pageURL: document.url, classify: classify, classifySubpage: classifySubpage)
+        let targets = outboundLinks(in: children, pageURL: url, classify: classify, classifySubpage: classifySubpage)
             .intersection(current.allPageIDs)
         guard targets != (current.outbound[rel] ?? []) else { return }
         linkGraph = current.replacingOutbound(of: rel, with: targets, home: homeRelativePath)
@@ -978,7 +978,7 @@ final class Clamshell {
     //
     // Save model is commit-time atomic: every commit applies its log
     // entries to the recovery log and writes the .md file as one coordinator
-    // generation, log strictly before file. `PageSession.enqueueEditorOps(_:)`
+    // generation, log strictly before file. `PageSession.enqueueEditorChanges(_:)`
     // installs editor generations synchronously; internal `commit(_:to:)`
     // awaits coordinator durability. Concurrent commits for the same URL run
     // in order through its `PageCoordinator`; rapid commits whose predecessor
@@ -986,7 +986,7 @@ final class Clamshell {
     // debounce or separate per-op log task: every `Document.transaction` (typing via
     // `commitLiveText`, structural via `mutate(_:_:)`, undo, redo) emits
     // its pre→post diff through `Document.didCommitTransaction` → host
-    // bridge → `PageSession.enqueueEditorOps(_:)`.
+    // bridge → `PageSession.enqueueEditorChanges(_:)`.
     //
     // Heavy lifting hops off MainActor: serialize + `NSFileCoordinator`
     // write run on a detached task at `.userInitiated` so they don't
@@ -997,8 +997,8 @@ final class Clamshell {
     /// the `.md` is serialized and written. Concurrent commits for the
     /// same URL run in order; the `await` returns only after this
     /// commit's bytes are on disk, and errors propagate.
-    func commit(_ commit: Commit, to doc: Document) async throws {
-        try await coordinator(for: doc).enqueue(commit, for: doc).value
+    func commit(_ commit: Commit, to doc: Document, at url: URL) async throws {
+        try await coordinator(for: url).enqueue(commit, for: doc).value
     }
 
     func coordinator(for url: URL) -> PageCoordinator {
@@ -1009,10 +1009,8 @@ final class Clamshell {
         return coordinator
     }
 
-    func coordinator(for document: Document) -> PageCoordinator {
-        let coordinator = coordinator(for: document.url)
-        coordinator.bindCanonicalDocument(document)
-        return coordinator
+    func coordinator(owning document: Document) -> PageCoordinator? {
+        pageCoordinators.values.first { $0.document === document }
     }
 
     func removeCoordinatorIfIdle(_ coordinator: PageCoordinator) {
@@ -1040,8 +1038,11 @@ final class Clamshell {
         let frontier = await log.frontierForStampAfterOwnSave(page: rel)
         _ = try await save(children: children, at: url, logFrontier: frontier)
         let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        let saved = Document(url: url, children: children, modificationDate: mtime ?? previousModificationDate)
-        postSaveBookkeeping(saved)
+        postSaveBookkeeping(
+            url: url,
+            children: children,
+            modificationDate: mtime ?? previousModificationDate
+        )
         return mtime
     }
 
@@ -1076,8 +1077,8 @@ final class Clamshell {
         return trustedFrontierForPage(at: url)
     }
 
-    func reconcileInputs(for doc: Document) -> (trustedFrontier: [String: UInt64]?, allowJournalMutations: Bool) {
-        switch currentStampTrustForPage(at: doc.url) {
+    func reconcileInputs(at url: URL) -> (trustedFrontier: [String: UInt64]?, allowJournalMutations: Bool) {
+        switch currentStampTrustForPage(at: url) {
         case .trusted(let frontier):
             return (frontier, true)
         case .invalid:
@@ -1162,23 +1163,26 @@ final class Clamshell {
     /// workspace if the entries surface needs it. Runs at the end of
     /// every successfully persisted coordinator generation.
     @MainActor
-    private func postSaveBookkeeping(_ document: Document) {
-        document.modificationDate = (try? document.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-        let titleChanged = refreshTitleCache(from: document)
+    private func postSaveBookkeeping(url: URL, children: [Block], modificationDate: Date?) {
+        let title = Document.deriveTitle(
+            from: children,
+            fallback: url.deletingPathExtension().lastPathComponent
+        )
+        let titleChanged = refreshTitleCache(url: url, title: title, modificationDate: modificationDate)
         // Refresh the reconcile watermark so this save (new `.md` mtime,
         // grown own-log) doesn't trigger a useless refold on next open.
         // We logged the records via `apply(_:to:)` and just wrote the
         // `.md` — the journal and the doc are consistent by construction.
-        let rel = relativePath(of: document.url)
-        let mtime = document.modificationDate
+        let rel = relativePath(of: url)
+        let mtime = modificationDate
         Task { [log, rel, mtime] in
             await log.recordOwnSave(page: rel, mdMtime: mtime)
         }
         let indexedPage = SearchIndexedPage(
             relativePath: rel,
             modificationDate: mtime ?? .distantPast,
-            title: document.title,
-            body: searchableText(in: document.children)
+            title: title,
+            body: searchableText(in: children)
         )
         Task { [searchIndex] in await searchIndex.upsert(indexedPage) }
         if titleChanged {
@@ -1191,7 +1195,7 @@ final class Clamshell {
         // no disk read). When `titleChanged` already invalidated via rescan,
         // this no-ops; otherwise it keeps backlinks/orphans current after a
         // link edit without a full re-read.
-        refreshLinkGraph(forSaved: document)
+        refreshLinkGraph(forSavedURL: url, children: children)
     }
     nonisolated private static func readCoordinated(_ url: URL) -> String? {
         let coordinator = NSFileCoordinator()
@@ -1716,8 +1720,8 @@ extension Clamshell.Page {
             }
             guard after != before else { return }
             document.replaceChildrenFromSystemMutation(after)
-            let ops = BlockTreeDiff.derive(pre: before, post: after)
-            try await owner.commit(.fromEditorOps(ops), to: document)
+            let changes = RecoveryChangeDiff.derive(pre: before, post: after)
+            try await owner.commit(.fromEditorChanges(changes), to: document, at: url)
         }
     }
 
@@ -1733,7 +1737,8 @@ extension Clamshell.Page {
             document.replaceChildrenFromSystemMutation(document.children + blocks)
             try await owner.commit(
                 Commit(logEntries: Patch.adds(from: blocks).entries),
-                to: document
+                to: document,
+                at: url
             )
         }
     }
@@ -1752,9 +1757,9 @@ extension Clamshell.Page {
 
     func compactThisDeviceLog() async throws -> LogCompactionResult {
         let coordinator = owner.coordinator(for: url)
-        return try await coordinator.withTransientDocument { document in
+        return try await coordinator.withTransientDocument { _ in
             try await coordinator.flush()
-            return try await owner.compactThisDeviceLog(for: document)
+            return try await owner.compactThisDeviceLog(for: coordinator)
         }
     }
 
@@ -1793,7 +1798,8 @@ extension Clamshell.Page {
             canonical.replaceChildrenFromConflictResolution(result.merged)
             try await owner.commit(
                 Commit(logEntries: Patch.observations(from: canonical.children).entries),
-                to: canonical
+                to: canonical,
+                at: url
             )
 
             Clamshell.markAlternatesResolved(alternates)

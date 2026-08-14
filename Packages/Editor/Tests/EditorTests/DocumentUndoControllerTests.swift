@@ -11,7 +11,7 @@ import AppKit
 struct DocumentUndoControllerTests {
     private func makeDocument() -> Document {
         Document(
-            url: URL(fileURLWithPath: "/tmp/undo-controller.md"),
+            id: DocumentID("undo-controller"),
             children: [.paragraph(text: AttributedString("alpha"))]
         )
     }

@@ -78,7 +78,7 @@ struct ContentView: View {
                 .sheet(isPresented: $window.showAddToPageSearch) {
                     PageSearchSheet(
                         workspace: workspace,
-                        excluding: window.openDocument?.url,
+                        excluding: window.currentPageURL,
                         title: "Add This Page to…",
                         onActivate: { item in
                             Task {
@@ -94,7 +94,7 @@ struct ContentView: View {
                     MoveDestinationSheet(
                         workspace: workspace,
                         inDocCandidates: request.inDocCandidates,
-                        excluding: window.openDocument?.url,
+                        excluding: window.currentPageURL,
                         onActivate: { destination in window.resolveMoveRequest(with: destination) },
                         onClose: { window.resolveMoveRequest(with: nil) }
                     )

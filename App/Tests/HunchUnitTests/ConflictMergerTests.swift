@@ -113,7 +113,7 @@ struct ConflictMergerTests {
 
         #expect(Set(result.salvagedHashes) == [hash(leaf)])
         var leafParent: BlockID?
-        let doc = Document(url: URL(fileURLWithPath: "/x"), children: result.merged)
+        let doc = Document(id: DocumentID("conflict-merge"), children: result.merged)
         doc.walk { block, _, parent in
             if hash(block) == hash(leaf) { leafParent = parent }
         }
@@ -167,7 +167,7 @@ struct ConflictMergerTests {
         )
 
         #expect(Set(result.salvagedHashes) == [hash(x)])
-        let doc = Document(url: URL(fileURLWithPath: "/x"), children: result.merged)
+        let doc = Document(id: DocumentID("conflict-merge"), children: result.merged)
         var xParentHash: String?
         doc.walk { block, _, parent in
             guard hash(block) == hash(x), let parentID = parent else { return }
@@ -187,7 +187,7 @@ struct ConflictMergerTests {
         )
 
         var newTopParent: BlockID?
-        let doc = Document(url: URL(fileURLWithPath: "/x"), children: result.merged)
+        let doc = Document(id: DocumentID("conflict-merge"), children: result.merged)
         doc.walk { block, _, parent in
             if hash(block) == hash(newTop) { newTopParent = parent }
         }

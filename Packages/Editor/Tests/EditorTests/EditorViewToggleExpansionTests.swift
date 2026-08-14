@@ -8,7 +8,7 @@ import Testing
 struct EditorViewToggleExpansionTests {
     @Test func turnIntoToggleStartsClosedAndClearsTemplateExpansion() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .templateButton(label: "Details")
             ]
@@ -32,7 +32,7 @@ struct EditorViewToggleExpansionTests {
 
     @Test func autotransformToggleStartsClosed() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .paragraph(text: AttributedString("> Details"))
             ]
@@ -54,7 +54,7 @@ struct EditorViewToggleExpansionTests {
 
     @Test func subpageTurnIntoToggleStartsClosed() async {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .subpage(title: "Child", pageID: "child.md")
             ]
@@ -82,7 +82,7 @@ struct EditorViewToggleExpansionTests {
 
     @Test func optionArrowMoveDoesNotRevealCollapsedAncestor() {
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [
                 .toggle(title: AttributedString("Closed"), children: [
                     .paragraph(text: AttributedString("first")),
@@ -105,7 +105,7 @@ struct EditorViewToggleExpansionTests {
         let moving = Block.paragraph(text: AttributedString("moving"))
         let toggle = Block.toggle(title: AttributedString("Closed"))
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [moving, toggle]
         )
         let state = EditorState()
@@ -124,7 +124,7 @@ struct EditorViewToggleExpansionTests {
         let toggle = Block.toggle(title: AttributedString("Closed"))
         let child = Block.paragraph(text: AttributedString("child"))
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [toggle, child]
         )
         let state = EditorState()
@@ -144,7 +144,7 @@ struct EditorViewToggleExpansionTests {
         let child = Block.paragraph(text: AttributedString("child"))
         let toggle = Block.toggle(title: AttributedString("Closed"), children: [child])
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [parent, toggle]
         )
         let state = EditorState()
@@ -165,7 +165,7 @@ struct EditorViewToggleExpansionTests {
             children: [.paragraph(text: AttributedString("child"))]
         )
         let doc = Document(
-            url: URL(fileURLWithPath: "/tmp/test.md"),
+            id: DocumentID("test"),
             children: [toggle]
         )
         let host = TestHost()
@@ -210,7 +210,7 @@ private final class TestHost: EditorHost {
     }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
-    func persistCommit(ops: [EditorOp], in document: Document) {}
+    func persistCommit(changes: [DocumentChange], in document: Document) {}
     func flush(_ document: Document) async {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
