@@ -1,0 +1,809 @@
+# Editor extraction plan
+
+> **Executor instructions:** Complete the milestones in order. Keep the package
+> at `Packages/Editor`, with the package/product/module name `Editor`, through
+> Milestones 0–6. Do not choose a public name, rename imports, create a remote
+> repository, or remove the local package before Milestone 7.
+>
+> **Drift check:** This plan was written at commit `0c922ab` on 2026-08-13.
+> Before starting a milestone, run:
+>
+> ```sh
+> git diff --stat 0c922ab..HEAD -- Packages/Editor App project.yml README.md CONTRIBUTING.md CLAUDE.md
+> ```
+>
+> Compare any changed in-scope APIs with the “Current boundary” section before
+> proceeding. Adapt straightforward file moves or renames, but stop for a design
+> decision if a stated invariant no longer matches the live code.
+
+## Outcome
+
+Publish the block editor as a distinctive, independently versioned Swift
+package that Hunch consumes through Swift Package Manager.
+
+The work deliberately happens in two phases:
+
+1. Make the editor genuinely reusable and independently verifiable while it is
+   still inside the Hunch repository, where editor and host changes can land
+   atomically.
+2. In the final milestone only, choose the public name, perform the
+   history-preserving extraction, publish `0.1.0`, and switch Hunch to the
+   remote dependency.
+
+This is a pre-1.0 API cleanup. Compatibility with an unpublished external
+`Editor` API is not a goal; preserving Hunch behavior and its on-disk recovery
+format is.
+
+## Status and milestone order
+
+| Milestone | Result | Effort | Risk | Depends on | Status |
+|---|---|---:|---:|---|---|
+| 0 | Baseline and behavior inventory | S | LOW | — | TODO |
+| 1 | Storage-neutral document identity | L | HIGH | 0 | TODO |
+| 2 | Semantic edit boundary; Clamshell-owned recovery identity | L | HIGH | 1 | TODO |
+| 3 | Small required host API plus explicit capabilities | L | HIGH | 2 | TODO |
+| 4 | Host-supplied block actions | M | MED | 3 | TODO |
+| 5 | Neutral configuration, styling, and public surface | L | MED | 4 | TODO |
+| 6 | Standalone docs, example, dependency policy, and verification | L | MED | 5 | TODO |
+| 7 | Choose name, extract, publish, and adopt remotely | L | HIGH | 6 | TODO |
+
+Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`.
+
+## Decisions already made
+
+- The extraction is worth doing. `Packages/Editor` already has its own
+  `Package.swift`, sources, resources, tests, and README; the remaining work is
+  chiefly API honesty and release engineering.
+- Naming and repository extraction are coupled and deferred to Milestone 7.
+  Until then, all code continues to use `Editor` and `import Editor`.
+- A minimal host must not implement unrelated page, image, preview, move, or
+  mention features. Only edit persistence and durability waiting remain
+  mandatory; optional features have neutral defaults and explicit capability
+  flags that control their UI.
+- “Host-supplied block actions” means the reusable editor owns action
+  presentation, selection snapshots, progress/error UI, stale-result checks,
+  one undoable transaction, and persistence. The host supplies action metadata
+  and an async transformation. The first consumer is Hunch’s transcript
+  polishing action.
+- The package should remain one library target for `0.1.0`. Do not split an
+  `EditorCore` and `EditorUI` package without a real second consumer that needs
+  the split.
+- Hunch’s exact recovery hashes and journal compatibility are durable storage
+  concerns. They must not accidentally change while the editor API is cleaned
+  up.
+- Do not build a general plugin system or a comprehensive design-system API.
+  Add only the capabilities, actions, and theme/configuration values required
+  to remove current host policy from the reusable package.
+
+## Current boundary
+
+These are the load-bearing facts at the plan’s starting commit:
+
+- `Packages/Editor/Sources/Editor/Model/Document.swift` makes a file `URL` the
+  public document ID and filename-derived title fallback. It also carries a
+  storage-oriented `modificationDate`.
+- `Packages/Editor/Sources/Editor/BlockFingerprint.swift` defines
+  `Block.atomicHash`, described as the identity stored in Hunch’s recovery log.
+  `BlockTreeDiff.swift` emits those hashes through public `EditorOp` values.
+  Clamshell and its tests depend on this exact projection.
+- `Packages/Editor/Sources/Editor/EditorHost.swift` requires navigation, page
+  creation/deletion, move-to, persistence, paste codecs, images, previews, and
+  resolution in one protocol. Most unsupported features are represented by
+  stubs rather than discoverable capabilities.
+- `Packages/Editor/Sources/Editor/TranscriptPolisher.swift` imports
+  `FoundationModels`; package UI and public command enums contain the
+  Hunch-specific “Polish Transcription” product action.
+- `EditorView.swift`, `Diag.swift`, `Feedback.swift`,
+  `EmojiCompletion.swift`, `InlineAttributes.swift`, and `NotionStyle.swift`
+  contain Hunch, Console, global-preference, Inter, or Notion policy that an
+  unrelated host should not inherit.
+- `Packages/Editor/Package.swift` forces static linkage and pins EmojiKit
+  exactly to `3.0.0`.
+- `Packages/Editor/README.md` says all host methods are required, but its
+  quickstart omits required methods. It also links upward into Hunch’s `App/`
+  tree and documents only headless package tests.
+- Hunch consumes the package by local path in `project.yml`. Its app-hosted
+  unit tests deliberately do not declare a second direct Editor dependency,
+  but four test files use `@testable import Editor`.
+
+## Invariants for every milestone
+
+1. **No data-format migration.** Existing Markdown, recovery JSONL, page IDs,
+   block hash values, and reconciliation behavior remain compatible.
+2. **One save emission path.** Every user edit continues to flow through
+   `Document.transaction`, the editor’s commit callback, the current
+   `PageSession` queue, recovery-log application, and Markdown write in that
+   order.
+3. **No lost late edit.** Blur, navigation, scene changes, and close continue
+   to await already-enqueued persistence.
+4. **One editor per document session.** Do not disturb the stable
+   `(Document, EditorState)` lifetime, shared undo manager, or native text-view
+   focus choreography.
+5. **Hunch behavior stays visible.** Page links, mentions, page icons,
+   inline-and-trash, cross-page moves, custom Markdown paste, image paste,
+   link previews, transcript polishing, sounds, gestures, and keyboard commands
+   remain available in Hunch unless a milestone explicitly replaces their
+   implementation.
+6. **Both Apple platforms remain first-class.** Every public API must compile
+   under iOS 26 and macOS 26 with Swift 6 strict concurrency.
+
+## Verification commands
+
+Use a fresh derived-data directory per Xcode command to avoid `build.db`
+contention. The executor may choose a unique path under `/tmp`.
+
+| Purpose | Command | Expected result |
+|---|---|---|
+| Package tests | `swift test --package-path Packages/Editor` | Exit 0; all suites pass |
+| Regenerate project | `xcodegen generate --spec project.yml --project .` | Exit 0; generated project reflects `project.yml` |
+| Hunch macOS tests | `xcodebuild test -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -derivedDataPath /tmp/hunch-editor-plan-macos CODE_SIGNING_ALLOWED=NO` | Exit 0; Hunch unit tests pass |
+| Hunch macOS build | `xcodebuild build -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -derivedDataPath /tmp/hunch-editor-plan-macos-build CODE_SIGNING_ALLOWED=NO` | Exit 0 |
+| Hunch iOS build | `xcodebuild build -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/hunch-editor-plan-ios CODE_SIGNING_ALLOWED=NO` | Exit 0 |
+| Focused iOS UI tests | Use the existing `HunchUITests` scheme with `-only-testing:` for `HunchDragAndDropUITests`, `HunchEditScrollUITests`, and `HunchSplitKeyboardUITests` on an installed iOS 26 simulator | Exit 0 for all three suites |
+
+If `xcodegen generate` changes `Hunch.xcodeproj/project.pbxproj`, include the
+generated change when it is a consequence of an intentional `project.yml`
+edit. Do not hand-edit the project file. The current `.gitignore` and docs
+disagree about whether `Hunch.xcodeproj` is generated-only, while the file is
+tracked; resolve that policy explicitly in Milestone 6 rather than silently
+dropping or hand-maintaining it.
+
+---
+
+## Milestone 0 — Record the behavioral and compatibility baseline
+
+### Goal
+
+Make the risky boundary changes measurable. This milestone changes tests and
+documentation only; it does not change runtime behavior.
+
+### Work
+
+1. Run the full verification matrix above and record the exact toolchain,
+   simulator destination, suite counts, and any pre-existing failures in this
+   document or a short file under `plans/`.
+2. Add golden tests in `App/Tests/HunchUnitTests/BlockFingerprintTests.swift`
+   or a new adjacent file for every `BlockKind`, whitespace normalization,
+   inline-mark insensitivity, parent/child relationships, and representative
+   Unicode. Assert full `atomicHash` values, not only equality relationships.
+3. Add recovery-log fixtures that prove records written before the refactor
+   still fold, reconcile, and round-trip afterward. Keep the fixtures small and
+   checked in; do not generate expected hashes at test runtime.
+4. Add characterization tests for the current `EditorHost` feature behavior:
+   unavailable optional operations are no-ops, supported Hunch operations are
+   presented, and an edit still synchronously enqueues persistence before
+   `persistCommit` returns.
+5. Inventory editor-generic UI tests currently living only in
+   `App/UITests/`. Mark each as either “move/copy to standalone example” or
+   “keep Hunch-only” for Milestone 6.
+
+### Files
+
+- `App/Tests/HunchUnitTests/BlockFingerprintTests.swift`
+- `App/Tests/HunchUnitTests/BlockFingerprintRoundtripTests.swift`
+- `App/Tests/HunchUnitTests/RecoveryLogTests.swift`
+- `Packages/Editor/Tests/EditorTests/`
+- `App/UITests/HunchDragAndDropUITests.swift`
+- `App/UITests/HunchEditScrollUITests.swift`
+- `App/UITests/HunchSplitKeyboardUITests.swift`
+- `plans/editor-extraction-plan.md`
+
+### Gate
+
+- The full pre-change matrix is recorded.
+- Golden hash fixtures fail if any canonical string or digest changes.
+- Recovery compatibility fixtures use literal pre-refactor data.
+- No production source file changed.
+
+---
+
+## Milestone 1 — Give `Document` storage-neutral identity
+
+### Goal
+
+A consumer backed by a database, an in-memory model, or a remote service can
+construct a document without inventing a file URL. Hunch keeps URLs in its
+Clamshell/PageSession layer.
+
+### Target API shape
+
+Introduce a small, concrete, host-supplied identifier rather than a generic
+`Document<ID>` that would infect the entire public surface:
+
+```swift
+public struct DocumentID: Hashable, Sendable {
+    public init(_ rawValue: String)
+}
+
+@Observable @MainActor
+public final class Document: Identifiable {
+    public let id: DocumentID
+    public var fallbackTitle: String?
+    public internal(set) var children: [Block]
+
+    public init(
+        id: DocumentID,
+        children: [Block],
+        fallbackTitle: String? = nil
+    )
+}
+```
+
+The exact stored representation of `DocumentID` may remain private. It must be
+stable, hashable, sendable, and supplied by the host. `Document.title` should
+continue to prefer the first top-level H1, then use `fallbackTitle`, then a
+neutral `"Untitled"` fallback. Remove `modificationDate` unless a package-only
+caller with a demonstrated editor concern exists.
+
+### Work
+
+1. Add `DocumentID` and replace `Document.url` identity in the editor package.
+   Update package tests to use readable synthetic IDs rather than `/tmp` or
+   `/dev/null` URLs.
+2. Make `Clamshell.PageSession` (or its existing page/coordinator handle) the
+   owner of the page URL and modification metadata. Hunch code must resolve a
+   `Document` back to its session through the existing object-identity session
+   map, not through an editor-owned URL.
+3. At materialization time, have Clamshell supply a stable document ID. Prefer
+   the page’s durable Clamshell page ID when available; otherwise use a
+   host-owned stable value whose lifecycle is explicit. Do not expose a file
+   URL merely encoded as the new ID.
+4. Replace all Hunch reads of `document.url` with PageSession/Clamshell access.
+   This includes navigation comparison, registration of open URLs, relative
+   link classification, title fallback, persistence lookup, and tests.
+5. Update the README quickstart to construct an in-memory document without a
+   URL, but do not otherwise rewrite the public docs yet.
+
+### Files
+
+- `Packages/Editor/Sources/Editor/Model/Document.swift`
+- Package tests constructing `Document`
+- `App/Sources/Clamshell/PageCoordinator.swift`
+- `App/Sources/Clamshell/Clamshell.swift` and extensions that materialize or
+  identify documents
+- `App/Sources/WorkspaceWindow.swift`
+- `App/Sources/WorkspaceWindow+EditorHost.swift`
+- Hunch tests constructing or locating documents
+- `Packages/Editor/README.md`
+
+### Gate
+
+```sh
+rg -n 'public let url|var id: URL|Document\(url:' Packages/Editor
+```
+
+returns no matches. The package test and both Hunch build gates pass. Hunch’s
+navigation, relative links, save routing, and title fallback have direct test
+coverage after the move.
+
+### STOP conditions
+
+- Stop if no stable Clamshell page identity can be obtained without changing
+  the on-disk format; propose a session-scoped ID instead of inventing a file
+  migration.
+- Stop if any persistence path must recover a URL by parsing `DocumentID`.
+  That would recreate the old coupling under a new type name.
+
+---
+
+## Milestone 2 — Emit semantic edits and move recovery identity into Clamshell
+
+### Goal
+
+The editor describes what blocks changed; Hunch decides how those changes map
+to its durable recovery log. Existing on-disk hashes remain byte-for-byte
+compatible.
+
+### Target boundary
+
+Replace recovery-shaped public `EditorOp` values with semantic change values
+that carry block snapshots and placement information, not hashes. A suitable
+shape is:
+
+```swift
+public enum DocumentChange: Sendable, Equatable {
+    case removed(block: Block)
+    case inserted(block: Block, parent: Block?)
+}
+```
+
+The exact names may change, but the host must have enough information to
+reproduce today’s rules, including the special case where a child’s content is
+unchanged but its same-ID parent’s content hash changed. Pure reorder/move
+operations remain semantically visible as a committed document transaction
+even if Clamshell emits no recovery-log record.
+
+### Work
+
+1. Refactor the editor’s pre/post tree diff to emit block snapshots and parent
+   snapshots. Keep diff derivation in the editor because it owns transaction
+   semantics, but remove recovery-log terminology from its public names and
+   docs.
+2. Move the canonical-string algorithm, SHA-256 projection,
+   `Document.atomicHashSet`, and editor-change-to-`Patch` conversion into
+   `App/Sources/Clamshell/`. Name them as Clamshell recovery/storage concepts,
+   not editor identity.
+3. Change `EditorHost.persistCommit` to accept the semantic change batch. In
+   `WorkspaceWindow+EditorHost`, synchronously project the batch to the exact
+   existing recovery operations and synchronously enqueue the current
+   `PageSession` before returning.
+4. Replace Hunch’s direct uses of `Block.atomicHash`, `BlockTreeDiff`, and
+   `EditorOp` with the Clamshell-owned projector. Reconcile and other
+   non-editor mutations may call the same Hunch-side semantic diff helper; do
+   not keep a public editor hashing API solely for Hunch tests.
+5. Move the hash and patch-projection tests into the Hunch test target. Preserve
+   all Milestone 0 golden values and pre-refactor recovery fixtures.
+6. Rename comments throughout Clamshell so the editor callback is a source of
+   semantic changes, while the recovery log’s add/purge projection is explicitly
+   Clamshell policy.
+
+### Files
+
+- `Packages/Editor/Sources/Editor/BlockFingerprint.swift` (remove or reduce to
+  genuinely editor-owned helpers)
+- `Packages/Editor/Sources/Editor/BlockTreeDiff.swift`
+- `Packages/Editor/Sources/Editor/Model/Document.swift`
+- `Packages/Editor/Sources/Editor/EditorHost.swift`
+- `App/Sources/Clamshell/Commit.swift`
+- `App/Sources/Clamshell/PatchEngine.swift`
+- `App/Sources/Clamshell/RecoveryLog.swift`
+- `App/Sources/Clamshell/Clamshell+Reconcile.swift`
+- `App/Sources/Clamshell/PageCoordinator.swift`
+- `App/Sources/WorkspaceWindow+EditorHost.swift`
+- Corresponding Editor and Hunch tests
+
+### Gate
+
+- All golden full hashes from Milestone 0 are unchanged.
+- All literal old recovery fixtures still load and reconcile.
+- `rg -n 'atomicHash|EditorOp|BlockTreeDiff' Packages/Editor/Sources/Editor`
+  returns no storage-shaped public API. A package-internal semantic diff helper
+  may remain under a neutral name.
+- The persistence-order tests prove enqueue visibility is still synchronous.
+- Full package tests, Hunch macOS tests, and both platform builds pass.
+
+### STOP conditions
+
+- Stop if satisfying a test appears to require changing a golden hash, journal
+  record, or old fixture. Treat it as a compatibility regression, not a fixture
+  update.
+- Stop if the proposed semantic change lacks enough old/new parent information
+  to reproduce current recovery behavior. Enrich the semantic event; do not
+  leak hashes back into the editor.
+
+---
+
+## Milestone 3 — Make the minimum host genuinely minimal
+
+### Goal
+
+A basic consumer implements persistence and flush only. Optional capabilities
+are explicit, unsupported UI is absent, and Hunch opts into its complete feature
+set.
+
+### Target API shape
+
+Add a public `EditorCapabilities: OptionSet` with a deliberately small initial
+set:
+
+```swift
+public struct EditorCapabilities: OptionSet, Sendable {
+    public static let pages: Self
+    public static let mentions: Self
+    public static let crossPageMove: Self
+    public static let images: Self
+    public static let linkPreviews: Self
+}
+```
+
+`EditorHost` keeps only these methods mandatory:
+
+```swift
+func persistCommit(changes: [DocumentChange], in document: Document)
+func flush(_ document: Document) async
+```
+
+All other existing methods receive safe defaults in a public protocol
+extension. `capabilities` defaults to `[]`. Hunch explicitly returns every
+capability it supports. Do not infer capability availability by probing a
+method and interpreting `nil` or `false`.
+
+### Work
+
+1. Add the option set and neutral defaults. Preserve the class-bound stable
+   host identity.
+2. Gate every optional affordance at its source: menus, swipe actions,
+   context/turn-into actions, mention completion, drop targets, pasted-image
+   handling, preview tasks, and broken-page navigation. Unsupported features
+   should not appear and then silently fail.
+3. Keep ordinary text copy/paste usable without a host codec. Provide a
+   package-owned plain-text fallback; advertise custom serialization only when
+   the host has opted into the relevant broader capability or hook. Do not add
+   a capability flag merely to preserve a blank-string no-op.
+4. Replace the editor-coordinated `loadPageBlocks` then
+   `inlineAndTrashPage` sequence with one page-capability operation whose
+   contract makes the host responsible for the complete load → editor
+   transaction → durability wait → trash sequence. The editor may pass the
+   `Document`, source block ID, and requested conversion target, but it must not
+   independently delete/trash host data after an `await`.
+5. Keep page APIs grouped in the single protocol for this release. Do not split
+   into capability subprotocols yet; the option set and defaults are the
+   smallest correction. Revisit subprotocols only if a real consumer needs
+   replaceable implementations or the option set permits invalid combinations.
+6. Add a `MinimalHost` test fixture implementing only the two required methods.
+   Compile an `EditorView` with it. Add Hunch tests asserting all expected
+   capabilities and their visible commands/actions.
+
+### Files
+
+- `Packages/Editor/Sources/Editor/EditorHost.swift`
+- `Packages/Editor/Sources/Editor/EditorView.swift` and focused extension files
+- `Packages/Editor/Sources/Editor/BlockRow.swift`
+- `Packages/Editor/Sources/Editor/ImageBlockView.swift`
+- `Packages/Editor/Sources/Editor/EditorCommands.swift`
+- `Packages/Editor/Tests/EditorTests/`
+- `App/Sources/WorkspaceWindow+EditorHost.swift`
+- Relevant Hunch unit/UI tests
+
+### Gate
+
+- A compiled minimal-host fixture has no page, mention, move, image, or preview
+  stubs.
+- Searching `EditorHost` shows only persistence and flush without default
+  implementations.
+- Hunch opts in explicitly and retains all existing functionality.
+- The full verification matrix passes, including the focused iOS UI suites.
+
+### STOP conditions
+
+- Stop if a capability is checked only after presenting the unsupported UI.
+- Stop if the atomic page operation forces a package consumer to know
+  Clamshell concepts such as trash directories or Markdown paths. The operation
+  should describe user intent; Hunch supplies storage semantics.
+
+---
+
+## Milestone 4 — Introduce host-supplied block actions
+
+### Goal
+
+Reusable editing mechanics can host product actions without embedding their
+model/provider or product wording. Hunch’s transcript polishing remains
+behaviorally identical but Foundation Models leaves the package.
+
+### Contract
+
+Add a narrow action contract, not a plugin framework:
+
+- The host returns action metadata: stable ID, title, system image, and an
+  applicability predicate over immutable selected-block snapshots.
+- On invocation, the editor snapshots selected text-bearing blocks in visible
+  order and calls the host action asynchronously.
+- The action returns proposed replacements keyed by `BlockID`; it does not
+  mutate `Document` directly.
+- The editor rechecks that each source block still exists and its relevant
+  content matches the snapshot. Stale results are skipped.
+- Applicable replacements land in one named `Document.transaction`, producing
+  one undo step and one persistence emission.
+- The editor owns progress presentation, cancellation/lifetime, success toast,
+  and error presentation. Action results must not overwrite newer typing.
+
+Names such as `EditorBlockAction`, `BlockActionContext`, and
+`BlockReplacement` are acceptable placeholders until Milestone 7; do not put
+the eventual package brand into type names now.
+
+### Work
+
+1. Add the action value types and a default-empty host hook. Availability is
+   covered by the host action list; do not add one option-set flag per action.
+2. Render host actions in the existing block action surfaces after native
+   editor actions. Preserve keyboard accessibility and stable ordering.
+3. Add a neutral focused-command entry point that invokes an action by stable
+   ID. Hunch’s macOS menu can use it without adding product-specific cases to
+   `EditorAction` or `EditorPredicate`.
+4. Move `TranscriptPolisher.swift`, its Foundation Models dependency, prompt,
+   availability logic, and Hunch-specific labels into `App/Sources/`.
+   `WorkspaceWindow` (or a small Hunch action provider) exposes the “Polish”
+   action only when the model is available and the selected blocks are
+   eligible.
+5. Delete `polishTranscription` and `canPolishTranscription` from package command
+   enums and remove all transcript-specific package state and UI strings.
+6. Port tests for ordered selection, structural-row exclusion, stale-write
+   protection, one undo transaction, unavailable model, errors, and success.
+   Package tests exercise a fake action; Hunch tests exercise the polisher.
+
+### Files
+
+- New neutral action types under `Packages/Editor/Sources/Editor/Model/`
+- `Packages/Editor/Sources/Editor/EditorHost.swift`
+- `Packages/Editor/Sources/Editor/EditorCommands.swift`
+- `Packages/Editor/Sources/Editor/EditorView.swift`
+- `Packages/Editor/Sources/Editor/EditorView+TurnInto.swift`
+- `Packages/Editor/Sources/Editor/EditorView+Wiring.swift`
+- `Packages/Editor/Sources/Editor/TranscriptPolisher.swift` (remove)
+- New Hunch-side polisher/action provider under `App/Sources/`
+- `App/Sources/HunchApp.swift`
+- Editor and Hunch tests
+
+### Gate
+
+```sh
+rg -n 'FoundationModels|TranscriptPolisher|polishTranscription|Polish Transcription' Packages/Editor
+```
+
+returns no matches. A fake async package action proves stale-result rejection
+and one-transaction application. Hunch still shows and runs Polish on both its
+swipe/action surface and macOS menu when available.
+
+---
+
+## Milestone 5 — Remove Hunch policy and stabilize the public surface
+
+### Goal
+
+The remaining package API and runtime behavior are neutral enough to document
+and version. Hunch can preserve its current visual treatment through explicit
+configuration.
+
+### Work
+
+1. **Escape handling:** remove the public `hunchEscapeKeyDown` notification
+   from the package. Keep the fullscreen AppKit monitor and any process-global
+   notification in Hunch. Bridge it from the Hunch wrapper to the neutral
+   `.escape` editor command/controller.
+2. **Logging:** remove the hard-coded `org.nxhx.Hunch` subsystem. Use the host
+   bundle identifier by default or an explicit editor configuration value;
+   retain useful categories without publishing Hunch names.
+3. **Feedback:** replace the process-global `uiSoundsEnabled` UserDefaults read
+   with explicit configuration. The package may provide bundled sound effects,
+   but the host decides whether audio/haptics are enabled. Defaults should be
+   unsurprising for a reusable library and documented.
+4. **Internal names:** rename `HunchEmojiPicker` neutrally. Replace legacy
+   `Console.*` attributed-string key names with stable, neutral identifiers and
+   add round-trip tests. If those raw names can cross persistence or pasteboard
+   boundaries, provide a compatibility reader rather than silently breaking
+   old values.
+5. **Theme:** replace `NotionStyle` as public package policy with a modest
+   `EditorTheme`/configuration boundary. It must cover only the tokens the
+   editor actually consumes: palette, body/heading/monospace typography, and
+   load-bearing layout metrics. Keep the current look as Hunch’s explicitly
+   supplied theme. Move shell-only styling into a Hunch-owned style type.
+6. **Fonts:** remove the requirement that every consumer register Hunch’s Inter
+   resource. The default theme must render correctly with system fonts; Hunch
+   may register Inter and select `"Inter Variable"` through its theme. Test the
+   Hunch font contract through public behavior, not `@testable import Editor`.
+7. **Public API audit:** review all `public` declarations. Make gesture/layout,
+   overlay, hover, lifecycle, and other implementation types internal unless a
+   concrete host call site needs them. Preserve read-only state hosts actually
+   observe. Do not expose internals solely to retain tests.
+8. Change Hunch test files from `@testable import Editor` to normal
+   `import Editor`, or remove the import if symbols arrive through the app
+   target. Rewrite tests that currently depend on package internals.
+
+### Files
+
+- `Packages/Editor/Sources/Editor/EditorView.swift`
+- `Packages/Editor/Sources/Editor/Diag.swift`
+- `Packages/Editor/Sources/Editor/Feedback.swift`
+- `Packages/Editor/Sources/Editor/EmojiCompletion.swift`
+- `Packages/Editor/Sources/Editor/Model/InlineAttributes.swift`
+- `Packages/Editor/Sources/Editor/NotionStyle.swift`
+- Other package files affected by `EditorTheme` and access-level cleanup
+- `App/Sources/HunchApp.swift`
+- `App/Sources/ContentView.swift`
+- `App/Sources/Shell/`
+- `App/Tests/HunchUnitTests/FontRegistrationTests.swift`
+- `App/Tests/HunchUnitTests/RecoveryLogTests.swift`
+- `App/Tests/HunchUnitTests/LinkHealingTests.swift`
+- `App/Tests/HunchUnitTests/ClamshellRenameTests.swift`
+
+### Gate
+
+```sh
+rg -n 'Hunch|hunch\.|org\.nxhx\.Hunch|uiSoundsEnabled|Console\.|NotionStyle' Packages/Editor
+rg -n '^@testable import Editor' App/Tests/HunchUnitTests
+```
+
+Both commands return no matches, except a clearly documented historical
+compatibility string in a test or decoder. Package tests pass with no host font
+registration. Hunch’s current typography, colors, sounds, Escape behavior, and
+icons are covered by focused tests/builds and manual smoke checks.
+
+### STOP conditions
+
+- Stop before renaming an attributed-string key if evidence shows it is stored
+  durably and no compatibility reader has been designed.
+- Stop if theme extraction turns into a general design system. Keep the
+  boundary to values already varied by Hunch or required to eliminate its
+  assumptions.
+
+---
+
+## Milestone 6 — Make the local package independently releasable
+
+### Goal
+
+Before any repository move, a clean checkout of `Packages/Editor` has accurate
+docs, a compiled example host, a repeatable verification script, and
+consumer-friendly dependency declarations.
+
+### Work
+
+1. Add a tiny, self-contained example app under
+   `Packages/Editor/Examples/EditorDemo/`. It must use only the public API and a
+   host implementing the two required persistence methods. Use an in-memory
+   document, demonstrate optional capabilities separately, and make the sample
+   build on macOS and iOS Simulator.
+2. Make the README quickstart match the compiled minimal host. Prefer sharing
+   or checking the sample source rather than maintaining an untested duplicate.
+3. Rewrite `Packages/Editor/README.md` so it stands alone: installation,
+   supported platforms/toolchain, minimal quickstart, model and mutation
+   semantics, capabilities table, block actions, theme/configuration, resource
+   behavior, threading/actor expectations, and versioning policy. Remove links
+   that climb into Hunch’s `App/` tree; link to Hunch’s public repository as an
+   external example only where useful.
+4. Add a package-local `CONTRIBUTING.md`, `LICENSE` copy, and a concise
+   architecture/maintenance note. Do not add speculative docs or a changelog
+   before releases exist.
+5. In `Package.swift`, let SwiftPM choose linkage by declaring
+   `.library(name: "Editor", targets: ["Editor"])`. Change EmojiKit from an
+   exact transitive pin to a compatible 3.x requirement after verifying the
+   resolved version. Keep `Package.resolved` only if the chosen library-repo
+   policy intentionally tracks it.
+6. Add `Packages/Editor/scripts/verify.sh` (or an equivalently obvious command)
+   that runs package tests plus clean macOS and iOS Simulator example builds and
+   verifies bundled sound resources. It must work both at the current subtree
+   location and after that subtree becomes a repository root.
+7. Copy/move editor-generic UI regression coverage identified in Milestone 0
+   into the sample app’s UI-test target. At minimum cover edit/scroll, keyboard
+   split/focus continuity, and generic drag-reorder. Leave workspace,
+   Clamshell, navigation, recovery, and Hunch-specific presentation tests in
+   Hunch.
+8. Decide and document whether `Hunch.xcodeproj/project.pbxproj` is tracked
+   generated output or ignored output. Make `.gitignore`, CONTRIBUTING, and the
+   actual repository state agree before changing package dependency form.
+9. Add a package-local CI workflow file staged under `Packages/Editor/.github/`
+   for the future repository. It will not run from the Hunch monorepo; verify
+   its commands locally now and activate it as part of Milestone 7.
+
+### Files
+
+- `Packages/Editor/Package.swift`
+- `Packages/Editor/Package.resolved`
+- `Packages/Editor/README.md`
+- `Packages/Editor/CONTRIBUTING.md` (new)
+- `Packages/Editor/LICENSE` (new)
+- `Packages/Editor/Examples/EditorDemo/` (new)
+- `Packages/Editor/scripts/verify.sh` (new)
+- `Packages/Editor/.github/workflows/ci.yml` (new, staged for extraction)
+- Editor-generic tests copied from `App/UITests/`
+- `.gitignore`, `CONTRIBUTING.md`, and possibly generated project policy docs
+
+### Gate
+
+- The README minimal host and example compile without optional-feature stubs.
+- Running the package-local verification script from a clean checkout exits 0.
+- The example builds for macOS and generic iOS Simulator.
+- A resource smoke test locates and loads the package sound assets.
+- `Package.swift` no longer forces static linkage or an exact EmojiKit version.
+- No package doc has a relative link outside `Packages/Editor`.
+- Full Hunch verification still passes with the local-path dependency.
+
+---
+
+## Milestone 7 — Choose the name, extract, publish, and switch Hunch
+
+### Goal
+
+Choose the permanent public identity with the stabilized API in view, preserve
+the package’s history, publish a tested `0.1.0`, and make Hunch consume it as a
+remote SwiftPM dependency.
+
+This is the **only** milestone allowed to rename the package/module or create
+the standalone repository.
+
+### Name decision
+
+Choose the name before touching manifests. Apply these conventions:
+
+- Repository slug: distinctive lowercase brand, optionally hyphenated.
+- Swift package, library product, and module: the same distinctive
+  `UpperCamelCase` brand so consumers write `import Brand`.
+- Public types: role-based (`EditorView`, `Document`, `Block`,
+  `EditorTheme`), not mechanically brand-prefixed.
+- `Kit` is optional only if the package genuinely presents as a broad toolkit.
+  A `Swift` prefix is unnecessary unless needed to disambiguate search/results.
+- Avoid generic module names such as `Editor`, `BlockEditor`, or
+  `HunchEditor`; the name should be searchable and collision-resistant.
+
+Before deciding, search GitHub, Swift Package Index, package registries, App
+Store/product results, and relevant trademark databases. Check exact name,
+module spelling, repo slug, and close phonetic variants. Record the search date,
+results, and rationale in the new repository. Collision screening is not legal
+clearance; stop and ask for a different candidate if material ambiguity remains.
+
+### Extraction and publication sequence
+
+1. Freeze editor-boundary changes in Hunch and run the complete Milestone 6
+   verification script plus the full Hunch matrix.
+2. In a disposable clone, use a history-preserving subtree extraction such as
+   `git filter-repo --path Packages/Editor/ --path-rename Packages/Editor/:`.
+   Never run history rewriting against the working Hunch repository.
+3. In the extracted repository, perform the chosen rename consistently across
+   `Package.swift`, `Sources/`, `Tests/`, imports, example app, CI, docs, logging
+   defaults, and file names. Keep public type names role-based.
+4. Confirm the repository root contains `Package.swift`, `Sources`, `Tests`,
+   `Examples`, `README.md`, `CONTRIBUTING.md`, `LICENSE`, CI, and the verification
+   script. Remove subtree-era paths from docs and workflows.
+5. Push the new repository’s default branch. Run CI and the local clean-checkout
+   verification. Do not tag yet.
+6. In a Hunch branch, change `project.yml` from `path: Packages/Editor` to the
+   new Git URL pinned to the tested commit revision. Rename the dependency key,
+   product, and imports consistently; regenerate the Xcode project. Remove the
+   local `Packages/Editor` subtree only after remote resolution succeeds.
+7. Run package tests in the new repo and the full Hunch macOS/iOS/unit/UI matrix
+   with a clean SwiftPM cache/resolution. Verify there is one linked copy of the
+   library and that package resources load through the remote dependency.
+8. Tag the tested editor commit `0.1.0`. In Hunch, replace the revision pin with
+   an exact `0.1.0` requirement, resolve again from clean state, and rerun both
+   platform builds plus Hunch unit tests.
+9. Update Hunch’s README, CONTRIBUTING, CLAUDE/agent notes, links, dependency
+   instructions, and local-development override instructions. Cross-repository
+   work should use a local SwiftPM override during development, followed by a
+   package tag and a separate Hunch dependency bump.
+10. Keep exact `0.x` versions while the boundary is settling. Adopt compatible
+    version ranges only once the public API has stabilized; treat `1.0.0` as an
+    explicit compatibility commitment.
+
+### Gate
+
+- The new module has a distinctive, screened name and a documented rationale.
+- The standalone repository retains meaningful pre-extraction file history.
+- CI and the package-local verification script pass in a clean clone.
+- Hunch resolves the dependency from the tagged remote URL, not a local path or
+  revision.
+- `Packages/Editor` is absent from Hunch only after the remote builds pass.
+- Hunch package resolution contains one copy of the renamed library and its
+  resources.
+- Full Hunch package/unit/build/UI verification passes at exact `0.1.0`.
+
+### STOP conditions
+
+- Stop if the chosen name has a meaningful active Swift/module/product
+  collision or unresolved trademark concern.
+- Stop if extraction loses relevant file history; redo it from a disposable
+  clone rather than accepting a source-only copy.
+- Stop if Hunch passes only with a local package override. Do not delete the
+  in-repo package or tag a release until clean remote resolution works.
+- Stop if the remote package links twice into `HunchUnitTests` or resources fail
+  under remote resolution. Fix the target/dependency graph before publishing.
+
+## Final done criteria
+
+- [ ] The standalone package’s public model has no filesystem-required
+  identity.
+- [ ] Recovery hashing and on-disk compatibility are owned and tested by
+  Clamshell/Hunch.
+- [ ] A minimal host implements persistence and flush only.
+- [ ] Optional UI follows explicit capabilities.
+- [ ] Product actions are host-supplied; Foundation Models is not a package
+  dependency.
+- [ ] The package contains no Hunch/Console/Notion policy or global Hunch
+  preference keys.
+- [ ] System-font defaults work; Hunch explicitly supplies its Inter-based
+  treatment.
+- [ ] Public docs and a compiled example agree.
+- [ ] Standalone CI verifies SwiftPM tests, both Apple-platform builds, and
+  resources.
+- [ ] The final package/module has a distinctive screened name.
+- [ ] Hunch consumes exact remote version `0.1.0` through SwiftPM.
+- [ ] The old local package is removed only after all clean remote gates pass.
+
+## Explicitly deferred beyond `0.1.0`
+
+- Splitting model/core and UI into separate products.
+- A general plugin architecture or third-party action discovery.
+- Broad theming beyond the existing editor’s real tokens.
+- Lowering deployment targets below iOS 26/macOS 26.
+- Promising source stability or a compatible SemVer range before the API has
+  survived real external use.
