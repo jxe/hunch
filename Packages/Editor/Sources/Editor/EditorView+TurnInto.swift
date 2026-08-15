@@ -110,6 +110,7 @@ struct BlockIndentAction: Hashable {
 extension EditorView {
     @discardableResult
     func convertBlockToSubpage(blockID: BlockID, preferredTitle: String?) -> KeyPress.Result {
+        guard host.supportsPageCreation else { return .ignored }
         guard let block = document.find(blockID) else { return .ignored }
         guard !isStructuralBlock(block) else { return .ignored }
 
@@ -226,6 +227,7 @@ extension EditorView {
 
     @discardableResult
     fileprivate func convertSubpage(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
+        guard host.supportsSubpageInlining else { return .ignored }
         guard target != .page else { return .ignored }
         guard let block = document.find(blockID),
               case .subpage(let title, let path) = block.kind else { return .ignored }
@@ -396,23 +398,25 @@ extension EditorView {
                         ) {
                             _ = copyBlocksToPasteboard(ids: targetIDs)
                         }
-                        compactMenuButton(
-                            title: "Move to",
-                            systemImage: "arrow.right.doc.on.clipboard",
-                            keyboardShortcut: "m",
-                            keyboardShortcutModifiers: [.command, .shift],
-                            keyboardShortcutLabel: "⇧⌘M"
-                        ) {
-                            let inDoc = inDocMoveCandidates(excluding: targetIDs)
-                            Task { @MainActor in
-                                let destination = await host.moveDestination(for: targetIDs, candidates: inDoc)
-                                switch destination {
-                                case .page(let pageID):
-                                    await moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
-                                case .block(let parentID):
-                                    moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
-                                case nil:
-                                    break
+                        if host.supportsMoveDestinationPicker {
+                            compactMenuButton(
+                                title: "Move to",
+                                systemImage: "arrow.right.doc.on.clipboard",
+                                keyboardShortcut: "m",
+                                keyboardShortcutModifiers: [.command, .shift],
+                                keyboardShortcutLabel: "⇧⌘M"
+                            ) {
+                                let inDoc = inDocMoveCandidates(excluding: targetIDs)
+                                Task { @MainActor in
+                                    let destination = await host.moveDestination(for: targetIDs, candidates: inDoc)
+                                    switch destination {
+                                    case .page(let pageID):
+                                        await moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
+                                    case .block(let parentID):
+                                        moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
+                                    case nil:
+                                        break
+                                    }
                                 }
                             }
                         }
@@ -565,6 +569,14 @@ extension EditorView {
 
     fileprivate func turnIntoTargets(for blocks: [Block]) -> [BlockTurnInto] {
         BlockTurnInto.allCases.filter { target in
+            if target == .page, !host.supportsPageCreation {
+                return false
+            }
+            if target != .page,
+               !host.supportsSubpageInlining,
+               blocks.contains(where: { if case .subpage = $0.kind { true } else { false } }) {
+                return false
+            }
             if target == .template, blocks.count > 1 {
                 return false
             }

@@ -86,6 +86,8 @@ trashes the source file (`inlineAndTrashPage(_:parent:)`).
 - The editor snapshots explicitly selected text-bearing rows in document
   order, rejects results for blocks changed while the action was running, and
   applies the remaining replacements as one undoable transaction.
+- A handler may replace any subset of the selected blocks, and each replacement
+  may use any `BlockKind`; replacements do not have to preserve the source type.
 - Host actions appear after native editor actions. A host menu can invoke the
   same action through `EditorCommands.performBlockAction` using its id.
 
@@ -404,6 +406,9 @@ is one extension point. Only `persistCommit` and `flush` are mandatory.
 |--------|-------------|-----------------|
 | `persistCommit` | Required | None; the host must explicitly own persistence. |
 | `flush` | Required | None; durability may never be silently weakened. |
+| `supportsPageCreation` | Optional | `false`; hides Turn Into → Page and Cmd-K page creation. |
+| `supportsSubpageInlining` | Optional | `false`; hides non-page conversions for subpage rows. |
+| `supportsMoveDestinationPicker` | Optional | `false`; hides the "Move to" action. |
 | `suggestPages` | Optional | `[]` |
 | `openPage` | Optional | No-op |
 | `setPageIcon` | Optional | `false` |

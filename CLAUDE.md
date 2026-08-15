@@ -150,8 +150,8 @@ user-picked workspace folder.
     The host methods (`openPage`, `persistCommit`, `flush`, …) live on the
     same type and forward to `Clamshell`. The host's `persistCommit`
     conforms to `EditorHost`; it calls
-    `clamshell.enqueueCommit(.fromEditorOps(ops), to: doc)`
-    synchronously (the chain entry exists before the hook returns) and
+    `session.enqueueEditorChanges(changes)` synchronously (the coordinator
+    generation exists before the hook returns) and
     awaits the returned task in a follow-up Task for the failure
     banner — the editor's sync hook contract stays intact with no
     enqueue-visibility gap. Move-to is
@@ -165,7 +165,7 @@ user-picked workspace folder.
   the test target must not list Editor as a direct dep or it would link
   a second copy.
 - `project.yml` — XcodeGen spec. **Don't hand-edit the `.xcodeproj`** —
-  it's generated, gitignored, overwritten by `xcodegen generate`.
+  it is tracked generated output and overwritten by `xcodegen generate`.
 - `References/typography/` — real Notion screenshots; see its README.
 - `.claude/skills/`, `docs/` — per-project Claude skills and accumulated
   working notes. Upcoming work lives in `TODO.md` at the repo root.
@@ -175,7 +175,7 @@ user-picked workspace folder.
 The full build / test loop lives in [CONTRIBUTING.md](CONTRIBUTING.md). The
 short version: `swift test --package-path Packages/Editor` for the SPM
 tests; `xcodegen generate --spec project.yml --project .` to refresh the
-Xcode project (it's gitignored — don't hand-edit); `xcodebuild … -scheme
+tracked Xcode project (don't hand-edit it); `xcodebuild … -scheme
 Hunch -destination 'platform=macOS'` to build, then `./scripts/run.sh` to
 launch the freshest macOS build.
 
@@ -293,7 +293,8 @@ is enqueue-then-await. Concurrent calls for the same URL chain (see
 rapid burst (typing commit → focus blur → navigation) lands in
 order. `flush(_:)` awaits the chain head without triggering work;
 `drain()` awaits everything at teardown. Every flow projects
-to a `Commit`: editor commits via `Commit.fromEditorOps(ops)`,
+to a `Commit`: `PageSession.enqueueEditorChanges(_:)` projects editor
+changes via `Commit.fromEditorChanges(_:)`,
 reconcile via `Reconciliation.asCommit()`, manual restore /
 conflict-merge / subpage-append build the value directly. No
 debounce, no `.armed` / queued state machine, no separate log-apply
@@ -313,7 +314,7 @@ snapshots `children` *before* `preMutation` fires (so the snapshot
 captures pre-typing state), runs `preMutation` (which flushes the live
 editor's text through a nested transaction), runs the change closure,
 re-enforces heading containment, snapshots `children` again, derives
-the pre→post diff via `BlockTreeDiff.derive(_:_:)`, and fires
+the pre→post diff via `DocumentChangeDiff.derive(pre:post:)`, and fires
 `Document.didCommitTransaction` with the diff. Forward, undo, and redo
 all funnel through the same hook — undo with the *inverted* diff so
 the journal stays symmetric across the round-trip. Nested transactions
@@ -322,11 +323,11 @@ diff already covers their changes.
 
 **`Document.didCommitTransaction` is the editor's single emission
 point.** Wired in `EditorView.installUndoApply` to revalidate
-`EditorState` against the new block set and forward the ops to
-`host.persistCommit(ops:on:)`. Both `EditorView.mutate(name:_:)`
+`EditorState` against the new block set and forward the changes to
+`host.persistCommit(changes:in:)`. Both `EditorView.mutate(name:_:)`
 (structural) and `BlockTextEditor.Coordinator.commitLiveText` (typing)
 ultimately call `Document.transaction`, which fires the hook. Empty
-diff = pure reorder/move (id+hash stable); the host still persists
+diff = pure reorder/move; the host still persists
 the new tree shape from the same call.
 
 **Nav-mode keyboard goes through `EditorCommands`.**
@@ -369,8 +370,8 @@ consumes. Override `keyDown(_:)` on a custom NSTextView subclass instead
 ## Project-level constraints
 
 General platform / toolchain constraints (iOS 26 + macOS 26 min, single
-multiplatform target, swift-tools 6.2, no code signing, swift-markdown as
-only third-party dep) are in [CONTRIBUTING.md](CONTRIBUTING.md). The
+multiplatform target, swift-tools 6.2, no code signing, and package
+dependencies) are in [CONTRIBUTING.md](CONTRIBUTING.md). The
 constraint worth always having in context, because it shapes parser
 changes:
 

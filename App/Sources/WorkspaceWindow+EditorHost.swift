@@ -14,6 +14,10 @@ import UIKit
 // `openDocument` and the per-window navigation primitives directly.
 
 extension WorkspaceWindow: EditorHost {
+    var supportsPageCreation: Bool { true }
+    var supportsSubpageInlining: Bool { true }
+    var supportsMoveDestinationPicker: Bool { true }
+
     // — Workspace-scoped forwarders —
 
     func blockActions(in document: Document) -> [EditorBlockAction] {

@@ -184,7 +184,9 @@ Editor package doesn't need to learn about multi-workspace dispatch:
     weak var window: WorkspaceWindow?      // for cross-frame ops (openPage, navigateBack)
 
     // EditorHost — storage / per-clamshell ops dispatch to self.clamshell:
-    func persistCommit(ops:in:)   { clamshell.persistCommit(...) }
+    func persistCommit(changes: [DocumentChange], in document: Document) {
+        session(for: document)?.enqueueEditorChanges(changes)
+    }
     func lookupPage(_:)            { clamshell.lookupPage(...) }
     func suggestPages(_:)          { clamshell.pages(matching:) }
     func createPage(...)           { clamshell.createPage(...) }

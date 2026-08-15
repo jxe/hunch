@@ -32,6 +32,7 @@ extension EditorView {
                 actionSheet = BlockActionSheet(id: id)
 
             case .openMoveTo:
+                guard host.supportsMoveDestinationPicker else { return }
                 guard let id = topSelectedBlockID() else { return }
                 let targetIDs = menuTargetIDs(anchorID: id)
                 let inDoc = inDocMoveCandidates(excluding: targetIDs)
@@ -48,6 +49,7 @@ extension EditorView {
                 }
 
             case .toggleLinkOrSubpage:
+                guard host.supportsPageCreation else { return }
                 guard let id = state.cursor, state.selection.count == 1 else { return }
                 // The Cmd-K menu shortcut wins over NSTextView's keyDown, so the
                 // live-text capture path in BlockTextEditor's keyDown never runs.

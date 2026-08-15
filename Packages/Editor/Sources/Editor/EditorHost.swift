@@ -35,6 +35,18 @@ extension PageLookup {
 /// churn that 17 individual @escaping callbacks previously caused.
 @MainActor
 public protocol EditorHost: AnyObject {
+    /// Whether the host can persist a page created by Turn Into → Page or
+    /// Cmd-K. When false, the editor hides those creation affordances.
+    var supportsPageCreation: Bool { get }
+
+    /// Whether the host can load, inline, durably save, and trash an existing
+    /// subpage. When false, a subpage row cannot be turned into another type.
+    var supportsSubpageInlining: Bool { get }
+
+    /// Whether the host can present the asynchronous destination picker used
+    /// by "Move to". When false, the editor hides that action.
+    var supportsMoveDestinationPicker: Bool { get }
+
     /// `@`-mention candidates for the given query string. Editor renders up to
     /// the first 8 results; host owns filtering/ranking. `document` is the
     /// page the mention is being typed into — hosts typically exclude it
@@ -195,6 +207,9 @@ public protocol EditorHost: AnyObject {
 }
 
 public extension EditorHost {
+    var supportsPageCreation: Bool { false }
+    var supportsSubpageInlining: Bool { false }
+    var supportsMoveDestinationPicker: Bool { false }
     func suggestPages(_ query: String, in document: Document) -> [MentionItem] { [] }
     func openPage(pageID: String) {}
     func didDeleteSubpageLink(pageID: String, title: String, from document: Document) {}

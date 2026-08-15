@@ -16,7 +16,10 @@ The repo is two products in one workspace:
 - a **standalone SwiftPM package** (`Packages/Editor/`) the app depends on
   and that's reusable in other hosts.
 
-No third-party dependencies except [swift-markdown](https://github.com/swiftlang/swift-markdown).
+Third-party dependencies are intentionally small:
+[swift-markdown](https://github.com/swiftlang/swift-markdown) parses and
+serializes Hunch pages, while [EmojiKit](https://github.com/danielsaidi/EmojiKit)
+provides the editor's emoji picker.
 
 ## Build & test
 
@@ -24,7 +27,7 @@ No third-party dependencies except [swift-markdown](https://github.com/swiftlang
 # 1. Editor package — tests live here; keep them green before pushing UI changes
 swift test --package-path Packages/Editor
 
-# 2. Generate the Xcode project (don't hand-edit .xcodeproj — it's gitignored)
+# 2. Generate the tracked Xcode project (don't hand-edit .xcodeproj)
 xcodegen generate --spec project.yml --project .
 
 # 3. Build for macOS or iOS Simulator
@@ -40,9 +43,10 @@ xcodebuild -project Hunch.xcodeproj -scheme Hunch \
 `scripts/run.sh` kills any running `Hunch.app` and launches the newest
 Debug build.
 
-`project.yml` is the source of truth for the Xcode project. If a file
-doesn't show up in the build, regenerate the project rather than dragging
-it into Xcode by hand.
+`project.yml` is the source of truth for the Xcode project. The generated
+`.xcodeproj` is currently tracked, so include its generated diff when project
+membership changes. If a file doesn't show up in the build, regenerate the
+project rather than dragging it into Xcode by hand.
 
 ## Source layout
 

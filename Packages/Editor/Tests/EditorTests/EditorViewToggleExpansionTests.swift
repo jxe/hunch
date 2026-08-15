@@ -183,6 +183,7 @@ struct EditorViewToggleExpansionTests {
 
 @MainActor
 private final class TestHost: EditorHost {
+    var supportsSubpageInlining: Bool { true }
     var loadedPageBlocks: [Block]?
     var didInlineAndTrashPage = false
     var appendedPageID: String?

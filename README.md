@@ -5,7 +5,7 @@ Open-source, improved Notion. Native iOS 26 + macOS 26. Your notes live as plain
 ## TL;DR
 
 - ⚡  Native Swift, no Electron — fast cold start, fast typing, fast scroll
-- 🎙️  Voice dictation built in, with a Siri shortcut
+- 🎙️  Voice dictation built in, with a Siri shortcut and optional on-device cleanup
 - 📱  native iOS gestures for delete line, pinch to open, drag to reorder
 - 📂  Plain markdown files on disk — no database, no lock-in
 - ☁️  iCloud-sync friendly; some hidden files enable robust recovery, version history, and conflict-free multi-device editing
@@ -44,6 +44,10 @@ Paste from the clipboard, drop one in from Finder, drag a screenshot off the des
 ### 🎙️  Voice dictation, with a Siri shortcut
 
 Mic button in the page toolbar on both macOS and iOS — press to speak, get text inserted at the cursor (or appended as a paragraph when nothing's focused). On iOS, a Siri intent (`VoiceRecordingIntents`) means you can wire dictation into the Action Button or a Shortcut and capture into the current page hands-free.
+
+When Apple's on-device language model is available, select one or more
+transcript blocks and choose **Polish** to clean up their wording without
+sending the text to a hosted service.
 
 ### 🛟  More robust restore, by design
 
@@ -143,7 +147,7 @@ You can read the code, fork it, audit your own data layer, and ship patches. Lic
 - ❌ Full databases (relations, formulas, rollups, views)
 - ❌ Tables
 - ❌ Embeds besides just fancy external link mentions
-- ❌ AI features
+- ❌ Embedded general-purpose AI chat or agent UI
 
 ---
 
