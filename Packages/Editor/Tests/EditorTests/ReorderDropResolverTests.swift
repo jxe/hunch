@@ -143,6 +143,28 @@ struct ReorderDropResolverTests {
         }
     }
 
+    @MainActor
+    @Test func reorderFrameSnapshotIgnoresAnimatedGapAndTracksScrolling() {
+        let cache = RowSurfaceLayoutCache<String>()
+        cache.updateOrder(["a", "b", "c"])
+        cache.setHeight(30, for: "a")
+        cache.setHeight(30, for: "b")
+        cache.setHeight(30, for: "c")
+        cache.contentOriginY = 100
+        cache.beginReorderFrameSnapshot()
+
+        cache.updateOrder(["a", "b", "c"], topGaps: ["c": 42])
+
+        #expect(cache.frame(of: "c")?.minY == 202)
+        #expect(cache.reorderFrame(of: "c")?.minY == 160)
+
+        cache.contentOriginY = 40
+        #expect(cache.reorderFrame(of: "c")?.minY == 100)
+
+        cache.endReorderFrameSnapshot()
+        #expect(cache.reorderFrame(of: "c")?.minY == 142)
+    }
+
     @Test func acceptsLargeJumpsWithoutStickyIntermediateSlots() {
         let frames = makeFrames(count: 5)
 

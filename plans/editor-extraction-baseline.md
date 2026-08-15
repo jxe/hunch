@@ -50,6 +50,16 @@ The reorder failures are recorded rather than repaired here because milestones
 0–4 concern storage identity, semantic persistence, host defaults, and host
 actions, and changing gesture behavior would broaden their scope.
 
+### Follow-up resolution — 2026-08-15
+
+Both recorded reorder failures were repaired in the post-Milestone-4
+stabilization pass. The insertion gap was changing the live destination frames
+used by the next drag event, so downward drops could settle one slot early.
+Reorder now freezes destination frames in document-local coordinates for the
+gesture lifetime while applying the live page origin for autoscroll. The two
+focused regressions and all 13 `HunchDragAndDropUITests` pass on the same iPhone
+17 Pro, iOS 27.0 simulator.
+
 ## UI test inventory for a standalone example
 
 Copy these editor-generic integration checks into the milestone-6 standalone

@@ -91,6 +91,7 @@ extension EditorView {
             pendingAnchor: true,
             isCopy: false
         ) else { return }
+        layoutCache.beginReorderFrameSnapshot()
         state.setReorderLift(lift)
     }
 
@@ -174,6 +175,7 @@ extension EditorView {
                       isCopy: isCopy
                   )
             else { return }
+            layoutCache.beginReorderFrameSnapshot()
             state.setReorderLift(lift)
         } else if var lift = state.reorderLift {
             if lift.pendingAnchor {
@@ -204,7 +206,10 @@ extension EditorView {
     /// move inside one no-animation transaction so neither the gap close, the
     /// lift unmount, nor the row reflow springs.
     func endReorderLift(atY y: CGFloat, snapshot: [Block]) {
-        guard let lift = state.reorderLift else { return }
+        guard let lift = state.reorderLift else {
+            layoutCache.endReorderFrameSnapshot()
+            return
+        }
         SoundFX.play(.drop)
         let hidden = hiddenBlockIDs(in: snapshot)
         let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot)
@@ -217,6 +222,7 @@ extension EditorView {
         withTransaction(transaction) {
             state.currentDropTarget = nil
             state.setReorderLift(nil)
+            layoutCache.endReorderFrameSnapshot()
             switch target {
             case .insertAt(let path):
                 if isCopy {
@@ -244,6 +250,7 @@ extension EditorView {
         withTransaction(transaction) {
             state.currentDropTarget = nil
             state.setReorderLift(nil)
+            layoutCache.endReorderFrameSnapshot()
         }
     }
 
@@ -277,7 +284,7 @@ extension EditorView {
         // drops.
         let edgeBand: CGFloat = 6
         for row in rows where !liftIDs.contains(row.id) {
-            guard let frame = layoutCache.frame(of: row.id) else { continue }
+            guard let frame = layoutCache.reorderFrame(of: row.id) else { continue }
             if case .subpage(let path) = row.kind,
                y >= frame.minY && y <= frame.maxY {
                 return .intoSubpage(row.id, path)
@@ -314,7 +321,7 @@ extension EditorView {
         liftFootprint: ClosedRange<Int>? = nil
     ) -> Int {
         let knownFrames: [(rowsIndex: Int, frame: ReorderDropFrame)] = rows.enumerated().compactMap { (k, row) in
-            layoutCache.frame(of: row.id).map { (k, ReorderDropFrame(frame: $0)) }
+            layoutCache.reorderFrame(of: row.id).map { (k, ReorderDropFrame(frame: $0)) }
         }
         guard !knownFrames.isEmpty else { return previousIndex ?? 0 }
         let prevInKnownSpace: Int? = previousIndex.map { prev in

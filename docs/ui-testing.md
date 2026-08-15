@@ -5,7 +5,9 @@
 Prefer making gesture decisions observable and testable before adding broad
 simulator automation. For drag/reorder, the important seam is the pure
 resolver: feed it stable frames and pointer paths, then assert the active
-slot does not oscillate.
+slot does not oscillate. Integration with the layout cache must separately
+prove that destination frames stay frozen while the animated gap opens, but
+continue to move with the live page origin during autoscroll.
 
 Use simulator/UI testing for integration checks that cannot be proven from
 pure geometry:
@@ -13,6 +15,8 @@ pure geometry:
 - A long press starts reorder without entering edit mode.
 - A horizontal swipe still wins before reorder begins.
 - Pinch gestures still reach the page-level pinch handler.
+- Dragging down to a row's center lands after that row, both before and after
+  scrolling.
 - Dropping mutates order exactly once.
 - Cancelling clears transient hover/source-row state.
 
@@ -47,10 +51,12 @@ document. This avoids the file picker and bookmark restore path. The
 related `--console-ui-testing-tall-doc` flag installs a 60-row fixture
 used by the scroll/keyboard UI tests in `App/UITests/`.
 
-Run focused iOS UI tests with:
+Run the drag-and-drop integration suite on the existing iOS 27 simulator with:
 
 ```sh
-xcodebuild -project Hunch.xcodeproj -scheme Hunch -destination 'platform=iOS Simulator,name=iPhone 17' test
+xcodebuild test -project Hunch.xcodeproj -scheme HunchUITests \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=27.0' \
+  -only-testing:HunchUITests/HunchDragAndDropUITests
 ```
 
 Use the generated row labels (`Paragraph: Bravo`, etc.) for interaction and

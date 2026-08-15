@@ -4,7 +4,6 @@ Unordered list of work that seems in scope.
 
 ## Small ones
 
-* Drop target feel on ios as you drag is not ideal.
 * The disclosure triangles on toggle lists are not equilateral.
 * I have mixed feelings about the way that sections act as blocks.
 * I guess we should add "comes after" sibling info to the logs to make it easier to reconstruct the right tree structure when we have edit conflicts.

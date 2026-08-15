@@ -18,9 +18,9 @@ What's **deliberately not** in the design: shadows, card treatments, rotation, p
 
 Both platforms resolve the candidate insertion index the same way: `ReorderDropResolver.insertionIndex(forY:rowFrames:previousIndex:hysteresis:)` ([ReorderDropResolver.swift](../Packages/Editor/Sources/Editor/ReorderDropResolver.swift)).
 
-It maps the pointer's y-coordinate to a slot by counting how many rows have a midY above it, with a 10pt hysteresis band so a pointer hovering near a row boundary doesn't oscillate between two slots. Row geometry is held in `RowSurfaceLayoutCache`: row body heights are measured directly, while before-row spacing, pinch gaps, and reorder gaps are modeled as empty top gaps outside the row frame. That keeps a finger hovering in blank space from resolving as though it were over the row below.
+It maps the pointer's y-coordinate to a slot by counting how many rows have a midY above it, with a 10pt hysteresis band so a pointer hovering near a row boundary doesn't oscillate between two slots. Row geometry is held in `RowSurfaceLayoutCache`: row body heights are measured directly, while before-row spacing, pinch gaps, and reorder gaps are modeled as empty top gaps outside the row frame. `beginReorderFrameSnapshot()` freezes destination frames in document-local coordinates when the lift begins. The visual gap may then change live layout without moving the target being tested; `reorderFrame(of:)` applies the current page origin so the snapshot still tracks autoscroll. `endReorderFrameSnapshot()` clears the snapshot on both drop and cancellation. This also keeps a finger hovering in blank space from resolving as though it were over the row below.
 
-Earlier iterations used per-slot `.dropDestination` / `isTargeted` callbacks — those produced a "buzzing" pattern where opening a gap shifted hit-testing, which closed the gap, which shifted hit-testing back. The page-level resolver against frozen frames is what fixed it.
+Earlier iterations used per-slot `.dropDestination` / `isTargeted` callbacks — those produced a "buzzing" pattern where opening a gap shifted hit-testing, which closed the gap, which shifted hit-testing back. Resolving against live cumulative frames had the quieter version of the same feedback: opening the 42pt gap pushed the intended destination below the pointer and made downward drops land one slot early. The page-level resolver against frozen frames fixes both cases.
 
 Tests live in [ReorderDropResolverTests.swift](../Packages/Editor/Tests/EditorTests/ReorderDropResolverTests.swift). Add coverage there before touching hover math.
 
@@ -71,9 +71,9 @@ A single `gesture: .reordering(ReorderLift)` case on `EditorState` carries the l
 
 The shared methods are:
 
-- `preliftReorder(blockID:snapshot:)` — pre-mounts the lift centered on the source row with `pendingAnchor: true`. iOS-only entry point (called from `onReorderBegin`).
-- `tickReorderLift(blockID:at location:anchorAt anchor:snapshot:)` — per-event update. Creates the lift lazily if missing (macOS path), re-anchors `touchOffset` if pending, then sets `location` and recomputes `dropHoverIndex`. iOS passes the recognizer location for both `at` and `anchorAt`; macOS passes `value.location` for `at` and `value.startLocation` for `anchorAt` (the click point, before the 4pt minimum-distance kicked in).
-- `endReorderLift(atY:snapshot:)` / `cancelReorderLift()` — both wrap their state changes (and `moveBlocks` in the end case) in one `Transaction(animation: nil, disablesAnimations: true)`.
+- `preliftReorder(blockID:snapshot:)` — pre-mounts the lift centered on the source row with `pendingAnchor: true` and starts the destination-frame snapshot. iOS-only entry point (called from `onReorderBegin`).
+- `tickReorderLift(blockID:at location:anchorAt anchor:snapshot:)` — per-event update. Creates the lift and starts the destination-frame snapshot lazily if missing (macOS path), re-anchors `touchOffset` if pending, then sets `location` and recomputes `dropHoverIndex`. iOS passes the recognizer location for both `at` and `anchorAt`; macOS passes `value.location` for `at` and `value.startLocation` for `anchorAt` (the click point, before the 4pt minimum-distance kicked in).
+- `endReorderLift(atY:snapshot:)` / `cancelReorderLift()` — both clear the destination-frame snapshot and wrap their state changes (and `moveBlocks` in the end case) in one `Transaction(animation: nil, disablesAnimations: true)`.
 
 `reorderDriftGap(for:)` and `reorderSourceOpacity(for:)` consult `reorderLift` directly — no `#if` fork. Multi-block and section drags dim every source row on both platforms. The lift also stores `sourceEndIndex`, so gap animation is suppressed for every insertion slot inside the source section, not just the lead row.
 

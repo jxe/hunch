@@ -41,6 +41,15 @@ while saving its test record; it was interrupted after the assertions and suite
 summaries had been emitted. The comparison run from `0a88055` exhibited the
 same post-test log-finalization stall.
 
+### Follow-up stabilization — 2026-08-15
+
+The two historical reorder failures above are now resolved. Reorder destination
+frames are frozen in document-local coordinates while the insertion gap
+animates, then projected through the live page origin during autoscroll. The
+Editor package suite passes with 239 tests, the Hunch macOS suite passes with
+331 tests, and all 13 `HunchDragAndDropUITests` pass on the iPhone 17 Pro,
+iOS 27.0 simulator.
+
 ## Action contract coverage
 
 - Package tests prove selected text-bearing blocks are snapshotted in document

@@ -12,6 +12,9 @@ Verification records:
 - [editor-extraction-baseline.md](editor-extraction-baseline.md) — Milestones 0–2
 - [editor-extraction-milestones-3-4.md](editor-extraction-milestones-3-4.md) — Milestones 3–4
 
+Both records include the 2026-08-15 stabilization follow-up that cleared the
+previously recorded iOS reorder failures before Milestone 5.
+
 The milestones inside the editor extraction plan are ordered dependencies. Do
 not begin the naming/repository extraction milestone until all preceding API,
 compatibility, and standalone-verification gates pass.

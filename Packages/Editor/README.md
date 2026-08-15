@@ -35,8 +35,11 @@ What the editor does for the end user, regardless of how the host wraps it:
 - Option+↑/↓ slides the selected block up or down (carries indent-descendants
   for headings/toggles).
 - Drag the leading-gutter handle to reorder. Drop targets resolve by row
-  midline with hysteresis. Dropping onto a closed toggle, template button,
-  or subpage row appends as a child instead of inserting between rows.
+  midline with hysteresis. Destination frames are frozen for the lifetime of
+  the drag, so the animated insertion gap cannot move the target being tested;
+  the live page origin still projects those frames through autoscroll.
+  Dropping onto a closed toggle, template button, or subpage row appends as a
+  child instead of inserting between rows.
 
 **Indent**
 - Tab / Shift-Tab indent and outdent in both nav mode (over the whole

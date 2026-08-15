@@ -49,6 +49,11 @@ format is.
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`.
 
+Post-Milestone-4 stabilization on 2026-08-15 gated visible optional-host
+affordances, refreshed the reusable-package documentation, and cleared the two
+recorded iOS reorder failures by freezing destination geometry for each drag.
+Milestone 5 remains next.
+
 ## Decisions already made
 
 - The extraction is worth doing. `Packages/Editor` already has its own

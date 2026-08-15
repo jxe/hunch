@@ -239,6 +239,15 @@ class RowSurfaceLayoutCache<ID: Hashable> {
     /// because it must cover rows outside the materialization window.
     private(set) var realizedInternalFrames: [ID: CGRect] = [:]
 
+    /// Document-local destination frames captured when a reorder begins.
+    /// The visual 42pt insertion gap changes live `rowTops`; resolving the
+    /// next drag event against those shifted frames makes the gap chase the
+    /// pointer and can leave a drop one row early. Keeping internal frames
+    /// frozen avoids that feedback while applying the live `contentOrigin`
+    /// below still lets the snapshot track viewport movement during
+    /// autoscroll.
+    private var reorderInternalFrameSnapshot: [ID: CGRect]?
+
     /// Y-position of the LazyVStack's top in PageHoverCoordinateSpace.
     /// Updated from a single anchor view at the top of the content area.
     /// One write per scroll tick — vs. N writes when each row published its
@@ -280,6 +289,27 @@ class RowSurfaceLayoutCache<ID: Hashable> {
 
     func removeRealizedInternalFrame(for id: ID) {
         realizedInternalFrames.removeValue(forKey: id)
+    }
+
+    func beginReorderFrameSnapshot() {
+        guard reorderInternalFrameSnapshot == nil else { return }
+        reorderInternalFrameSnapshot = Dictionary(uniqueKeysWithValues: orderedIDs.compactMap { id in
+            internalFrame(of: id).map { (id, $0) }
+        })
+    }
+
+    func endReorderFrameSnapshot() {
+        reorderInternalFrameSnapshot = nil
+    }
+
+    /// Destination frame for reorder hit-testing. Frozen in document-local
+    /// coordinates for the drag lifetime, but projected through the current
+    /// page origin so scrolling continues to move the targets on screen.
+    func reorderFrame(of id: ID) -> CGRect? {
+        guard let frame = reorderInternalFrameSnapshot?[id] ?? internalFrame(of: id) else {
+            return nil
+        }
+        return frame.offsetBy(dx: contentOriginX, dy: contentOriginY)
     }
 
     /// Replace the ordered ID list and reverse index, then recompute offsets.
