@@ -116,11 +116,13 @@ public struct EditorView: View {
     @State var actionSheet: BlockActionSheet?
     /// Subpage row whose marker anchors the page-icon picker.
     @State var iconPickerBlockID: BlockID?
-    /// True while Apple’s on-device language model is polishing the selected
-    /// rows. Keeps duplicate menu invocations out and gives the async operation
-    /// visible progress after the compact action sheet closes.
-    @State var isPolishingTranscription = false
-    @State var polishErrorMessage: String?
+    /// One host action may run at a time. The task is retained so leaving the
+    /// editor cancels its lifetime before an async result can touch the page.
+    @State var runningBlockActionID: String?
+    @State var runningBlockActionTitle: String?
+    @State var blockActionTask: Task<Void, Never>?
+    @State var blockActionErrorTitle: String?
+    @State var blockActionErrorMessage: String?
 
     public init(
         document: Document,
@@ -282,11 +284,11 @@ public struct EditorView: View {
             }
             .background(NotionStyle.background)
             .overlay(alignment: .bottom) {
-                if isPolishingTranscription {
+                if let runningBlockActionTitle {
                     HStack(spacing: 10) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Polishing transcription…")
+                        Text("\(runningBlockActionTitle)…")
                     }
                     .font(NotionStyle.body(size: 13))
                     .padding(.horizontal, 14)
@@ -322,13 +324,21 @@ public struct EditorView: View {
             // scene-level remains visible to the menu commands.
             .focusedSceneValue(\.documentUndoController, undoController)
             .focusedSceneValue(\.editorCommands, editorCommands)
-            .alert("Polish Transcription", isPresented: Binding(
-                get: { polishErrorMessage != nil },
-                set: { if !$0 { polishErrorMessage = nil } }
+            .alert(blockActionErrorTitle ?? "Action Failed", isPresented: Binding(
+                get: { blockActionErrorMessage != nil },
+                set: {
+                    if !$0 {
+                        blockActionErrorTitle = nil
+                        blockActionErrorMessage = nil
+                    }
+                }
             )) {
-                Button("OK") { polishErrorMessage = nil }
+                Button("OK") {
+                    blockActionErrorTitle = nil
+                    blockActionErrorMessage = nil
+                }
             } message: {
-                Text(polishErrorMessage ?? "")
+                Text(blockActionErrorMessage ?? "")
             }
             #if os(macOS)
             // macOS uses page-level focus for nav-mode hardware keyboard handling.
@@ -352,6 +362,10 @@ public struct EditorView: View {
                 #endif
             }
             .onDisappear {
+                blockActionTask?.cancel()
+                blockActionTask = nil
+                runningBlockActionID = nil
+                runningBlockActionTitle = nil
                 document.removeEditorHooks(documentHookToken)
                 documentHookToken = nil
                 if undoController.document === document {

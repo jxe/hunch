@@ -187,11 +187,76 @@ public protocol EditorHost: AnyObject {
     /// `Assets/foo.png`) to a file URL the renderer can load. Nil →
     /// renderer shows a missing-image placeholder.
     func imageURL(for source: String) -> URL?
+
+    /// Host-supplied actions for selected text-bearing blocks. Returning an
+    /// empty array hides the host-action surface. Each action carries its own
+    /// applicability predicate, so no parallel capability flag is needed.
+    func blockActions(in document: Document) -> [EditorBlockAction]
 }
 
 public extension EditorHost {
+    func suggestPages(_ query: String, in document: Document) -> [MentionItem] { [] }
+    func openPage(pageID: String) {}
     func didDeleteSubpageLink(pageID: String, title: String, from document: Document) {}
     func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool { false }
+    func lookupPage(_ pageID: String) -> PageLookup { .missing }
+    func resolvePageID(from url: URL, in document: Document) -> String? { nil }
+    func linkURL(forPageID pageID: String, in document: Document) -> URL? { nil }
+    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? { nil }
+    func loadPageBlocks(_ pageID: String) async -> [Block]? { nil }
+    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool { false }
+    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
+    func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
+    func navigateBack() {}
+    func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {
+        EditorPlainTextCodec.serialize(blocks)
+    }
+    func parseBlocksFromPasteboard(_ string: String) -> [Block]? {
+        EditorPlainTextCodec.parse(string)
+    }
+    func saveImages(_ items: [PastedImage]) -> [String] { [] }
+    func linkPreview(for url: URL) async -> LinkPreview? { nil }
+    func imageURL(for source: String) -> URL? { nil }
+    func blockActions(in document: Document) -> [EditorBlockAction] { [] }
+}
+
+private enum EditorPlainTextCodec {
+    static func serialize(_ blocks: [Block]) -> String {
+        var lines: [String] = []
+        func append(_ block: Block) {
+            switch block.kind {
+            case .paragraph, .heading, .bullet, .numbered, .todo, .quote,
+                 .toggle, .templateButton:
+                lines.append(String(block.text.characters))
+            case .code(let source, _):
+                lines.append(source)
+            case .divider:
+                lines.append("---")
+            case .subpage(let title, _):
+                lines.append(title)
+            case .image(let source, let alt):
+                lines.append(alt.isEmpty ? source : alt)
+            }
+            block.children.forEach(append)
+        }
+        blocks.forEach(append)
+        return lines.joined(separator: "\n")
+    }
+
+    static func parse(_ string: String) -> [Block]? {
+        let normalized = string
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        while lines.count > 1, lines.last?.isEmpty == true {
+            lines.removeLast()
+        }
+        return lines.map { .paragraph(text: AttributedString($0)) }
+    }
 }
 
 private struct EditorHostKey: @preconcurrency EnvironmentKey {

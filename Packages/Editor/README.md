@@ -80,6 +80,15 @@ keyboard shortcut while the menu is open. On a subpage block, "Turn Into
 anything-but-page" inlines the child page's content (`loadPageBlocks(_:)`) and
 trashes the source file (`inlineAndTrashPage(_:parent:)`).
 
+**Host-supplied block actions**
+- Hosts can return `EditorBlockAction` values with a stable id, title, system
+  image, applicability predicate, and async replacement handler.
+- The editor snapshots explicitly selected text-bearing rows in document
+  order, rejects results for blocks changed while the action was running, and
+  applies the remaining replacements as one undoable transaction.
+- Host actions appear after native editor actions. A host menu can invoke the
+  same action through `EditorCommands.performBlockAction` using its id.
+
 **Pinch-to-insert** (trackpad / touchscreen)
 Spread fingers between two rows to open a gap. Past threshold, releases
 into a new empty paragraph at that index.
@@ -142,23 +151,8 @@ import Editor
 
 @MainActor
 final class MyHost: EditorHost {
-    func suggestPages(_ query: String, in document: Document) -> [MentionItem] { [] }
-    func openPage(pageID: String) {}
-    func lookupPage(_ pageID: String) -> PageLookup { .missing }
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? { nil }
-    func loadPageBlocks(_ pageID: String) async -> [Block]? { nil }
-    func resolvePageID(from url: URL, in document: Document) -> String? { nil }
-    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool { false }
-    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
-    func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
-    func navigateBack() {}
     func persistCommit(changes: [DocumentChange], in document: Document) {}
     func flush(_ document: Document) async {}
-    func serializeBlocksForPasteboard(_ blocks: [Block]) -> String { "" }
-    func parseBlocksFromPasteboard(_ string: String) -> [Block]? { nil }
-    func saveImages(_ items: [PastedImage]) -> [String] { [] }
-    func linkPreview(for url: URL) async -> LinkPreview? { nil }
-    func imageURL(for source: String) -> URL? { nil }
 }
 
 struct ContentView: View {
@@ -176,17 +170,17 @@ struct ContentView: View {
 }
 ```
 
-All methods are required. `DocumentID` is opaque to the editor: it can name a
-database row, remote object, or in-memory session and never needs to encode a
-file URL. `persistCommit` reports semantic block snapshots through
+Only persistence and flush are required. `DocumentID` is opaque to the editor:
+it can name a database row, remote object, or in-memory session and never needs
+to encode a file URL. `persistCommit` reports semantic block snapshots through
 `DocumentChange`; translating those changes into storage records is host policy.
 Silently dropping the callback would leave a host with no persistence, so a
-non-persisting integration must provide an explicit empty body.
+non-persisting integration must provide explicit empty bodies for both methods.
 
-That's a working editor. Most methods can be no-ops in early integration
-— the editor degrades gracefully (paste is single-paragraph-only, @-mention
-shows nothing, subpage taps are silent). Wire each method as you add the
-corresponding feature.
+That's a working editor. Optional hooks have neutral defaults: copy and paste
+use a package-owned line-oriented plain-text codec; other unavailable reads,
+writes, navigation, and actions fail closed. Override each hook as the host adds
+the corresponding feature.
 
 **One `EditorView` per document.** The pair `(document, state)` is one
 editing session — the editor caches focus, undo, and gesture state
@@ -404,9 +398,31 @@ where the host wants to append new content while honoring undo.
 ## Host protocol
 
 Hosts conform to `EditorHost` (class-bound, `@MainActor`). Each method
-is one extension point. All methods are required — keeps it obvious
-from the host class which extension points are wired and which are
-stubbed out for early integration.
+is one extension point. Only `persistCommit` and `flush` are mandatory.
+
+| Method | Requirement | Neutral default |
+|--------|-------------|-----------------|
+| `persistCommit` | Required | None; the host must explicitly own persistence. |
+| `flush` | Required | None; durability may never be silently weakened. |
+| `suggestPages` | Optional | `[]` |
+| `openPage` | Optional | No-op |
+| `setPageIcon` | Optional | `false` |
+| `lookupPage` | Optional | `.missing` |
+| `didDeleteSubpageLink` | Optional | No-op |
+| `resolvePageID` | Optional | `nil` |
+| `linkURL` | Optional | `nil` |
+| `createPage` | Optional | `nil` |
+| `loadPageBlocks` | Optional | `nil` |
+| `inlineAndTrashPage` | Optional | `false` |
+| `appendToPage` | Optional | `false` |
+| `moveDestination` | Optional | `nil` |
+| `navigateBack` | Optional | No-op |
+| `serializeBlocksForPasteboard` | Optional | Plain text in visible tree order, one block per line. |
+| `parseBlocksFromPasteboard` | Optional | Nonblank plain-text lines become paragraph blocks; blank input returns `nil`. |
+| `saveImages` | Optional | `[]` |
+| `linkPreview` | Optional | `nil` |
+| `imageURL` | Optional | `nil` |
+| `blockActions` | Optional | `[]` |
 
 | Method | Signature | When it fires | Return semantics |
 |--------|-----------|---------------|------------------|
@@ -427,6 +443,7 @@ stubbed out for early integration.
 | `saveImages` | `(_ items: [PastedImage]) -> [String]` | User pastes one or more images (or image URLs from another app). | Host writes them to disk; returns relative paths suitable for `BlockKind.image.source`. Empty / shorter array cancels the paste. |
 | `linkPreview` | `(for url: URL) async -> LinkPreview?` | Editor calls this once per external `http`/`https` link in a rendered (read-only) row to fetch favicon + page title. Async; nil → no preview rendered. | Host returns metadata for the URL, or nil on fetch failure / known-failed state. |
 | `imageURL` | `(for source: String) -> URL?` | Resolve an image block's `source` (markdown path like `Assets/foo.png`) to a file URL the renderer can load. | nil → renderer shows a missing-image placeholder. |
+| `blockActions` | `(in document: Document) -> [EditorBlockAction]` | The block-action surface is rendered or a focused host command checks/invokes an action id. | Empty hides host actions. Each action decides applicability and returns proposed replacements; the editor owns validation, mutation, progress, success, and errors. |
 
 ---
 

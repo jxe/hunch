@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import Editor
 
 @Generable
 private struct PolishedTranscript {
@@ -7,12 +8,19 @@ private struct PolishedTranscript {
     var text: String
 }
 
-enum TranscriptPolisher {
-    static var isAvailable: Bool {
+@MainActor
+protocol TranscriptPolishing {
+    var isAvailable: Bool { get }
+    func polish(_ transcript: String) async throws -> String
+}
+
+@MainActor
+struct TranscriptPolisher: TranscriptPolishing {
+    var isAvailable: Bool {
         SystemLanguageModel.default.isAvailable
     }
 
-    static func polish(_ transcript: String) async throws -> String {
+    func polish(_ transcript: String) async throws -> String {
         guard isAvailable else {
             throw TranscriptPolisherError.modelUnavailable
         }
@@ -49,7 +57,7 @@ enum TranscriptPolisher {
     }
 }
 
-private enum TranscriptPolisherError: LocalizedError {
+enum TranscriptPolisherError: LocalizedError {
     case modelUnavailable
     case emptyResponse
 
@@ -60,5 +68,40 @@ private enum TranscriptPolisherError: LocalizedError {
         case .emptyResponse:
             "The on-device model returned an empty transcript."
         }
+    }
+}
+
+@MainActor
+enum HunchEditorActions {
+    static let polishTranscriptionID = "hunch.polish-transcription"
+
+    static func actions(
+        polisher: any TranscriptPolishing = TranscriptPolisher()
+    ) -> [EditorBlockAction] {
+        guard polisher.isAvailable else { return [] }
+        return [EditorBlockAction(
+            id: polishTranscriptionID,
+            title: "Polish",
+            systemImage: "wand.and.sparkles",
+            isApplicable: { !$0.blocks.isEmpty },
+            perform: { context in
+                var replacements: [BlockReplacement] = []
+                replacements.reserveCapacity(context.blocks.count)
+                for snapshot in context.blocks {
+                    try Task.checkCancellation()
+                    let original = String(snapshot.text.characters)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let polished = try await polisher.polish(original)
+                    guard polished != original else { continue }
+                    let replacement = Block(id: snapshot.id, kind: snapshot.kind)
+                        .withText(AttributedString(polished))
+                    replacements.append(BlockReplacement(
+                        blockID: snapshot.id,
+                        kind: replacement.kind
+                    ))
+                }
+                return replacements
+            }
+        )]
     }
 }

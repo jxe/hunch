@@ -18,6 +18,11 @@ public final class EditorCommands {
     /// disabled when `commands` is nil).
     public var can: (EditorPredicate) -> Bool = { _ in true }
 
+    /// Neutral entry point for host-supplied block actions. Menus identify an
+    /// action by the same stable id returned from `EditorHost.blockActions`.
+    public var performBlockAction: (String) -> Void = { _ in }
+    public var canPerformBlockAction: (String) -> Bool = { _ in false }
+
     public init() {}
 }
 
@@ -31,7 +36,6 @@ public final class EditorCommands {
 public enum EditorAction: Sendable, Equatable {
     // Surfaces from the menu bar AND nav-mode keyboard. Same in both contexts.
     case openBlockActionMenu
-    case polishTranscription
     case openMoveTo
     case toggleLinkOrSubpage
     case toggleInlineMark(InlineMark)
@@ -60,7 +64,6 @@ public enum EditorAction: Sendable, Equatable {
 public enum EditorPredicate: Sendable {
     case canIndent
     case canOutdent
-    case canPolishTranscription
 }
 
 struct EditorCommandsFocusKey: FocusedValueKey {

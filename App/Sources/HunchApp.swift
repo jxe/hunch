@@ -273,15 +273,28 @@ private struct EditorCommandButton: View {
     }
 }
 
+private struct EditorBlockActionCommandButton: View {
+    let title: LocalizedStringKey
+    let key: KeyEquivalent
+    var modifiers: EventModifiers = .command
+    let actionID: String
+    @FocusedValue(\.editorCommands) private var commands
+
+    var body: some View {
+        Button(title) { commands?.performBlockAction(actionID) }
+            .keyboardShortcut(key, modifiers: modifiers)
+            .disabled(commands?.canPerformBlockAction(actionID) != true)
+    }
+}
+
 private struct EditorBlockMenuItems: View {
     var body: some View {
         EditorCommandButton(title: "Turn Selected Block Into…", key: "/", action: .openBlockActionMenu)
-        EditorCommandButton(
+        EditorBlockActionCommandButton(
             title: "Polish Transcription",
             key: "p",
             modifiers: [.command, .option],
-            requires: .canPolishTranscription,
-            action: .polishTranscription
+            actionID: HunchEditorActions.polishTranscriptionID
         )
         EditorCommandButton(title: "Create Page from Selected Block…", key: "k", action: .toggleLinkOrSubpage)
         EditorCommandButton(title: "Insert Block Below", key: .return, action: .newBlockBelow)

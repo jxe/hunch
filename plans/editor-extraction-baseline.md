@@ -44,11 +44,11 @@ removed after the runs.
 | Hunch iOS Simulator build | PASS with the Xcode 27 simulator SDK. |
 | iOS 27 split-keyboard check | PASS — `testKeyboardStaysUpAcrossSplit`. |
 | iOS 27 edit/scroll check | PASS — `testTypeThenDismissThenScroll`. |
-| iOS 27 reorder check | BASELINE FAILURE — `testLongPressReordersRows` consistently moves Bravo before Delta rather than after Delta. The same failure reproduced from the untouched `d6aed6f` source in one comparison run made on the already-installed iOS 26.5 simulator before the iOS-27-only direction; no editor gesture/layout source changed in milestones 0–2. |
+| iOS 27 reorder checks | BASELINE FAILURES — `testLongPressReordersRows` consistently moves Bravo before Delta rather than after Delta. `testLongPressReorderAfterScrollTargetsTouchedRow` moves Row 12 before Row 14 rather than after it; this second failure was discovered during Milestones 3–4 verification and reproduced identically from untouched Milestone-2 commit `0a88055` on the same iOS 27 simulator. No editor gesture/layout source changed in Milestones 0–4. |
 
-The reorder failure is recorded rather than repaired here because milestones
-0–2 concern storage identity and semantic persistence, and changing gesture
-behavior would broaden their scope.
+The reorder failures are recorded rather than repaired here because milestones
+0–4 concern storage identity, semantic persistence, host defaults, and host
+actions, and changing gesture behavior would broaden their scope.
 
 ## UI test inventory for a standalone example
 

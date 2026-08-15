@@ -16,6 +16,10 @@ import UIKit
 extension WorkspaceWindow: EditorHost {
     // — Workspace-scoped forwarders —
 
+    func blockActions(in document: Document) -> [EditorBlockAction] {
+        HunchEditorActions.actions()
+    }
+
     func suggestPages(_ query: String, in document: Document) -> [MentionItem] {
         guard let clamshell = workspace.clamshell,
               let pageURL = pageURL(for: document) else { return [] }

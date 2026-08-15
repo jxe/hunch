@@ -31,9 +31,6 @@ extension EditorView {
                 guard let id = topSelectedBlockID() else { return }
                 actionSheet = BlockActionSheet(id: id)
 
-            case .polishTranscription:
-                polishTranscription(blockIDs: selectedTextBlockIDs())
-
             case .openMoveTo:
                 guard let id = topSelectedBlockID() else { return }
                 let targetIDs = menuTargetIDs(anchorID: id)
@@ -158,10 +155,17 @@ extension EditorView {
                 }
                 let roots = document.selectionSubtreeRoots(state.selection)
                 return !roots.isEmpty && roots.allSatisfy { document.canOutdent($0) }
-            case .canPolishTranscription:
-                return !isPolishingTranscription
-                    && TranscriptPolisher.isAvailable
-                    && !selectedTextBlockIDs().isEmpty
+            }
+        }
+
+        editorCommands.performBlockAction = { actionID in
+            performBlockAction(id: actionID)
+        }
+        editorCommands.canPerformBlockAction = { actionID in
+            guard runningBlockActionID == nil else { return false }
+            let context = selectedBlockActionContext()
+            return host.blockActions(in: document).contains { action in
+                action.id == actionID && action.isApplicable(to: context)
             }
         }
     }

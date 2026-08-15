@@ -352,6 +352,7 @@ extension EditorView {
                 .map { ($0.0, $0.1.filter { availableTargets.contains($0) || $0 == selectedTarget }) }
                 .filter { !$0.1.isEmpty }
             let indentTargets = indentActions(for: targetIDs)
+            let hostActions = applicableBlockActions(anchorID: blockID)
             VStack(alignment: .leading, spacing: 8) {
                 Button("Close") {
                     actionSheet = nil
@@ -396,13 +397,6 @@ extension EditorView {
                             _ = copyBlocksToPasteboard(ids: targetIDs)
                         }
                         compactMenuButton(
-                            title: "Polish",
-                            systemImage: "wand.and.sparkles",
-                            keyboardShortcut: "p"
-                        ) {
-                            polishTranscription(blockIDs: selectedTextBlockIDs(anchorID: blockID))
-                        }
-                        compactMenuButton(
                             title: "Move to",
                             systemImage: "arrow.right.doc.on.clipboard",
                             keyboardShortcut: "m",
@@ -431,6 +425,14 @@ extension EditorView {
                                 indentMenuTargets(targetIDs, by: action.delta)
                             }
                         }
+                        ForEach(hostActions) { action in
+                            compactMenuButton(
+                                title: action.title,
+                                systemImage: action.systemImage
+                            ) {
+                                performBlockAction(id: action.id, anchorID: blockID)
+                            }
+                        }
                     }
                     .padding(.horizontal, 2)
                 }
@@ -452,13 +454,13 @@ extension EditorView {
     fileprivate func compactMenuButton(
         title: String,
         systemImage: String,
-        keyboardShortcut: KeyEquivalent,
+        keyboardShortcut: KeyEquivalent? = nil,
         keyboardShortcutModifiers: EventModifiers = [],
         keyboardShortcutLabel: String? = nil,
         isSelected: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        Button {
+        let button = Button {
             actionSheet = nil
             action()
         } label: {
@@ -474,14 +476,21 @@ extension EditorView {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                BlockMenuShortcutChip(label: keyboardShortcutLabel ?? String(keyboardShortcut.character))
-                    .padding(.top, 4)
-                    .padding(.trailing, 5)
+                if let shortcutLabel = keyboardShortcutLabel
+                    ?? keyboardShortcut.map({ String($0.character) }) {
+                    BlockMenuShortcutChip(label: shortcutLabel)
+                        .padding(.top, 4)
+                        .padding(.trailing, 5)
+                }
             }
             .frame(width: 60, height: 60)
         }
         .buttonStyle(BlockMenuTileStyle(isSelected: isSelected))
-        .keyboardShortcut(keyboardShortcut, modifiers: keyboardShortcutModifiers)
+        if let keyboardShortcut {
+            button.keyboardShortcut(keyboardShortcut, modifiers: keyboardShortcutModifiers)
+        } else {
+            button
+        }
     }
 
     func menuTargetIDs(anchorID: BlockID) -> [BlockID] {
@@ -498,68 +507,54 @@ extension EditorView {
         return [anchorID]
     }
 
-    /// Text-bearing rows in the nav selection, in document order. Unlike the
-    /// structural action targets, this intentionally does not expand selected
-    /// containers to include their descendants: polishing changes only the rows
-    /// the user explicitly selected.
-    func selectedTextBlockIDs(anchorID: BlockID? = nil) -> [BlockID] {
-        let selected: Set<BlockID>
-        if let anchorID, !state.selection.contains(anchorID) {
-            selected = [anchorID]
-        } else {
-            selected = state.selection
-        }
-
-        return selected
-            .filter { id in
-                guard let block = document.find(id),
-                      let text = textForBlockTypeChange(block) else { return false }
-                return !String(text.characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            .sorted {
-                (document.documentOrder(of: $0) ?? .max) < (document.documentOrder(of: $1) ?? .max)
-            }
+    /// Text-bearing rows in the explicit selection, captured in document
+    /// order. Selected containers do not implicitly add their descendants.
+    func selectedBlockActionContext(anchorID: BlockID? = nil) -> BlockActionContext {
+        BlockActionExecution.context(
+            in: document,
+            selection: state.selection,
+            anchorID: anchorID
+        )
     }
 
-    func polishTranscription(blockIDs: [BlockID]) {
-        guard !isPolishingTranscription else { return }
-        let snapshots: [(id: BlockID, text: String)] = blockIDs.compactMap { id in
-            guard let block = document.find(id),
-                  let attributed = textForBlockTypeChange(block) else { return nil }
-            let text = String(attributed.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? nil : (id, text)
-        }
-        guard !snapshots.isEmpty else { return }
+    func applicableBlockActions(anchorID: BlockID? = nil) -> [EditorBlockAction] {
+        guard runningBlockActionID == nil else { return [] }
+        let context = selectedBlockActionContext(anchorID: anchorID)
+        return host.blockActions(in: document).filter { $0.isApplicable(to: context) }
+    }
 
-        isPolishingTranscription = true
-        Task { @MainActor in
-            defer { isPolishingTranscription = false }
+    func performBlockAction(id: String, anchorID: BlockID? = nil) {
+        guard runningBlockActionID == nil else { return }
+        let context = selectedBlockActionContext(anchorID: anchorID)
+        guard let action = host.blockActions(in: document).first(where: {
+            $0.id == id && $0.isApplicable(to: context)
+        }) else { return }
+
+        runningBlockActionID = action.id
+        runningBlockActionTitle = action.title
+        blockActionTask = Task { @MainActor in
+            defer {
+                runningBlockActionID = nil
+                runningBlockActionTitle = nil
+                blockActionTask = nil
+            }
             do {
-                var replacements: [(id: BlockID, original: String, polished: String)] = []
-                for snapshot in snapshots {
-                    let polished = try await TranscriptPolisher.polish(snapshot.text)
-                    if polished != snapshot.text {
-                        replacements.append((snapshot.id, snapshot.text, polished))
-                    }
+                let replacements = try await action.perform(in: context)
+                try Task.checkCancellation()
+                let applied = BlockActionExecution.apply(
+                    replacements,
+                    from: context,
+                    to: document,
+                    actionName: action.title
+                )
+                if applied > 0 {
+                    showActionToast("\(action.title) complete")
                 }
-
-                // Do not overwrite a row that changed while the model was working.
-                let applicable = replacements.filter { replacement in
-                    guard let block = document.find(replacement.id),
-                          let current = textForBlockTypeChange(block) else { return false }
-                    return String(current.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-                        == replacement.original
-                }
-                guard !applicable.isEmpty else { return }
-
-                mutate("Polish Transcription") {
-                    for replacement in applicable {
-                        _ = document.setText(replacement.id, AttributedString(replacement.polished))
-                    }
-                }
-                showActionToast("Polished transcription")
+            } catch is CancellationError {
+                return
             } catch {
-                polishErrorMessage = error.localizedDescription
+                blockActionErrorTitle = action.title
+                blockActionErrorMessage = error.localizedDescription
             }
         }
     }

@@ -41,8 +41,8 @@ format is.
 | 0 | Baseline and behavior inventory | S | LOW | — | DONE |
 | 1 | Storage-neutral document identity | L | HIGH | 0 | DONE |
 | 2 | Semantic edit boundary; Clamshell-owned recovery identity | L | HIGH | 1 | DONE |
-| 3 | Neutral defaults for optional host hooks | S | LOW | 2 | TODO |
-| 4 | Host-supplied block actions | M | MED | 3 | TODO |
+| 3 | Neutral defaults for optional host hooks | S | LOW | 2 | DONE |
+| 4 | Host-supplied block actions | M | MED | 3 | DONE |
 | 5 | Neutral configuration, styling, and public surface | L | MED | 4 | TODO |
 | 6 | Standalone docs, example, dependency policy, and verification | L | MED | 5 | TODO |
 | 7 | Choose name, extract, publish, and adopt remotely | L | HIGH | 6 | TODO |
