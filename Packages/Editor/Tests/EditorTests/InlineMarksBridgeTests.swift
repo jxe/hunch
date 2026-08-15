@@ -54,9 +54,9 @@ struct InlineMarksBridgeSanitizeTests {
             #expect(attrs[.backgroundColor] == nil)
             // Foreground is the editor's foreground (not the source's red).
             let fg = attrs[.foregroundColor] as? PlatformColor
-            #expect(fg == NotionStyle.platformForeground)
+            #expect(fg == EditorTheme.default.platformForeground)
             // Font is normalized to the row's base size. The standalone Editor
-            // test host does not register Hunch's Inter resource, so the family
+            // test host does not register a custom font resource, so the family
             // may legitimately be the platform fallback here.
             if let font = attrs[.font] as? PlatformFont {
                 #expect(font.pointSize == baseFontSize)
@@ -103,7 +103,7 @@ struct InlineMarksBridgeSanitizeTests {
         // Links use the normal text color, no underline, and presentation-only
         // semibold that must not become a Markdown bold mark on round-trip.
         let fg = attrs[.foregroundColor] as? PlatformColor
-        #expect(fg == NotionStyle.platformForeground)
+        #expect(fg == EditorTheme.default.platformForeground)
         #expect(attrs[.underlineStyle] == nil)
         guard let font = attrs[.font] as? PlatformFont else {
             Issue.record("missing .font on link run")
@@ -182,6 +182,6 @@ struct InlineMarksBridgeSanitizeTests {
         )
         let codeFont = code[.font] as? PlatformFont
         #expect(codeFont?.fontDescriptor.symbolicTraits.contains(.monoSpaceTrait) == true)
-        #expect(code[.backgroundColor] as? PlatformColor == NotionStyle.platformCodeBackground)
+        #expect(code[.backgroundColor] as? PlatformColor == EditorTheme.default.platformCodeBackground)
     }
 }

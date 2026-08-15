@@ -167,6 +167,7 @@ struct BlockTextEditor: View {
     let fontSize: CGFloat
     let bold: Bool
     let lineSpacing: CGFloat
+    let theme: EditorTheme
     @FocusState.Binding var focused: BlockID?
     /// True for the actively-edited block. False on iOS only, for one tick, when
     /// the row stays mounted during an inter-block focus transfer so the new
@@ -208,6 +209,7 @@ struct BlockTextEditor: View {
         fontSize: CGFloat = 16,
         bold: Bool = false,
         lineSpacing: CGFloat,
+        theme: EditorTheme,
         focused: FocusState<BlockID?>.Binding,
         isActive: Bool = true,
         blockID: BlockID,
@@ -223,6 +225,7 @@ struct BlockTextEditor: View {
         self.fontSize = fontSize
         self.bold = bold
         self.lineSpacing = lineSpacing
+        self.theme = theme
         self._focused = focused
         self.isActive = isActive
         self.blockID = blockID
@@ -246,6 +249,7 @@ struct BlockTextEditor: View {
             fontSize: fontSize,
             bold: bold,
             lineSpacing: lineSpacing,
+            theme: theme,
             isFocused: true,
             onFocusChange: { newFocused in
                 if newFocused {
@@ -269,7 +273,7 @@ struct BlockTextEditor: View {
             // baseline at `font.ascender` from the top of the view. Without this guide,
             // SwiftUI uses the view's top as the baseline, which pushes the editor visually
             // below a sibling marker in an HStack(alignment: .firstTextBaseline).
-            let nsFont = MacBlockTextEditor.resolveNSFont(size: fontSize, bold: bold)
+            let nsFont = MacBlockTextEditor.resolveNSFont(size: fontSize, bold: bold, theme: theme)
             return nsFont.ascender
         }
         .onAppear {
@@ -287,6 +291,7 @@ struct BlockTextEditor: View {
             fontSize: fontSize,
             bold: bold,
             lineSpacing: lineSpacing,
+            theme: theme,
             isFocused: isActive,
             onFocusChange: { newFocused in
                 if newFocused {
@@ -315,7 +320,7 @@ struct BlockTextEditor: View {
             // with NSFont) leaves a sub-pixel gap on iOS for fonts with non-zero
             // leading (Inter ≈ 0.7pt at 16pt), which shows up as the list marker
             // hopping down ~0.5pt on focus. Match `Text`'s formula instead.
-            let uiFont = IOSBlockTextEditorView.resolveUIFont(size: fontSize, bold: bold)
+            let uiFont = IOSBlockTextEditorView.resolveUIFont(size: fontSize, bold: bold, theme: theme)
             return uiFont.lineHeight - abs(uiFont.descender)
         }
         .onAppear {
@@ -338,6 +343,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     let fontSize: CGFloat
     let bold: Bool
     let lineSpacing: CGFloat
+    let theme: EditorTheme
     let isFocused: Bool
     let onFocusChange: (Bool) -> Void
     let onKey: (BlockKey) -> KeyPress.Result
@@ -362,7 +368,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
         view.blockID = blockID
         view.isRichText = true
         view.linkTextAttributes = [
-            .foregroundColor: NotionStyle.platformForeground,
+            .foregroundColor: theme.platformForeground,
             .underlineStyle: 0,
         ]
         // NSTextView's native typing-undo registers actions that hold strong refs to the
@@ -457,7 +463,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
     }
 
     private func loadAttributedString(into view: ContainedTextView) {
-        let ns = InlineMarksBridge.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
+        let ns = InlineMarksBridge.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing, theme: theme)
         view.textStorage?.setAttributedString(ns)
     }
 
@@ -469,11 +475,11 @@ struct MacBlockTextEditor: NSViewRepresentable {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
         view.defaultParagraphStyle = style
-        view.typingAttributes = InlineMarksBridge.baseTypingAttributes(baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
+        view.typingAttributes = InlineMarksBridge.baseTypingAttributes(baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing, theme: theme)
     }
 
-    nonisolated static func resolveNSFont(size: CGFloat, bold: Bool) -> NSFont {
-        InlineMarksBridge.interFont(size: size, bold: bold, italic: false)
+    nonisolated static func resolveNSFont(size: CGFloat, bold: Bool, theme: EditorTheme) -> NSFont {
+        InlineMarksBridge.bodyFont(size: size, bold: bold, italic: false, theme: theme)
     }
 
     @MainActor
@@ -614,14 +620,16 @@ struct MacBlockTextEditor: NSViewRepresentable {
                 restoredText,
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing
+                lineSpacing: parent.lineSpacing,
+            theme: parent.theme
             )
             tv.textStorage?.setAttributedString(restored)
             tv.setSelectedRange(selection)
             tv.typingAttributes = InlineMarksBridge.baseTypingAttributes(
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing
+                lineSpacing: parent.lineSpacing,
+            theme: parent.theme
             )
             lastKnownBindingPlain = restoredPlain
             textStorageDirty = false
@@ -653,14 +661,16 @@ struct MacBlockTextEditor: NSViewRepresentable {
                 result.text,
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing
+                lineSpacing: parent.lineSpacing,
+            theme: parent.theme
             )
             tv.textStorage?.setAttributedString(ns)
             tv.setSelectedRange(NSRange(location: result.cursor, length: 0))
             tv.typingAttributes = InlineMarksBridge.baseTypingAttributes(
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing
+                lineSpacing: parent.lineSpacing,
+            theme: parent.theme
             )
             textStorageDirty = true
             tv.invalidateIntrinsicContentSize()
@@ -711,7 +721,7 @@ struct MacBlockTextEditor: NSViewRepresentable {
                 commitLiveText(tv)
             }
             // Don't clear `flushActiveText` here. In fullscreen mode the Esc-notification
-            // path (HunchApp's NSEvent monitor → `handleEscapeKey` → `transferFocus(.nav)`)
+            // path (host NSEvent monitor → `.escape` command → `transferFocus(.nav)`)
             // commits AFTER first responder resigns — clearing the closure here would
             // turn that commit into a no-op. The closure captures coordinator + view
             // weakly, so unmounting the row still cleans it up.
@@ -945,11 +955,12 @@ final class ContainedTextView: NSTextView {
                 current: typingAttributes,
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing
+                lineSpacing: parent.lineSpacing,
+            theme: parent.theme
             )
             return
         }
-        InlineMarksBridge.toggleMark(mark, on: range, in: storage, baseFontSize: parent.fontSize, baseBold: parent.bold)
+        InlineMarksBridge.toggleMark(mark, on: range, in: storage, baseFontSize: parent.fontSize, baseBold: parent.bold, theme: parent.theme)
         didChangeText()
     }
 
@@ -1043,7 +1054,7 @@ final class ContainedTextView: NSTextView {
                 rich,
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing)
+                lineSpacing: parent.lineSpacing, theme: parent.theme)
             insertText(sanitized, replacementRange: selectedRange())
             return
         }
@@ -1134,6 +1145,7 @@ final class IOSEditorBridge {
     var fontSize: CGFloat = 16
     var bold: Bool = false
     var lineSpacing: CGFloat = 0
+    var theme: EditorTheme = .default
 
     func toggleMark(_ mark: InlineMark) {
         guard let tv = textView else { return }
@@ -1144,12 +1156,13 @@ final class IOSEditorBridge {
                 current: tv.typingAttributes,
                 baseFontSize: fontSize,
                 baseBold: bold,
-                lineSpacing: lineSpacing
+                lineSpacing: lineSpacing,
+                theme: theme
             )
             return
         }
         let storage = tv.textStorage
-        InlineMarksBridge.toggleMark(mark, on: range, in: storage, baseFontSize: fontSize, baseBold: bold)
+        InlineMarksBridge.toggleMark(mark, on: range, in: storage, baseFontSize: fontSize, baseBold: bold, theme: theme)
         // Notify the delegate so the binding picks up the new attributes.
         tv.delegate?.textViewDidChange?(tv)
     }
@@ -1162,6 +1175,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     let fontSize: CGFloat
     let bold: Bool
     let lineSpacing: CGFloat
+    let theme: EditorTheme
     let isFocused: Bool
     let onFocusChange: (Bool) -> Void
     let blockID: BlockID
@@ -1183,7 +1197,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         tv.isEditable = true
         tv.isSelectable = true
         tv.linkTextAttributes = [
-            .foregroundColor: NotionStyle.platformForeground,
+            .foregroundColor: theme.platformForeground,
             .underlineStyle: 0,
         ]
         tv.backgroundColor = .clear
@@ -1202,6 +1216,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         bridge.fontSize = fontSize
         bridge.bold = bold
         bridge.lineSpacing = lineSpacing
+        bridge.theme = theme
         // See macOS twin: wire eagerly at mount, not in `textViewDidBeginEditing` —
         // formatting changes via `IOSEditorBridge` don't fire begin-editing.
         documentUndoController?.flushActiveText = { [weak coordinator = context.coordinator, weak tv] in
@@ -1267,6 +1282,7 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
         bridge.fontSize = fontSize
         bridge.bold = bold
         bridge.lineSpacing = lineSpacing
+        bridge.theme = theme
 
         // Refresh the accessory bar's closures so they capture the latest
         // `onKey` / `bridge` references — both are recreated on every parent
@@ -1322,18 +1338,18 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
     }
 
     private func loadAttributedString(into tv: ContainedTextViewIOS) {
-        let ns = InlineMarksBridge.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
+        let ns = InlineMarksBridge.toNS(text, baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing, theme: theme)
         tv.textStorage.setAttributedString(ns)
     }
 
     private func applyTypingAttributes(to tv: ContainedTextViewIOS) {
-        let font = Self.resolveUIFont(size: fontSize, bold: bold)
+        let font = Self.resolveUIFont(size: fontSize, bold: bold, theme: theme)
         tv.font = font
-        tv.typingAttributes = InlineMarksBridge.baseTypingAttributes(baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing)
+        tv.typingAttributes = InlineMarksBridge.baseTypingAttributes(baseFontSize: fontSize, baseBold: bold, lineSpacing: lineSpacing, theme: theme)
     }
 
-    nonisolated static func resolveUIFont(size: CGFloat, bold: Bool) -> UIFont {
-        InlineMarksBridge.interFont(size: size, bold: bold, italic: false)
+    nonisolated static func resolveUIFont(size: CGFloat, bold: Bool, theme: EditorTheme) -> UIFont {
+        InlineMarksBridge.bodyFont(size: size, bold: bold, italic: false, theme: theme)
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -1453,14 +1469,16 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
                 restoredText,
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing
+                lineSpacing: parent.lineSpacing,
+            theme: parent.theme
             )
             textView.textStorage.setAttributedString(restored)
             textView.selectedRange = selection
             textView.typingAttributes = InlineMarksBridge.baseTypingAttributes(
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing
+                lineSpacing: parent.lineSpacing,
+            theme: parent.theme
             )
             lastKnownBindingPlain = restoredPlain
             textStorageDirty = false
@@ -1491,14 +1509,16 @@ struct IOSBlockTextEditorView: UIViewRepresentable {
                 result.text,
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing
+                lineSpacing: parent.lineSpacing,
+            theme: parent.theme
             )
             textView.textStorage.setAttributedString(ns)
             textView.selectedRange = NSRange(location: result.cursor, length: 0)
             textView.typingAttributes = InlineMarksBridge.baseTypingAttributes(
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing
+                lineSpacing: parent.lineSpacing,
+            theme: parent.theme
             )
             textStorageDirty = true
             textView.invalidateIntrinsicContentSize()
@@ -1642,7 +1662,7 @@ final class ContainedTextViewIOS: UITextView {
                 rich,
                 baseFontSize: parent.fontSize,
                 baseBold: parent.bold,
-                lineSpacing: parent.lineSpacing)
+                lineSpacing: parent.lineSpacing, theme: parent.theme)
             let target = selectedRange
             textStorage.beginEditing()
             textStorage.replaceCharacters(in: target, with: sanitized)

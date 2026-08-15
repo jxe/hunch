@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-@testable import Editor
+import Editor
 
 /// The lazy link-healing pass: stale destinations converge to canonical
 /// form (resolved rel + page-ID fragment) with proper purge/add journal

@@ -7,19 +7,19 @@ import Foundation
 public enum InlineAttributes {
     public enum BoldAttribute: AttributedStringKey {
         public typealias Value = Bool
-        public static let name = "Console.Bold"
+        public static let name = "Editor.Inline.Bold"
     }
     public enum ItalicAttribute: AttributedStringKey {
         public typealias Value = Bool
-        public static let name = "Console.Italic"
+        public static let name = "Editor.Inline.Italic"
     }
     public enum CodeAttribute: AttributedStringKey {
         public typealias Value = Bool
-        public static let name = "Console.InlineCode"
+        public static let name = "Editor.Inline.Code"
     }
     public enum StrikethroughAttribute: AttributedStringKey {
         public typealias Value = Bool
-        public static let name = "Console.Strikethrough"
+        public static let name = "Editor.Inline.Strikethrough"
     }
 }
 

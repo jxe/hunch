@@ -9,30 +9,32 @@ import SwiftUI
 /// `isHighlighted` is the popover's selected-row treatment. List-based
 /// surfaces leave it false and let `List(selection:)` provide its own
 /// highlight.
-public struct MentionItemRow: View {
-    public let item: MentionItem
-    public let isHighlighted: Bool
+struct MentionItemRow: View {
+    let item: MentionItem
+    let isHighlighted: Bool
+    let theme: EditorTheme
 
-    public init(item: MentionItem, isHighlighted: Bool = false) {
+    init(item: MentionItem, isHighlighted: Bool = false, theme: EditorTheme = .default) {
         self.item = item
         self.isHighlighted = isHighlighted
+        self.theme = theme
     }
 
-    public var body: some View {
+    var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "doc")
                 .font(.system(size: 13))
-                .foregroundStyle(NotionStyle.mutedForeground)
+                .foregroundStyle(theme.mutedForeground)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)
-                    .font(NotionStyle.body(size: 13))
-                    .foregroundStyle(NotionStyle.foreground)
+                    .font(theme.body(size: 13))
+                    .foregroundStyle(theme.foreground)
                     .lineLimit(1)
                 if let subtitle = item.subtitle {
                     Text(subtitle)
-                        .font(NotionStyle.body(size: 10))
-                        .foregroundStyle(NotionStyle.mutedForeground)
+                        .font(theme.body(size: 10))
+                        .foregroundStyle(theme.mutedForeground)
                         .lineLimit(1)
                 }
             }
@@ -40,14 +42,14 @@ public struct MentionItemRow: View {
             if item.isHome {
                 Image(systemName: "house.fill")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .foregroundStyle(theme.mutedForeground)
                     .accessibilityLabel("Home page")
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isHighlighted ? NotionStyle.linkForeground.opacity(0.18) : Color.clear)
+        .background(isHighlighted ? theme.linkForeground.opacity(0.18) : Color.clear)
         .contentShape(Rectangle())
     }
 }

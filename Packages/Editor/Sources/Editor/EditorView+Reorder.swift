@@ -55,7 +55,8 @@ extension EditorView {
             BlockRowPreview(
                 block: lift.block,
                 depth: 0,
-                pageLookups: resolvePageLookups(for: lift.block, host: host, in: document)
+                pageLookups: resolvePageLookups(for: lift.block, host: host, in: document),
+                theme: configuration.theme
             )
             .frame(width: size.width, height: size.height, alignment: .leading)
             .overlay(alignment: .topLeading) {
@@ -210,7 +211,7 @@ extension EditorView {
             layoutCache.endReorderFrameSnapshot()
             return
         }
-        SoundFX.play(.drop)
+        SoundFX.play(.drop, enabled: configuration.isAudioFeedbackEnabled)
         let hidden = hiddenBlockIDs(in: snapshot)
         let target = state.currentDropTarget ?? resolveDropTarget(atY: y, snapshot: snapshot)
         let ids = lift.ids
@@ -451,7 +452,7 @@ extension EditorView {
         }
         lastDropHapticTarget = target
         lastDropHapticFireAt = now
-        Haptics.light()
+        Haptics.light(enabled: configuration.isHapticFeedbackEnabled)
         #else
         _ = target
         #endif

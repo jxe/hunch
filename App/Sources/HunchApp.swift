@@ -9,6 +9,10 @@ import Darwin
 import Security
 #endif
 
+extension Notification.Name {
+    static let hunchEscapeKeyDown = Notification.Name("hunch.escapeKeyDown")
+}
+
 @main
 struct HunchApp: App {
     @State private var workspace = Workspace()

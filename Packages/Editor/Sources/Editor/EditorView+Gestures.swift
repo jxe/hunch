@@ -50,6 +50,7 @@ extension View {
     @ViewBuilder
     func iosBlockTouchActions(
         isEnabled: Bool,
+        configuration: EditorConfiguration,
         onDelete: @escaping () -> Void,
         onShowMenu: @escaping () -> Void
     ) -> some View {
@@ -57,7 +58,12 @@ extension View {
         // Apply unconditionally; gate the gesture via isEnabled so the row's
         // view tree (and its layout) stays stable across pinch / edit mode
         // toggles. Swapping the modifier in/out caused per-row layout churn.
-        self.modifier(IOSRowSwipeActions(isEnabled: isEnabled, onDelete: onDelete, onShowMenu: onShowMenu))
+        self.modifier(IOSRowSwipeActions(
+            isEnabled: isEnabled,
+            configuration: configuration,
+            onDelete: onDelete,
+            onShowMenu: onShowMenu
+        ))
         #else
         self
         #endif
@@ -844,6 +850,7 @@ struct IOSScrollMetricsReader: UIViewRepresentable {
 /// vertical-dominant — releasing the touch back to the scroll view's pan.
 struct IOSRowSwipeActions: ViewModifier {
     let isEnabled: Bool
+    let configuration: EditorConfiguration
     let onDelete: () -> Void
     let onShowMenu: () -> Void
 
@@ -871,7 +878,7 @@ struct IOSRowSwipeActions: ViewModifier {
         // happens transiently during a swipe. Pencil line goes ON TOP via
         // .overlay, sized to content.
         content
-            .background(isSwiping ? NotionStyle.background : Color.clear)
+            .background(isSwiping ? configuration.theme.background : Color.clear)
             .background(alignment: .leading) {
                 if isSwiping {
                     ZStack {
@@ -917,7 +924,7 @@ struct IOSRowSwipeActions: ViewModifier {
                         } else if h <= -trigger {
                             if !crossedDeleteThreshold {
                                 crossedDeleteThreshold = true
-                                Haptics.medium()
+                                Haptics.medium(enabled: configuration.isHapticFeedbackEnabled)
                             }
                         } else {
                             crossedDeleteThreshold = false
@@ -926,7 +933,7 @@ struct IOSRowSwipeActions: ViewModifier {
                     onEnded: { h in
                         if !triggered, h <= -trigger {
                             onDelete()
-                            SoundFX.play(.delete)
+                            SoundFX.play(.delete, enabled: configuration.isAudioFeedbackEnabled)
                         }
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
                             dragOffset = 0
@@ -958,7 +965,7 @@ struct IOSRowSwipeActions: ViewModifier {
 
     private func fire(_ action: () -> Void) {
         triggered = true
-        Haptics.medium()
+        Haptics.medium(enabled: configuration.isHapticFeedbackEnabled)
         action()
         withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
             dragOffset = 0

@@ -8,9 +8,8 @@ state — selection, edit mode, gestures, expanded toggles), and an
 @-mention candidate source). **No opinion on serialization, persistence,
 or navigation.** The host wires those up.
 
-Built for [Hunch](https://github.com/joeedelman/hunch). Designed to be
-embeddable in other apps that want Notion-flavoured block editing without
-inheriting Hunch's filesystem-and-markdown setup.
+Designed to be embedded in apps that want a native block editor without
+inheriting a particular filesystem, serialization format, or visual identity.
 
 ---
 
@@ -101,8 +100,8 @@ into a new empty paragraph at that index.
 **Copy / paste**
 The editor reads/writes the system pasteboard. The host owns the wire
 format via `EditorHost.serializeBlocksForPasteboard` and
-`parseBlocksFromPasteboard` (Hunch wires these to its markdown
-parser/serializer).
+`parseBlocksFromPasteboard` (a markdown-backed host can wire these to its own
+parser and serializer).
 
 **Drag and drop**
 In-app block drag uses a custom `BlockDragPayload` UTType — no host wiring
@@ -141,8 +140,9 @@ can retain a text view after SwiftUI unmounts it.
 
 ## Quickstart
 
-`EditorView` takes three things: a `Document` reference, an `EditorState`,
-and a host conforming to `EditorHost`. `Document` is `@Observable` and
+`EditorView` takes a `Document` reference, an `EditorState`, and a host
+conforming to `EditorHost`; an optional `EditorConfiguration` supplies visual,
+feedback, and logging policy. `Document` is `@Observable` and
 updated in place on external reloads, so a plain reference suffices — no
 `Binding` needed. The host is class-bound and held
 by reference; keep one stable instance per editor (e.g. `@State` on a
@@ -169,8 +169,19 @@ struct ContentView: View {
     @State var editorState = EditorState()
     @State var host = MyHost()
 
+    private let editorConfiguration = EditorConfiguration(
+        theme: EditorTheme(),
+        isAudioFeedbackEnabled: false,
+        isHapticFeedbackEnabled: false
+    )
+
     var body: some View {
-        EditorView(document: document, state: editorState, host: host)
+        EditorView(
+            document: document,
+            state: editorState,
+            host: host,
+            configuration: editorConfiguration
+        )
     }
 }
 ```
@@ -190,9 +201,9 @@ the corresponding feature.
 **One `EditorView` per document.** The pair `(document, state)` is one
 editing session — the editor caches focus, undo, and gesture state
 internally and assumes both are stable. To switch documents (e.g. on
-navigation), mount a fresh `EditorView` with a fresh `EditorState`. In
-Hunch this is done by giving each `NavigationStack` destination its own
-wrapper view that owns the state via `@State`.
+navigation), mount a fresh `EditorView` with a fresh `EditorState`. A
+`NavigationStack` host can give each destination a wrapper view that owns the
+state via `@State`.
 
 ---
 
@@ -459,11 +470,14 @@ is one extension point. Only `persistCommit` and `flush` are mandatory.
 
 - **iOS 26 / macOS 26 minimum.** Uses `TextEditor(text: Binding<AttributedString>)`
   on iOS, NSViewRepresentable wrapping NSTextView on macOS.
-- **Inter font.** The host registers it (Hunch does this in
-  [`FontRegistration.swift`](../../App/Sources/FontRegistration.swift)). The
-  editor's typography assumes Inter is available — fallback to system fonts
-  is fine for development but won't match the intended look.
-- **Single multiplatform target works fine** (Hunch is one). `#if os(iOS)`
+- **System fonts by default.** Supply an `EditorTheme` with a registered custom
+  family when the host needs branded typography. Palette, type sizes, and
+  load-bearing layout metrics are also explicit theme values.
+- **Feedback is host policy.** Audio and haptics default off. Enable them with
+  `EditorConfiguration`; bundled sound resources remain package-owned.
+- **Logging uses the host bundle identifier by default.** A host can override
+  the subsystem through `EditorConfiguration.loggingSubsystem`.
+- **Single multiplatform targets work fine.** `#if os(iOS)`
   / `#if os(macOS)` guards the platform-specific bits inside the package.
 - **swift-tools 6.2** in the consumer's `Package.swift` (or modern Xcode
   project). Editor uses `swiftLanguageModes: [.v6]`.
@@ -477,20 +491,12 @@ is one extension point. Only `persistCommit` and `flush` are mandatory.
 ## What the editor doesn't do
 
 - **No file I/O, no markdown parsing/serialization, no recovery/trash.**
-  All the persistence machinery lives in Hunch's
-  [`App/Sources/Clamshell/`](../../App/Sources/Clamshell/) — `FileStore`
-  for I/O, `BlockParser` / `BlockSerializer`
-  (built on [swift-markdown](https://github.com/swiftlang/swift-markdown))
-  for wire format, `RecoveryLog` (per-(device, page) JSONL) and
-  `TrashStore` for soft-delete and the recoverable-blocks log.
+  The host owns its store, wire format, journal, and deletion policy.
 - **No multi-page navigation.** The editor is single-page; the host
   manages the navigation stack and pushes/pops in response to
-  `openPage(pageID:)` / `navigateBack()`. Hunch uses
-  `NavigationStack(path: [URL])` in
-  [`App/Sources/ContentView.swift`](../../App/Sources/ContentView.swift).
+  `openPage(pageID:)` / `navigateBack()`.
 - **No sidebar, no @-mention list source, no history UI, no trash UI.**
-  The host owns these. Hunch's implementations live in
-  [`App/Sources/Shell/`](../../App/Sources/Shell/).
+  The host owns these surfaces.
 
 ---
 

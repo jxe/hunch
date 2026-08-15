@@ -320,6 +320,7 @@ private struct EditorPage: View {
 
     @State private var editorState = EditorState()
     @FocusedValue(\.documentUndoController) private var undoController
+    @FocusedValue(\.editorCommands) private var editorCommands
 
     var body: some View {
         Group {
@@ -327,7 +328,8 @@ private struct EditorPage: View {
                 EditorView(
                     document: document,
                     state: editorState,
-                    host: window
+                    host: window,
+                    configuration: HunchStyle.editorConfiguration
                 ) {
                     VStack(spacing: 0) {
                         BacklinksFooter(workspace: workspace, window: window, url: url)
@@ -343,8 +345,11 @@ private struct EditorPage: View {
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(NotionStyle.background)
+                    .background(HunchStyle.background)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .hunchEscapeKeyDown)) { _ in
+            editorCommands?.perform(.escape)
         }
         .toolbar {
             #if os(iOS)
@@ -413,8 +418,8 @@ private struct BacklinksFooter: View {
         if !backlinks.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Linked from")
-                    .font(NotionStyle.body(size: 11, weight: .semibold))
-                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .font(HunchStyle.body(size: 11, weight: .semibold))
+                    .foregroundStyle(HunchStyle.mutedForeground)
                     .textCase(.uppercase)
                 ForEach(backlinks, id: \.self) { pageID in
                     Button {
@@ -423,10 +428,10 @@ private struct BacklinksFooter: View {
                         HStack(spacing: 6) {
                             Image(systemName: "doc.text")
                                 .font(.system(size: 12))
-                                .foregroundStyle(NotionStyle.mutedForeground)
+                                .foregroundStyle(HunchStyle.mutedForeground)
                             Text(title(for: pageID))
-                                .font(NotionStyle.body(size: 14))
-                                .foregroundStyle(NotionStyle.foreground)
+                                .font(HunchStyle.body(size: 14))
+                                .foregroundStyle(HunchStyle.foreground)
                                 .lineLimit(1)
                             Spacer(minLength: 0)
                         }
@@ -458,7 +463,7 @@ private struct PageSyncFooter: View {
                 showingDetails.toggle()
             } label: {
                 Label(statusTitle, systemImage: statusIcon)
-                    .font(NotionStyle.body(size: 11, weight: .medium))
+                    .font(HunchStyle.body(size: 11, weight: .medium))
                     .foregroundStyle(statusTint)
                     .lineLimit(1)
             }
@@ -515,7 +520,7 @@ private struct PageSyncFooter: View {
         case .syncing: return .blue
         case .waiting: return .orange
         case .error: return .red
-        case .local: return NotionStyle.mutedForeground
+        case .local: return HunchStyle.mutedForeground
         }
     }
 }
@@ -528,8 +533,8 @@ private struct PageSyncPopover: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("iCloud Status")
-                .font(NotionStyle.body(size: 13, weight: .semibold))
-                .foregroundStyle(NotionStyle.foreground)
+                .font(HunchStyle.body(size: 13, weight: .semibold))
+                .foregroundStyle(HunchStyle.foreground)
 
             ForEach(snapshot.items) { item in
                 PageSyncRow(item: item)
@@ -616,13 +621,13 @@ private struct PageSyncRow: View {
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.target.displayName)
-                    .font(NotionStyle.body(size: 12, weight: .medium))
-                    .foregroundStyle(NotionStyle.foreground)
+                    .font(HunchStyle.body(size: 12, weight: .medium))
+                    .foregroundStyle(HunchStyle.foreground)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(detail)
-                    .font(NotionStyle.body(size: 11))
-                    .foregroundStyle(item.status == .error ? .red : NotionStyle.mutedForeground)
+                    .font(HunchStyle.body(size: 11))
+                    .foregroundStyle(item.status == .error ? .red : HunchStyle.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -663,7 +668,7 @@ private struct PageSyncRow: View {
         case .syncing: return .blue
         case .waiting: return .orange
         case .error: return .red
-        case .local, .missingNeutral: return NotionStyle.mutedForeground
+        case .local, .missingNeutral: return HunchStyle.mutedForeground
         }
     }
 }
@@ -681,13 +686,13 @@ private struct WorkspacePickerView: View {
             Spacer()
             Image(systemName: "folder.badge.plus")
                 .font(.system(size: 64))
-                .foregroundStyle(NotionStyle.mutedForeground)
+                .foregroundStyle(HunchStyle.mutedForeground)
             Text("Welcome to Hunch")
-                .font(NotionStyle.body(size: 22, weight: .semibold))
-                .foregroundStyle(NotionStyle.foreground)
+                .font(HunchStyle.body(size: 22, weight: .semibold))
+                .foregroundStyle(HunchStyle.foreground)
             Text("A workspace is a folder of plain markdown files. Pick one to get started.")
-                .font(NotionStyle.body(size: 14))
-                .foregroundStyle(NotionStyle.mutedForeground)
+                .font(HunchStyle.body(size: 14))
+                .foregroundStyle(HunchStyle.mutedForeground)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
             HStack(spacing: 12) {
@@ -707,7 +712,7 @@ private struct WorkspacePickerView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(NotionStyle.background)
+        .background(HunchStyle.background)
         .fileImporter(
             isPresented: $showingOpenPicker,
             allowedContentTypes: [.folder],
@@ -820,13 +825,13 @@ private struct EmptyWorkspaceView: View {
             Spacer()
             Image(systemName: "doc.text")
                 .font(.system(size: 48))
-                .foregroundStyle(NotionStyle.mutedForeground)
+                .foregroundStyle(HunchStyle.mutedForeground)
             Text("Pick a page to open by default")
-                .font(NotionStyle.body(size: 18, weight: .semibold))
-                .foregroundStyle(NotionStyle.foreground)
+                .font(HunchStyle.body(size: 18, weight: .semibold))
+                .foregroundStyle(HunchStyle.foreground)
             Text("Choose one from your workspace, or create a new page.")
-                .font(NotionStyle.body(size: 14))
-                .foregroundStyle(NotionStyle.mutedForeground)
+                .font(HunchStyle.body(size: 14))
+                .foregroundStyle(HunchStyle.mutedForeground)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
             HStack(spacing: 12) {
@@ -847,7 +852,7 @@ private struct EmptyWorkspaceView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(NotionStyle.background)
+        .background(HunchStyle.background)
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

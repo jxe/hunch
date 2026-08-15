@@ -4,14 +4,14 @@ import Foundation
 /// as detection keeps returning a non-nil trigger from `detectMentionTrigger`; on every
 /// keystroke / cursor move the editor re-runs detection and reports the new trigger (or
 /// nil) to the page-level state.
-public struct MentionTrigger: Equatable, Sendable {
+struct MentionTrigger: Equatable, Sendable {
     /// Range covering the literal `@` plus any chars typed after it, in NSString (UTF-16)
     /// units — caller will splice the menu's selected link into this range on commit.
-    public let nsRange: NSRange
+    let nsRange: NSRange
     /// Plain text after the `@`. Empty string is valid (cursor sits right after `@`).
-    public let query: String
+    let query: String
 
-    public init(nsRange: NSRange, query: String) {
+    init(nsRange: NSRange, query: String) {
         self.nsRange = nsRange
         self.query = query
     }

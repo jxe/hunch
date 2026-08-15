@@ -161,8 +161,8 @@ struct RecoveryView: View {
                     if !showAllPurged {
                         Button("Show older") { showAllPurged = true }
                             .buttonStyle(.borderless)
-                            .font(NotionStyle.body(size: 12))
-                            .foregroundStyle(NotionStyle.mutedForeground)
+                            .font(HunchStyle.body(size: 12))
+                            .foregroundStyle(HunchStyle.mutedForeground)
                     }
                 }
             }
@@ -185,29 +185,29 @@ struct RecoveryView: View {
         let isPurged = entry.isPurged
         HStack(spacing: 10) {
             Image(systemName: icon(for: entry))
-                .foregroundStyle(NotionStyle.mutedForeground)
+                .foregroundStyle(HunchStyle.mutedForeground)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(entry.displayTitle)
-                        .font(NotionStyle.body())
-                        .foregroundStyle(isPurged ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                        .font(HunchStyle.body())
+                        .foregroundStyle(isPurged ? HunchStyle.mutedForeground : HunchStyle.foreground)
                         .lineLimit(1)
                     if entry.nestedCount > 0 {
                         Text("+\(entry.nestedCount) more")
-                            .font(NotionStyle.body(size: 11))
-                            .foregroundStyle(NotionStyle.mutedForeground)
+                            .font(HunchStyle.body(size: 11))
+                            .foregroundStyle(HunchStyle.mutedForeground)
                     }
                 }
                 Text(secondaryLine(for: entry))
-                    .font(NotionStyle.body(size: 12))
-                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .font(HunchStyle.body(size: 12))
+                    .foregroundStyle(HunchStyle.mutedForeground)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
             Text(entry.timestamp, style: .relative)
-                .font(NotionStyle.body(size: 12))
-                .foregroundStyle(NotionStyle.mutedForeground)
+                .font(HunchStyle.body(size: 12))
+                .foregroundStyle(HunchStyle.mutedForeground)
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())

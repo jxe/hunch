@@ -7,30 +7,30 @@ import AppKit
 
 /// An active `:query` immediately before the caret. The range is expressed in
 /// UTF-16 units so it can be replaced directly in NSTextView/UITextView text.
-public struct EmojiTrigger: Equatable, Sendable {
-    public let nsRange: NSRange
-    public let query: String
+struct EmojiTrigger: Equatable, Sendable {
+    let nsRange: NSRange
+    let query: String
 
-    public init(nsRange: NSRange, query: String) {
+    init(nsRange: NSRange, query: String) {
         self.nsRange = nsRange
         self.query = query
     }
 }
 
 /// The one inline completion the native editor should currently present.
-public enum InlineCompletionTrigger: Equatable, Sendable {
+enum InlineCompletionTrigger: Equatable, Sendable {
     case mention(MentionTrigger)
     case emoji(EmojiTrigger)
 }
 
 /// Editor-owned projection of EmojiKit data. Keeping this small value at the
 /// overlay boundary avoids exposing a third-party model through EditorHost.
-public struct EmojiSuggestion: Equatable, Identifiable, Sendable {
-    public var id: String { character }
-    public let character: String
-    public let name: String
+struct EmojiSuggestion: Equatable, Identifiable, Sendable {
+    var id: String { character }
+    let character: String
+    let name: String
 
-    public init(character: String, name: String) {
+    init(character: String, name: String) {
         self.character = character
         self.name = name
     }
@@ -147,19 +147,19 @@ func isEmojiCharacter(_ character: Character) -> Bool {
 
 /// Pure hit-test for the subpage marker column. Coordinates and row frame are
 /// in the same page space; indentation moves the marker column right by 24pt.
-func hitsSubpageIconColumn(point: CGPoint, rowFrame: CGRect, depth: Int) -> Bool {
+func hitsSubpageIconColumn(point: CGPoint, rowFrame: CGRect, depth: Int, theme: EditorTheme = .default) -> Bool {
     let localX = point.x - rowFrame.minX
-    return hitsSubpageIconColumn(localX: localX, depth: depth)
+    return hitsSubpageIconColumn(localX: localX, depth: depth, theme: theme)
         && point.y >= rowFrame.minY && point.y <= rowFrame.maxY
 }
 
-func hitsSubpageIconColumn(localX: CGFloat, depth: Int) -> Bool {
-    let minX = CGFloat(depth) * NotionStyle.indentStep
-    return localX >= minX && localX <= minX + NotionStyle.bulletMarkerColumnWidth
+func hitsSubpageIconColumn(localX: CGFloat, depth: Int, theme: EditorTheme = .default) -> Bool {
+    let minX = CGFloat(depth) * theme.indentStep
+    return localX >= minX && localX <= minX + theme.bulletMarkerColumnWidth
 }
 
 /// Searchable EmojiKit surface shared by page-icon picking.
-struct HunchEmojiPicker: View {
+struct EditorEmojiPicker: View {
     let onSelect: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss

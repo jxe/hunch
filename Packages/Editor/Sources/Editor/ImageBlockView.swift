@@ -10,6 +10,7 @@ import SwiftUI
 struct ImageBlockView: View {
     let source: String
     let alt: String
+    let theme: EditorTheme
     @Environment(\.editorHost) private var host: EditorHost?
     #if !os(macOS)
     @State private var presentingFullSize = false
@@ -63,15 +64,15 @@ struct ImageBlockView: View {
     private var missingPlaceholder: some View {
         HStack(spacing: 8) {
             Image(systemName: "photo")
-                .foregroundStyle(NotionStyle.mutedForeground)
+                .foregroundStyle(theme.mutedForeground)
             Text("Missing image: \(source)")
-                .font(NotionStyle.body())
-                .foregroundStyle(NotionStyle.mutedForeground)
+                .font(theme.body())
+                .foregroundStyle(theme.mutedForeground)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(NotionStyle.codeBackground.opacity(0.5))
+        .background(theme.codeBackground.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }

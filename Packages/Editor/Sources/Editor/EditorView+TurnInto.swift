@@ -239,7 +239,7 @@ extension EditorView {
         // than data loss (file gone, bullet never persisted).
         Task { @MainActor in
             guard var loaded = await host.loadPageBlocks(path) else {
-                Diag.subpage.error("convertSubpage: loadPageBlocks returned nil — path=\(path, privacy: .public)")
+                configuration.diagnostics.subpage.error("convertSubpage: loadPageBlocks returned nil — path=\(path, privacy: .public)")
                 return
             }
             // The subpage may have moved out from under us during the await.
@@ -270,7 +270,7 @@ extension EditorView {
                 state.expandedTemplates.remove(blockID)
             }
             if !(await host.inlineAndTrashPage(path, parent: document)) {
-                Diag.subpage.error("convertSubpage: inlineAndTrashPage failed after mutation — orphan file at \(path, privacy: .public)")
+                configuration.diagnostics.subpage.error("convertSubpage: inlineAndTrashPage failed after mutation — orphan file at \(path, privacy: .public)")
             }
         }
         return .handled
@@ -449,7 +449,7 @@ extension EditorView {
     @ViewBuilder
     fileprivate func blockMenuGroupDivider() -> some View {
         Rectangle()
-            .fill(NotionStyle.dividerColor)
+            .fill(configuration.theme.dividerColor)
             .frame(width: 1, height: 28)
             .padding(.horizontal, 2)
     }
@@ -474,7 +474,7 @@ extension EditorView {
                         .font(.system(size: 17, weight: .semibold))
                         .frame(height: 20)
                     Text(title)
-                        .font(NotionStyle.body(size: 11, weight: .medium))
+                        .font(configuration.theme.body(size: 11, weight: .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
                 }
@@ -482,14 +482,14 @@ extension EditorView {
 
                 if let shortcutLabel = keyboardShortcutLabel
                     ?? keyboardShortcut.map({ String($0.character) }) {
-                    BlockMenuShortcutChip(label: shortcutLabel)
+                    BlockMenuShortcutChip(label: shortcutLabel, theme: configuration.theme)
                         .padding(.top, 4)
                         .padding(.trailing, 5)
                 }
             }
             .frame(width: 60, height: 60)
         }
-        .buttonStyle(BlockMenuTileStyle(isSelected: isSelected))
+        .buttonStyle(BlockMenuTileStyle(isSelected: isSelected, theme: configuration.theme))
         if let keyboardShortcut {
             button.keyboardShortcut(keyboardShortcut, modifiers: keyboardShortcutModifiers)
         } else {
@@ -699,15 +699,17 @@ extension EditorView {
 
 struct BlockMenuTileStyle: ButtonStyle {
     let isSelected: Bool
+    let theme: EditorTheme
     @State private var isHovering = false
 
-    init(isSelected: Bool = false) {
+    init(isSelected: Bool = false, theme: EditorTheme) {
         self.isSelected = isSelected
+        self.theme = theme
     }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(isSelected ? NotionStyle.linkForeground : NotionStyle.foreground)
+            .foregroundStyle(isSelected ? theme.linkForeground : theme.foreground)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(fillColor(isPressed: configuration.isPressed))
@@ -722,18 +724,19 @@ struct BlockMenuTileStyle: ButtonStyle {
 
     private func fillColor(isPressed: Bool) -> Color {
         if isSelected {
-            if isPressed { return NotionStyle.linkForeground.opacity(0.28) }
-            if isHovering { return NotionStyle.linkForeground.opacity(0.20) }
-            return NotionStyle.linkForeground.opacity(0.14)
+            if isPressed { return theme.linkForeground.opacity(0.28) }
+            if isHovering { return theme.linkForeground.opacity(0.20) }
+            return theme.linkForeground.opacity(0.14)
         }
-        if isPressed { return NotionStyle.dividerColor }
-        if isHovering { return NotionStyle.dividerColor.opacity(0.5) }
+        if isPressed { return theme.dividerColor }
+        if isHovering { return theme.dividerColor.opacity(0.5) }
         return .clear
     }
 }
 
 struct BlockMenuShortcutChip: View {
     let label: String
+    let theme: EditorTheme
     #if os(iOS)
     // On iOS the chip only makes sense when a hardware keyboard is around to
     // hit the shortcut. HardwareKeyboardObserver flips when GameController's
@@ -754,13 +757,13 @@ struct BlockMenuShortcutChip: View {
 
     private var chip: some View {
         Text(label)
-            .font(NotionStyle.mono(size: 9))
-            .foregroundStyle(NotionStyle.mutedForeground)
+            .font(theme.mono(size: 9))
+            .foregroundStyle(theme.mutedForeground)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
             .background(
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(NotionStyle.codeBackground)
+                    .fill(theme.codeBackground)
             )
     }
 }

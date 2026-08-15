@@ -22,8 +22,8 @@ struct IconPickerView: View {
         NavigationStack {
             VStack(spacing: 24) {
                 Text("Pick your hunchback.")
-                    .font(NotionStyle.body(size: 14))
-                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .font(HunchStyle.body(size: 14))
+                    .foregroundStyle(HunchStyle.mutedForeground)
                 HStack(spacing: 20) {
                     ForEach(iconOptions) { option in
                         IconTile(
@@ -37,7 +37,7 @@ struct IconPickerView: View {
             }
             .padding(.top, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(NotionStyle.background)
+            .background(HunchStyle.background)
             .navigationTitle("App Icon")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -77,7 +77,7 @@ private struct IconTile: View {
                         .overlay(
                             RoundedRectangle(cornerRadius: 26, style: .continuous)
                                 .stroke(
-                                    isSelected ? NotionStyle.linkForeground : NotionStyle.mutedForeground.opacity(0.25),
+                                    isSelected ? HunchStyle.linkForeground : HunchStyle.mutedForeground.opacity(0.25),
                                     lineWidth: isSelected ? 3 : 1
                                 )
                         )
@@ -85,13 +85,13 @@ private struct IconTile: View {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 26))
                             .symbolRenderingMode(.palette)
-                            .foregroundStyle(.white, NotionStyle.linkForeground)
+                            .foregroundStyle(.white, HunchStyle.linkForeground)
                             .offset(x: 6, y: 6)
                     }
                 }
                 Text(option.label)
-                    .font(NotionStyle.body(size: 13, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(NotionStyle.foreground)
+                    .font(HunchStyle.body(size: 13, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(HunchStyle.foreground)
             }
         }
         .buttonStyle(.plain)

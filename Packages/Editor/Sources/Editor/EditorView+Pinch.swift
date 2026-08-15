@@ -72,15 +72,15 @@ extension EditorView {
             }
             if gapHeight >= Self.pinchInsertCommitGap, !pinchCrossedInsertThreshold {
                 pinchCrossedInsertThreshold = true
-                Haptics.medium()
-                SoundFX.play(.pinchOpen)
+                Haptics.medium(enabled: configuration.isHapticFeedbackEnabled)
+                SoundFX.play(.pinchOpen, enabled: configuration.isAudioFeedbackEnabled)
             } else if gapHeight < Self.pinchInsertCommitGap {
                 pinchCrossedInsertThreshold = false
             }
             if gapHeight >= Self.pinchInsertFocusGap, !pinchCrossedFocusThreshold {
                 pinchCrossedFocusThreshold = true
-                Haptics.medium()
-                SoundFX.play(.pinchOpen)
+                Haptics.medium(enabled: configuration.isHapticFeedbackEnabled)
+                SoundFX.play(.pinchOpen, enabled: configuration.isAudioFeedbackEnabled)
             } else if gapHeight < Self.pinchInsertFocusGap {
                 pinchCrossedFocusThreshold = false
             }
@@ -133,7 +133,7 @@ extension EditorView {
             // and the surrounding rows close in around it. Without the shared
             // animation transaction the gap snap-closes first and the new row
             // pops in afterwards — visually disjoint.
-            Haptics.heavy()
+            Haptics.heavy(enabled: configuration.isHapticFeedbackEnabled)
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                 insertBlock(newBlock, at: path, focus: true)
                 state.setPinchPreview(nil)

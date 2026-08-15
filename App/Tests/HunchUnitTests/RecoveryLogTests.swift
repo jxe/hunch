@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-@testable import Editor
+import Editor
 
 @Suite("RecoveryLog")
 struct RecoveryLogTests {

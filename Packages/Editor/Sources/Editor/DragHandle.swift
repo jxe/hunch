@@ -4,6 +4,7 @@ import SwiftUI
 /// (no inline action menu yet) — its only job is to host the row's reorder
 /// DragGesture so the row's text-area gestures aren't disturbed.
 struct DragHandle: View {
+    let theme: EditorTheme
     /// Visible width of the handle. The row's hit area extends this far into the
     /// leading gutter via a custom `contentShape`, so hovering the handle keeps the
     /// row's hover state alive.
@@ -11,12 +12,12 @@ struct DragHandle: View {
 
     var body: some View {
         DragGripGlyph(dotSize: 2.8)
-            .foregroundStyle(NotionStyle.foreground.opacity(0.32))
+            .foregroundStyle(theme.foreground.opacity(0.32))
             .padding(.horizontal, 6)
             .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(NotionStyle.foreground.opacity(0.018))
+                    .fill(theme.foreground.opacity(0.018))
             )
             .frame(width: Self.gutterWidth, height: 28)
             .contentShape(Rectangle())

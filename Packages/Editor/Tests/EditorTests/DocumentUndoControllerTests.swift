@@ -39,6 +39,7 @@ struct DocumentUndoControllerTests {
             fontSize: 16,
             bold: false,
             lineSpacing: 2,
+            theme: .default,
             isFocused: true,
             onFocusChange: { _ in },
             onKey: { _ in .ignored },

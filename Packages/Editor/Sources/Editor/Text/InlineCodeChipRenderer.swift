@@ -3,11 +3,13 @@ import SwiftUI
 struct InlineCodeChipAttribute: TextAttribute {}
 
 struct InlineCodeChipRenderer: TextRenderer {
+    let theme: EditorTheme
+
     var displayPadding: EdgeInsets {
         EdgeInsets(
-            top: NotionStyle.inlineCodeVerticalPadding,
+            top: theme.inlineCodeVerticalPadding,
             leading: 0,
-            bottom: NotionStyle.inlineCodeVerticalPadding,
+            bottom: theme.inlineCodeVerticalPadding,
             trailing: 0
         )
     }
@@ -16,8 +18,8 @@ struct InlineCodeChipRenderer: TextRenderer {
         for line in layout {
             for rect in inlineCodeRects(in: line) {
                 context.fill(
-                    Path(roundedRect: rect, cornerRadius: NotionStyle.inlineCodeRadius),
-                    with: .color(NotionStyle.codeBackground)
+                    Path(roundedRect: rect, cornerRadius: theme.inlineCodeRadius),
+                    with: .color(theme.codeBackground)
                 )
             }
         }
@@ -52,7 +54,7 @@ struct InlineCodeChipRenderer: TextRenderer {
         return mergedRects.map {
             $0.insetBy(
                 dx: 0,
-                dy: -NotionStyle.inlineCodeVerticalPadding
+                dy: -theme.inlineCodeVerticalPadding
             )
         }
     }

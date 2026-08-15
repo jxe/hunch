@@ -53,6 +53,8 @@ struct BlockRow: View, Equatable {
     let state: EditorState
     let model: BlockRowModel
     let actions: BlockRowActions
+    let configuration: EditorConfiguration
+    let theme: EditorTheme
 
     nonisolated static func == (lhs: BlockRow, rhs: BlockRow) -> Bool {
         MainActor.assumeIsolated {
@@ -113,10 +115,12 @@ struct BlockRow: View, Equatable {
         }
     }
 
-    init(model: BlockRowModel, state: EditorState, actions: BlockRowActions) {
+    init(model: BlockRowModel, state: EditorState, actions: BlockRowActions, configuration: EditorConfiguration) {
         self.model = model
         self.state = state
         self.actions = actions
+        self.configuration = configuration
+        self.theme = configuration.theme
     }
 
     var block: Block { model.block }
@@ -176,7 +180,7 @@ struct BlockRow: View, Equatable {
             .padding(.top, BlockSpacing.intrinsicTopPadding(block))
             .padding(.bottom, BlockSpacing.intrinsicBottomPadding(block))
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected && !isEditing ? NotionStyle.selectionBackground : Color.clear)
+            .background(isSelected && !isEditing ? theme.selectionBackground : Color.clear)
             .task(id: externalURLs) {
                 for url in externalURLs where linkPreviews[url] == nil {
                     if let preview = await host.linkPreview(for: url) {
@@ -187,18 +191,18 @@ struct BlockRow: View, Equatable {
             }
             .background(alignment: .leading) {
                 if isDropTarget {
-                    let leadingInset = CGFloat(depth) * NotionStyle.indentStep
+                    let leadingInset = CGFloat(depth) * theme.indentStep
                     RoundedRectangle(cornerRadius: 5)
-                        .fill(NotionStyle.linkForeground.opacity(0.12))
+                        .fill(theme.linkForeground.opacity(0.12))
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .stroke(NotionStyle.linkForeground.opacity(0.55), lineWidth: 1.5)
+                                .stroke(theme.linkForeground.opacity(0.55), lineWidth: 1.5)
                         )
                         .padding(.leading, leadingInset)
                         .padding(.trailing, 4)
                         .allowsHitTesting(false)
                 } else if isActionMenuTarget {
-                    let leadingInset = CGFloat(depth) * NotionStyle.indentStep
+                    let leadingInset = CGFloat(depth) * theme.indentStep
                     let gold = Color(red: 0.83, green: 0.66, blue: 0.18)
                     RoundedRectangle(cornerRadius: 5)
                         .fill(gold.opacity(0.05))
@@ -232,6 +236,7 @@ struct BlockRow: View, Equatable {
             #if os(iOS)
             .iosBlockTouchActions(
                 isEnabled: !isEditing && !isPinching,
+                configuration: configuration,
                 onDelete: onIOSDelete,
                 onShowMenu: onIOSShowMenu
             )
@@ -240,7 +245,7 @@ struct BlockRow: View, Equatable {
             .gesture(
                 SpatialTapGesture().onEnded { value in
                     if case .subpage = block.kind,
-                       hitsSubpageIconColumn(localX: value.location.x, depth: depth) {
+                       hitsSubpageIconColumn(localX: value.location.x, depth: depth, theme: theme) {
                         onSubpageIconTap()
                     } else {
                         onTapOutsideText()
@@ -259,7 +264,7 @@ struct BlockRow: View, Equatable {
                 // anchor recyclable per-row gestures inside the LazyVStack
                 // and were the source of the "destroyed mid-drag" failure
                 // mode that needed the NSEvent mouse-up backstop.
-                DragHandle()
+                DragHandle(theme: theme)
                     .opacity(isHandleVisible && !isEditing ? 1 : 0)
                     .offset(x: -DragHandle.gutterWidth, y: BlockSpacing.dragHandleYOffset(block))
                     .allowsHitTesting(false)
@@ -328,117 +333,117 @@ struct BlockRow: View, Equatable {
     }
 
     private func paragraphRow() -> some View {
-        editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
-            .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+        editableText(font: theme.body(), fontSize: 16, bold: false, lineSpacing: theme.bodyLineSpacing)
+            .padding(.leading, theme.nonListLeading(depth: depth))
     }
 
     private func headingRow(level: HeadingLevel) -> some View {
-        let size: CGFloat = (isPageTitle && level == .h1) ? NotionStyle.pageTitleSize
-                          : level == .h1 ? NotionStyle.h1Size
-                          : level == .h2 ? NotionStyle.h2Size
-                                         : NotionStyle.h3Size
-        let font = NotionStyle.body(size: size, weight: NotionStyle.headingWeight)
-        return editableText(font: font, fontSize: size, bold: true, lineSpacing: NotionStyle.headingLineSpacing)
-            .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+        let size: CGFloat = (isPageTitle && level == .h1) ? theme.pageTitleSize
+                          : level == .h1 ? theme.h1Size
+                          : level == .h2 ? theme.h2Size
+                                         : theme.h3Size
+        let font = theme.body(size: size, weight: theme.headingWeight)
+        return editableText(font: font, fontSize: size, bold: true, lineSpacing: theme.headingLineSpacing)
+            .padding(.leading, theme.nonListLeading(depth: depth))
     }
 
     private func bulletRow() -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+        HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
             Circle()
-                .foregroundStyle(NotionStyle.foreground)
-                .frame(width: NotionStyle.bulletMarkerDiameter, height: NotionStyle.bulletMarkerDiameter)
-                .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                .foregroundStyle(theme.foreground)
+                .frame(width: theme.bulletMarkerDiameter, height: theme.bulletMarkerDiameter)
+                .frame(width: theme.bulletMarkerColumnWidth, height: theme.listMarkerFrameHeight, alignment: .trailing)
                 .alignmentGuide(.firstTextBaseline) { dimensions in
-                    dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    dimensions[VerticalAlignment.center] + theme.bulletMarkerBaselineOffset
                 }
-            editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            editableText(font: theme.body(), fontSize: 16, bold: false, lineSpacing: theme.bodyLineSpacing)
         }
-        .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+        .padding(.leading, CGFloat(depth) * theme.indentStep)
     }
 
     private func numberedRow() -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+        HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
             Text("\(numberingIndex ?? 1).")
-                .font(NotionStyle.body())
-                .foregroundStyle(NotionStyle.foreground)
-                .frame(width: NotionStyle.numberedMarkerColumnWidth, alignment: .trailing)
-            editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+                .font(theme.body())
+                .foregroundStyle(theme.foreground)
+                .frame(width: theme.numberedMarkerColumnWidth, alignment: .trailing)
+            editableText(font: theme.body(), fontSize: 16, bold: false, lineSpacing: theme.bodyLineSpacing)
         }
-        .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+        .padding(.leading, CGFloat(depth) * theme.indentStep)
     }
 
     private func todoRow(done: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+        HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
             Button {
                 if case .todo = block.kind {
                     onToggleTodo(block.id)
                 }
             } label: {
                 Image(systemName: done ? "checkmark.square.fill" : "square")
-                    .font(.system(size: NotionStyle.todoCheckboxSize))
-                    .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                    .frame(width: NotionStyle.todoMarkerColumnWidth, alignment: .trailing)
+                    .font(.system(size: theme.todoCheckboxSize))
+                    .foregroundStyle(done ? theme.mutedForeground : theme.foreground)
+                    .frame(width: theme.todoMarkerColumnWidth, alignment: .trailing)
             }
             .buttonStyle(.plain)
             editableText(
-                font: NotionStyle.body(),
+                font: theme.body(),
                 fontSize: 16,
                 bold: false,
-                lineSpacing: NotionStyle.bodyLineSpacing,
+                lineSpacing: theme.bodyLineSpacing,
                 strikethrough: done,
                 muted: done
             )
         }
-        .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+        .padding(.leading, CGFloat(depth) * theme.indentStep)
     }
 
     private func quoteRow() -> some View {
         let quoteFontSize: CGFloat = 16 * 1.2
         return HStack(spacing: 14) {
             Rectangle()
-                .fill(NotionStyle.foreground)
+                .fill(theme.foreground)
                 .frame(width: 3)
-            editableText(font: NotionStyle.body(size: quoteFontSize), fontSize: quoteFontSize, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            editableText(font: theme.body(size: quoteFontSize), fontSize: quoteFontSize, bold: false, lineSpacing: theme.bodyLineSpacing)
         }
-        .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+        .padding(.leading, theme.nonListLeading(depth: depth))
     }
 
     private func codeRow(source: String, language: String?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if let language, !language.isEmpty {
                 Text(language)
-                    .font(NotionStyle.mono(size: 11))
-                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .font(theme.mono(size: 11))
+                    .foregroundStyle(theme.mutedForeground)
                     .padding(.bottom, 8)
             }
             Text(source)
-                .font(NotionStyle.mono())
-                .foregroundStyle(NotionStyle.foreground)
+                .font(theme.mono())
+                .foregroundStyle(theme.foreground)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 16)
-        .background(NotionStyle.codeBackground.opacity(0.5))
+        .background(theme.codeBackground.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+        .padding(.leading, theme.nonListLeading(depth: depth))
     }
 
     private func dividerRow() -> some View {
         Rectangle()
-            .fill(NotionStyle.dividerColor)
+            .fill(theme.dividerColor)
             .frame(height: 1)
-            .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+            .padding(.leading, theme.nonListLeading(depth: depth))
     }
 
     private func toggleRow() -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+        HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
             Image(systemName: "arrowtriangle.right.fill")
-                .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                .font(.system(size: theme.chevronSize, weight: .medium))
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                .foregroundStyle(NotionStyle.foreground)
-                .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
-                .offset(x: NotionStyle.markerCenteringOffset(markerWidth: NotionStyle.chevronSize))
+                .foregroundStyle(theme.foreground)
+                .frame(width: theme.bulletMarkerColumnWidth, height: theme.listMarkerFrameHeight, alignment: .trailing)
+                .offset(x: theme.markerCenteringOffset(markerWidth: theme.chevronSize))
                 .alignmentGuide(.firstTextBaseline) { dimensions in
-                    dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    dimensions[VerticalAlignment.center] + theme.bulletMarkerBaselineOffset
                 }
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -447,21 +452,21 @@ struct BlockRow: View, Equatable {
                     }
                 }
 
-            editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+            editableText(font: theme.body(), fontSize: 16, bold: false, lineSpacing: theme.bodyLineSpacing)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+        .padding(.leading, CGFloat(depth) * theme.indentStep)
     }
 
     private func templateButtonRow() -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+        HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
             Image(systemName: "chevron.right")
-                .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                .font(.system(size: theme.chevronSize, weight: .medium))
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                .foregroundStyle(NotionStyle.foreground)
-                .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                .foregroundStyle(theme.foreground)
+                .frame(width: theme.bulletMarkerColumnWidth, height: theme.listMarkerFrameHeight, alignment: .trailing)
                 .alignmentGuide(.firstTextBaseline) { dimensions in
-                    dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                    dimensions[VerticalAlignment.center] + theme.bulletMarkerBaselineOffset
                 }
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -474,26 +479,26 @@ struct BlockRow: View, Equatable {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    editableText(font: NotionStyle.body(), fontSize: 16, bold: false, lineSpacing: NotionStyle.bodyLineSpacing)
+                    editableText(font: theme.body(), fontSize: 16, bold: false, lineSpacing: theme.bodyLineSpacing)
                 }
-                .foregroundStyle(NotionStyle.foreground)
+                .foregroundStyle(theme.foreground)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(NotionStyle.selectionBackground.opacity(0.75))
+                .background(theme.selectionBackground.opacity(0.75))
                 .clipShape(RoundedRectangle(cornerRadius: 5))
             } else {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    InlineRenderer.swiftUIText(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageLookups[$0]?.title })
-                        .font(NotionStyle.body())
-                        .lineSpacing(NotionStyle.bodyLineSpacing)
-                        .textRenderer(InlineCodeChipRenderer())
+                    InlineRenderer.swiftUIText(block.text, theme: theme, baseFont: theme.body(), resolvingPageTitle: { pageLookups[$0]?.title })
+                        .font(theme.body())
+                        .lineSpacing(theme.bodyLineSpacing)
+                        .textRenderer(InlineCodeChipRenderer(theme: theme))
                 }
-                .foregroundStyle(NotionStyle.foreground)
+                .foregroundStyle(theme.foreground)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(NotionStyle.selectionBackground.opacity(0.75))
+                .background(theme.selectionBackground.opacity(0.75))
                 .clipShape(RoundedRectangle(cornerRadius: 5))
                 .contentShape(RoundedRectangle(cornerRadius: 5))
                 .onTapGesture {
@@ -502,15 +507,15 @@ struct BlockRow: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+        .padding(.leading, CGFloat(depth) * theme.indentStep)
     }
 
     private func subpageRow(title: String, missing: Bool) -> some View {
-        subpageRowBody(title: title, missing: missing, depth: depth)
+        subpageRowBody(title: title, missing: missing, depth: depth, theme: theme)
             .overlay(alignment: .leading) {
                 Color.clear
-                    .frame(width: NotionStyle.bulletMarkerColumnWidth)
-                    .offset(x: CGFloat(depth) * NotionStyle.indentStep)
+                    .frame(width: theme.bulletMarkerColumnWidth)
+                    .offset(x: CGFloat(depth) * theme.indentStep)
                     .allowsHitTesting(false)
                     .popover(
                         isPresented: Binding(
@@ -524,8 +529,8 @@ struct BlockRow: View, Equatable {
     }
 
     private func imageRow(source: String, alt: String) -> some View {
-        ImageBlockView(source: source, alt: alt)
-            .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+        ImageBlockView(source: source, alt: alt, theme: theme)
+            .padding(.leading, theme.nonListLeading(depth: depth))
     }
 
     @ViewBuilder
@@ -537,6 +542,7 @@ struct BlockRow: View, Equatable {
                 fontSize: fontSize,
                 bold: bold,
                 lineSpacing: lineSpacing,
+                theme: theme,
                 focused: editor.editorFocused,
                 isActive: editor.isActive,
                 blockID: block.id,
@@ -547,7 +553,7 @@ struct BlockRow: View, Equatable {
                 completionActive: editor.completionActive,
                 consumeInitialCursor: editor.consumeInitialCursor
             )
-            .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
+            .foregroundStyle(muted ? theme.mutedForeground : theme.foreground)
             .strikethrough(strikethrough)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -566,14 +572,15 @@ struct BlockRow: View, Equatable {
                 decoratedText(
                     block.text,
                     baseFont: font,
-                    boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
+                    boldFont: theme.body(size: fontSize, weight: .semibold),
                     pageLookups: pageLookups,
-                    previews: linkPreviews
+                    previews: linkPreviews,
+                    theme: theme
                 )
                     .font(font)
-                    .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                    .foregroundStyle(muted ? theme.mutedForeground : theme.foreground)
                     .lineSpacing(lineSpacing)
-                    .textRenderer(InlineCodeChipRenderer())
+                    .textRenderer(InlineCodeChipRenderer(theme: theme))
                     .strikethrough(strikethrough)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -626,45 +633,45 @@ func leadingEmojiIcon(in title: String) -> (emoji: String, rest: String)? {
 /// paths). A leading emoji in the title becomes the row icon in place of
 /// the generic `doc.text`; a missing target keeps its warning icon.
 @ViewBuilder
-func subpageRowBody(title: String, missing: Bool, depth: Int) -> some View {
+func subpageRowBody(title: String, missing: Bool, depth: Int, theme: EditorTheme) -> some View {
     let icon = missing ? nil : leadingEmojiIcon(in: title)
     let displayTitle = leadingEmojiIcon(in: title)?.rest ?? title
-    HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+    HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
         Group {
             if let icon {
                 // Slightly larger than the SF Symbol so the emoji reads at a
                 // comparable weight; the fixed frame height below keeps the
                 // row from growing.
                 Text(icon.emoji)
-                    .font(.system(size: NotionStyle.subpageEmojiIconSize))
+                    .font(.system(size: theme.subpageEmojiIconSize))
             } else {
                 Image(systemName: missing ? "doc.badge.exclamationmark" : "doc.text")
-                    .font(.system(size: NotionStyle.pageIconSize))
-                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .font(.system(size: theme.pageIconSize))
+                    .foregroundStyle(theme.mutedForeground)
             }
         }
-        .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
-        .offset(x: NotionStyle.markerCenteringOffset(
-            markerWidth: icon != nil ? NotionStyle.subpageEmojiIconAdvance : NotionStyle.pageIconSize
+        .frame(width: theme.bulletMarkerColumnWidth, height: theme.listMarkerFrameHeight, alignment: .trailing)
+        .offset(x: theme.markerCenteringOffset(
+            markerWidth: icon != nil ? theme.subpageEmojiIconAdvance : theme.pageIconSize
         ))
         .alignmentGuide(.firstTextBaseline) { dimensions in
-            dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+            dimensions[VerticalAlignment.center] + theme.bulletMarkerBaselineOffset
         }
         HStack(spacing: 6) {
             Text(displayTitle)
-                .font(NotionStyle.body(weight: .semibold))
-                .foregroundStyle(missing ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                .lineSpacing(NotionStyle.bodyLineSpacing)
+                .font(theme.body(weight: .semibold))
+                .foregroundStyle(missing ? theme.mutedForeground : theme.foreground)
+                .lineSpacing(theme.bodyLineSpacing)
             if missing {
                 Text("(missing)")
-                    .font(NotionStyle.body())
-                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .font(theme.body())
+                    .foregroundStyle(theme.mutedForeground)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+    .padding(.leading, CGFloat(depth) * theme.indentStep)
 }
 
 /// Pre-resolve every workspace-page reference this row needs to render: the
@@ -721,7 +728,8 @@ private func decoratedText(
     baseFont: Font,
     boldFont: Font,
     pageLookups: [String: PageLookup],
-    previews: [URL: LinkPreview]
+    previews: [URL: LinkPreview],
+    theme: EditorTheme
 ) -> Text {
     var output = Text("")
     let inlineCodePaddingText = "\u{2005}"
@@ -754,8 +762,8 @@ private func decoratedText(
         let renderedDisplay = code ? inlineCodePaddingText + displayText + inlineCodePaddingText : displayText
         var attributed = AttributedString(renderedDisplay)
         if code {
-            attributed.font = NotionStyle.mono(size: NotionStyle.inlineCodeSize)
-            attributed.foregroundColor = NotionStyle.codeForeground
+            attributed.font = theme.mono(size: theme.inlineCodeSize)
+            attributed.foregroundColor = theme.codeForeground
         } else {
             var f = (bold || link != nil) ? boldFont : baseFont
             if italic { f = f.italic() }
@@ -766,12 +774,12 @@ private func decoratedText(
         }
         if let url = link {
             attributed.link = url
-            attributed.foregroundColor = NotionStyle.foreground
+            attributed.foregroundColor = theme.foreground
         }
 
         if let preview = externalWithPreview,
            let iconData = preview.iconPNG,
-           let iconImage = decodeFavicon(iconData) {
+           let iconImage = decodeFavicon(iconData, size: theme.pageIconSize) {
             output = output + Text(iconImage)
                 .baselineOffset(-2)
                 + Text(" ")
@@ -795,14 +803,14 @@ private func runMatchesURL(_ runText: String, url: URL) -> Bool {
 
 #if os(macOS)
 import AppKit
-private func decodeFavicon(_ data: Data) -> Image? {
+private func decodeFavicon(_ data: Data, size: CGFloat) -> Image? {
     guard let nsImage = NSImage(data: data) else { return nil }
-    nsImage.size = NSSize(width: NotionStyle.pageIconSize, height: NotionStyle.pageIconSize)
+    nsImage.size = NSSize(width: size, height: size)
     return Image(nsImage: nsImage)
 }
 #else
 import UIKit
-private func decodeFavicon(_ data: Data) -> Image? {
+private func decodeFavicon(_ data: Data, size: CGFloat) -> Image? {
     guard let uiImage = UIImage(data: data, scale: 2) else { return nil }
     return Image(uiImage: uiImage)
 }
@@ -823,6 +831,7 @@ struct BlockRowPreview: View, Equatable {
     let isExpanded: Bool
     let pageLookups: [String: PageLookup]
     let linkPreviews: [URL: LinkPreview]
+    let theme: EditorTheme
 
     init(
         block: Block,
@@ -831,7 +840,8 @@ struct BlockRowPreview: View, Equatable {
         numberingIndex: Int? = nil,
         isExpanded: Bool = false,
         pageLookups: [String: PageLookup] = [:],
-        linkPreviews: [URL: LinkPreview] = [:]
+        linkPreviews: [URL: LinkPreview] = [:],
+        theme: EditorTheme = .default
     ) {
         self.block = block
         self.depth = depth
@@ -840,6 +850,7 @@ struct BlockRowPreview: View, Equatable {
         self.isExpanded = isExpanded
         self.pageLookups = pageLookups
         self.linkPreviews = linkPreviews
+        self.theme = theme
     }
 
     var body: some View {
@@ -853,136 +864,136 @@ struct BlockRowPreview: View, Equatable {
     private var content: some View {
         switch block.kind {
         case .paragraph:
-            text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing)
-                .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+            text(font: theme.body(), fontSize: 16, lineSpacing: theme.bodyLineSpacing)
+                .padding(.leading, theme.nonListLeading(depth: depth))
 
         case .heading(let level, _):
-            let size: CGFloat = (isPageTitle && level == .h1) ? NotionStyle.pageTitleSize
-                              : level == .h1 ? NotionStyle.h1Size
-                              : level == .h2 ? NotionStyle.h2Size
-                                             : NotionStyle.h3Size
-            let font = NotionStyle.body(size: size, weight: NotionStyle.headingWeight)
-            text(font: font, fontSize: size, lineSpacing: NotionStyle.headingLineSpacing)
-                .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+            let size: CGFloat = (isPageTitle && level == .h1) ? theme.pageTitleSize
+                              : level == .h1 ? theme.h1Size
+                              : level == .h2 ? theme.h2Size
+                                             : theme.h3Size
+            let font = theme.body(size: size, weight: theme.headingWeight)
+            text(font: font, fontSize: size, lineSpacing: theme.headingLineSpacing)
+                .padding(.leading, theme.nonListLeading(depth: depth))
 
         case .bullet:
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+            HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
                 Circle()
-                    .foregroundStyle(NotionStyle.foreground)
-                    .frame(width: NotionStyle.bulletMarkerDiameter, height: NotionStyle.bulletMarkerDiameter)
-                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .foregroundStyle(theme.foreground)
+                    .frame(width: theme.bulletMarkerDiameter, height: theme.bulletMarkerDiameter)
+                    .frame(width: theme.bulletMarkerColumnWidth, height: theme.listMarkerFrameHeight, alignment: .trailing)
                     .alignmentGuide(.firstTextBaseline) { dimensions in
-                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                        dimensions[VerticalAlignment.center] + theme.bulletMarkerBaselineOffset
                     }
-                text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing)
+                text(font: theme.body(), fontSize: 16, lineSpacing: theme.bodyLineSpacing)
             }
-            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+            .padding(.leading, CGFloat(depth) * theme.indentStep)
 
         case .numbered:
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+            HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
                 Text("\(numberingIndex ?? 1).")
-                    .font(NotionStyle.body())
-                    .foregroundStyle(NotionStyle.foreground)
-                    .frame(width: NotionStyle.numberedMarkerColumnWidth, alignment: .trailing)
-                text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing)
+                    .font(theme.body())
+                    .foregroundStyle(theme.foreground)
+                    .frame(width: theme.numberedMarkerColumnWidth, alignment: .trailing)
+                text(font: theme.body(), fontSize: 16, lineSpacing: theme.bodyLineSpacing)
             }
-            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+            .padding(.leading, CGFloat(depth) * theme.indentStep)
 
         case .todo(_, let done):
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+            HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
                 Image(systemName: done ? "checkmark.square.fill" : "square")
-                    .font(.system(size: NotionStyle.todoCheckboxSize))
-                    .foregroundStyle(done ? NotionStyle.mutedForeground : NotionStyle.foreground)
-                    .frame(width: NotionStyle.todoMarkerColumnWidth, alignment: .trailing)
-                text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing, strikethrough: done, muted: done)
+                    .font(.system(size: theme.todoCheckboxSize))
+                    .foregroundStyle(done ? theme.mutedForeground : theme.foreground)
+                    .frame(width: theme.todoMarkerColumnWidth, alignment: .trailing)
+                text(font: theme.body(), fontSize: 16, lineSpacing: theme.bodyLineSpacing, strikethrough: done, muted: done)
             }
-            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+            .padding(.leading, CGFloat(depth) * theme.indentStep)
 
         case .quote:
             let quoteFontSize: CGFloat = 16 * 1.2
             HStack(spacing: 14) {
                 Rectangle()
-                    .fill(NotionStyle.foreground)
+                    .fill(theme.foreground)
                     .frame(width: 3)
-                text(font: NotionStyle.body(size: quoteFontSize), fontSize: quoteFontSize, lineSpacing: NotionStyle.bodyLineSpacing)
+                text(font: theme.body(size: quoteFontSize), fontSize: quoteFontSize, lineSpacing: theme.bodyLineSpacing)
             }
-            .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+            .padding(.leading, theme.nonListLeading(depth: depth))
 
         case .code(let source, let language):
             VStack(alignment: .leading, spacing: 0) {
                 if let language, !language.isEmpty {
                     Text(language)
-                        .font(NotionStyle.mono(size: 11))
-                        .foregroundStyle(NotionStyle.mutedForeground)
+                        .font(theme.mono(size: 11))
+                        .foregroundStyle(theme.mutedForeground)
                         .padding(.bottom, 8)
                 }
                 Text(source)
-                    .font(NotionStyle.mono())
-                    .foregroundStyle(NotionStyle.foreground)
+                    .font(theme.mono())
+                    .foregroundStyle(theme.foreground)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 16)
-            .background(NotionStyle.codeBackground.opacity(0.5))
+            .background(theme.codeBackground.opacity(0.5))
             .clipShape(RoundedRectangle(cornerRadius: 8))
-            .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+            .padding(.leading, theme.nonListLeading(depth: depth))
 
         case .divider:
             Rectangle()
-                .fill(NotionStyle.dividerColor)
+                .fill(theme.dividerColor)
                 .frame(height: 1)
-                .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+                .padding(.leading, theme.nonListLeading(depth: depth))
 
         case .toggle:
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+            HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
                 Image(systemName: "arrowtriangle.right.fill")
-                    .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                    .font(.system(size: theme.chevronSize, weight: .medium))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .foregroundStyle(NotionStyle.foreground)
-                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .foregroundStyle(theme.foreground)
+                    .frame(width: theme.bulletMarkerColumnWidth, height: theme.listMarkerFrameHeight, alignment: .trailing)
                     .alignmentGuide(.firstTextBaseline) { dimensions in
-                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                        dimensions[VerticalAlignment.center] + theme.bulletMarkerBaselineOffset
                     }
-                text(font: NotionStyle.body(), fontSize: 16, lineSpacing: NotionStyle.bodyLineSpacing)
+                text(font: theme.body(), fontSize: 16, lineSpacing: theme.bodyLineSpacing)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+            .padding(.leading, CGFloat(depth) * theme.indentStep)
 
         case .templateButton:
-            HStack(alignment: .firstTextBaseline, spacing: NotionStyle.listMarkerGap) {
+            HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: NotionStyle.chevronSize, weight: .medium))
+                    .font(.system(size: theme.chevronSize, weight: .medium))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .foregroundStyle(NotionStyle.foreground)
-                    .frame(width: NotionStyle.bulletMarkerColumnWidth, height: NotionStyle.listMarkerFrameHeight, alignment: .trailing)
+                    .foregroundStyle(theme.foreground)
+                    .frame(width: theme.bulletMarkerColumnWidth, height: theme.listMarkerFrameHeight, alignment: .trailing)
                     .alignmentGuide(.firstTextBaseline) { dimensions in
-                        dimensions[VerticalAlignment.center] + NotionStyle.bulletMarkerBaselineOffset
+                        dimensions[VerticalAlignment.center] + theme.bulletMarkerBaselineOffset
                     }
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    InlineRenderer.swiftUIText(block.text, baseFont: NotionStyle.body(), resolvingPageTitle: { pageLookups[$0]?.title })
-                        .font(NotionStyle.body())
-                        .lineSpacing(NotionStyle.bodyLineSpacing)
-                        .textRenderer(InlineCodeChipRenderer())
+                    InlineRenderer.swiftUIText(block.text, theme: theme, baseFont: theme.body(), resolvingPageTitle: { pageLookups[$0]?.title })
+                        .font(theme.body())
+                        .lineSpacing(theme.bodyLineSpacing)
+                        .textRenderer(InlineCodeChipRenderer(theme: theme))
                 }
-                .foregroundStyle(NotionStyle.foreground)
+                .foregroundStyle(theme.foreground)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(NotionStyle.selectionBackground.opacity(0.75))
+                .background(theme.selectionBackground.opacity(0.75))
                 .clipShape(RoundedRectangle(cornerRadius: 5))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, CGFloat(depth) * NotionStyle.indentStep)
+            .padding(.leading, CGFloat(depth) * theme.indentStep)
 
         case .subpage(let title, let path):
             let lookup = pageLookups[path]
             let displayTitle = lookup?.title ?? title
             let missing = lookup?.isMissing == true
-            subpageRowBody(title: displayTitle, missing: missing, depth: depth)
+            subpageRowBody(title: displayTitle, missing: missing, depth: depth, theme: theme)
 
         case .image(let source, let alt):
-            ImageBlockView(source: source, alt: alt)
-                .padding(.leading, NotionStyle.nonListLeading(depth: depth))
+            ImageBlockView(source: source, alt: alt, theme: theme)
+                .padding(.leading, theme.nonListLeading(depth: depth))
         }
     }
 
@@ -999,14 +1010,15 @@ struct BlockRowPreview: View, Equatable {
             decoratedText(
                 block.text,
                 baseFont: font,
-                boldFont: NotionStyle.body(size: fontSize, weight: .semibold),
+                boldFont: theme.body(size: fontSize, weight: .semibold),
                 pageLookups: pageLookups,
-                previews: linkPreviews
+                previews: linkPreviews,
+                theme: theme
             )
                 .font(font)
-                .foregroundStyle(muted ? NotionStyle.mutedForeground : NotionStyle.foreground)
+                .foregroundStyle(muted ? theme.mutedForeground : theme.foreground)
                 .lineSpacing(lineSpacing)
-                .textRenderer(InlineCodeChipRenderer())
+                .textRenderer(InlineCodeChipRenderer(theme: theme))
                 .strikethrough(strikethrough)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

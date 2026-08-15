@@ -7,10 +7,6 @@ import UIKit
 #endif
 
 
-public extension Notification.Name {
-    static let hunchEscapeKeyDown = Notification.Name("hunch.escapeKeyDown")
-}
-
 /// Single-page block editor.
 ///
 /// **One EditorView per document.** Each `(document, state)` pair is one editing
@@ -32,6 +28,7 @@ public struct EditorView: View {
     /// lets `.equatable()` gating actually work for the row wrapper. See
     /// `EditorHost`.
     public let host: any EditorHost
+    public let configuration: EditorConfiguration
     public let pageFooter: AnyView?
 
     // View-shaped @State that doesn't move into EditorState because it's tied to
@@ -127,11 +124,13 @@ public struct EditorView: View {
     public init(
         document: Document,
         state: EditorState,
-        host: any EditorHost
+        host: any EditorHost,
+        configuration: EditorConfiguration = EditorConfiguration()
     ) {
         self.document = document
         self.state = state
         self.host = host
+        self.configuration = configuration
         self.pageFooter = nil
     }
 
@@ -139,11 +138,13 @@ public struct EditorView: View {
         document: Document,
         state: EditorState,
         host: any EditorHost,
+        configuration: EditorConfiguration = EditorConfiguration(),
         @ViewBuilder pageFooter: () -> Footer
     ) {
         self.document = document
         self.state = state
         self.host = host
+        self.configuration = configuration
         self.pageFooter = AnyView(pageFooter())
     }
 
@@ -186,7 +187,8 @@ public struct EditorView: View {
             #else
             let selectedIDs = effectiveSelectedIDs()
             #endif
-            let horizontalPadding = NotionStyle.pageHorizontalPadding(for: geometry.size.width)
+            let theme = configuration.theme
+            let horizontalPadding = theme.pageHorizontalPadding(for: geometry.size.width)
             let visibleRowByID = Dictionary(uniqueKeysWithValues: visibleRows.map { ($0.id, $0) })
             let surfaceRows = visibleRows.map { row in
                 let gap = BlockSpacing.gap(before: row.kind, depth: row.depth, after: row.prevKind, prevDepth: row.prevDepth)
@@ -210,7 +212,7 @@ public struct EditorView: View {
                           let block = document.find(id) else { return }
                     if case .subpage(_, let pageID) = block.kind,
                        !host.lookupPage(pageID).isMissing,
-                       hitsSubpageIconColumn(point: point, rowFrame: frame, depth: row.depth) {
+                       hitsSubpageIconColumn(point: point, rowFrame: frame, depth: row.depth, theme: theme) {
                         openPageIconPicker(for: id)
                     } else {
                         handleRowClick(blockID: id)
@@ -222,7 +224,7 @@ public struct EditorView: View {
                     state.selectForReorderStart(on: blockID)
                     if anchor == location {
                         preliftReorder(blockID: blockID)
-                        Haptics.light()
+                        Haptics.light(enabled: configuration.isHapticFeedbackEnabled)
                     }
                     tickReorderLift(blockID: blockID, at: location, anchorAt: anchor, snapshot: document.children)
                 },
@@ -263,7 +265,7 @@ public struct EditorView: View {
             RowSurface(
                 rows: surfaceRows,
                 layoutCache: layoutCache,
-                maxContentWidth: NotionStyle.maxContentWidth,
+                maxContentWidth: theme.maxContentWidth,
                 horizontalPadding: horizontalPadding,
                 gutterWidth: DragHandle.gutterWidth,
                 trailingDropHeight: 32 + trailingPinchGap + trailingReorderGap,
@@ -282,7 +284,7 @@ public struct EditorView: View {
             } liftContent: { id, size in
                 reorderLiftContent(for: id, size: size)
             }
-            .background(NotionStyle.background)
+            .background(theme.background)
             .overlay(alignment: .bottom) {
                 if let runningBlockActionTitle {
                     HStack(spacing: 10) {
@@ -290,7 +292,7 @@ public struct EditorView: View {
                             .controlSize(.small)
                         Text("\(runningBlockActionTitle)…")
                     }
-                    .font(NotionStyle.body(size: 13))
+                    .font(theme.body(size: 13))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(.regularMaterial, in: Capsule())
@@ -303,7 +305,7 @@ public struct EditorView: View {
                             state.actionToast = nil
                         }
                     }
-                    .font(NotionStyle.body(size: 13))
+                    .font(theme.body(size: 13))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(.regularMaterial, in: Capsule())
@@ -424,9 +426,6 @@ public struct EditorView: View {
                 if let payload = state.takePendingAppend() {
                     appendBlocksFromHost(payload.blocks, actionName: payload.actionName)
                 }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .hunchEscapeKeyDown)) { _ in
-                handleEscapeKey()
             }
             .onKeyPress(keys: [
                 .upArrow, .downArrow, .leftArrow, .rightArrow, .return, .escape, .tab,
@@ -657,12 +656,12 @@ public struct EditorView: View {
             actionMenuContent: { AnyView(blockActionMenuContent(for: block.id)) },
             completionMenuContent: { AnyView(completionMenuContent()) },
             emojiPickerContent: {
-                AnyView(HunchEmojiPicker { emoji in
+                AnyView(EditorEmojiPicker { emoji in
                     selectPageIcon(emoji, fromSubpageBlock: block.id)
                 })
             }
         )
-        BlockRow(model: rowModel, state: state, actions: rowActions)
+        BlockRow(model: rowModel, state: state, actions: rowActions, configuration: configuration)
         .equatable()
     }
 
@@ -947,19 +946,19 @@ public struct EditorView: View {
     /// Returns `.ignored` if no binding matches so SwiftUI can pass the press
     /// through to other handlers.
     func handleNavKeyPress(_ press: KeyPress) -> KeyPress.Result {
-        Diag.navkey.debug("press key=\(String(describing: press.key), privacy: .public) modifiers=\(press.modifiers.rawValue, privacy: .public) cursor=\(String(describing: state.cursor), privacy: .public) selection=\(state.selection.count, privacy: .public) editing=\(String(describing: state.editingBlock), privacy: .public)")
+        configuration.diagnostics.navkey.debug("press key=\(String(describing: press.key), privacy: .public) modifiers=\(press.modifiers.rawValue, privacy: .public) cursor=\(String(describing: state.cursor), privacy: .public) selection=\(state.selection.count, privacy: .public) editing=\(String(describing: state.editingBlock), privacy: .public)")
         // The page remains in navigation mode while its icon-picker popover is
         // open. Let the picker's focused search field/grid own every key so
         // Backspace edits the query instead of deleting the selected row.
         guard iconPickerBlockID == nil else { return .ignored }
         guard state.editingBlock == nil else { return .ignored }
         guard let action = Self.navAction(for: press.key, modifiers: press.modifiers) else {
-            Diag.navkey.debug("no action matched")
+            configuration.diagnostics.navkey.debug("no action matched")
             return .ignored
         }
-        Diag.navkey.debug("dispatching action=\(String(describing: action), privacy: .public)")
+        configuration.diagnostics.navkey.debug("dispatching action=\(String(describing: action), privacy: .public)")
         editorCommands.perform(action)
-        Diag.navkey.debug("after dispatch cursor=\(String(describing: state.cursor), privacy: .public) selection=\(state.selection.count, privacy: .public)")
+        configuration.diagnostics.navkey.debug("after dispatch cursor=\(String(describing: state.cursor), privacy: .public) selection=\(state.selection.count, privacy: .public)")
         return .handled
     }
 
@@ -1153,7 +1152,7 @@ public struct EditorView: View {
     /// to remember to flip `pageFocused`.
     func handleModeChange(from oldState: SessionState, to newState: SessionState) {
         let wasEditing: Bool = { if case .editing = oldState { return true } else { return false } }()
-        Diag.mode.debug("from=\(String(describing: oldState), privacy: .public) to=\(String(describing: newState), privacy: .public)")
+        configuration.diagnostics.mode.debug("from=\(String(describing: oldState), privacy: .public) to=\(String(describing: newState), privacy: .public)")
 
         switch newState {
         case .editing(let id, _):
@@ -1693,7 +1692,7 @@ public struct EditorView: View {
             (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
         }
         if out.isEmpty, !state.selection.isEmpty {
-            Diag.mode.error("effectiveSelectedIDs: state.selection has \(state.selection.count, privacy: .public) IDs but none present in document")
+            configuration.diagnostics.mode.error("effectiveSelectedIDs: state.selection has \(state.selection.count, privacy: .public) IDs but none present in document")
         }
         return out
     }
@@ -1728,7 +1727,7 @@ public struct EditorView: View {
         mutate("Move Block") {
             _ = document.slideSiblings(Set(roots), by: delta)
         }
-        Diag.navkey.debug("slideSiblings ids=\(ids.count, privacy: .public) roots=\(roots.count, privacy: .public) delta=\(delta, privacy: .public) moved=true")
+        configuration.diagnostics.navkey.debug("slideSiblings ids=\(ids.count, privacy: .public) roots=\(roots.count, privacy: .public) delta=\(delta, privacy: .public) moved=true")
     }
 
     /// Delete every block in the current selection. No-op if the selection
@@ -1770,7 +1769,7 @@ public struct EditorView: View {
         // no-op. Should be unreachable now that `Document.didReplaceChildren`
         // revalidates state on bulk-replace; log loudly if it ever fires again.
         if !roots.contains(where: { document.documentOrder(of: $0) != nil }) {
-            Diag.mode.error("deleteBlocks: selection has no doc-present IDs roots=\(roots.count, privacy: .public)")
+            configuration.diagnostics.mode.error("deleteBlocks: selection has no doc-present IDs roots=\(roots.count, privacy: .public)")
             return
         }
 

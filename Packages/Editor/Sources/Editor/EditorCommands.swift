@@ -27,8 +27,8 @@ public final class EditorCommands {
 }
 
 /// Every void-returning command exposed to the menu bar. New shortcuts add a
-/// case here, a switch arm in `EditorView.wireEditorCommands()`, and a menu
-/// button in `HunchApp.swift` — three touch-points, all compile-checked.
+/// case here, a switch arm in `EditorView.wireEditorCommands()`, and the host's
+/// menu surface — three touch-points, all compile-checked.
 ///
 /// Some cases are nav-mode only (page-focused, no editor mounted) — they're
 /// dispatched both from the menu bar and from `EditorView.handleNavKeyPress`'s

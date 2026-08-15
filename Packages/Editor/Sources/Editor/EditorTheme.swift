@@ -5,7 +5,10 @@ import AppKit
 import UIKit
 #endif
 
-public enum NotionStyle {
+/// Visual values consumed by the editor. A host can supply a theme per
+/// `EditorView`; the package default uses system fonts and requires no bundled
+/// font registration.
+public struct EditorTheme: Equatable, Sendable {
     private struct RGBA {
         let red: CGFloat
         let green: CGFloat
@@ -26,7 +29,7 @@ public enum NotionStyle {
         NSColor(name: nil) { appearance in
             let match = appearance.bestMatch(from: [.darkAqua, .aqua])
             return platformColor(match == .darkAqua ? dark : light)
-        } ?? platformColor(light)
+        }
     }
 
     private static func adaptiveColor(light: RGBA, dark: RGBA) -> Color {
@@ -56,38 +59,152 @@ public enum NotionStyle {
     }
     #endif
 
-    // MARK: Colors
-    public static let foreground = adaptiveColor(light: rgb(55, 53, 47), dark: rgb(218, 216, 211))        // #37352F / #DAD8D3
-    public static let mutedForeground = adaptiveColor(light: rgba(55, 53, 47, 0.5), dark: rgba(255, 255, 255, 0.46))
-    public static let background = adaptiveColor(light: rgb(255, 255, 255), dark: rgb(25, 25, 25))
-    static let codeForeground = adaptiveColor(light: rgb(235, 87, 87), dark: rgb(255, 115, 105))    // #EB5757 / #FF7369
-    static let codeBackground = adaptiveColor(light: rgba(135, 131, 120, 0.15), dark: rgba(255, 255, 255, 0.08))
-    static let dividerColor = adaptiveColor(light: rgb(233, 233, 231), dark: rgba(255, 255, 255, 0.13))
-    public static let linkForeground = adaptiveColor(light: rgb(35, 131, 226), dark: rgb(82, 156, 255))
-    static let selectionBackground = adaptiveColor(light: rgba(35, 131, 226, 0.12), dark: rgba(82, 156, 255, 0.22))
+    public struct Palette: Equatable, Sendable {
+        public var foreground: Color
+        public var mutedForeground: Color
+        public var background: Color
+        public var codeForeground: Color
+        public var codeBackground: Color
+        public var divider: Color
+        public var link: Color
+        public var selection: Color
 
-    #if os(macOS)
-    static let platformForeground = adaptivePlatformColor(light: rgb(55, 53, 47), dark: rgb(218, 216, 211))
-    static let platformCodeForeground = adaptivePlatformColor(light: rgb(235, 87, 87), dark: rgb(255, 115, 105))
-    static let platformCodeBackground = adaptivePlatformColor(light: rgba(135, 131, 120, 0.15), dark: rgba(255, 255, 255, 0.08))
-    #elseif os(iOS)
-    static let platformForeground = adaptivePlatformColor(light: rgb(55, 53, 47), dark: rgb(218, 216, 211))
-    static let platformCodeForeground = adaptivePlatformColor(light: rgb(235, 87, 87), dark: rgb(255, 115, 105))
-    static let platformCodeBackground = adaptivePlatformColor(light: rgba(135, 131, 120, 0.15), dark: rgba(255, 255, 255, 0.08))
-    #endif
+        public init(
+            foreground: Color,
+            mutedForeground: Color,
+            background: Color,
+            codeForeground: Color,
+            codeBackground: Color,
+            divider: Color,
+            link: Color,
+            selection: Color
+        ) {
+            self.foreground = foreground
+            self.mutedForeground = mutedForeground
+            self.background = background
+            self.codeForeground = codeForeground
+            self.codeBackground = codeBackground
+            self.divider = divider
+            self.link = link
+            self.selection = selection
+        }
 
-    // MARK: Fonts
-    /// Family name declared by the bundled Inter variable-font file.
-    static let bodyFontFamily = "Inter Variable"
+        public static let `default` = Palette(
+            foreground: EditorTheme.adaptiveColor(light: EditorTheme.rgb(55, 53, 47), dark: EditorTheme.rgb(218, 216, 211)),
+            mutedForeground: EditorTheme.adaptiveColor(light: EditorTheme.rgba(55, 53, 47, 0.5), dark: EditorTheme.rgba(255, 255, 255, 0.46)),
+            background: EditorTheme.adaptiveColor(light: EditorTheme.rgb(255, 255, 255), dark: EditorTheme.rgb(25, 25, 25)),
+            codeForeground: EditorTheme.adaptiveColor(light: EditorTheme.rgb(235, 87, 87), dark: EditorTheme.rgb(255, 115, 105)),
+            codeBackground: EditorTheme.adaptiveColor(light: EditorTheme.rgba(135, 131, 120, 0.15), dark: EditorTheme.rgba(255, 255, 255, 0.08)),
+            divider: EditorTheme.adaptiveColor(light: EditorTheme.rgb(233, 233, 231), dark: EditorTheme.rgba(255, 255, 255, 0.13)),
+            link: EditorTheme.adaptiveColor(light: EditorTheme.rgb(35, 131, 226), dark: EditorTheme.rgb(82, 156, 255)),
+            selection: EditorTheme.adaptiveColor(light: EditorTheme.rgba(35, 131, 226, 0.12), dark: EditorTheme.rgba(82, 156, 255, 0.22))
+        )
+    }
 
-    /// Inter at the requested size and weight, built via a platform font descriptor
-    /// so SwiftUI never has to call `.weight()` on a `Font.custom(...)` — that path
-    /// emits "Unable to update Font Descriptor's weight" warnings on iOS for every
-    /// non-system font (Inter is registered as a single variable face). Same family
-    /// + weight resolution as `InlineMarksBridge.interFont`, just bridged into a
-    /// SwiftUI `Font`.
-    public static func body(size: CGFloat = 16, weight: Font.Weight = .regular) -> Font {
+    public struct Typography: Equatable, Sendable {
+        public var bodyFontFamily: String?
+        public var bodySize: CGFloat
+        public var bodyLineSpacing: CGFloat
+        public var headingWeight: Font.Weight
+        public var headingLineSpacing: CGFloat
+        public var pageTitleSize: CGFloat
+        public var h1Size: CGFloat
+        public var h2Size: CGFloat
+        public var h3Size: CGFloat
+        public var inlineCodeSize: CGFloat
+
+        public init(
+            bodyFontFamily: String? = nil,
+            bodySize: CGFloat = 16,
+            bodyLineSpacing: CGFloat = 3.5,
+            headingWeight: Font.Weight = .semibold,
+            headingLineSpacing: CGFloat = 1,
+            pageTitleSize: CGFloat = 40,
+            h1Size: CGFloat = 30,
+            h2Size: CGFloat = 24,
+            h3Size: CGFloat = 20,
+            inlineCodeSize: CGFloat = 13.6
+        ) {
+            self.bodyFontFamily = bodyFontFamily
+            self.bodySize = bodySize
+            self.bodyLineSpacing = bodyLineSpacing
+            self.headingWeight = headingWeight
+            self.headingLineSpacing = headingLineSpacing
+            self.pageTitleSize = pageTitleSize
+            self.h1Size = h1Size
+            self.h2Size = h2Size
+            self.h3Size = h3Size
+            self.inlineCodeSize = inlineCodeSize
+        }
+    }
+
+    public struct Layout: Equatable, Sendable {
+        public var maxContentWidth: CGFloat
+        public var minimumHorizontalPadding: CGFloat
+        public var maximumHorizontalPadding: CGFloat
+        public var proportionalHorizontalPadding: CGFloat
+        public var indentStep: CGFloat
+        public var listMarkerGap: CGFloat
+        public var listMarkerColumnWidth: CGFloat
+
+        public init(
+            maxContentWidth: CGFloat = 708,
+            minimumHorizontalPadding: CGFloat = 20,
+            maximumHorizontalPadding: CGFloat = 48,
+            proportionalHorizontalPadding: CGFloat = 0.055,
+            indentStep: CGFloat = 24,
+            listMarkerGap: CGFloat = 10,
+            listMarkerColumnWidth: CGFloat = 24
+        ) {
+            self.maxContentWidth = maxContentWidth
+            self.minimumHorizontalPadding = minimumHorizontalPadding
+            self.maximumHorizontalPadding = maximumHorizontalPadding
+            self.proportionalHorizontalPadding = proportionalHorizontalPadding
+            self.indentStep = indentStep
+            self.listMarkerGap = listMarkerGap
+            self.listMarkerColumnWidth = listMarkerColumnWidth
+        }
+    }
+
+    public var palette: Palette
+    public var typography: Typography
+    public var layout: Layout
+
+    public init(
+        palette: Palette = .default,
+        typography: Typography = Typography(),
+        layout: Layout = Layout()
+    ) {
+        self.palette = palette
+        self.typography = typography
+        self.layout = layout
+    }
+
+    public static let `default` = EditorTheme()
+
+    public var foreground: Color { palette.foreground }
+    public var mutedForeground: Color { palette.mutedForeground }
+    public var background: Color { palette.background }
+    public var codeForeground: Color { palette.codeForeground }
+    public var codeBackground: Color { palette.codeBackground }
+    public var dividerColor: Color { palette.divider }
+    public var linkForeground: Color { palette.link }
+    public var selectionBackground: Color { palette.selection }
+    public var bodyFontFamily: String? { typography.bodyFontFamily }
+
+    var platformForeground: PlatformColor { PlatformColor(foreground) }
+    var platformCodeForeground: PlatformColor { PlatformColor(codeForeground) }
+    var platformCodeBackground: PlatformColor { PlatformColor(codeBackground) }
+
+    public func body(weight: Font.Weight = .regular) -> Font {
+        body(size: typography.bodySize, weight: weight)
+    }
+
+    public func body(size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let platformWeight = platformFontWeight(for: weight)
+        guard let bodyFontFamily else {
+            return .system(size: size, weight: weight)
+        }
         let attributes: [PlatformFontDescriptor.AttributeName: Any] = [
             .family: bodyFontFamily,
             .traits: [PlatformFontDescriptor.TraitKey.weight: platformWeight.rawValue]
@@ -103,11 +220,11 @@ public enum NotionStyle {
         #endif
     }
 
-    static func mono(size: CGFloat = 14) -> Font {
+    public func mono(size: CGFloat = 14) -> Font {
         Font.system(size: size, weight: .regular, design: .monospaced)
     }
 
-    private static func platformFontWeight(for weight: Font.Weight) -> PlatformFontWeight {
+    private func platformFontWeight(for weight: Font.Weight) -> PlatformFontWeight {
         if weight == .ultraLight { return .ultraLight }
         if weight == .thin { return .thin }
         if weight == .light { return .light }
@@ -120,79 +237,78 @@ public enum NotionStyle {
     }
 
     // MARK: Spacing
-    public static let lineHeightMultiple: CGFloat = 1.5
-    public static let blockVerticalPadding: CGFloat = 3
-    public static let headingTopPadding: CGFloat = 22
-    /// Notion uses 700 across page title, H1, H2, H3 — confirmed against pre-2026 reference shots.
-    static let headingWeight: Font.Weight = .semibold
+    public var lineHeightMultiple: CGFloat { 1.5 }
+    public var blockVerticalPadding: CGFloat { 3 }
+    public var headingTopPadding: CGFloat { 22 }
+    var headingWeight: Font.Weight { typography.headingWeight }
 
     /// SwiftUI's `.lineSpacing` is *additional* spacing between baselines, not a multiplier.
     /// Inter's natural 16pt leading already reads a touch airier than Notion's body copy,
     /// so we stay slightly under the theoretical 1.5em target to keep wrapped paragraphs dense enough.
-    static let bodyLineSpacing: CGFloat = 3.5
+    var bodyLineSpacing: CGFloat { typography.bodyLineSpacing }
     /// Headings use a tighter line-height (~1.2em) than body so multi-line headings don't sprawl.
-    static let headingLineSpacing: CGFloat = 1
+    var headingLineSpacing: CGFloat { typography.headingLineSpacing }
 
     // MARK: Heading sizes
     /// Notion's `.notion-page-title-text { font-size: 40px }`. Used only for the *first* H1 in a
     /// document when it sits at the top — that's how Notion treats the document title.
-    static let pageTitleSize: CGFloat = 40
+    var pageTitleSize: CGFloat { typography.pageTitleSize }
     /// `.notion-h1 { font-size: 1.875em }` → 30pt. Inline H1 (rare; not the page title).
-    static let h1Size: CGFloat = 30
+    var h1Size: CGFloat { typography.h1Size }
     /// `.notion-h2 { font-size: 1.5em }` → 24pt.
-    static let h2Size: CGFloat = 24
+    var h2Size: CGFloat { typography.h2Size }
     /// `.notion-h3 { font-size: 1.25em }` → 20pt.
-    static let h3Size: CGFloat = 20
+    var h3Size: CGFloat { typography.h3Size }
 
     // MARK: Page layout
-    static let maxContentWidth: CGFloat = 708
+    var maxContentWidth: CGFloat { layout.maxContentWidth }
     /// Minimum side breathing room before the centered page column takes over on wider windows.
-    static func pageHorizontalPadding(for availableWidth: CGFloat) -> CGFloat {
-        min(48, max(20, availableWidth * 0.055))
+    func pageHorizontalPadding(for availableWidth: CGFloat) -> CGFloat {
+        min(layout.maximumHorizontalPadding, max(layout.minimumHorizontalPadding, availableWidth * layout.proportionalHorizontalPadding))
     }
 
     // MARK: Inline code
-    static let inlineCodeSize: CGFloat = 13.6
-    public static let inlineCodeRadius: CGFloat = 3
-    public static let inlineCodeHorizontalPadding: CGFloat = 4
-    public static let inlineCodeVerticalPadding: CGFloat = 1.5
+    var inlineCodeSize: CGFloat { typography.inlineCodeSize }
+    public var inlineCodeRadius: CGFloat { 3 }
+    public var inlineCodeHorizontalPadding: CGFloat { 4 }
+    public var inlineCodeVerticalPadding: CGFloat { 1.5 }
 
     // MARK: List indentation
-    static let indentStep: CGFloat = 24
-    static let listMarkerGap: CGFloat = 10
+    var indentStep: CGFloat { layout.indentStep }
+    var listMarkerGap: CGFloat { layout.listMarkerGap }
     /// Width of the marker column for every list-style row (bullet/numbered/
     /// todo/toggle/templateButton/subpage). Unified across kinds so list-text
     /// columns line up regardless of marker shape, and so an indented paragraph
     /// at depth N+1 aligns exactly with list text at depth N. Marker glyphs are
     /// right-aligned within the column.
-    static let listMarkerColumnWidth: CGFloat = 24
+    var listMarkerColumnWidth: CGFloat { layout.listMarkerColumnWidth }
 
     /// Leading inset for marker-less rows (paragraph, heading, quote, code, divider).
     /// At depth N>0, aligns with where a list item at depth N-1 puts its TEXT — so
     /// depth reads consistently across block kinds.
-    static func nonListLeading(depth: Int) -> CGFloat {
+    func nonListLeading(depth: Int) -> CGFloat {
         depth <= 0 ? 0 : CGFloat(depth - 1) * indentStep + listMarkerColumnWidth + listMarkerGap
     }
-    static let listMarkerFrameHeight: CGFloat = 16
-    static let bulletMarkerDiameter: CGFloat = 6
-    static let bulletMarkerColumnWidth: CGFloat = listMarkerColumnWidth
-    static let bulletMarkerBaselineOffset: CGFloat = 5
-    static let numberedMarkerColumnWidth: CGFloat = listMarkerColumnWidth
-    static let todoMarkerColumnWidth: CGFloat = listMarkerColumnWidth
-    static let todoCheckboxSize: CGFloat = 16
+    var listMarkerFrameHeight: CGFloat { 16 }
+    var bulletMarkerDiameter: CGFloat { 6 }
+    var bulletMarkerColumnWidth: CGFloat { listMarkerColumnWidth }
+    var bulletMarkerBaselineOffset: CGFloat { 5 }
+    var numberedMarkerColumnWidth: CGFloat { listMarkerColumnWidth }
+    var todoMarkerColumnWidth: CGFloat { listMarkerColumnWidth }
+    var todoCheckboxSize: CGFloat { 16 }
 
     // MARK: Toggle / subpage
-    static let chevronSize: CGFloat = 12
-    static let pageIconSize: CGFloat = 14
+    var chevronSize: CGFloat { 12 }
+    var pageIconSize: CGFloat { 14 }
     /// A title emoji standing in for the page icon reads small next to the
     /// SF Symbol at the same point size; render it a touch larger. It sits
     /// in the same fixed-height marker frame, so the row height is unchanged.
-    static let subpageEmojiIconSize: CGFloat = 17
+    var subpageEmojiIconSize: CGFloat { 17 }
     /// Emoji glyphs render ~1.2× their point size wide. `markerCenteringOffset`
     /// centers a right-aligned marker by its *visual width*, so feed it the
     /// emoji's advance (not its point size) or the glyph lands a couple px
     /// too far left.
-    static let subpageEmojiIconAdvance: CGFloat = subpageEmojiIconSize * 1.2
+    var subpageEmojiIconAdvance: CGFloat { subpageEmojiIconSize * 1.2 }
 
     /// Visual shift (in pt) to apply to a right-aligned marker so its horizontal center
     /// matches the bullet marker's center. Bullet is `bulletMarkerDiameter` wide and sits
@@ -200,7 +316,7 @@ public enum NotionStyle {
     /// same column has its center further left by `(width - bulletMarkerDiameter) / 2`.
     /// Apply via `.offset(x:)` *after* the marker's `.frame(...)` so layout (and therefore
     /// the text column) is unaffected.
-    static func markerCenteringOffset(markerWidth: CGFloat) -> CGFloat {
+    func markerCenteringOffset(markerWidth: CGFloat) -> CGFloat {
         (markerWidth - bulletMarkerDiameter) / 2
     }
 }

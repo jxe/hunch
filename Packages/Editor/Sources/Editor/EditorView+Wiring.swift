@@ -216,7 +216,7 @@ extension EditorView {
                 undoController.cancelActiveTextCheckpoint?()
                 var validIDs: Set<BlockID> = []
                 document.walk { block, _, _ in validIDs.insert(block.id) }
-                Diag.mode.debug("document children replaced — revalidating state against \(validIDs.count, privacy: .public) blocks")
+                configuration.diagnostics.mode.debug("document children replaced — revalidating state against \(validIDs.count, privacy: .public) blocks")
                 state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
                 layoutCache.invalidateStructure()
             }

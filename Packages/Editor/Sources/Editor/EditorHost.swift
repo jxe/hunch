@@ -60,8 +60,8 @@ public protocol EditorHost: AnyObject {
     /// they fall through to the system handler at the OpenURLAction site.
     func openPage(pageID: String)
 
-    /// Set the page-level icon for the referenced page. Hunch represents the
-    /// icon as the leading emoji of the page title; other hosts may project
+    /// Set the page-level icon for the referenced page. A host may represent
+    /// the icon as the leading emoji of the page title or project
     /// this onto their own storage model.
     func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool
 

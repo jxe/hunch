@@ -18,7 +18,7 @@ import UIKit
 @MainActor
 enum LinkPreviewFetcher {
     /// Native pixel size of the favicon we persist. Decoded back at 2x scale
-    /// so it renders inside `Text` at `NotionStyle.pageIconSize` (14pt) logical,
+    /// so it renders inside `Text` at `HunchStyle.pageIconSize` (14pt) logical,
     /// matching the small `doc.text` icon used in subpage rows. Stored as
     /// `Data` so the actor cache stays `Sendable`.
     private static let iconPixelSize: CGFloat = 28

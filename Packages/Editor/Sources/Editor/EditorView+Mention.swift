@@ -210,13 +210,17 @@ extension EditorView {
 
             if matches.isEmpty {
                 Text("No matching pages")
-                    .font(NotionStyle.body(size: 12))
-                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .font(configuration.theme.body(size: 12))
+                    .foregroundStyle(configuration.theme.mutedForeground)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             } else {
                 ForEach(Array(matches.enumerated()), id: \.element.id) { index, item in
-                    MentionItemRow(item: item, isHighlighted: state.mentionMenu?.selectedIndex == index)
+                    MentionItemRow(
+                        item: item,
+                        isHighlighted: state.mentionMenu?.selectedIndex == index,
+                        theme: configuration.theme
+                    )
                         .onTapGesture {
                             guard let menu = state.mentionMenu else { return }
                             commitMention(item, menu: menu)
@@ -260,8 +264,8 @@ extension EditorView {
 
             if matches.isEmpty {
                 Text("No matching emoji")
-                    .font(NotionStyle.body(size: 12))
-                    .foregroundStyle(NotionStyle.mutedForeground)
+                    .font(configuration.theme.body(size: 12))
+                    .foregroundStyle(configuration.theme.mutedForeground)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             } else {
@@ -271,8 +275,8 @@ extension EditorView {
                             .font(.system(size: 20))
                             .frame(width: 26)
                         Text(item.name)
-                            .font(NotionStyle.body(size: 13))
-                            .foregroundStyle(NotionStyle.foreground)
+                            .font(configuration.theme.body(size: 13))
+                            .foregroundStyle(configuration.theme.foreground)
                             .lineLimit(1)
                         Spacer(minLength: 0)
                     }
@@ -280,7 +284,7 @@ extension EditorView {
                     .padding(.vertical, 6)
                     .background(
                         state.emojiMenu?.selectedIndex == index
-                            ? NotionStyle.selectionBackground
+                            ? configuration.theme.selectionBackground
                             : Color.clear
                     )
                     .contentShape(Rectangle())

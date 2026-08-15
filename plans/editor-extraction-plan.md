@@ -43,7 +43,7 @@ format is.
 | 2 | Semantic edit boundary; Clamshell-owned recovery identity | L | HIGH | 1 | DONE |
 | 3 | Neutral defaults for optional host hooks | S | LOW | 2 | DONE |
 | 4 | Host-supplied block actions | M | MED | 3 | DONE |
-| 5 | Neutral configuration, styling, and public surface | L | MED | 4 | TODO |
+| 5 | Neutral configuration, styling, and public surface | L | MED | 4 | DONE |
 | 6 | Standalone docs, example, dependency policy, and verification | L | MED | 5 | TODO |
 | 7 | Choose name, extract, publish, and adopt remotely | L | HIGH | 6 | TODO |
 
@@ -52,7 +52,9 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`.
 Post-Milestone-4 stabilization on 2026-08-15 gated visible optional-host
 affordances, refreshed the reusable-package documentation, and cleared the two
 recorded iOS reorder failures by freezing destination geometry for each drag.
-Milestone 5 remains next.
+Milestone 5 then moved all remaining Hunch presentation and process policy
+behind explicit host configuration, narrowed the public surface, and passed
+the complete macOS and iOS 27 verification matrix. Milestone 6 is next.
 
 ## Decisions already made
 

@@ -24,7 +24,7 @@ import Foundation
 @Observable
 @MainActor
 public final class EditorState {
-    public internal(set) var sessionState: SessionState = .navigating(Selection(), gesture: nil)
+    var sessionState: SessionState = .navigating(Selection(), gesture: nil)
 
     /// Where the live editor should park the cursor on its next mount of the
     /// editing block. Set when transitioning into edit mode (click point, start
@@ -34,7 +34,7 @@ public final class EditorState {
     /// clears any unconsumed value so a stale target can't leak across sessions.
     /// Nil means
     /// "seek to end".
-    internal(set) var pendingInitialCursor: InitialCursorTarget? = nil
+    var pendingInitialCursor: InitialCursorTarget? = nil
 
     /// Set when `revalidate` repaired the selection (the cursor / editing block
     /// vanished from the document, so it fell back to another block — often the
@@ -58,14 +58,14 @@ public final class EditorState {
     // every setter call regardless of whether the value changed, and SwiftUI
     // redispatches hover whenever layout shifts row frames, so an unguarded
     // write reachable from `.onContinuousHover` / `.onHover` closes the loop.
-    public private(set) var hoveredBlock: BlockID? = nil
-    public private(set) var hoveredHandle: BlockID? = nil
+    private(set) var hoveredBlock: BlockID? = nil
+    private(set) var hoveredHandle: BlockID? = nil
 
-    public func setHoveredBlock(_ id: BlockID?) {
+    func setHoveredBlock(_ id: BlockID?) {
         if hoveredBlock != id { hoveredBlock = id }
     }
 
-    public func setHoveredHandle(_ id: BlockID?) {
+    func setHoveredHandle(_ id: BlockID?) {
         if hoveredHandle != id { hoveredHandle = id }
     }
 
@@ -73,7 +73,7 @@ public final class EditorState {
     // file drops. `currentDropTarget` is the source of truth; `dropHoverIndex`
     // and `dropOntoBlockID` are computed views below for sites that only care
     // about one shape of target.
-    public internal(set) var currentDropTarget: DropTarget? = nil
+    var currentDropTarget: DropTarget? = nil
 
     // Page-local view state — defaults to all closed every time the page opens.
     // Toggle expansion is intentionally not persisted to markdown.
@@ -83,10 +83,10 @@ public final class EditorState {
     // changes which blocks are visible and thus which slots a drag/pinch
     // can land in. Set/Set mutations like `.insert(_:)` route through
     // Swift's `_modify` accessor, which runs `didSet` after each call.
-    public internal(set) var expandedToggles: Set<BlockID> = [] {
+    var expandedToggles: Set<BlockID> = [] {
         didSet { onStructureChange?() }
     }
-    public internal(set) var expandedTemplates: Set<BlockID> = [] {
+    var expandedTemplates: Set<BlockID> = [] {
         didSet { onStructureChange?() }
     }
 
@@ -98,13 +98,13 @@ public final class EditorState {
     internal var onStructureChange: (() -> Void)? = nil
 
     // Transient bottom-of-page toast (e.g. "Deleted") with an Undo affordance.
-    public internal(set) var actionToast: String? = nil
+    var actionToast: String? = nil
 
     /// Bumped by `appendBlocks(_:actionName:)`. EditorView observes via
     /// `.onChange` and consumes the buffered payload via `takePendingAppend()`.
     /// Counter (not a Bool) so two consecutive appends both fire even if the
     /// editor hasn't yet noticed the first.
-    public internal(set) var pendingAppendTicket: Int = 0
+    var pendingAppendTicket: Int = 0
     internal var pendingAppendBuffer: (blocks: [Block], actionName: String)? = nil
 
     public init() {}
@@ -112,7 +112,7 @@ public final class EditorState {
     /// Append host-supplied blocks to the end of the document. Wraps the
     /// mutation in undo registration with `actionName` and transfers focus
     /// (nav-mode cursor) to the last appended block. Source-agnostic — used
-    /// today by Hunch's voice-transcription pipeline, but the editor itself
+    /// today by a host's voice-transcription pipeline, but the editor itself
     /// doesn't care where the blocks came from.
     public func appendBlocks(_ blocks: [Block], actionName: String = "Insert Blocks") {
         guard !blocks.isEmpty else { return }
@@ -129,7 +129,7 @@ public final class EditorState {
 
 // MARK: - SessionState
 
-public enum SessionState: Equatable, Sendable {
+enum SessionState: Equatable, Sendable {
     /// Block-level selection, no caret. A `Selection` with empty `blocks` and
     /// nil cursor is the no-cursor variant (used briefly during document load
     /// and after a delete-everything). The `gesture` rides on top of nav-mode
@@ -149,31 +149,31 @@ extension SessionState {
     }
 }
 
-public enum Overlay: Equatable, Sendable {
+enum Overlay: Equatable, Sendable {
     /// @-mention popover open on the editing block.
     case mention(MentionMenuState)
     /// :emoji completion popover open on the editing block.
     case emoji(EmojiMenuState)
 }
 
-public enum Gesture: Equatable, Sendable {
+enum Gesture: Equatable, Sendable {
     /// Drag-reorder: a block (or selection of blocks) lifted under the cursor.
     case reordering(ReorderLift)
     /// Pinch-to-insert: an inline gap is opening between two rows.
     case pinchOpening(PinchPreviewState)
 }
 
-public struct Selection: Equatable, Sendable {
+struct Selection: Equatable, Sendable {
     /// Selected block IDs in document order. Always contiguous (we only build
     /// it via cursor/anchor extension).
-    public var blocks: Set<BlockID>
+    var blocks: Set<BlockID>
     /// Anchor end of a Shift-extend operation. Stays put while `cursor` moves.
-    public var anchor: BlockID?
+    var anchor: BlockID?
     /// Moving end of the selection. With no shift held, `anchor == cursor`
     /// and `blocks == [cursor]`.
-    public var cursor: BlockID?
+    var cursor: BlockID?
 
-    public init(blocks: Set<BlockID> = [], anchor: BlockID? = nil, cursor: BlockID? = nil) {
+    init(blocks: Set<BlockID> = [], anchor: BlockID? = nil, cursor: BlockID? = nil) {
         self.blocks = blocks
         self.anchor = anchor
         self.cursor = cursor
@@ -182,18 +182,18 @@ public struct Selection: Equatable, Sendable {
 
 // MARK: - Overlay payloads
 
-public struct MentionMenuState: Equatable, Sendable {
-    public let blockID: BlockID
-    public var trigger: MentionTrigger
-    public var selectedIndex: Int
+struct MentionMenuState: Equatable, Sendable {
+    let blockID: BlockID
+    var trigger: MentionTrigger
+    var selectedIndex: Int
     /// Match candidates for the current `trigger.query`, capped at 8.
     /// Filled by the editor on every trigger change so subsequent body
     /// renders and keyboard handlers read from state instead of re-asking
     /// the host (`EditorHost.suggestPages` walks the workspace page list
     /// and isn't free).
-    public var matches: [MentionItem]
+    var matches: [MentionItem]
 
-    public init(blockID: BlockID, trigger: MentionTrigger, selectedIndex: Int, matches: [MentionItem] = []) {
+    init(blockID: BlockID, trigger: MentionTrigger, selectedIndex: Int, matches: [MentionItem] = []) {
         self.blockID = blockID
         self.trigger = trigger
         self.selectedIndex = selectedIndex
@@ -201,13 +201,13 @@ public struct MentionMenuState: Equatable, Sendable {
     }
 }
 
-public struct EmojiMenuState: Equatable, Sendable {
-    public let blockID: BlockID
-    public var trigger: EmojiTrigger
-    public var selectedIndex: Int
-    public var matches: [EmojiSuggestion]
+struct EmojiMenuState: Equatable, Sendable {
+    let blockID: BlockID
+    var trigger: EmojiTrigger
+    var selectedIndex: Int
+    var matches: [EmojiSuggestion]
 
-    public init(blockID: BlockID, trigger: EmojiTrigger, selectedIndex: Int, matches: [EmojiSuggestion] = []) {
+    init(blockID: BlockID, trigger: EmojiTrigger, selectedIndex: Int, matches: [EmojiSuggestion] = []) {
         self.blockID = blockID
         self.trigger = trigger
         self.selectedIndex = selectedIndex
@@ -217,34 +217,34 @@ public struct EmojiMenuState: Equatable, Sendable {
 
 // MARK: - Gesture payloads
 
-public struct ReorderLift: Equatable, Sendable {
+struct ReorderLift: Equatable, Sendable {
     /// Lead block — what the lift overlay renders.
-    public var block: Block
+    var block: Block
     /// All subtree-roots being reordered. Single-row drags carry one ID; drags
     /// initiated from a multi-block selection carry the whole selection.
-    public var ids: [BlockID]
+    var ids: [BlockID]
     /// The parent of the lifted blocks (`nil` for root). All `ids` share this
     /// parent — the gesture refuses to lift a selection that crosses parents.
-    public var sourceParentID: BlockID?
+    var sourceParentID: BlockID?
     /// Range of positions occupied by `ids` under `sourceParentID` at lift
     /// time, in document order. Used by the drop validator to reject "drop
     /// onto yourself".
-    public var sourcePositions: ClosedRange<Int>
+    var sourcePositions: ClosedRange<Int>
     /// All ids in the lifted subtrees (roots + every descendant). Drop validator
     /// rejects targets whose `parent` is in this set (cycle prevention).
-    public var draggedSubtreeIDs: Set<BlockID>
-    public var sourceFrame: CGRect
-    public var touchOffset: CGSize
-    public var location: CGPoint
+    var draggedSubtreeIDs: Set<BlockID>
+    var sourceFrame: CGRect
+    var touchOffset: CGSize
+    var location: CGPoint
     /// True while the lift is mounted but `touchOffset` is a placeholder
     /// waiting for a real cursor location to re-anchor against. Used on iOS
     /// when the prelift state is mounted before the first concrete touch.
-    public var pendingAnchor: Bool
+    var pendingAnchor: Bool
     /// macOS Option-drag: drop performs a duplicate instead of a move, and
     /// the source rows stay at full opacity. Live-updated each gesture tick.
-    public var isCopy: Bool
+    var isCopy: Bool
 
-    public init(
+    init(
         block: Block,
         ids: [BlockID],
         sourceParentID: BlockID?,
@@ -269,14 +269,14 @@ public struct ReorderLift: Equatable, Sendable {
     }
 }
 
-public struct PinchPreviewState: Equatable, Sendable {
+struct PinchPreviewState: Equatable, Sendable {
     /// Visible-row slot index (0...visibleRows.count) where the gap is opening.
     /// Same space as `dropHoverPath` resolves into via `visibleSlotForCurrentDropPath` —
     /// nested rows participate so a pinch under a heading lands as a heading child.
-    public var insertIndex: Int
-    public var gapHeight: CGFloat
+    var insertIndex: Int
+    var gapHeight: CGFloat
 
-    public init(insertIndex: Int, gapHeight: CGFloat) {
+    init(insertIndex: Int, gapHeight: CGFloat) {
         self.insertIndex = insertIndex
         self.gapHeight = gapHeight
     }
@@ -286,7 +286,7 @@ public struct PinchPreviewState: Equatable, Sendable {
 /// id + position in that parent's children list). `asLastChildOf` is a
 /// distinct case because the UX is different — drop highlight lives on the
 /// parent row. `intoSubpage` is a cross-document move into a `.subpage`.
-public enum DropTarget: Equatable, Sendable {
+enum DropTarget: Equatable, Sendable {
     case insertAt(DropPath)
     case asLastChildOf(BlockID)
     case intoSubpage(BlockID, String)
@@ -297,23 +297,23 @@ public enum DropTarget: Equatable, Sendable {
 /// Convenience accessors that flatten `sessionState` cases back to the
 /// individual fields the editor's internals (and most consumers) read. These
 /// are derived; mutation goes through the named transition methods below.
-public extension EditorState {
+extension EditorState {
     /// Set of currently-selected blocks. In edit mode this is `[editingBlock]`
     /// for the host's purposes (the user is "selecting" that one block).
-    var selection: Set<BlockID> {
+    public var selection: Set<BlockID> {
         switch sessionState {
         case .navigating(let sel, _): return sel.blocks
         case .editing(let id, _): return [id]
         }
     }
     /// Anchor of a Shift-extend operation. nil in edit mode.
-    var anchor: BlockID? {
+    public var anchor: BlockID? {
         if case .navigating(let sel, _) = sessionState { return sel.anchor }
         return nil
     }
     /// Moving end of the selection / current focus block. In edit mode this
     /// is the editing block id.
-    var cursor: BlockID? {
+    public var cursor: BlockID? {
         switch sessionState {
         case .navigating(let sel, _): return sel.cursor
         case .editing(let id, _): return id
@@ -321,7 +321,7 @@ public extension EditorState {
     }
     /// The block whose text is currently mounted as a live editor; nil in
     /// nav mode.
-    var editingBlock: BlockID? {
+    public var editingBlock: BlockID? {
         if case .editing(let id, _) = sessionState { return id }
         return nil
     }

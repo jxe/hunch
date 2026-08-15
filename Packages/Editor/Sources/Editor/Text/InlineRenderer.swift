@@ -7,10 +7,12 @@ enum InlineRenderer {
 
     static func swiftUIText(
         _ source: AttributedString,
-        baseFont: Font = NotionStyle.body(),
-        boldFont: Font = NotionStyle.body(weight: .semibold),
+        theme: EditorTheme,
+        baseFont: Font,
+        boldFont: Font? = nil,
         resolvingPageTitle pageTitle: (String) -> String? = { _ in nil }
     ) -> Text {
+        let boldFont = boldFont ?? theme.body(weight: .semibold)
         var result = Text("")
         for run in source.runs {
             let segment = source[run.range]
@@ -29,8 +31,8 @@ enum InlineRenderer {
             let renderedDisplay = code ? Self.inlineCodePaddingText + display + Self.inlineCodePaddingText : display
             var attributed = AttributedString(renderedDisplay)
             if code {
-                attributed.font = NotionStyle.mono(size: NotionStyle.inlineCodeSize)
-                attributed.foregroundColor = NotionStyle.codeForeground
+                attributed.font = theme.mono(size: theme.inlineCodeSize)
+                attributed.foregroundColor = theme.codeForeground
             } else {
                 var font = (bold || link != nil) ? boldFont : baseFont
                 if italic {
@@ -44,7 +46,7 @@ enum InlineRenderer {
             }
             if let link {
                 attributed.link = link
-                attributed.foregroundColor = NotionStyle.foreground
+                attributed.foregroundColor = theme.foreground
             }
 
             var text = Text(attributed)

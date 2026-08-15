@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		03C5FE62B4C7960B3B7E8696 /* HunchStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12CA70AE18F67103B6352C7 /* HunchStyle.swift */; };
 		04A06B21070FBD3F94135665 /* RecoveryLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CAB768C1FCE7C688962A0B3 /* RecoveryLog.swift */; };
 		05EDCEDBEF4C024F981312E2 /* InterVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C60B591D585995CB7097A0DC /* InterVariable.ttf */; };
 		06D6A88E893F0986E9919590 /* AppIcon-Woman.icon in Resources */ = {isa = PBXBuildFile; fileRef = 51A4F447CFC7D0904C9BC40F /* AppIcon-Woman.icon */; };
@@ -167,6 +168,7 @@
 		C60B591D585995CB7097A0DC /* InterVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = InterVariable.ttf; sourceTree = "<group>"; };
 		C8DE8B7410728D05D8611A50 /* TranscriptPolisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPolisher.swift; sourceTree = "<group>"; };
 		CAD5ADE397DACEA1B4A26BE8 /* Hunch.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Hunch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D12CA70AE18F67103B6352C7 /* HunchStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HunchStyle.swift; sourceTree = "<group>"; };
 		D2E8B84ACE57ECE78B4F007B /* LinkGraph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkGraph.swift; sourceTree = "<group>"; };
 		D6E17081D5B22D0E271ABE6E /* PageCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageCoordinator.swift; sourceTree = "<group>"; };
 		D954BA2A1FAF2CB0B575371F /* HunchUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HunchUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -234,6 +236,7 @@
 			isa = PBXGroup;
 			children = (
 				8F11150420DF76AAA0F96008 /* BannerView.swift */,
+				D12CA70AE18F67103B6352C7 /* HunchStyle.swift */,
 				BEC23F7F5FF43096C7D9EF57 /* IconPickerView.swift */,
 				30B9606FCEB304E70DF4845C /* MoveDestinationSheet.swift */,
 				3403F91704D1B3970E4EB908 /* PagePickerView.swift */,
@@ -547,6 +550,7 @@
 				F70ABF6CF6A83F55B5C10876 /* FileStore.swift in Sources */,
 				3EEA45994B20513A94C2EF04 /* FontRegistration.swift in Sources */,
 				262D29CF7CAA3118EBB12F92 /* HunchApp.swift in Sources */,
+				03C5FE62B4C7960B3B7E8696 /* HunchStyle.swift in Sources */,
 				2F2ACA505AE4ACE8ED0B81FB /* IconPickerView.swift in Sources */,
 				A73814C6D355D5D9F6CF43B4 /* LinkGraph.swift in Sources */,
 				A015923C1B74E1431EC063D0 /* LinkPreviewCache.swift in Sources */,

@@ -12,8 +12,7 @@ enum SoundFX {
         case delete
     }
 
-    static func play(_ effect: Effect) {
-        let enabled = UserDefaults.standard.object(forKey: "uiSoundsEnabled") as? Bool ?? true
+    static func play(_ effect: Effect, enabled: Bool) {
         guard enabled, let id = soundID(for: effect) else { return }
         AudioServicesPlaySystemSound(id)
     }
@@ -42,19 +41,20 @@ private enum ImpactStyle {
 
 @MainActor
 enum Haptics {
-    static func light() {
-        impact(.light)
+    static func light(enabled: Bool) {
+        impact(.light, enabled: enabled)
     }
 
-    static func medium() {
-        impact(.medium)
+    static func medium(enabled: Bool) {
+        impact(.medium, enabled: enabled)
     }
 
-    static func heavy() {
-        impact(.heavy)
+    static func heavy(enabled: Bool) {
+        impact(.heavy, enabled: enabled)
     }
 
-    private static func impact(_ style: ImpactStyle) {
+    private static func impact(_ style: ImpactStyle, enabled: Bool) {
+        guard enabled else { return }
         #if os(iOS)
         let generator = UIImpactFeedbackGenerator(style: style)
         generator.prepare()
