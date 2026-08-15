@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-import Editor
+import Quagmire
 
 /// Round-trip tests covering the parser/serializer/heading-fold pipeline.
 /// The old indent-based assertions were retired with the tree refactor —

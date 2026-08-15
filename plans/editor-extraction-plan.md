@@ -2,14 +2,15 @@
 
 > **Executor instructions:** Complete the milestones in order. Keep the package
 > at `Packages/Editor`, with the package/product/module name `Editor`, through
-> Milestones 0–6. Do not choose a public name, rename imports, create a remote
-> repository, or remove the local package before Milestone 7.
+> Milestone 5. The selected public name is `Quagmire`; apply it locally in
+> Milestone 6. Do not create a remote repository or remove the local package
+> before Milestone 7.
 >
 > **Drift check:** This plan was written at commit `0c922ab` on 2026-08-13.
 > Before starting a milestone, run:
 >
 > ```sh
-> git diff --stat 0c922ab..HEAD -- Packages/Editor App project.yml README.md CONTRIBUTING.md CLAUDE.md
+> git diff --stat 0c922ab..HEAD -- Packages/Editor Packages/Quagmire App project.yml README.md CONTRIBUTING.md CLAUDE.md
 > ```
 >
 > Compare any changed in-scope APIs with the “Current boundary” section before
@@ -21,14 +22,15 @@
 Publish the block editor as a distinctive, independently versioned Swift
 package that Hunch consumes through Swift Package Manager.
 
-The work deliberately happens in two phases:
+The work deliberately happens in three phases:
 
 1. Make the editor genuinely reusable and independently verifiable while it is
    still inside the Hunch repository, where editor and host changes can land
    atomically.
-2. In the final milestone only, choose the public name, perform the
-   history-preserving extraction, publish `0.1.0`, and switch Hunch to the
-   remote dependency.
+2. Choose the public name and make the renamed local package independently
+   documented and verifiable while Hunch can still adopt the rename atomically.
+3. Perform the history-preserving extraction, publish `0.1.0`, and switch Hunch
+   to the remote dependency.
 
 This is a pre-1.0 API cleanup. Compatibility with an unpublished external
 `Editor` API is not a goal; preserving Hunch behavior and its on-disk recovery
@@ -44,8 +46,8 @@ format is.
 | 3 | Neutral defaults for optional host hooks | S | LOW | 2 | DONE |
 | 4 | Host-supplied block actions | M | MED | 3 | DONE |
 | 5 | Neutral configuration, styling, and public surface | L | MED | 4 | DONE |
-| 6 | Standalone docs, example, dependency policy, and verification | L | MED | 5 | TODO |
-| 7 | Choose name, extract, publish, and adopt remotely | L | HIGH | 6 | TODO |
+| 6 | Choose name; standalone docs, dependency policy, and verification | L | MED | 5 | DONE |
+| 7 | Extract, publish, and adopt remotely | L | HIGH | 6 | TODO |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`.
 
@@ -54,15 +56,25 @@ affordances, refreshed the reusable-package documentation, and cleared the two
 recorded iOS reorder failures by freezing destination geometry for each drag.
 Milestone 5 then moved all remaining Hunch presentation and process policy
 behind explicit host configuration, narrowed the public surface, and passed
-the complete macOS and iOS 27 verification matrix. Milestone 6 is next.
+the complete macOS and iOS 27 verification matrix. Milestone 6 selected and
+applied the `Quagmire` identity, made the local package independently
+verifiable, and passed the complete local package and Hunch gates. Milestone 7
+has not started.
 
 ## Decisions already made
 
-- The extraction is worth doing. `Packages/Editor` already has its own
+- The extraction is worth doing. The package, now at `Packages/Quagmire`,
+  already has its own
   `Package.swift`, sources, resources, tests, and README; the remaining work is
   chiefly API honesty and release engineering.
-- Naming and repository extraction are coupled and deferred to Milestone 7.
-  Until then, all code continues to use `Editor` and `import Editor`.
+- Naming happens at the start of Milestone 6, while the package is still local
+  to Hunch. This lets the complete Hunch matrix verify the final module identity
+  before repository extraction. Repository creation and publication remain
+  deferred to Milestone 7.
+- The selected public identity is `Quagmire`: repository slug `quagmire` and
+  matching Swift package, product, and module. The recorded Python-package,
+  repository-name, ordinary-meaning, and popular-culture collisions are known
+  and explicitly accepted; no Swift module collision was found.
 - A minimal host must not implement unrelated page, image, preview, move, or
   mention features. Only edit persistence and durability waiting remain
   mandatory; all other host hooks have neutral defaults. Do not introduce a
@@ -144,7 +156,7 @@ contention. The executor may choose a unique path under `/tmp`.
 
 | Purpose | Command | Expected result |
 |---|---|---|
-| Package tests | `swift test --package-path Packages/Editor` | Exit 0; all suites pass |
+| Package tests | `swift test --package-path Packages/Quagmire` | Exit 0; all suites pass |
 | Regenerate project | `xcodegen generate --spec project.yml --project .` | Exit 0; generated project reflects `project.yml` |
 | Hunch macOS tests | `xcodebuild test -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -derivedDataPath /tmp/hunch-editor-plan-macos CODE_SIGNING_ALLOWED=NO` | Exit 0; Hunch unit tests pass |
 | Hunch macOS build | `xcodebuild build -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -derivedDataPath /tmp/hunch-editor-plan-macos-build CODE_SIGNING_ALLOWED=NO` | Exit 0 |
@@ -184,8 +196,8 @@ documentation only; it does not change runtime behavior.
    presented, and an edit still synchronously enqueues persistence before
    `persistCommit` returns.
 5. Inventory editor-generic UI tests currently living only in
-   `App/UITests/`. Mark each as either “move/copy to standalone example” or
-   “keep Hunch-only” for Milestone 6.
+   `App/UITests/`. Keep them as Hunch integration coverage unless a standalone
+   test host later demonstrates a concrete gap.
 
 ### Files
 
@@ -492,7 +504,7 @@ Add a narrow action contract, not a plugin framework:
   and error presentation. Action results must not overwrite newer typing.
 
 Names such as `EditorBlockAction`, `BlockActionContext`, and
-`BlockReplacement` are acceptable placeholders until Milestone 7; do not put
+`BlockReplacement` are acceptable placeholders until Milestone 6; do not put
 the eventual package brand into type names now.
 
 ### Work
@@ -622,92 +634,22 @@ icons are covered by focused tests/builds and manual smoke checks.
 
 ---
 
-## Milestone 6 — Make the local package independently releasable
+## Milestone 6 — Name and make the local package independently releasable
 
 ### Goal
 
-Before any repository move, a clean checkout of `Packages/Editor` has accurate
-docs, a compiled example host, a repeatable verification script, and
-consumer-friendly dependency declarations.
-
-### Work
-
-1. Add a tiny, self-contained example app under
-   `Packages/Editor/Examples/EditorDemo/`. It must use only the public API and a
-   host implementing the two required persistence methods. Use an in-memory
-   document, demonstrate selected optional host hooks separately, and make the
-   sample build on macOS and iOS Simulator.
-2. Make the README quickstart match the compiled minimal host. Prefer sharing
-   or checking the sample source rather than maintaining an untested duplicate.
-3. Rewrite `Packages/Editor/README.md` so it stands alone: installation,
-   supported platforms/toolchain, minimal quickstart, model and mutation
-   semantics, optional host hooks and defaults, block actions,
-   theme/configuration, resource behavior, threading/actor expectations, and
-   versioning policy. Remove links that climb into Hunch’s `App/` tree; link to
-   Hunch’s public repository as an external example only where useful.
-4. Add a package-local `CONTRIBUTING.md`, `LICENSE` copy, and a concise
-   architecture/maintenance note. Do not add speculative docs or a changelog
-   before releases exist.
-5. In `Package.swift`, let SwiftPM choose linkage by declaring
-   `.library(name: "Editor", targets: ["Editor"])`. Change EmojiKit from an
-   exact transitive pin to a compatible 3.x requirement after verifying the
-   resolved version. Keep `Package.resolved` only if the chosen library-repo
-   policy intentionally tracks it.
-6. Add `Packages/Editor/scripts/verify.sh` (or an equivalently obvious command)
-   that runs package tests plus clean macOS and iOS Simulator example builds and
-   verifies bundled sound resources. It must work both at the current subtree
-   location and after that subtree becomes a repository root.
-7. Copy/move editor-generic UI regression coverage identified in Milestone 0
-   into the sample app’s UI-test target. At minimum cover edit/scroll, keyboard
-   split/focus continuity, and generic drag-reorder. Leave workspace,
-   Clamshell, navigation, recovery, and Hunch-specific presentation tests in
-   Hunch.
-8. Decide and document whether `Hunch.xcodeproj/project.pbxproj` is tracked
-   generated output or ignored output. Make `.gitignore`, CONTRIBUTING, and the
-   actual repository state agree before changing package dependency form.
-9. Add a package-local CI workflow file staged under `Packages/Editor/.github/`
-   for the future repository. It will not run from the Hunch monorepo; verify
-   its commands locally now and activate it as part of Milestone 7.
-
-### Files
-
-- `Packages/Editor/Package.swift`
-- `Packages/Editor/Package.resolved`
-- `Packages/Editor/README.md`
-- `Packages/Editor/CONTRIBUTING.md` (new)
-- `Packages/Editor/LICENSE` (new)
-- `Packages/Editor/Examples/EditorDemo/` (new)
-- `Packages/Editor/scripts/verify.sh` (new)
-- `Packages/Editor/.github/workflows/ci.yml` (new, staged for extraction)
-- Editor-generic tests copied from `App/UITests/`
-- `.gitignore`, `CONTRIBUTING.md`, and possibly generated project policy docs
-
-### Gate
-
-- The README minimal host and example compile without optional-feature stubs.
-- Running the package-local verification script from a clean checkout exits 0.
-- The example builds for macOS and generic iOS Simulator.
-- A resource smoke test locates and loads the package sound assets.
-- `Package.swift` no longer forces static linkage or an exact EmojiKit version.
-- No package doc has a relative link outside `Packages/Editor`.
-- Full Hunch verification still passes with the local-path dependency.
-
----
-
-## Milestone 7 — Choose the name, extract, publish, and switch Hunch
-
-### Goal
-
-Choose the permanent public identity with the stabilized API in view, preserve
-the package’s history, publish a tested `0.1.0`, and make Hunch consume it as a
-remote SwiftPM dependency.
-
-This is the **only** milestone allowed to rename the package/module or create
-the standalone repository.
+Choose and verify the permanent public identity before any repository move.
+The renamed local package has accurate standalone docs, a public-API consumer
+contract test, a repeatable verification script, and consumer-friendly
+dependency declarations.
 
 ### Name decision
 
-Choose the name before touching manifests. Apply these conventions:
+The selected name is **Quagmire**. Consumers write `import Quagmire`; the
+standalone repository slug is `quagmire`. The research and accepted tradeoffs
+are recorded in `plans/editor-name-landscape.md`.
+
+Apply these conventions:
 
 - Repository slug: distinctive lowercase brand, optionally hyphenated.
 - Swift package, library product, and module: the same distinctive
@@ -722,39 +664,114 @@ Choose the name before touching manifests. Apply these conventions:
 Before deciding, search GitHub, Swift Package Index, package registries, App
 Store/product results, and relevant trademark databases. Check exact name,
 module spelling, repo slug, and close phonetic variants. Record the search date,
-results, and rationale in the new repository. Collision screening is not legal
-clearance; stop and ask for a different candidate if material ambiguity remains.
+results, and rationale in the package documentation. Collision screening is not
+legal clearance; stop and ask for a different candidate if material ambiguity
+remains.
+
+### Work
+
+1. Record the selected `Quagmire` identity and its accepted collision tradeoffs
+   from `plans/editor-name-landscape.md` in the package documentation.
+2. Rename the package directory, Swift package, library product, module, source
+   and test targets, imports, logging defaults, and local dependency references
+   consistently. Regenerate the tracked Xcode project. Keep public type names
+   role-based rather than mechanically brand-prefixing them.
+3. Add a small public-API consumer contract test. It must use a normal
+   `import Quagmire`, implement only the two required persistence methods, create
+   an in-memory `Document` and `EditorState`, and construct `EditorView`. Keep
+   the README quickstart aligned with this compiled contract.
+4. Rewrite the package README so it stands alone: installation,
+   supported platforms/toolchain, minimal quickstart, model and mutation
+   semantics, optional host hooks and defaults, block actions,
+   theme/configuration, resource behavior, threading/actor expectations, and
+   versioning policy. Remove links that climb into Hunch’s `App/` tree; link to
+   Hunch’s public repository as an external example only where useful.
+5. Add a package-local `CONTRIBUTING.md`, `LICENSE` copy, and a concise
+   architecture/maintenance note. Do not add speculative docs or a changelog
+   before releases exist.
+6. In `Package.swift`, let SwiftPM choose linkage by declaring
+   `.library(name: "Quagmire", targets: ["Quagmire"])`. Change EmojiKit from an
+   exact transitive pin to a compatible 3.x requirement after verifying the
+   resolved version. Keep `Package.resolved` only if the chosen library-repo
+   policy intentionally tracks it.
+7. Add a package resource smoke test that locates and loads the bundled sound
+   assets through the package bundle.
+8. Add a package-local `scripts/verify.sh` (or an equivalently obvious command)
+   that runs package tests and clean macOS and iOS Simulator package builds. It
+   must locate the package relative to itself so it works both in the current
+   subtree and after that subtree becomes a repository root.
+9. Retain the already documented Xcode project policy: `project.yml` is the
+   source of truth and `Hunch.xcodeproj/project.pbxproj` is tracked generated
+   output. Confirm `.gitignore`, CONTRIBUTING, and repository state still agree
+   after the dependency rename.
+
+Do not add a demo/example app, copy Hunch UI tests into a second host, or add a
+CI workflow. Hunch remains the end-to-end UI integration harness through the
+extraction and first release.
+
+### Files
+
+- `Packages/Quagmire/Package.swift`
+- `Packages/Quagmire/Package.resolved` (remove and ignore under the chosen
+  library-repository policy)
+- `Packages/Quagmire/README.md`
+- `Packages/Quagmire/CONTRIBUTING.md` (new)
+- `Packages/Quagmire/LICENSE` (new)
+- `Packages/Quagmire/Tests/QuagmireTests/` (public consumer and resource tests)
+- `Packages/Quagmire/scripts/verify.sh` (new)
+- `.gitignore`, `CONTRIBUTING.md`, and possibly generated project policy docs
+
+### Gate
+
+- The chosen name is distinctive, collision-screened, and documented.
+- Hunch and the public consumer contract compile against the renamed module.
+- The README minimal host compiles without optional-feature stubs.
+- Running the package-local verification script from a clean checkout exits 0.
+- The package builds for macOS and the installed iOS 27 Simulator toolchain.
+- A resource smoke test locates and loads the package sound assets.
+- `Package.swift` no longer forces static linkage or an exact EmojiKit version.
+- No package doc has a relative link outside the package root.
+- Full Hunch verification still passes with the local-path dependency.
+
+---
+
+## Milestone 7 — Extract, publish, and switch Hunch
+
+### Goal
+
+Preserve the named package’s history, publish a tested `0.1.0`, and make Hunch
+consume it as a remote SwiftPM dependency.
+
+This is the first milestone allowed to create the standalone repository or
+remove the local package.
 
 ### Extraction and publication sequence
 
 1. Freeze editor-boundary changes in Hunch and run the complete Milestone 6
    verification script plus the full Hunch matrix.
 2. In a disposable clone, use a history-preserving subtree extraction such as
-   `git filter-repo --path Packages/Editor/ --path-rename Packages/Editor/:`.
+   `git filter-repo --path Packages/Quagmire/ --path-rename Packages/Quagmire/:`.
    Never run history rewriting against the working Hunch repository.
-3. In the extracted repository, perform the chosen rename consistently across
-   `Package.swift`, `Sources/`, `Tests/`, imports, example app, CI, docs, logging
-   defaults, and file names. Keep public type names role-based.
-4. Confirm the repository root contains `Package.swift`, `Sources`, `Tests`,
-   `Examples`, `README.md`, `CONTRIBUTING.md`, `LICENSE`, CI, and the verification
-   script. Remove subtree-era paths from docs and workflows.
-5. Push the new repository’s default branch. Run CI and the local clean-checkout
+3. Confirm the repository root contains `Package.swift`, `Sources`, `Tests`,
+   `README.md`, `CONTRIBUTING.md`, `LICENSE`, and the verification script. Remove
+   subtree-era paths from docs and scripts.
+4. Push the new repository’s default branch and run the local clean-checkout
    verification. Do not tag yet.
-6. In a Hunch branch, change `project.yml` from `path: Packages/Editor` to the
+5. In a Hunch branch, change `project.yml` from `path: Packages/Quagmire` to the
    new Git URL pinned to the tested commit revision. Rename the dependency key,
    product, and imports consistently; regenerate the Xcode project. Remove the
-   local `Packages/Editor` subtree only after remote resolution succeeds.
-7. Run package tests in the new repo and the full Hunch macOS/iOS/unit/UI matrix
+   local `Packages/Quagmire` subtree only after remote resolution succeeds.
+6. Run package tests in the new repo and the full Hunch macOS/iOS/unit/UI matrix
    with a clean SwiftPM cache/resolution. Verify there is one linked copy of the
    library and that package resources load through the remote dependency.
-8. Tag the tested editor commit `0.1.0`. In Hunch, replace the revision pin with
+7. Tag the tested editor commit `0.1.0`. In Hunch, replace the revision pin with
    an exact `0.1.0` requirement, resolve again from clean state, and rerun both
    platform builds plus Hunch unit tests.
-9. Update Hunch’s README, CONTRIBUTING, CLAUDE/agent notes, links, dependency
+8. Update Hunch’s README, CONTRIBUTING, CLAUDE/agent notes, links, dependency
    instructions, and local-development override instructions. Cross-repository
    work should use a local SwiftPM override during development, followed by a
    package tag and a separate Hunch dependency bump.
-10. Keep exact `0.x` versions while the boundary is settling. Adopt compatible
+9. Keep exact `0.x` versions while the boundary is settling. Adopt compatible
     version ranges only once the public API has stabilized; treat `1.0.0` as an
     explicit compatibility commitment.
 
@@ -762,18 +779,19 @@ clearance; stop and ask for a different candidate if material ambiguity remains.
 
 - The new module has a distinctive, screened name and a documented rationale.
 - The standalone repository retains meaningful pre-extraction file history.
-- CI and the package-local verification script pass in a clean clone.
+- The package-local verification script passes in a clean clone.
 - Hunch resolves the dependency from the tagged remote URL, not a local path or
   revision.
-- `Packages/Editor` is absent from Hunch only after the remote builds pass.
+- `Packages/Quagmire` is absent from Hunch only after the remote builds pass.
 - Hunch package resolution contains one copy of the renamed library and its
   resources.
 - Full Hunch package/unit/build/UI verification passes at exact `0.1.0`.
 
 ### STOP conditions
 
-- Stop if the chosen name has a meaningful active Swift/module/product
-  collision or unresolved trademark concern.
+- Stop if a meaningful active Swift/module/product collision or trademark
+  concern appears beyond the tradeoffs already recorded and accepted for
+  Quagmire.
 - Stop if extraction loses relevant file history; redo it from a disposable
   clone rather than accepting a source-only copy.
 - Stop if Hunch passes only with a local package override. Do not delete the
@@ -796,9 +814,9 @@ clearance; stop and ask for a different candidate if material ambiguity remains.
   preference keys.
 - [ ] System-font defaults work; Hunch explicitly supplies its Inter-based
   treatment.
-- [ ] Public docs and a compiled example agree.
-- [ ] Standalone CI verifies SwiftPM tests, both Apple-platform builds, and
-  resources.
+- [ ] Public docs and the public-API consumer contract test agree.
+- [ ] The standalone verification script checks SwiftPM tests, both
+  Apple-platform builds, and resources.
 - [ ] The final package/module has a distinctive screened name.
 - [ ] Hunch consumes exact remote version `0.1.0` through SwiftPM.
 - [ ] The old local package is removed only after all clean remote gates pass.

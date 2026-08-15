@@ -721,7 +721,7 @@ append" — `NSFileCoordinator` handles that.
   chosen Clamshell folder.
 - [Parser.swift](Parser.swift) / [Serializer.swift](Serializer.swift) —
   markdown ↔ `[Block]`. swift-markdown lives here, not in the
-  [Editor package](../../../Packages/Editor/).
+  [Quagmire package](../../../Packages/Quagmire/).
   `Serializer.serializeAtomic(_:)` emits a single block without
   children — what the recovery log stores in its `m` field.
 

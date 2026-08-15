@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 
 /// Seed content for the welcome page that's dropped into a fresh workspace.
 /// Returned as parsed `[Block]` so `Clamshell.createPage` can serialize it

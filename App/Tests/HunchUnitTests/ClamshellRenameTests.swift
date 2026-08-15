@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-import Editor
+import Quagmire
 
 /// `renamePage(at:toMatchTitle:)` — the O(1) rename: file + history +
 /// bookkeeping move, no link rewriting (resolution + healing own that).

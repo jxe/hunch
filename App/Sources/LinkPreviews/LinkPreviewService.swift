@@ -1,9 +1,9 @@
 import Foundation
-import Editor
+import Quagmire
 
 /// Coordinates fetching + caching of `LinkPreview` data for external URLs.
 ///
-/// The Editor package calls `preview(for:)` once per external URL it finds in
+/// The Quagmire package calls `preview(for:)` once per external URL it finds in
 /// a rendered row. The service:
 ///   - returns a cached entry from the disk cache when fresh,
 ///   - dedupes concurrent in-flight fetches for the same URL,

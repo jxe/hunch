@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import Editor
+import Quagmire
 
 /// Clamshell's stable on-disk identity for one atomic block record.
 ///

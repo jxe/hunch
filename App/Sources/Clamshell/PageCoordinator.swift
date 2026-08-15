@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 
 /// Per-URL page state machine. A coordinator exists while a page is open in
 /// any editor, while a closed-page operation holds a transient lease, or while

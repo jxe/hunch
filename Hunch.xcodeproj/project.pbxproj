@@ -72,7 +72,7 @@
 		C8D66E78DE747B7C1B518CF4 /* Diag.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADBD47A7CADD0F953053FE59 /* Diag.swift */; };
 		C8DC2CA143C6DAABBBE43AB2 /* WorkspaceBookmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0D5BC6AC3A24FE2C74A0EC1 /* WorkspaceBookmarkTests.swift */; };
 		CB53208075BF30FCC290AF1D /* TrashStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBF5AC98CF7B5213C676903 /* TrashStore.swift */; };
-		D474865E25285B0A3054E20C /* Editor in Frameworks */ = {isa = PBXBuildFile; productRef = 958167F9196AF3C05B22D091 /* Editor */; };
+		D474865E25285B0A3054E20C /* Quagmire in Frameworks */ = {isa = PBXBuildFile; productRef = 13E4833111DE8C6F8C90900C /* Quagmire */; };
 		DB9326C1A5FE79087202B71B /* PageSpeechRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E013E1FDA4330D76E480B5C4 /* PageSpeechRecorder.swift */; };
 		DED5F3333AF106B7B03733CE /* ConflictMergerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27594EFFCF6AEDC2FDDF749E /* ConflictMergerTests.swift */; };
 		E07D41F2B44A4CB1C39EEBBA /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 4EB4F3A2E519DE7DDC800978 /* libsqlite3.tbd */; };
@@ -149,7 +149,6 @@
 		96271E52824BE5EEEB780B51 /* LostBlockForestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LostBlockForestTests.swift; sourceTree = "<group>"; };
 		9CAB768C1FCE7C688962A0B3 /* RecoveryLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryLog.swift; sourceTree = "<group>"; };
 		9CC4602BCAEEEC006F066DDF /* LinkGraphTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkGraphTests.swift; sourceTree = "<group>"; };
-		9D5DCC509F521050F7038C36 /* Editor */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Editor; path = Packages/Editor; sourceTree = SOURCE_ROOT; };
 		9DAF1FAAB8AC20CBD4FF0352 /* SubpageTrashDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubpageTrashDecisionTests.swift; sourceTree = "<group>"; };
 		ACE37BCCB32678754FDBF3D5 /* BlockRecoveryIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockRecoveryIdentity.swift; sourceTree = "<group>"; };
 		AD818E80A31A592762987ECC /* ClamshellImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClamshellImageTests.swift; sourceTree = "<group>"; };
@@ -163,6 +162,7 @@
 		BEC23F7F5FF43096C7D9EF57 /* IconPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconPickerView.swift; sourceTree = "<group>"; };
 		C0C39100C0D7F622F1275216 /* PageSearchIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageSearchIndexTests.swift; sourceTree = "<group>"; };
 		C1F5BE0CAA148514A9635C33 /* LinkHealingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkHealingTests.swift; sourceTree = "<group>"; };
+		C3672484485A687B244D33A7 /* Quagmire */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Quagmire; path = Packages/Quagmire; sourceTree = SOURCE_ROOT; };
 		C40C5869BF914FA61B2FEC5D /* FileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileStore.swift; sourceTree = "<group>"; };
 		C4608B6FE43942A156484E8F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C60B591D585995CB7097A0DC /* InterVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = InterVariable.ttf; sourceTree = "<group>"; };
@@ -188,7 +188,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D474865E25285B0A3054E20C /* Editor in Frameworks */,
+				D474865E25285B0A3054E20C /* Quagmire in Frameworks */,
 				7C8E5BD992CE032FCAC3E4E9 /* Markdown in Frameworks */,
 				E07D41F2B44A4CB1C39EEBBA /* libsqlite3.tbd in Frameworks */,
 			);
@@ -227,7 +227,7 @@
 		45052CB1F3C2EF60EC156E3F /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				9D5DCC509F521050F7038C36 /* Editor */,
+				C3672484485A687B244D33A7 /* Quagmire */,
 			);
 			path = Packages;
 			sourceTree = "<group>";
@@ -439,7 +439,7 @@
 			);
 			name = Hunch;
 			packageProductDependencies = (
-				958167F9196AF3C05B22D091 /* Editor */,
+				13E4833111DE8C6F8C90900C /* Quagmire */,
 				60D4D0042A0050D48AF58979 /* Markdown */,
 			);
 			productName = Hunch;
@@ -481,7 +481,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				60E69A3442B3A4A214239625 /* XCRemoteSwiftPackageReference "swift-markdown" */,
-				B389E0E218E1F8838D7695E2 /* XCLocalSwiftPackageReference "Packages/Editor" */,
+				DE37F3055AA9E20729D9C135 /* XCLocalSwiftPackageReference "Packages/Quagmire" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AE7FCC9B148E4A8C802B7877 /* Products */;
@@ -931,9 +931,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		B389E0E218E1F8838D7695E2 /* XCLocalSwiftPackageReference "Packages/Editor" */ = {
+		DE37F3055AA9E20729D9C135 /* XCLocalSwiftPackageReference "Packages/Quagmire" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = Packages/Editor;
+			relativePath = Packages/Quagmire;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -949,14 +949,14 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		13E4833111DE8C6F8C90900C /* Quagmire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Quagmire;
+		};
 		60D4D0042A0050D48AF58979 /* Markdown */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 60E69A3442B3A4A214239625 /* XCRemoteSwiftPackageReference "swift-markdown" */;
 			productName = Markdown;
-		};
-		958167F9196AF3C05B22D091 /* Editor */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = Editor;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

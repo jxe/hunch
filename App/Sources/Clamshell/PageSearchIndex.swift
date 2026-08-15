@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import Editor
+import Quagmire
 import SQLite3
 
 struct PageSearchResult: Sendable, Equatable {

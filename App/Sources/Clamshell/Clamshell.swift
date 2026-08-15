@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 import Synchronization
-import Editor
+import Quagmire
 
 /// Hunch's persistent markdown format and its API.
 ///
@@ -159,7 +159,7 @@ final class Clamshell {
     @ObservationIgnored nonisolated private let pageIDIndexStore = Mutex<[String: String]>([:])
 
     /// User frontmatter + Clamshell stamp trust for pages we've loaded in
-    /// this process. `Editor.Document` remains pure block content; Clamshell
+    /// this process. `Quagmire.Document` remains pure block content; Clamshell
     /// reattaches/updates the envelope only when it writes markdown.
     @ObservationIgnored private var pageFrontmatter: [URL: [String]?] = [:]
     @ObservationIgnored private var pageStampTrust: [URL: ClamshellPageEnvelope.StampTrust] = [:]

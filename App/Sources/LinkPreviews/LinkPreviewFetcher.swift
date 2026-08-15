@@ -1,6 +1,6 @@
 import Foundation
 import LinkPresentation
-import Editor
+import Quagmire
 #if os(macOS)
 import AppKit
 #else

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 @testable import Hunch
-import Editor
+import Quagmire
 import SQLite3
 
 @Suite("Page full-text search")

@@ -1,4 +1,4 @@
-import Editor
+import Quagmire
 import Foundation
 import Testing
 @testable import Hunch

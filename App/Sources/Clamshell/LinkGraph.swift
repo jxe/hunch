@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 
 /// Derived link graph over the workspace's pages: who links to whom, what's
 /// reachable from the home page, and (therefore) what's orphaned. A pure value

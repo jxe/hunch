@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 
 struct WorkspaceEntry: Identifiable, Sendable, Hashable {
     let url: URL

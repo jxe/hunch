@@ -1,6 +1,6 @@
 import Foundation
 import CryptoKit
-import Editor
+import Quagmire
 
 enum ClamshellPageEnvelope {
     static let frontmatterKey = "clamshell"

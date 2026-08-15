@@ -1,6 +1,6 @@
 import Foundation
 import FoundationModels
-import Editor
+import Quagmire
 
 @Generable
 private struct PolishedTranscript {

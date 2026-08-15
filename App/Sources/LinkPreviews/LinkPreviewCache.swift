@@ -1,6 +1,6 @@
 import Foundation
 import CryptoKit
-import Editor
+import Quagmire
 
 /// On-disk cache for fetched `LinkPreview` metadata.
 ///

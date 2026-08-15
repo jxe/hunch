@@ -8,7 +8,7 @@ user-picked workspace folder.
 
 ## Repo shape
 
-- `Packages/Editor/` — single SwiftUI SPM package. The single-page editor:
+- `Packages/Quagmire/` — single SwiftUI SPM package. The single-page editor:
   `Block` / `Document` model, `EditorView`, `EditorState`, `BlockTextEditor`
   (NSTextView wrapper on macOS, plain TextEditor on iOS), block rendering,
   autotransforms (`# `, `- `, `> `, ` ``` `, `---`, `[]/[ ]`, `1. `, `" `),
@@ -16,7 +16,7 @@ user-picked workspace folder.
   swift-markdown dep.** Operates on the in-memory `Document` only — the
   host is responsible for serialization, persistence, navigation, and
   multi-page operations. SPM tests live here. See
-  `Packages/Editor/README.md` for the embedding contract.
+  `Packages/Quagmire/README.md` for the embedding contract.
 - `App/Sources/` — Hunch.app target. `HunchApp` (root, owns `Workspace`),
   `ContentView` (one per `WindowGroup` body, owns a `WorkspaceWindow`),
   `Workspace.swift` / `WorkspaceWindow.swift` (the host model — see below;
@@ -108,7 +108,7 @@ user-picked workspace folder.
     clears `homeRelativePath` if it matched and moves the page's
     `.history/<rel>/` dir along with the `.md`. Also where the
     markdown layer lives: `BlockParser`, `BlockSerializer` (swift-markdown
-    lives here, not in the Editor), and `BlockFingerprint` (16-char
+    lives here, not in Quagmire), and `BlockFingerprint` (16-char
     prefix for compact display, full SHA-256 for the recovery log's
     `h` field). `DeviceID` mints + caches a per-install UUID in
     `UserDefaults` to name this device's log file. `WorkspaceBookmark`
@@ -159,10 +159,10 @@ user-picked workspace folder.
     the host bridges to the sheet via a `CheckedContinuation`.
 - `App/Tests/HunchUnitTests/` — Xcode unit-test bundle for the host's
   storage + parser/serializer (formerly SPM tests under `CoreTests/`).
-  The test target depends only on the `Hunch` app target — Editor's
+  The test target depends only on the `Hunch` app target — Quagmire's
   symbols come through `BUNDLE_LOADER` (the test bundle's host is
-  `Hunch.app/Contents/MacOS/Hunch`, which statically links Editor), so
-  the test target must not list Editor as a direct dep or it would link
+  `Hunch.app/Contents/MacOS/Hunch`, which statically links Quagmire), so
+  the test target must not list Quagmire as a direct dep or it would link
   a second copy.
 - `project.yml` — XcodeGen spec. **Don't hand-edit the `.xcodeproj`** —
   it is tracked generated output and overwritten by `xcodegen generate`.
@@ -173,7 +173,7 @@ user-picked workspace folder.
 ## Build & test
 
 The full build / test loop lives in [CONTRIBUTING.md](CONTRIBUTING.md). The
-short version: `swift test --package-path Packages/Editor` for the SPM
+short version: `swift test --package-path Packages/Quagmire` for the SPM
 tests; `xcodegen generate --spec project.yml --project .` to refresh the
 tracked Xcode project (don't hand-edit it); `xcodebuild … -scheme
 Hunch -destination 'platform=macOS'` to build, then `./scripts/run.sh` to
@@ -261,7 +261,7 @@ NSTextView mutates during edits. Cmd-B/I/E/Shift-S toggle marks on the
 selection.
 
 **Markdown autotransforms.** Pure detection in
-`Packages/Editor/Sources/Editor/Autotransforms.swift`;
+`Packages/Quagmire/Sources/Quagmire/Autotransforms.swift`;
 replacement blocks via `BlockTransform.apply(to:)`; spliced into the
 document by `EditorView.applyAutotransform`. Prefix triggers (`# `, `## `, `### `, `- `,
 `* `, `1. `, `[] `, `[ ] `, `> ` for toggle, `" ` for quote) fire from
@@ -394,8 +394,8 @@ Pre-March-2026 Notion. **Don't use `react-notion-x`'s CSS as truth** —
 its values diverge from real Notion. Reference screenshots and the
 constants file location are documented in
 [CONTRIBUTING.md](CONTRIBUTING.md); the rule worth keeping in context is
-that **constants live in `NotionStyle.swift`** (both the `NotionStyle`
-enum and the `BlockSpacing` enum) — don't sprinkle magic numbers into
+that **constants live in `EditorTheme.swift`** (the `EditorTheme` value and the
+`BlockSpacing` enum) — don't sprinkle magic numbers into
 `BlockRow.swift`.
 
 ## Debugging UI runtime issues
@@ -408,12 +408,12 @@ tail -f /tmp/console.log
 
 Sprinkle `print("[CLI] ...")` at suspect transitions (state setters,
 focus changes, key handlers, lifecycle hooks). Strip them before
-committing: `grep -rn '\[CLI\]' Packages/Editor App`. `print()` may
+committing: `grep -rn '\[CLI\]' Packages/Quagmire App`. `print()` may
 buffer when stdout isn't a tty.
 
 For diagnostics that need to outlive a single debug session — and to read
 state from a build the user is running directly (no `> /tmp/console.log`
-redirect) — use the `Diag.*` loggers (`Packages/Editor/.../Diag.swift`,
+redirect) — use the `Diag.*` loggers (`Packages/Quagmire/.../Diag.swift`,
 `App/Sources/Diag.swift`). They're `os.Logger` keyed to subsystem
 `org.nxhx.Hunch` with categories `navkey` / `mode` / `subpage` / `speech`.
 **Do not use `NSLog` for new diagnostics** — its message bodies land as
@@ -440,6 +440,6 @@ Xcode tools that earn their keep:
 - Prefer editing existing files over adding new ones.
 - Comments explain *why*, never *what*. Skip them when the code is clear.
 - Don't add CHANGELOG.md, TROUBLESHOOTING.md, etc. unless asked.
-- Keep `swift test --package-path Packages/Editor` green before committing
+- Keep `swift test --package-path Packages/Quagmire` green before committing
   UI changes — the autotransform / mention / reorder / mutation layer is
   load-bearing and the only test surface inside the package.

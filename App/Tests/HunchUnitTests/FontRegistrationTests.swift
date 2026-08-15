@@ -1,6 +1,6 @@
 import Testing
 @testable import Hunch
-import Editor
+import Quagmire
 
 #if os(macOS)
 import AppKit

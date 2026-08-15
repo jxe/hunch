@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 #if os(macOS)
 import AppKit
 #elseif os(iOS)

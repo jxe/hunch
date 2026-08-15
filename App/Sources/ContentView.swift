@@ -1,5 +1,5 @@
 import SwiftUI
-import Editor
+import Quagmire
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit

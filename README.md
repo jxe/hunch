@@ -155,7 +155,7 @@ You can read the code, fork it, audit your own data layer, and ship patches. Lic
 
 Hunch is built on two reusable pieces, both documented in this repo:
 
-- **[Editor](Packages/Editor/README.md)** — a SwiftUI block editor (paragraphs, headings, lists, toggles, code, inline marks, autotransforms, drag-reorder, @-mentions) with no opinion on storage, navigation, or serialization. Drop it into any iOS 26 / macOS 26 app and wire up an `EditorHost`.
+- **[Quagmire](Packages/Quagmire/README.md)** — a SwiftUI block editor (paragraphs, headings, lists, toggles, code, inline marks, autotransforms, drag-reorder, @-mentions) with no opinion on storage, navigation, or serialization. Drop it into any iOS 26 / macOS 26 app and wire up an `EditorHost`.
 - **[Clamshell](App/Sources/Clamshell/README.md)** — Hunch's on-disk format and storage engine: a folder of `.md`, a per-device append-only recovery log, trash, and assets. Durable, portable, iCloud-friendly, recoverable.
 
 Want to build, hack on, or send a patch? See [CONTRIBUTING.md](CONTRIBUTING.md).

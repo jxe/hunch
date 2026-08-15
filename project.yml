@@ -21,8 +21,8 @@ settings:
     CODE_SIGNING_ALLOWED: YES
 
 packages:
-  Editor:
-    path: Packages/Editor
+  Quagmire:
+    path: Packages/Quagmire
   swift-markdown:
     url: https://github.com/swiftlang/swift-markdown.git
     version: 0.8.0
@@ -35,7 +35,7 @@ targets:
       - path: App/Sources
       - path: App/Resources
     dependencies:
-      - package: Editor
+      - package: Quagmire
       - package: swift-markdown
         product: Markdown
       - sdk: libsqlite3.tbd

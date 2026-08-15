@@ -13,7 +13,7 @@ tend to be local. This doc points you at the layer you want.
 The repo is two products in one workspace:
 
 - a **multiplatform Swift app** (`Hunch.app`) targeting iOS 26 and macOS 26;
-- a **standalone SwiftPM package** (`Packages/Editor/`) the app depends on
+- a **standalone SwiftPM package** (`Packages/Quagmire/`) the app depends on
   and that's reusable in other hosts.
 
 Third-party dependencies are intentionally small:
@@ -24,8 +24,8 @@ provides the editor's emoji picker.
 ## Build & test
 
 ```sh
-# 1. Editor package — tests live here; keep them green before pushing UI changes
-swift test --package-path Packages/Editor
+# 1. Quagmire package — tests live here; keep them green before pushing UI changes
+swift test --package-path Packages/Quagmire
 
 # 2. Generate the tracked Xcode project (don't hand-edit .xcodeproj)
 xcodegen generate --spec project.yml --project .
@@ -52,7 +52,7 @@ project rather than dragging it into Xcode by hand.
 
 The codebase splits into three layers, in increasing host-specificity:
 
-### 1. `Packages/Editor/` — the reusable block editor
+### 1. `Packages/Quagmire/` — the reusable block editor
 
 A SwiftUI block editor with **no opinion on serialization, persistence,
 or navigation**. The host owns three things per editing session:
@@ -68,11 +68,11 @@ Inside the package: the model (`Block`, `Document`), `EditorView`, the
 `BlockTextEditor` NSViewRepresentable/UIViewRepresentable wrappers,
 prefix autotransforms (`# `, `- `, `> `, `[] `, `" `, etc.), @-mention
 detection, inline-mark `AttributedStringKey`s. The package's tests cover
-the autotransform / mention / reorder / mutation layer — this is the only
-test target with meaningful coverage, so keep `swift test
---package-path Packages/Editor` green.
+the autotransform / mention / reorder / mutation layer and bundled resources;
+a separate normal-import target compiles the minimal public host contract. Keep
+`swift test --package-path Packages/Quagmire` green.
 
-Deeper docs: **[Packages/Editor/README.md](Packages/Editor/README.md)** —
+Deeper docs: **[Packages/Quagmire/README.md](Packages/Quagmire/README.md)** —
 embedding contract, full feature list, the `EditorHost` protocol surface.
 
 ### 2. `App/Sources/Clamshell/` — the storage format & engine
@@ -119,7 +119,7 @@ There is no permanent sidebar — page navigation is via the search sheet
 Tests for this layer live in `App/Tests/HunchUnitTests/` and cover the
 parser/serializer + storage round-trips. The test target links against
 the app target (`BUNDLE_LOADER`), so don't add a direct dependency on
-`Editor` from the test target — that would link a second copy.
+`Quagmire` from the test target — that would link a second copy.
 
 ## Working notes for AI agents
 
@@ -142,8 +142,9 @@ contributor wading into the editor internals.
 
 ## Typography
 
-The visual target is Notion's typography from before the March 2026
-redesign. Reference screenshots live under `References/typography/`;
-constants live in `Packages/Editor/Sources/Editor/NotionStyle.swift`
-(both the `NotionStyle` enum and the `BlockSpacing` enum). Don't sprinkle
-magic numbers into `BlockRow.swift`.
+The visual target is Notion's typography from before the March 2026 redesign.
+Reference screenshots live under `References/typography/`; reusable defaults
+and layout values live in
+`Packages/Quagmire/Sources/Quagmire/EditorTheme.swift`, while Hunch's explicit
+Inter-based treatment lives in `App/Sources/Shell/HunchStyle.swift`. Don't
+sprinkle magic numbers into `BlockRow.swift`.

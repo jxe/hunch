@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-import Editor
+import Quagmire
 
 /// Pure tests for the recovery-log engine. Build a `LogJournal` as a value
 /// (no filesystem), call `PatchEngine.intent` / `reconcile`, assert on

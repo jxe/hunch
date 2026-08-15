@@ -23,7 +23,7 @@ Today Hunch opens exactly one Clamshell (workspace folder) at a time. The user w
    user to locate the folder; once located, mint a bookmark and remember it.
    After that, links to that workspace "just work."
 
-This is a host-level change: the Editor package treats `pageID` as an opaque
+This is a host-level change: the Quagmire package treats `pageID` as an opaque
 `String` already, so cross-workspace addressing slots in by extending the
 host's pageID format (and the URL it parses out of inline links) without
 touching `EditorHost`'s shape.
@@ -62,7 +62,7 @@ hunch://<uuid>/Page.md#abc123def4567890   # other workspace, specific block
 ```
 
 The fragment is the **16-char BlockFingerprint prefix** — already minted
-by `Packages/Editor/Sources/Editor/BlockFingerprint.swift` and used in the
+by `Packages/Quagmire/Sources/Quagmire/BlockFingerprint.swift` and used in the
 recovery log. Same hash, used for a new purpose. Properties:
 
 - Stable as long as the block content is unchanged. Edit the block → hash
@@ -172,7 +172,7 @@ Clamshell — or we deprecate them in favor of `workspace.activeClamshell?.entri
 `WorkspaceWindow` (`App/Sources/WorkspaceWindow.swift`) extends from "one
 clamshellID + one `path: [URL]`" to a stack of frames. **Each frame doubles
 as a per-Clamshell `EditorHost` delegate**, so the host plumbing in the
-Editor package doesn't need to learn about multi-workspace dispatch:
+Quagmire doesn't need to learn about multi-workspace dispatch:
 
 ```swift
 @Observable final class NavigationFrame: EditorHost {
@@ -386,7 +386,7 @@ the workspace switcher dropdown / page tab area) and on a block row.
 | NavigationStack remount on frame change | `App/Sources/ContentView.swift` (NavigationStack `.id(activeFrame.clamshell.id)`, host env = `activeFrame`) |
 | File menu + commands (incl. Copy Link to Page / Block) | `App/Sources/HunchApp.swift` |
 | Workspace switcher toolbar | `App/Sources/ContentView.swift` (top-leading toolbar item) |
-| Block link keybinding wiring | `Packages/Editor/Sources/Editor/EditorView+Wiring.swift` (Cmd+Option+Shift+L) + new `EditorAction.copyLinkToSelectedBlock` |
+| Block link keybinding wiring | `Packages/Quagmire/Sources/Quagmire/EditorView+Wiring.swift` (Cmd+Option+Shift+L) + new `EditorAction.copyLinkToSelectedBlock` |
 | New: locate-workspace sheet | `App/Sources/Shell/LocateWorkspaceSheet.swift` |
 | New: `PageRef` parser (uuid + path + #hash) | `App/Sources/Clamshell/Clamshell.swift` (inline next to existing pageID helpers) |
 
@@ -457,7 +457,7 @@ the workspace switcher dropdown / page tab area) and on a block row.
     `pageID(for:relativeTo:)` classifying `hunch://` URLs correctly with and
     without fragments. Also cover `BlockParser.detectSubpage` rejecting
     fragment-bearing links.
-14. **SPM Editor tests**: `swift test --package-path Packages/Editor` should
+14. **SPM Editor tests**: `swift test --package-path Packages/Quagmire` should
     still be green. The `EditorAction.copyLinkToSelectedBlock` addition is
     one new enum case + one dispatch arm — likely no test surface to update
     inside the package, but verify.

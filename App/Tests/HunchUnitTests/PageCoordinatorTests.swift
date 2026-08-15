@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-import Editor
+import Quagmire
 
 /// Pins the synchronous-enqueue contract of the page coordinator: a write
 /// generation is installed before `enqueueEditorChanges` returns, so `flush` and

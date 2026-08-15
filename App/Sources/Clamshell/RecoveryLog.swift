@@ -1,6 +1,6 @@
 import Foundation
 import CryptoKit
-import Editor
+import Quagmire
 
 struct LogCompactionResult: Equatable, Sendable {
     let originalRecordCount: Int

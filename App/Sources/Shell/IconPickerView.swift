@@ -1,7 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
-import Editor
+import Quagmire
 
 private struct IconOption: Identifiable {
     let id: String?

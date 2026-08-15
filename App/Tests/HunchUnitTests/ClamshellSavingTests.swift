@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-import Editor
+import Quagmire
 
 /// Commit-time save model: every `commit(_:to:)` applies the log entries
 /// (when non-empty) and writes the .md atomically per call. Calls for the

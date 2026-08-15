@@ -1,7 +1,7 @@
 # Editor extraction Milestone 5 verification record
 
-Recorded 2026-08-15. The package/product/module name remains `Editor`, as
-required through Milestone 6.
+Recorded 2026-08-15. The package/product/module name remains `Editor` through
+Milestone 5; the public naming decision is now the first task in Milestone 6.
 
 ## Result
 

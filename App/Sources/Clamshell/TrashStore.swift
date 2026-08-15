@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 
 /// Records and restores whole-page deletions inside `<workspace>/Trash/`.
 /// Block-level deletions are recorded in `RecoveryLog`, not here.

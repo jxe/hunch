@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 
 @MainActor
 private final class PresenterWakeupDebouncer {

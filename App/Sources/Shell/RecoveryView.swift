@@ -1,5 +1,5 @@
 import SwiftUI
-import Editor
+import Quagmire
 
 /// Unified workspace-wide recovery sheet. Surfaces three kinds of
 /// recoverable items, each in its own section: deleted whole pages (from

@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-import Editor
+import Quagmire
 
 /// The load-bearing invariant that the recovery log + autorestore pipeline
 /// rests on: an atomic-block record stored as `m` (atomic markdown) can be

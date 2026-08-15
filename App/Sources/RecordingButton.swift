@@ -1,5 +1,5 @@
 import SwiftUI
-import Editor
+import Quagmire
 #if os(macOS)
 import AppKit
 #else

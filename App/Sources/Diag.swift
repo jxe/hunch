@@ -2,7 +2,7 @@ import Foundation
 import os
 
 /// App-side `os.Logger` instances for the Hunch host. Mirrors `Diag` in the
-/// Editor package: same `subsystem`, distinct categories so log filters land
+/// Quagmire package: same `subsystem`, distinct categories so log filters land
 /// on host-only call sites without pulling in editor noise. All interpolated
 /// values use `, privacy: .public` so they aren't redacted as `<private>` in
 /// the unified log.

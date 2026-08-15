@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-import Editor
+import Quagmire
 
 @Suite("ConflictMerger") @MainActor
 struct ConflictMergerTests {

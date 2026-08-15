@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 import Markdown
 
 enum BlockParser {

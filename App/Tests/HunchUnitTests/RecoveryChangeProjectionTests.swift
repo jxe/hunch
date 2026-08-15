@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 @testable import Hunch
-import Editor
+import Quagmire
 
 @Suite("Clamshell recovery change projection")
 struct RecoveryChangeProjectionTests {

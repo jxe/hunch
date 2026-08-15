@@ -1,6 +1,6 @@
 import Foundation
 import SwiftUI
-import Editor
+import Quagmire
 
 /// Per-window navigation and edit-session state. One instance per
 /// `WindowGroup` body (and per macOS tab) — `ContentView` owns it as

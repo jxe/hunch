@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 @testable import Hunch
-import Editor
+import Quagmire
 
 /// Durable page identity: the `clamshell-id` frontmatter line, the
 /// `page.md#<id>` link-fragment form, and the minting rules (create-time

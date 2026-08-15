@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 
 enum FileStoreError: Error, LocalizedError {
     case readFailed(URL, underlying: Error)

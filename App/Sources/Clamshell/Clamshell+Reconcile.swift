@@ -1,5 +1,5 @@
 import Foundation
-import Editor
+import Quagmire
 
 /// Engine orchestration: reconcile an open `Document` against its journal,
 /// and restore a single lost or purged block back into its source page.
