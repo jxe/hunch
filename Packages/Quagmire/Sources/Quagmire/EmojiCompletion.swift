@@ -113,11 +113,97 @@ private func isEmojiTriggerBoundary(_ scalar: Unicode.Scalar) -> Bool {
 }
 
 @MainActor
-func emojiSuggestions(matching query: String, limit: Int = 8, locale: Locale = .current) -> [EmojiSuggestion] {
-    let matches = Emoji.all.matching(query, in: locale)
-    return matches.prefix(limit).map {
-        EmojiSuggestion(character: $0.char, name: $0.localizedName(in: locale))
+func emojiSuggestions(matching query: String, limit: Int = 50, locale: Locale = .current) -> [EmojiSuggestion] {
+    var personalRanks: [String: Int] = [:]
+    for (index, emoji) in EmojiCategory.Persisted.frequent.getEmojis().enumerated() {
+        personalRanks[emoji.char] = index
     }
+
+    let ranked = Emoji.all.matching(query, in: locale).enumerated().map { index, emoji in
+        RankedEmojiMatch(
+            emoji: emoji,
+            name: emoji.localizedName(in: locale),
+            matchQuality: emojiMatchQuality(emoji, query: query, locale: locale),
+            generalFrequency: EmojiGeneralFrequency.rank(of: emoji.char),
+            personalRank: personalRanks[emoji.char],
+            variantComplexity: emojiVariantComplexity(emoji.char),
+            originalIndex: index
+        )
+    }.sorted(by: ranksBefore)
+
+    return ranked.prefix(limit).map {
+        EmojiSuggestion(character: $0.emoji.char, name: $0.name)
+    }
+}
+
+private struct RankedEmojiMatch {
+    let emoji: Emoji
+    let name: String
+    let matchQuality: Int
+    let generalFrequency: EmojiGeneralFrequency.Rank?
+    let personalRank: Int?
+    let variantComplexity: Int
+    let originalIndex: Int
+}
+
+private func ranksBefore(_ lhs: RankedEmojiMatch, _ rhs: RankedEmojiMatch) -> Bool {
+    if lhs.matchQuality != rhs.matchQuality {
+        return lhs.matchQuality < rhs.matchQuality
+    }
+
+    let lhsTier = lhs.generalFrequency?.tier ?? EmojiGeneralFrequency.unrankedTier
+    let rhsTier = rhs.generalFrequency?.tier ?? EmojiGeneralFrequency.unrankedTier
+    if lhsTier != rhsTier { return lhsTier < rhsTier }
+
+    // Personal history refines a sensible global tier, but never makes an
+    // obscure result outrank a substantially more common one.
+    let lhsPersonal = lhs.personalRank ?? .max
+    let rhsPersonal = rhs.personalRank ?? .max
+    if lhsPersonal != rhsPersonal { return lhsPersonal < rhsPersonal }
+
+    let lhsOrder = lhs.generalFrequency?.order ?? .max
+    let rhsOrder = rhs.generalFrequency?.order ?? .max
+    if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+
+    if lhs.variantComplexity != rhs.variantComplexity {
+        return lhs.variantComplexity < rhs.variantComplexity
+    }
+    return lhs.originalIndex < rhs.originalIndex
+}
+
+private func emojiMatchQuality(_ emoji: Emoji, query: String, locale: Locale) -> Int {
+    let normalizedQuery = normalizedEmojiSearchText(query, locale: locale)
+    guard !normalizedQuery.isEmpty else { return 0 }
+    if emoji.char == query { return 0 }
+
+    let localizedName = normalizedEmojiSearchText(emoji.localizedName(in: locale), locale: locale)
+    if localizedName == normalizedQuery { return 0 }
+    if containsEmojiSearchTokenPrefix(localizedName, query: normalizedQuery) { return 1 }
+    if localizedName.contains(normalizedQuery) { return 2 }
+
+    let unicodeName = normalizedEmojiSearchText(emoji.unicodeName, locale: locale)
+    if unicodeName == normalizedQuery { return 3 }
+    if containsEmojiSearchTokenPrefix(unicodeName, query: normalizedQuery) { return 4 }
+    if unicodeName.contains(normalizedQuery) { return 5 }
+    return 6
+}
+
+private func normalizedEmojiSearchText(_ text: String, locale: Locale) -> String {
+    text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: locale)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func containsEmojiSearchTokenPrefix(_ text: String, query: String) -> Bool {
+    if text.hasPrefix(query) { return true }
+    return text.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        .contains { $0.hasPrefix(query) }
+}
+
+private func emojiVariantComplexity(_ character: String) -> Int {
+    let scalars = character.unicodeScalars
+    if scalars.contains(where: { $0.value == 0x200D }) { return 2 }
+    if scalars.contains(where: { (0x1F3FB...0x1F3FF).contains($0.value) }) { return 1 }
+    return 0
 }
 
 @MainActor

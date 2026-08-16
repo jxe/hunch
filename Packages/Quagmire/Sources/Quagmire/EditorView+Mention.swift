@@ -36,9 +36,12 @@ extension EditorView {
     private func handleEmojiTriggerChange(_ trigger: EmojiTrigger, blockID: BlockID) {
         let matches = emojiSuggestions(matching: trigger.query)
         if var existing = state.emojiMenu, existing.blockID == blockID {
+            let queryChanged = existing.trigger.query != trigger.query
             existing.trigger = trigger
             existing.matches = matches
             if matches.isEmpty {
+                existing.selectedIndex = 0
+            } else if queryChanged {
                 existing.selectedIndex = 0
             } else if existing.selectedIndex >= matches.count {
                 existing.selectedIndex = matches.count - 1
@@ -269,42 +272,66 @@ extension EditorView {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             } else {
-                ForEach(Array(matches.enumerated()), id: \.element.id) { index, item in
-                    HStack(spacing: 10) {
-                        Text(item.character)
-                            .font(.system(size: 20))
-                            .frame(width: 26)
-                        Text(item.name)
-                            .font(configuration.theme.body(size: 13))
-                            .foregroundStyle(configuration.theme.foreground)
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        state.emojiMenu?.selectedIndex == index
-                            ? configuration.theme.selectionBackground
-                            : Color.clear
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        guard let menu = state.emojiMenu else { return }
-                        commitEmoji(item, menu: menu)
-                    }
-                    .onHover { hovering in
-                        #if os(macOS)
-                        if hovering, var menu = state.emojiMenu {
-                            menu.selectedIndex = index
-                            state.setEmojiMenu(menu)
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(matches.enumerated()), id: \.element.id) { index, item in
+                                HStack(spacing: 10) {
+                                    Text(item.character)
+                                        .font(.system(size: 20))
+                                        .frame(width: 26)
+                                    Text(item.name)
+                                        .font(configuration.theme.body(size: 13))
+                                        .foregroundStyle(configuration.theme.foreground)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    state.emojiMenu?.selectedIndex == index
+                                        ? configuration.theme.selectionBackground
+                                        : Color.clear
+                                )
+                                .contentShape(Rectangle())
+                                .id(item.id)
+                                .onTapGesture {
+                                    guard let menu = state.emojiMenu else { return }
+                                    commitEmoji(item, menu: menu)
+                                }
+                                .onHover { hovering in
+                                    #if os(macOS)
+                                    if hovering, var menu = state.emojiMenu {
+                                        menu.selectedIndex = index
+                                        state.setEmojiMenu(menu)
+                                    }
+                                    #endif
+                                }
+                            }
                         }
-                        #endif
+                    }
+                    .frame(maxHeight: 320)
+                    .scrollIndicators(.visible)
+                    .onChange(of: state.emojiMenu?.selectedIndex) { _, selectedIndex in
+                        scrollToEmojiSelection(selectedIndex, matches: matches, proxy: proxy)
+                    }
+                    .onChange(of: state.emojiMenu?.trigger.query) { _, _ in
+                        scrollToEmojiSelection(state.emojiMenu?.selectedIndex, matches: matches, proxy: proxy)
                     }
                 }
             }
         }
         .padding(.vertical, 4)
         .frame(width: 260, alignment: .leading)
+    }
+
+    private func scrollToEmojiSelection(
+        _ selectedIndex: Int?,
+        matches: [EmojiSuggestion],
+        proxy: ScrollViewProxy
+    ) {
+        guard let selectedIndex, matches.indices.contains(selectedIndex) else { return }
+        proxy.scrollTo(matches[selectedIndex].id, anchor: .center)
     }
 }
 

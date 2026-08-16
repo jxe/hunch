@@ -50,7 +50,33 @@ struct EmojiCompletionTests {
     @Test func searchesLocalizedEmojiNames() {
         let results = emojiSuggestions(matching: "rocket", locale: Locale(identifier: "en"))
         #expect(results.contains { $0.character == "🚀" })
-        #expect(results.count <= 8)
+        #expect(results.count <= 50)
+    }
+
+    @MainActor
+    @Test func ranksFamiliarHeartsAheadOfCompoundMatches() {
+        let results = emojiSuggestions(matching: "heart", limit: .max, locale: Locale(identifier: "en"))
+        #expect(results.first?.character == "❤️")
+
+        let redHeart = results.firstIndex { $0.character == "❤️" }
+        let couple = results.firstIndex { $0.character == "💑" }
+        #expect(redHeart != nil)
+        #expect(couple != nil)
+        if let redHeart, let couple {
+            #expect(redHeart < couple)
+        }
+    }
+
+    @MainActor
+    @Test func exactNameStillOutranksGeneralFrequency() {
+        let results = emojiSuggestions(matching: "pink heart", locale: Locale(identifier: "en"))
+        #expect(results.first?.character == "🩷")
+    }
+
+    @Test func unicodeFrequencySnapshotKeepsRedHeartInTopTier() {
+        #expect(EmojiGeneralFrequency.rank(of: "❤️")?.tier == 0)
+        #expect(EmojiGeneralFrequency.rank(of: "💔")?.tier == 3)
+        #expect(EmojiGeneralFrequency.rank(of: "💘")?.tier == 6)
     }
 
     @Test func pageTitlePrependsOrReplacesOneEmoji() {
