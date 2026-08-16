@@ -124,7 +124,8 @@ public protocol EditorHost: AnyObject {
     func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool
 
     /// Append blocks to the end of the page at `pageID`. Returns `true` on
-    /// success. Used by drop-on-subpage to move dragged blocks into a child page.
+    /// success. Used by drop-on-subpage to move or copy dragged blocks into a
+    /// child page.
     /// Async so the host can sequence log-then-file durability before returning —
     /// the editor's local-block-removal only fires on success.
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool

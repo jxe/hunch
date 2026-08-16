@@ -233,7 +233,7 @@ extension WorkspaceWindow: EditorHost {
             try await clamshell.page(atPath: rel).append(blocks)
             return true
         } catch {
-            workspace.error = "Failed to move blocks into \(rel): \(error.localizedDescription)"
+            workspace.error = "Failed to add blocks to \(rel): \(error.localizedDescription)"
             return false
         }
     }

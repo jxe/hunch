@@ -179,6 +179,52 @@ struct EditorViewToggleExpansionTests {
         #expect(host.appendedBlocks.first?.children.map(\.id) == [toggle.children[0].id])
         #expect(doc.children.isEmpty)
     }
+
+    @Test func crossPageCopyUsesFreshIDsAndKeepsSourceSubtree() async {
+        let child = Block.paragraph(text: AttributedString("child"))
+        let toggle = Block.toggle(
+            title: AttributedString("Details"),
+            children: [child]
+        )
+        let doc = Document(
+            id: DocumentID("test"),
+            children: [toggle]
+        )
+        let state = EditorState()
+        let host = TestHost()
+        let editor = EditorView(document: doc, state: state, host: host)
+        editor.installUndoApply()
+
+        await editor.copyBlocks(ids: [toggle.id, child.id], intoSubpagePath: "target.md")
+
+        #expect(host.appendedPageID == "target.md")
+        #expect(host.appendedBlocks.count == 1)
+        #expect(host.appendedBlocks[0].id != toggle.id)
+        #expect(host.appendedBlocks[0].kind == toggle.kind)
+        #expect(host.appendedBlocks[0].children.count == 1)
+        #expect(host.appendedBlocks[0].children[0].id != child.id)
+        #expect(host.appendedBlocks[0].children[0].kind == child.kind)
+        #expect(doc.children == [toggle])
+        #expect(state.actionToast == "Copied")
+    }
+
+    @Test func failedCrossPageCopyKeepsSourceUntouched() async {
+        let block = Block.paragraph(text: AttributedString("source"))
+        let doc = Document(
+            id: DocumentID("test"),
+            children: [block]
+        )
+        let state = EditorState()
+        let host = TestHost()
+        host.appendSucceeds = false
+        let editor = EditorView(document: doc, state: state, host: host)
+        editor.installUndoApply()
+
+        await editor.copyBlocks(ids: [block.id], intoSubpagePath: "target.md")
+
+        #expect(doc.children == [block])
+        #expect(state.actionToast == nil)
+    }
 }
 
 @MainActor
@@ -188,6 +234,7 @@ private final class TestHost: EditorHost {
     var didInlineAndTrashPage = false
     var appendedPageID: String?
     var appendedBlocks: [Block] = []
+    var appendSucceeds = true
 
     init(loadedPageBlocks: [Block]? = nil) {
         self.loadedPageBlocks = loadedPageBlocks
@@ -207,7 +254,7 @@ private final class TestHost: EditorHost {
     func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool {
         appendedPageID = pageID
         appendedBlocks = blocks
-        return true
+        return appendSucceeds
     }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}

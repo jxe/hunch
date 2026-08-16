@@ -238,9 +238,11 @@ extension EditorView {
                     moveBlocks(ids: ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
                 }
             case .intoSubpage(_, let path):
-                // Cross-document copy is out of scope for now — Option drop
-                // onto a subpage falls through to a move.
-                Task { await moveBlocks(ids: ids, intoSubpagePath: path) }
+                if isCopy {
+                    Task { await copyBlocks(ids: ids, intoSubpagePath: path) }
+                } else {
+                    Task { await moveBlocks(ids: ids, intoSubpagePath: path) }
+                }
             }
         }
     }
@@ -573,5 +575,21 @@ extension EditorView {
             setCursor(id)
         }
         showActionToast("Moved")
+    }
+
+    /// Option-drop on a subpage: append fresh-ID copies to the destination
+    /// page while leaving the source document untouched. As with a local
+    /// duplicate, selecting both a parent and one of its descendants emits
+    /// the parent subtree only once.
+    func copyBlocks(ids: [BlockID], intoSubpagePath path: String) async {
+        let roots = document.selectionSubtreeRoots(Set(ids))
+        let ordered = roots.sorted { (a, b) in
+            (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
+        }
+        let copies = ordered.compactMap { document.find($0)?.withFreshIDs() }
+        guard !copies.isEmpty else { return }
+
+        guard await host.appendToPage(path, copies) else { return }
+        showActionToast("Copied")
     }
 }
