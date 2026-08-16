@@ -119,10 +119,14 @@ func emojiSuggestions(matching query: String, limit: Int = 50, locale: Locale = 
         personalRanks[emoji.char] = index
     }
 
-    let ranked = Emoji.all.matching(query, in: locale).enumerated().map { index, emoji in
-        RankedEmojiMatch(
+    let candidates = Emoji.all.filter {
+        $0.matches(query, in: locale) || emojiAnnotationMatches($0, query: query, locale: locale)
+    }
+    let ranked = candidates.enumerated().map { index, emoji in
+        let name = emojiSuggestionName(emoji, locale: locale)
+        return RankedEmojiMatch(
             emoji: emoji,
-            name: emoji.localizedName(in: locale),
+            name: name,
             matchQuality: emojiMatchQuality(emoji, query: query, locale: locale),
             generalFrequency: EmojiGeneralFrequency.rank(of: emoji.char),
             personalRank: personalRanks[emoji.char],
@@ -177,15 +181,41 @@ private func emojiMatchQuality(_ emoji: Emoji, query: String, locale: Locale) ->
     if emoji.char == query { return 0 }
 
     let localizedName = normalizedEmojiSearchText(emoji.localizedName(in: locale), locale: locale)
-    if localizedName == normalizedQuery { return 0 }
-    if containsEmojiSearchTokenPrefix(localizedName, query: normalizedQuery) { return 1 }
-    if localizedName.contains(normalizedQuery) { return 2 }
+    let annotation = EmojiSearchAnnotations.entry(for: emoji.char)
+    let annotatedName = annotation?.name.map { normalizedEmojiSearchText($0, locale: locale) }
+    let keywords = EmojiSearchAnnotations.searchTerms(for: emoji.char).map {
+        normalizedEmojiSearchText($0, locale: locale)
+    }
+
+    let names = [localizedName, annotatedName].compactMap { $0 }
+    if names.contains(normalizedQuery) { return 0 }
+    if names.contains(where: { containsEmojiSearchTokenPrefix($0, query: normalizedQuery) }) { return 1 }
+    if keywords.contains(normalizedQuery) { return 1 }
+    if keywords.contains(where: { containsEmojiSearchTokenPrefix($0, query: normalizedQuery) }) { return 2 }
+    if names.contains(where: { $0.contains(normalizedQuery) }) { return 2 }
+    if keywords.contains(where: { $0.contains(normalizedQuery) }) { return 3 }
 
     let unicodeName = normalizedEmojiSearchText(emoji.unicodeName, locale: locale)
-    if unicodeName == normalizedQuery { return 3 }
-    if containsEmojiSearchTokenPrefix(unicodeName, query: normalizedQuery) { return 4 }
-    if unicodeName.contains(normalizedQuery) { return 5 }
-    return 6
+    if unicodeName == normalizedQuery { return 4 }
+    if containsEmojiSearchTokenPrefix(unicodeName, query: normalizedQuery) { return 5 }
+    if unicodeName.contains(normalizedQuery) { return 6 }
+    return 7
+}
+
+private func emojiAnnotationMatches(_ emoji: Emoji, query: String, locale: Locale) -> Bool {
+    let normalizedQuery = normalizedEmojiSearchText(query, locale: locale)
+    guard !normalizedQuery.isEmpty else { return true }
+    return EmojiSearchAnnotations.searchTerms(for: emoji.char).contains {
+        normalizedEmojiSearchText($0, locale: locale).contains(normalizedQuery)
+    }
+}
+
+private func emojiSuggestionName(_ emoji: Emoji, locale: Locale) -> String {
+    if locale.language.languageCode?.identifier == "en",
+       let name = EmojiSearchAnnotations.entry(for: emoji.char)?.name {
+        return name.capitalized(with: locale)
+    }
+    return emoji.localizedName(in: locale)
 }
 
 private func normalizedEmojiSearchText(_ text: String, locale: Locale) -> String {

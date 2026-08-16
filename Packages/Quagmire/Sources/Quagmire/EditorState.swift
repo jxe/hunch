@@ -206,12 +206,23 @@ struct EmojiMenuState: Equatable, Sendable {
     var trigger: EmojiTrigger
     var selectedIndex: Int
     var matches: [EmojiSuggestion]
+    /// Incremented only by keyboard navigation. Hovering can update the
+    /// highlight without causing the scroll view to recenter beneath the
+    /// pointer and trigger a hover/scroll feedback loop.
+    var keyboardScrollRequestID: Int
 
-    init(blockID: BlockID, trigger: EmojiTrigger, selectedIndex: Int, matches: [EmojiSuggestion] = []) {
+    init(
+        blockID: BlockID,
+        trigger: EmojiTrigger,
+        selectedIndex: Int,
+        matches: [EmojiSuggestion] = [],
+        keyboardScrollRequestID: Int = 0
+    ) {
         self.blockID = blockID
         self.trigger = trigger
         self.selectedIndex = selectedIndex
         self.matches = matches
+        self.keyboardScrollRequestID = keyboardScrollRequestID
     }
 }
 

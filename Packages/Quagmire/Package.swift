@@ -19,7 +19,10 @@ let package = Package(
             dependencies: [
                 .product(name: "EmojiKit", package: "EmojiKit")
             ],
-            resources: [.process("Resources/Sounds")]
+            resources: [
+                .process("Resources/Sounds"),
+                .process("Resources/EmojiAnnotations")
+            ]
         ),
         .testTarget(
             name: "QuagmireTests",

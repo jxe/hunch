@@ -91,6 +91,7 @@ extension EditorView {
         guard !menu.matches.isEmpty else { return .handled }
         let count = menu.matches.count
         menu.selectedIndex = ((menu.selectedIndex + delta) % count + count) % count
+        menu.keyboardScrollRequestID += 1
         state.setEmojiMenu(menu)
         return .handled
     }
@@ -312,11 +313,12 @@ extension EditorView {
                     }
                     .frame(maxHeight: 320)
                     .scrollIndicators(.visible)
-                    .onChange(of: state.emojiMenu?.selectedIndex) { _, selectedIndex in
-                        scrollToEmojiSelection(selectedIndex, matches: matches, proxy: proxy)
+                    .onChange(of: state.emojiMenu?.keyboardScrollRequestID) { _, _ in
+                        scrollToEmojiSelection(state.emojiMenu?.selectedIndex, matches: matches, proxy: proxy)
                     }
                     .onChange(of: state.emojiMenu?.trigger.query) { _, _ in
-                        scrollToEmojiSelection(state.emojiMenu?.selectedIndex, matches: matches, proxy: proxy)
+                        guard let first = matches.first else { return }
+                        proxy.scrollTo(first.id, anchor: .top)
                     }
                 }
             }

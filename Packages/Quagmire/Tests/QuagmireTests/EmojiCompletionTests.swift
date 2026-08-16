@@ -73,6 +73,26 @@ struct EmojiCompletionTests {
         #expect(results.first?.character == "🩷")
     }
 
+    @MainActor
+    @Test func findsRepeatArrowsByCLDRNameAndKeyword() {
+        let results = emojiSuggestions(matching: "repeat", locale: Locale(identifier: "en"))
+        #expect(results.first?.character == "🔁")
+        #expect(results.first?.name == "Repeat Button")
+    }
+
+    @MainActor
+    @Test func findsRepeatArrowsByConversationalLoopAlias() {
+        let results = emojiSuggestions(matching: "loop", locale: Locale(identifier: "en"))
+        #expect(results.contains { $0.character == "🔁" })
+        #expect(results.contains { $0.character == "🔂" })
+    }
+
+    @Test func bundledCLDRAnnotationsLoad() {
+        let annotation = EmojiSearchAnnotations.entry(for: "🔁")
+        #expect(annotation?.name == "repeat button")
+        #expect(annotation?.keywords.contains("repeat") == true)
+    }
+
     @Test func unicodeFrequencySnapshotKeepsRedHeartInTopTier() {
         #expect(EmojiGeneralFrequency.rank(of: "❤️")?.tier == 0)
         #expect(EmojiGeneralFrequency.rank(of: "💔")?.tier == 3)
