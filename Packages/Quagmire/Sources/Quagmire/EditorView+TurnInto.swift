@@ -226,7 +226,7 @@ extension EditorView {
     }
 
     @discardableResult
-    fileprivate func convertSubpage(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
+    func convertSubpage(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
         guard host.supportsSubpageInlining else { return .ignored }
         guard target != .page else { return .ignored }
         guard let block = document.find(blockID),
@@ -238,12 +238,16 @@ extension EditorView {
         // duplicate (file still in workspace, bullet on disk) rather
         // than data loss (file gone, bullet never persisted).
         Task { @MainActor in
-            guard var loaded = await host.loadPageBlocks(path) else {
+            guard let hostBlocks = await host.loadPageBlocks(path) else {
                 configuration.diagnostics.subpage.error("convertSubpage: loadPageBlocks returned nil — path=\(path, privacy: .public)")
                 return
             }
             // The subpage may have moved out from under us during the await.
             guard document.find(blockID) != nil else { return }
+            // Cross-document inline: these are copies landing in *this* document,
+            // so they take fresh identity at the receiving boundary regardless of
+            // what the host's parser returned. Same rule as paste.
+            var loaded = hostBlocks.map { $0.withFreshIDs() }
             // Heading containment means the page's body lives as children of the
             // title H1, not as siblings. Replace the title heading with its
             // children so the subpage's body survives the inline.

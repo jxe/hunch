@@ -1902,13 +1902,10 @@ public struct EditorView: View {
         return true
     }
 
-    /// Paste: read a string from the pasteboard, hand it to the host to parse into blocks,
-    /// and insert them after the cursor block. If the cursor block already has children
-    /// (i.e. its `sectionRange` extends past itself), pasted blocks land at the end of
-    /// those children as siblings (indent + 1); otherwise they land immediately below the
-    /// cursor at the cursor's own indent. With no cursor, append at end of doc, indent 0.
-    /// The host is expected to return blocks normalized to indent 0; we shift each by the
-    /// chosen base.
+    /// Paste: read a string from the pasteboard, hand it to the host to parse into
+    /// blocks, and splice them in relative to the cursor block. See
+    /// `spliceParsedBlocksAfter` for the placement rule and the identity
+    /// guarantee applied to host-supplied blocks.
     func pasteFromPasteboard() -> Bool {
         // Image-on-pasteboard takes precedence over text — same rule as the
         // editor's `paste(_:)` override.
@@ -1936,17 +1933,24 @@ public struct EditorView: View {
         return spliceParsedBlocksAfter(state.cursor, parsed: parsed, focusLast: false)
     }
 
-    /// Splice host-parsed blocks into the document after `anchorID` (or at the end of
-    /// the document if `anchorID == nil` / not found). Indent + insertion-point logic:
-    /// if the anchor has indent-children, pasted blocks land after the last child as
-    /// siblings of the children (indent + 1); otherwise they land immediately below
-    /// the anchor at the anchor's own indent. The host is expected to return blocks
-    /// normalized to indent 0; we shift each by the chosen base. Returns true and
-    /// either selects (`focusLast == false`, nav-mode) or enters edit mode on
+    /// Splice host-parsed blocks into the document after `anchorID` (or at the end
+    /// of the document if `anchorID == nil` / not found). Placement: if the anchor
+    /// has children, the blocks become its first children; otherwise they become
+    /// its next siblings. Depth is structural, so nothing is shifted — the
+    /// subtrees land as the host handed them over. Returns true and either
+    /// selects (`focusLast == false`, nav-mode) or enters edit mode on
     /// (`focusLast == true`, edit-mode paste) the last spliced block.
+    ///
+    /// Every incoming subtree is reminted. `BlockID` is editor identity scoped to
+    /// one live `Document`, and a host parser is free to return whatever ids it
+    /// likes — including ids already live in this document. Reminting at the
+    /// receiving boundary closes that by construction rather than trusting the
+    /// host. Hunch's parser happens to mint fresh ids already; a third-party host
+    /// need not.
     @discardableResult
-    private func spliceParsedBlocksAfter(_ anchorID: BlockID?, parsed: [Block], focusLast: Bool) -> Bool {
-        guard !parsed.isEmpty else { return false }
+    func spliceParsedBlocksAfter(_ anchorID: BlockID?, parsed incoming: [Block], focusLast: Bool) -> Bool {
+        guard !incoming.isEmpty else { return false }
+        let parsed = incoming.map { $0.withFreshIDs() }
 
         // Tree analog of "after the anchor's section": if the anchor has
         // children, splice as the FIRST CHILDREN of the anchor; otherwise
@@ -2087,7 +2091,10 @@ public struct EditorView: View {
     }
 
 
-    private func splitBlock(_ blockID: BlockID, selectionStart: Int, selectionEnd: Int) -> KeyPress.Result {
+    /// Internal rather than private so `BlockIdentityLifecycleTests` can assert
+    /// the split row of the BlockID lifecycle contract directly: the original id
+    /// stays with the leading row and the trailing row gets a fresh one.
+    func splitBlock(_ blockID: BlockID, selectionStart: Int, selectionEnd: Int) -> KeyPress.Result {
         guard let block = document.find(blockID) else { return .ignored }
         let attr = block.text
         let total = attr.characters.count
@@ -2310,7 +2317,10 @@ public struct EditorView: View {
     ///    join point. If the previous block isn't text-bearing (code/divider/subpage/
     ///    templateButton) we ignore — the user can navigate up and delete it
     ///    explicitly.
-    private func deleteEmptyBlock(_ blockID: BlockID) -> KeyPress.Result {
+    /// Internal rather than private for the same reason as `splitBlock`: the
+    /// merge row of the BlockID lifecycle contract (survivor keeps its id, the
+    /// removed row's id dies) is asserted directly.
+    func deleteEmptyBlock(_ blockID: BlockID) -> KeyPress.Result {
         guard let block = document.find(blockID) else { return .ignored }
 
         // Empty + nested row: backspace tries to outdent. If outdent is

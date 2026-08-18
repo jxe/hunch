@@ -424,8 +424,15 @@ code changes, so the rest of the chain has a tracked artifact to point at.
 Add `Packages/Quagmire/Tests/QuagmireTests/BlockIdentityLifecycleTests.swift`
 covering every row of the matrix against current behavior, using
 `DocumentMutationTests.swift` and `DocumentTransactionTests.swift` as
-structural patterns. Add H1–H6 model tests and an unsupported-block payload
-preservation test as expected-failing characterizations of Steps 3 and 4.
+structural patterns. The H1–H6 and unsupported-payload tests land in Steps 3
+and 4 where they pass, rather than as red tests here — every stage commit stays
+green, which is the stronger property.
+
+Some of the operations under contract are `private`/`fileprivate` key handlers
+(`splitBlock`, `deleteEmptyBlock`, `commitMention`, `spliceParsedBlocksAfter`,
+`convertSubpage`). Relax them to `internal` so the matrix is executable against
+the real code paths — `internal` is not public API, and asserting identity
+through the actual handlers is the whole point.
 
 Then close both remint gaps at the receiving editor boundary via the existing
 `Block.withFreshIDs()`:
@@ -437,9 +444,13 @@ Then close both remint gaps at the receiving editor boundary via the existing
 Do not hunt for a failing test proving a live paste collision — there is none
 against the current host (see the BlockID contract above).
 
-**Verify**: `swift test --package-path Packages/Quagmire` → the new
-characterization tests compile; expected pre-migration failures are confined to
-the requirements Steps 3 and 4 change.
+**Verify**: `swift test --package-path Packages/Quagmire` → green.
+
+Known pre-existing flake, unrelated to this work: `DocumentUndoControllerTests`
+`macTextChangesCommitAfterCheckpointDelay` fails roughly one full-suite run in
+three (timing-based, 750ms typing checkpoint starved under parallel execution)
+and passes reliably under `--filter`. Reproduced at `4c35f37` before any change
+here. Do not let it block a stage; fix it separately.
 
 ### Step 2: Split the system-replacement seam
 

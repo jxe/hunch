@@ -130,7 +130,7 @@ extension EditorView {
     /// Commit the selected page mention. A line-leading mention becomes a
     /// `.subpage` row; a mention with sentence content before it becomes an
     /// inline link in the existing text block.
-    fileprivate func commitMention(_ item: MentionItem, menu: MentionMenuState) {
+    func commitMention(_ item: MentionItem, menu: MentionMenuState) {
         defer { state.closeMentionMenu() }
         // The popover detects from the live text storage, but `block.text` is the
         // binding state — only flushed by `commitLiveText` on blur / structural
