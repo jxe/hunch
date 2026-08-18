@@ -5,7 +5,7 @@ milestone status table as work lands.
 
 | Plan | Purpose | Status |
 |---|---|---|
-| [quagmire-0.1-foundation.md](quagmire-0.1-foundation.md) | Replace the Hunch-specific subpage API with one neutral document-link row, H1–H6, unsupported fallback, stable BlockID rules, a host boundary a remote backend can actually conform to, and a simultaneous Hunch migration | TODO — P1; blocks extraction Milestone 7 |
+| [quagmire-0.1-foundation.md](quagmire-0.1-foundation.md) | Replace the Hunch-specific subpage API with one neutral document-link row, H1–H6, unsupported fallback, stable BlockID rules, a host boundary a remote backend can actually conform to, and a simultaneous Hunch migration | DONE — 2026-08-18; Milestone 7 unblocked |
 | [editor-extraction-plan.md](editor-extraction-plan.md) | Stabilize the reusable editor, name and verify it locally, then extract, publish, and adopt it remotely | Milestones 0–6 DONE; Milestone 7 TODO |
 
 Verification records:

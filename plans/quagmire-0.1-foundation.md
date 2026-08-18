@@ -24,7 +24,7 @@
 
 ## Status
 
-- **Status**: TODO
+- **Status**: DONE — 2026-08-18, branch `codex/quagmire-document-link-foundation`
 - **Priority**: P1
 - **Effort**: L–XL
 - **Risk**: HIGH
@@ -363,7 +363,7 @@ Run Xcode commands sequentially.
 | Regenerate project | `xcodegen generate --spec project.yml --project .` | exit 0; only deterministic project membership changes |
 | Hunch macOS build | `xcodebuild build -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -derivedDataPath /tmp/hunch-document-link-macos-build CODE_SIGNING_ALLOWED=NO` | exit 0 |
 | Hunch iOS 27 build | `xcodebuild build-for-testing -project Hunch.xcodeproj -scheme Hunch -destination 'platform=iOS Simulator,id=C76DE979-27D7-4BE5-AD11-3FC223402AB9' -derivedDataPath /tmp/hunch-document-link-ios CODE_SIGNING_ALLOWED=NO` | exit 0 (iPhone 17 Pro / iOS 27.0, verified present) |
-| Stale API sweep | `rg -n '\.subpage\|Subpage\|supportsSubpage\|didDeleteSubpage\|intoSubpage\|openPage\(pageID:\|lookupPage\|suggestPages' Packages/Quagmire/Sources Packages/Quagmire/Tests App/Sources App/Tests` | no live model/API/code matches; migration-test prose may remain only if explicitly documenting old input |
+| Stale API sweep | `rg -c 'subpage\|Subpage\|pageID\|PageID\|lookupPage\|suggestPages\|openPage' Packages/Quagmire/Sources Packages/Quagmire/Tests Packages/Quagmire/README.md` | **zero** — this is the surface being frozen. Hunch keeps its own vocabulary (`resolveSubpageTarget`, `SubpageTrashDecision`, `openSubpage`, the `pageID` field in the recovery format) because "subpage" is genuinely what Hunch calls this feature; the boundary is what matters, not the word |
 | Boundary sweep | `rg -n 'Markdown\|Arbor\|sourceRange\|sourceSnapshot\|sourceHandle\|SourceHandle\|metadata:' Packages/Quagmire/Sources` | no new format/storage coupling; existing user-facing Markdown/paste comments must be reviewed, not blindly deleted |
 | Diff check | `git diff --check` | no output |
 
@@ -730,3 +730,57 @@ ordering more than mechanical renames. A compile-clean `.subpage` →
 inline operation trashes before flush, target capabilities are still global when
 the host needs them per reference, or a provider-completed save still clears the
 undo stack.
+
+
+## Outcome
+
+Executed 2026-08-18 on `codex/quagmire-document-link-foundation`, one commit
+per step:
+
+| Step | Commit | What it did |
+|---|---|---|
+| 0 | `727cd0d` | Tracked and revised this plan after auditing the code rather than the docs |
+| 1 | `7b9c0ad` | BlockID lifecycle made executable (23 tests); reminted at the paste and cross-document-inline boundaries |
+| 2 | `a43c27d` | Split the system-replacement seam; `SystemDelta` rebases outstanding undo snapshots instead of discarding them |
+| 3 | `2d08d83` | H1–H6 representable, H1–H3 authorable |
+| 4 | `f6f9acb` | `unsupported` leaf carrying byte-exact source via `Markup.range` |
+| 6 | `869ab34` | Per-target capabilities, `pending`/`unavailable`, async suggestions; plus the two durability fixes from Step 7 |
+| 5 | `d52c67f` | The vocabulary rename, 64 files |
+| 7 | (this) | Cross-document failure injection, final gate |
+
+Verification at the gate: package `verify.sh` (333 + 2 tests, clean macOS and
+iOS Simulator builds), XcodeGen (no project change), Hunch macOS tests (348),
+Hunch macOS build, Hunch iOS 27 build-for-testing, both sweeps,
+`git diff --check`. All green.
+
+Two bugs fixed that were live before this work and untested:
+
+- H4–H6 parsed as H3 and were written back as `###`, so opening a document
+  with deep headings and editing anything rewrote them.
+- Tables and raw HTML were flattened into paragraphs of re-rendered text and
+  destroyed on the next save.
+
+Three deviations from the plan as written, each argued at the point it came up:
+
+- **No `requestPresentation` warm hook.** `lookupDocument` already kicks a
+  deduped background warm as a side effect of a cache miss; what was missing
+  was a state to return meanwhile. `.pending` plus a documented contract beats
+  a second mechanism every host would implement alongside the first.
+- **No `delete` capability.** Deleting the row is always allowed and whether
+  that should delete the target is host policy, so the editor never gates on
+  it. Only what the editor gates on is in the set.
+- **`inlineAndRetireDocument`, not `inlineAndTrashDocument`.** "Trash" is the
+  Hunch policy this plan set out to get out of the API.
+
+Left for Milestone 7: extraction. Nothing here published, tagged, or pushed.
+
+### Known follow-up
+
+Every `EditorHost` requirement has a default implementation, which is what
+lets a host adopt with two methods. The cost is that a mistyped override is an
+overload, not an error, and the default silently wins. Mid-rename the entire
+Hunch host stopped conforming — twenty methods, still compiling, all answering
+`.missing`/`nil`/`false` — and the app built clean. `FullHost` in
+`QuagmirePublicAPITests` is now the tripwire, but it only guards hosts inside
+this repo. A published API might want something stronger (fewer defaults, or a
+documented conformance checklist).
