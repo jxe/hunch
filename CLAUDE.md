@@ -156,7 +156,12 @@ user-picked workspace folder.
     spawns a background reconcile Task and surfaces any restores via
     `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
     The host methods (`openDocument`, `persistCommit`, `flush`, …) live on the
-    same type and forward to `Clamshell`. The host's `persistCommit`
+    same type and forward to `Clamshell`. **`WorkspaceWindow` conforms to bare
+    `EditorHost`, adopting none of the `…Unsupported` opt-out markers**, so all
+    24 requirements are compile-checked — mistyping one is a conformance error
+    naming the method, not a silent fallback to a `nil`/`false` default. Keep it
+    that way: adding a marker to quiet a build error would turn that feature
+    off at runtime instead. The host's `persistCommit`
     conforms to `EditorHost`; it calls
     `session.enqueueEditorChanges(changes)` synchronously (the coordinator
     generation exists before the hook returns) and

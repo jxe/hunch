@@ -187,7 +187,7 @@ import SwiftUI
 import Quagmire
 
 @MainActor
-final class MyHost: EditorHost {
+final class MyHost: EditorHostDefaults {
     func persistCommit(changes: [DocumentChange], in document: Document) {}
     func flush(_ document: Document) async {}
 }
@@ -225,9 +225,9 @@ to encode a file URL. `persistCommit` reports semantic block snapshots through
 Silently dropping the callback would leave a host with no persistence, so a
 non-persisting integration must provide explicit empty bodies for both methods.
 
-That is not quite a working editor yet, because `EditorHost` has no blanket
-defaults — see "Opting out of a surface" below. The one-line version: conform to
-`EditorHostDefaults` and the snippet above compiles as written.
+That's a working editor. `EditorHostDefaults` above is what makes two methods
+enough — it opts out of every optional surface at once. Swap it for the
+narrower markers as the host grows into them; see "Opting out of a surface".
 
 **One `EditorView` per document.** The pair `(document, state)` is one
 editing session — the editor caches focus, undo, and gesture state
@@ -470,32 +470,32 @@ rest, its defaults do real work — a line-per-block plain-text codec — rather
 than declining to, so a mistyped override still leaves copy and paste working
 and there is nothing for a marker to protect.
 
-| Method | Requirement | Default, when its marker is adopted |
-|--------|-------------|-----------------|
+| Method | Supplied by | Default |
+|--------|-------------|---------|
 | `persistCommit` | Required | None; the host must explicitly own persistence. |
 | `flush` | Required | None; durability may never be silently weakened. |
-| `supportsDocumentCreation` | Optional | `false`; hides Turn Into → Page and Cmd-K page creation. |
-| `supportsDocumentInlining` | Optional | `false`; hides non-page conversions for document-link rows. |
-| `supportsMoveDestinationPicker` | Optional | `false`; hides the "Move to" action. |
-| `suggestDocuments` | Optional | `[]` |
-| `openDocument` | Optional | No-op |
-| `setDocumentIcon` | Optional | `false` |
-| `lookupDocument` | Optional | `.missing` |
-| `didDeleteDocumentLink` | Optional | No-op |
-| `resolveReference` | Optional | `nil` |
-| `linkURL` | Optional | `nil` |
-| `createDocument` | Optional | `nil` |
-| `loadDocumentBlocks` | Optional | `nil` |
-| `inlineAndRetireDocument` | Optional | `false` |
-| `appendToDocument` | Optional | `false` |
-| `moveDestination` | Optional | `nil` |
-| `navigateBack` | Optional | No-op |
-| `serializeBlocksForPasteboard` | Optional | Plain text in visible tree order, one block per line. |
-| `parseBlocksFromPasteboard` | Optional | Nonblank plain-text lines become paragraph blocks; blank input returns `nil`. |
-| `saveImages` | Optional | `[]` |
-| `linkPreview` | Optional | `nil` |
-| `imageURL` | Optional | `nil` |
-| `blockActions` | Optional | `[]` |
+| `supportsDocumentCreation` | `DocumentLinksUnsupported` | `false`; hides Turn Into → Page and Cmd-K page creation. |
+| `supportsDocumentInlining` | `DocumentLinksUnsupported` | `false`; hides non-page conversions for document-link rows. |
+| `supportsMoveDestinationPicker` | `MoveDestinationUnsupported` | `false`; hides the "Move to" action. |
+| `suggestDocuments` | `DocumentLinksUnsupported` | `[]` |
+| `openDocument` | `DocumentLinksUnsupported` | No-op |
+| `setDocumentIcon` | `DocumentLinksUnsupported` | `false` |
+| `lookupDocument` | `DocumentLinksUnsupported` | `.missing` |
+| `didDeleteDocumentLink` | `DocumentLinksUnsupported` | No-op |
+| `resolveReference` | `DocumentLinksUnsupported` | `nil` |
+| `linkURL` | `DocumentLinksUnsupported` | `nil` |
+| `createDocument` | `DocumentLinksUnsupported` | `nil` |
+| `loadDocumentBlocks` | `DocumentLinksUnsupported` | `nil` |
+| `inlineAndRetireDocument` | `DocumentLinksUnsupported` | `false` |
+| `appendToDocument` | `DocumentLinksUnsupported` | `false` |
+| `moveDestination` | `MoveDestinationUnsupported` | `nil` |
+| `navigateBack` | `NavigationUnsupported` | No-op |
+| `serializeBlocksForPasteboard` | always available | Plain text in visible tree order, one block per line. |
+| `parseBlocksFromPasteboard` | always available | Nonblank plain-text lines become paragraph blocks; blank input returns `nil`. |
+| `saveImages` | `ImagesUnsupported` | `[]` |
+| `linkPreview` | `LinkPreviewsUnsupported` | `nil` |
+| `imageURL` | `ImagesUnsupported` | `nil` |
+| `blockActions` | `BlockActionsUnsupported` | `[]` |
 
 | Method | Signature | When it fires | Return semantics |
 |--------|-----------|---------------|------------------|
