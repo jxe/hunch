@@ -14,7 +14,7 @@ Open-source, improved Notion. Native iOS 26 + macOS 26. Your notes live as plain
 
 ## Just like Notion used to be, but better
 
-- ✏️  **Block editor** — paragraph, H1/H2/H3, bullet/numbered/todo lists, toggles, quote, code, divider, image, subpage row, template button.
+- ✏️  **Block editor** — paragraph, H1/H2/H3, bullet/numbered/todo lists, toggles, quote, code, divider, image, document-link row, template button.
 - ⚡  **Markdown autotransforms** — `# `, `## `, `### `, `- `, `* `, `1. `, `[] ` / `[ ] `, `> `, ` ``` `, `---`, `" `.
 - 🎨  **Inline marks** — bold, italic, code, strike, link, with the obvious Cmd-shortcuts (Cmd-B / I / E / Shift-S, Cmd-K for link).
 - 🔽  **Toggles** — `▸ Title` collapsible blocks with nested children.
@@ -82,7 +82,7 @@ Notion's block UI hangs off hover. That doesn't translate to touch and makes the
 
 ### 🏠  Home page, not a sidebar
 
-Each workspace points at one home page. Subpages branch from there. There's no permanent sidebar tax — open by typing or by following a subpage row, not by scanning a tree.
+Each workspace points at one home page. Subpages branch from there. There's no permanent sidebar tax — open by typing or by following a document-link row, not by scanning a tree.
 
 ### 📱  iOS gestures that feel native
 
@@ -90,7 +90,7 @@ Edge-swipe pops navigation. Pinch on a heading or toggle opens its nested view a
 
 ### 🔗  One link type — that's it
 
-Page mention, page link, subpage row, database relation — Notion has four overlapping things. Hunch has one: `[Title](pages/foo.md)`. A paragraph that contains nothing but a link of that form renders as a subpage row; the same link inline renders as text. Done.
+Page mention, page link, document-link row, database relation — Notion has four overlapping things. Hunch has one: `[Title](pages/foo.md)`. A paragraph that contains nothing but a link of that form renders as a document-link row; the same link inline renders as text. Done.
 
 ### 🪄  Smart inline links
 

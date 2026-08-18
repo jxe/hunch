@@ -17,7 +17,7 @@ struct PageIconTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
-        let relativePath = try clamshell.createPage(title: "Project", requestedPath: "project.md", initialContent: nil)
+        let relativePath = try clamshell.createDocument(title: "Project", requestedPath: "project.md", initialContent: nil)
         let before = try await clamshell.page(atPath: relativePath).readBlocks()
         let oldHash = before[0].atomicHash
 
@@ -25,7 +25,7 @@ struct PageIconTests {
 
         let after = try await clamshell.page(atPath: relativePath).readBlocks()
         #expect(Document.deriveTitle(from: after, fallback: "fallback") == "🚀 Project")
-        #expect(clamshell.lookupPage(relativePath).title == "🚀 Project")
+        #expect(clamshell.lookupDocument(relativePath).title == "🚀 Project")
         #expect(FileManager.default.fileExists(atPath: clamshell.url(for: "project.md").path))
 
         let intent = PatchEngine.intent(from: clamshell.log.readJournal(page: relativePath))
@@ -41,7 +41,7 @@ struct PageIconTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
-        let relativePath = try clamshell.createPage(title: "Project", requestedPath: "project.md", initialContent: nil)
+        let relativePath = try clamshell.createDocument(title: "Project", requestedPath: "project.md", initialContent: nil)
         let page = clamshell.page(atPath: relativePath)
         let session = try await page.open(onEvent: { _ in })
 

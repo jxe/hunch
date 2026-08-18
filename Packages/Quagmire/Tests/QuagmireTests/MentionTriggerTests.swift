@@ -65,22 +65,22 @@ struct MentionTriggerTests {
         #expect(r?.nsRange == NSRange(location: 1, length: 4))
     }
 
-    @Test func lineLeadingMentionCreatesSubpageBlock() {
-        #expect(mentionStartsSubpageBlock(plain: "@foo", triggerStart: 0))
-        #expect(mentionStartsSubpageBlock(plain: "  @foo", triggerStart: 2))
+    @Test func lineLeadingMentionCreatesDocumentLinkBlock() {
+        #expect(mentionStartsDocumentLinkBlock(plain: "@foo", triggerStart: 0))
+        #expect(mentionStartsDocumentLinkBlock(plain: "  @foo", triggerStart: 2))
     }
 
-    @Test func mentionAfterMarkdownMarkerCreatesSubpageBlock() {
-        #expect(mentionStartsSubpageBlock(plain: "- @foo", triggerStart: 2))
-        #expect(mentionStartsSubpageBlock(plain: "1. @foo", triggerStart: 3))
-        #expect(mentionStartsSubpageBlock(plain: "[ ] @foo", triggerStart: 4))
-        #expect(mentionStartsSubpageBlock(plain: "## @foo", triggerStart: 3))
+    @Test func mentionAfterMarkdownMarkerCreatesDocumentLinkBlock() {
+        #expect(mentionStartsDocumentLinkBlock(plain: "- @foo", triggerStart: 2))
+        #expect(mentionStartsDocumentLinkBlock(plain: "1. @foo", triggerStart: 3))
+        #expect(mentionStartsDocumentLinkBlock(plain: "[ ] @foo", triggerStart: 4))
+        #expect(mentionStartsDocumentLinkBlock(plain: "## @foo", triggerStart: 3))
     }
 
     @Test func midSentenceMentionStaysInline() {
-        #expect(!mentionStartsSubpageBlock(plain: "see @foo", triggerStart: 4))
-        #expect(!mentionStartsSubpageBlock(plain: "(@foo", triggerStart: 1))
-        #expect(!mentionStartsSubpageBlock(plain: "see - @foo", triggerStart: 6))
+        #expect(!mentionStartsDocumentLinkBlock(plain: "see @foo", triggerStart: 4))
+        #expect(!mentionStartsDocumentLinkBlock(plain: "(@foo", triggerStart: 1))
+        #expect(!mentionStartsDocumentLinkBlock(plain: "see - @foo", triggerStart: 6))
     }
 
     // MARK: - Deep heading prefixes
@@ -89,13 +89,13 @@ struct MentionTriggerTests {
     /// is line-leading like any other. Missing these meant `#### @page` created
     /// an inline link inside a heading instead of a reference row.
     @Test func mentionAfterADeepHeadingMarkerIsLineLeading() {
-        #expect(mentionStartsSubpageBlock(plain: "#### @", triggerStart: 5))
-        #expect(mentionStartsSubpageBlock(plain: "##### @", triggerStart: 6))
-        #expect(mentionStartsSubpageBlock(plain: "###### @", triggerStart: 7))
+        #expect(mentionStartsDocumentLinkBlock(plain: "#### @", triggerStart: 5))
+        #expect(mentionStartsDocumentLinkBlock(plain: "##### @", triggerStart: 6))
+        #expect(mentionStartsDocumentLinkBlock(plain: "###### @", triggerStart: 7))
     }
 
     @Test func mentionAfterSevenHashesIsNotLineLeading() {
         // Not a heading marker in Markdown, so it is ordinary text.
-        #expect(!mentionStartsSubpageBlock(plain: "####### @", triggerStart: 8))
+        #expect(!mentionStartsDocumentLinkBlock(plain: "####### @", triggerStart: 8))
     }
 }

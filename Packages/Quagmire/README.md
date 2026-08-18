@@ -69,7 +69,7 @@ What the editor does for the end user, regardless of how the host wraps it:
   midline with hysteresis. Destination frames are frozen for the lifetime of
   the drag, so the animated insertion gap cannot move the target being tested;
   the live page origin still projects those frames through autoscroll.
-  Dropping onto a closed toggle, template button, or subpage row appends as a
+  Dropping onto a closed toggle, template button, or document-link row appends as a
   child instead of inserting between rows.
 
 **Indent**
@@ -103,16 +103,16 @@ Type these at the start of a paragraph; they fire on the trailing space:
 Enter triggers (on an empty-tail row): `---` → divider, ` ``` ` → code fence.
 
 **@-mention popover**
-Type `@` followed by a query. The host's `suggestPages(_:in:)` returns up
-to 8 `MentionItem`s. ↑/↓ navigates, Return inserts a subpage block,
+Type `@` followed by a query. The host's `suggestDocuments(_:in:)` returns up
+to 8 `MentionItem`s. ↑/↓ navigates, Return inserts a document-link row,
 Esc dismisses.
 
 **Turn Into**
 Cmd-/ in nav mode (on a single block) opens a 3-column grid: H1/H2/H3,
 Bullet/Numbered/To-do, Text/Toggle/Page/Divider/Template. Each has a
-keyboard shortcut while the menu is open. On a subpage block, "Turn Into
-anything-but-page" inlines the child page's content (`loadPageBlocks(_:)`) and
-trashes the source file (`inlineAndTrashPage(_:parent:)`).
+keyboard shortcut while the menu is open. On a document-link row, "Turn Into
+anything-but-page" inlines the child page's content (`loadDocumentBlocks(_:)`) and
+trashes the source file (`inlineAndRetireDocument(_:parent:)`).
 
 **Host-supplied block actions**
 - Hosts can return `EditorBlockAction` values with a stable id, title, system
@@ -139,22 +139,22 @@ parser and serializer).
 In-app block drag uses a custom `BlockDragPayload` UTType — no host wiring
 needed. Cross-app drag falls through to the pasteboard codecs.
 
-**Subpage navigation and management**
-- Tap a subpage row → host receives `openPage(pageID:)` and pushes the
+**Document links**
+- Tap a document-link row → host receives `openDocument(_:)` and pushes the
   child page on its navigation stack.
 - Inline `[text](url)` clicks in read-only rows go through the editor's
   `OpenURLAction` interceptor: the editor classifies the URL via
-  `host.resolvePageID(from:in:)` (its own host-owned classifier — same hook
+  `host.resolveReference(from:in:)` (its own host-owned classifier — same hook
   used at render time for inline-link decoration). Internal hits dispatch
-  to `host.openPage(pageID:)`; external URLs fall through to the system
+  to `host.openDocument(_:)`; external URLs fall through to the system
   handler via `OpenURLAction.systemAction`.
-- Cmd-K / Turn Into → Page on a paragraph creates a subpage block via
-  `createPage` (async — the editor spawns a Task and splices the subpage
+- Cmd-K / Turn Into → Page on a paragraph creates a document-link row via
+  `createDocument` (async — the editor spawns a Task and splices the link
   row after the host returns the new id). The editor consults
-  `host.resolvePageID` to decide whether an existing link's URL names an
+  `host.resolveReference` to decide whether an existing link's URL names an
   internal page; it never inspects the URL itself. @-mention commit only
-  references pages that already exist — it never calls `createPage`.
-- Drop blocks onto a subpage row → editor calls `appendToPage` to move
+  references pages that already exist — it never calls `createDocument`.
+- Drop blocks onto a document-link row → editor calls `appendToDocument` to move
   them into the child page.
 
 **Toggle / template-button expand/collapse**
@@ -264,7 +264,7 @@ public enum BlockKind: Equatable, Sendable {
     case divider
     case toggle(title: AttributedString)
     case templateButton(label: String)
-    case subpage(title: String, pageID: String)
+    case documentLink(label: AttributedString, reference: DocumentReference)
     case image(source: String, alt: String)
     case unsupported(payload: String, display: String)
 }
@@ -309,7 +309,7 @@ public enum HeadingLevel: Int, Comparable, Hashable, Sendable, CaseIterable {
 - **Containment is enforced.** `Block.canContain(_:)` describes which
   kinds may hold which children: headings, toggles, list items, and
   template buttons accept children; paragraphs / quotes / code /
-  dividers / subpages / images do not. A heading at level L can contain
+  dividers / document links / images do not. A heading at level L can contain
   any block except headings at level ≤ L (Notion-style heading scope).
 - **`Block.text: AttributedString`** projects the underlying kind's text
   payload (paragraph/heading/bullet/numbered/todo/quote/toggle title) for
@@ -319,108 +319,14 @@ public enum HeadingLevel: Int, Comparable, Hashable, Sendable, CaseIterable {
   (`BoldAttribute`, `ItalicAttribute`, `CodeAttribute`,
   `StrikethroughAttribute`). The host's serializer translates these to
   surface syntax (markdown `**bold**`, HTML `<b>`, etc.).
-- **`Block.subpage`'s `pageID: String`** is opaque to the editor —
-  whatever identifier the host uses (relative path, UUID, database key).
-  The editor echoes it back unchanged in `openPage(pageID:)`,
-  `loadPageBlocks(_:)`, `inlineAndTrashPage(_:parent:)`, `appendToPage(_:_:)`.
-- **`Block.subpage`'s `title: String`** is a fallback hint. The editor
-  prefers the title from `host.lookupPage(pageID)` when the host has it
-  cached; falls back to this when the host returns `.present(title: nil)`.
-  A `.missing` result renders the row in a broken-link style and disables
-  navigation on tap.
-
-### Document
-
-```swift
-@Observable @MainActor
-public final class Document: Identifiable {
-    public let id: DocumentID
-    public internal(set) var children: [Block]   // root-level siblings; written via transaction or named replacement helpers
-    public var fallbackTitle: String?
-    public var title: String { … }                // first H1, then fallbackTitle, then "Untitled"
-
-    public init(id: DocumentID, children: [Block], fallbackTitle: String? = nil)
-
-    // Atomic mutation entry point — fires preMutation, snapshots for undo,
-    // enforces heading containment. The editor's semantic changes route
-    // through here; hosts rarely call it directly.
-    public func transaction(name: String, coalesceKey: AnyHashable? = nil, _ change: () -> Void) -> [DocumentChange]
-
-    // Bulk non-undoable replacements — for system-owned tree swaps where
-    // the new content is the authoritative state.
-    public func replaceChildrenFromExternalReload(_ newChildren: [Block])
-    public func replaceChildrenFromConflictResolution(_ newChildren: [Block])
-    public func replaceChildrenFromSystemMutation(_ newChildren: [Block])
-
-    // Read access
-    public func snapshot() -> [Block]
-    public func find(_ blockID: BlockID) -> Block?
-    public func parent(of blockID: BlockID) -> BlockID?
-    public func subtreeIDs(of blockID: BlockID) -> Set<BlockID>
-    public func documentOrder(of blockID: BlockID) -> Int?
-    public func walk(_ visit: (Block, Int, BlockID?) -> Void)
-
-    // Mutation primitives (called by the editor inside `transaction`)
-    public func mutate(_ blockID: BlockID, _ transform: (inout Block) -> Void) -> Bool
-    public func setText(_ blockID: BlockID, _ newText: AttributedString) -> Bool
-    public func removeSubtree(_ blockID: BlockID) -> Block?
-    public func insertSubtree(_ block: Block, at path: DropPath) -> Bool
-    public func replaceSubtree(_ blockID: BlockID, with replacements: [Block]) -> Bool
-    public func enforceHeadingContainment()
-    // ... plus indent/outdent/slideSiblings/moveSubtrees/canDrop ...
-
-    // Editor-installed hooks (set on mount):
-    public weak var undoManager: UndoManager?
-    public var preMutation: (() -> Void)?                       // flush in-flight NSTextView text before snapshot
-    public var didCommitTransaction: (([DocumentChange]) -> Void)? // fires after every transaction (forward / undo / redo) with semantic snapshots
-    public var didReplaceChildren: ((DocumentReplacement) -> Void)? // fires after a system replacement, saying how it relates to the old tree
-
-    // System replacement (bypasses undo, `preMutation`, and change emission)
-    @discardableResult
-    public func replaceChildrenReconciled(_ newChildren: [Block]) -> DocumentReplacement
-    public func replaceChildrenFromExternalReload(_ newChildren: [Block])
-    public func replaceChildrenFromConflictResolution(_ newChildren: [Block])
-    public func replaceChildrenFromSystemMutation(_ newChildren: [Block])
-}
-```
-
-### Resolving reference targets
-
-`lookupPage(_:)` answers four things, and the two that aren't "here it is" or
-"it's gone" are the ones that make this usable by a host that isn't a folder of
-local files:
-
-```swift
-enum PageLookup {
-    case pending                    // not resolved yet
-    case present(PagePresentation)  // exists and reachable
-    case missing                    // resolved, and it's gone
-    case unavailable                // exists, not reachable right now
-}
-
-struct PagePresentation {
-    var title: String?              // nil = exists, title not resolved yet
-    var icon: String?               // nil = derive one from the title
-    var capabilities: DocumentCapabilities
-}
-
-struct DocumentCapabilities: OptionSet {
-    static let navigate, receiveBlocks, inline, setIcon: DocumentCapabilities
-    static let all: DocumentCapabilities
-}
-```
-
-**It is synchronous, and that is deliberate.** It is called while building rows,
-and its result is stored on the row and compared in `==` so `.equatable()` can
-skip re-rendering rows whose references did not change. Making it `async` would
-remove that gating and re-render the document every time a reference resolved.
-
-A host that cannot answer synchronously returns `.pending`, resolves in the
-background, and publishes the answer into observation-tracked state. SwiftUI
-re-renders, the next call returns `.present`, and the row updates — with no
-document mutation, no commit, and nothing entering the undo stack. Two
-obligations come with that, and both are load-bearing:
-
+- **`Block.documentLink`'s `reference`** is a `DocumentReference` — an opaque
+  handle the host defines and the editor never inspects. See "Resolving
+  reference targets" below.
+- **`Block.documentLink`'s `label`** is what the author wrote. It is *not* the
+  displayed title on its own: the host's live title from `lookupDocument` wins
+  when it has one, so renaming a target updates every row pointing at it
+  without rewriting any document. A host whose labels are authored source
+  returns no title and the label stands.
 - **Dedupe the background work.** This is called from a view body. An
   un-deduped fetch per call is an infinite loop, not a cache miss.
 - **Be observation-tracked.** If completing the resolution doesn't invalidate
@@ -438,7 +344,7 @@ hides or disables an affordance before its first mutation rather than letting
 the user try and fail. Hosts with a uniform answer return `.all` and forget
 about it. There is no `delete` capability: deleting the *row* is always allowed
 because it is this document's content, and whether that should also delete the
-target is host policy, reported through `didDeleteSubpageLink`.
+target is host policy, reported through `didDeleteDocumentLink`.
 
 - **`children` is `internal(set)`.** Mutations funnel through
   `transaction(name:_:)` (or its primitives `mutate` / `setText` /
@@ -527,20 +433,20 @@ is one extension point. Only `persistCommit` and `flush` are mandatory.
 |--------|-------------|-----------------|
 | `persistCommit` | Required | None; the host must explicitly own persistence. |
 | `flush` | Required | None; durability may never be silently weakened. |
-| `supportsPageCreation` | Optional | `false`; hides Turn Into → Page and Cmd-K page creation. |
-| `supportsSubpageInlining` | Optional | `false`; hides non-page conversions for subpage rows. |
+| `supportsDocumentCreation` | Optional | `false`; hides Turn Into → Page and Cmd-K page creation. |
+| `supportsDocumentInlining` | Optional | `false`; hides non-page conversions for document-link rows. |
 | `supportsMoveDestinationPicker` | Optional | `false`; hides the "Move to" action. |
-| `suggestPages` | Optional | `[]` |
-| `openPage` | Optional | No-op |
-| `setPageIcon` | Optional | `false` |
-| `lookupPage` | Optional | `.missing` |
-| `didDeleteSubpageLink` | Optional | No-op |
-| `resolvePageID` | Optional | `nil` |
+| `suggestDocuments` | Optional | `[]` |
+| `openDocument` | Optional | No-op |
+| `setDocumentIcon` | Optional | `false` |
+| `lookupDocument` | Optional | `.missing` |
+| `didDeleteDocumentLink` | Optional | No-op |
+| `resolveReference` | Optional | `nil` |
 | `linkURL` | Optional | `nil` |
-| `createPage` | Optional | `nil` |
-| `loadPageBlocks` | Optional | `nil` |
-| `inlineAndTrashPage` | Optional | `false` |
-| `appendToPage` | Optional | `false` |
+| `createDocument` | Optional | `nil` |
+| `loadDocumentBlocks` | Optional | `nil` |
+| `inlineAndRetireDocument` | Optional | `false` |
+| `appendToDocument` | Optional | `false` |
 | `moveDestination` | Optional | `nil` |
 | `navigateBack` | Optional | No-op |
 | `serializeBlocksForPasteboard` | Optional | Plain text in visible tree order, one block per line. |
@@ -552,14 +458,14 @@ is one extension point. Only `persistCommit` and `flush` are mandatory.
 
 | Method | Signature | When it fires | Return semantics |
 |--------|-----------|---------------|------------------|
-| `suggestPages` | `(_ query: String, in: Document) async -> [MentionItem]` | Once per @-mention trigger change, in a task the next keystroke cancels. May be slow — the menu stays up showing the previous query's rows while it runs. | Up to 8 items shown; host owns ranking/filtering. Results are discarded if the query moved on. Empty array shows "No matching pages", but only once the search has finished. |
-| `lookupPage` | `(_ pageID: String) -> PageLookup` | While building any row that references a target. **Must be a cheap synchronous read** — see "Resolving reference targets" below. | `.present` renders normally and enables the affordances its `capabilities` allow; `.pending` renders with the block's stored label and offers nothing; `.unavailable` renders muted; `.missing` renders broken-link style. |
-| `resolvePageID` | `(_ url: URL, in: Document) -> String?` | Classifies an inline-link URL as an internal page reference. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide subpage-creation vs link-toggling), and at the `OpenURLAction` interceptor (to decide internal-nav vs `.systemAction`). One classifier governs all three sites. | Return the host's pageID for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
-| `openPage` | `(pageID: String) -> Void` | User taps a subpage row, or clicks an inline `[text](url)` link the editor already classified as internal via `resolvePageID`. | Host pushes the page on its navigation stack. External URLs never reach this method — the OpenURLAction site routes them to `.systemAction`. |
-| `createPage` | `(title: String, requestedPath: String?, initialContent: [Block]?) async -> String?` | Cmd-K on a paragraph that's a single link, or Turn Into → Page (the @-mention flow never creates pages). `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |
-| `loadPageBlocks` | `(_ pageID: String) async -> [Block]?` | First step of Turn Into a non-page block on a subpage row. Async so the host can read off MainActor. Paired with `inlineAndTrashPage(_:)`. | Host returns the child page's blocks. nil makes the action a no-op. |
-| `inlineAndTrashPage` | `(_ pageID: String, parent: Document) async -> Bool` | Second step of Turn Into a non-page block on a subpage row: after the editor inlined the loaded blocks into the parent, ask the host to flush+trash the source. Async so the parent's save lands before the source goes away. | true = file trashed; false = abort (editor surfaces an orphan warning). |
-| `appendToPage` | `(_ pageID: String, _ blocks: [Block]) async -> Bool` | User drops blocks onto a subpage row. Async so the host can sequence log-then-file durability before returning. | true = host wrote them (proceed with local removal). false = no-op. |
+| `suggestDocuments` | `(_ query: String, in: Document) async -> [MentionItem]` | Once per @-mention trigger change, in a task the next keystroke cancels. May be slow — the menu stays up showing the previous query's rows while it runs. | Up to 8 items shown; host owns ranking/filtering. Results are discarded if the query moved on. Empty array shows "No matching pages", but only once the search has finished. |
+| `lookupDocument` | `(_ reference: DocumentReference) -> DocumentLookup` | While building any row that references a target. **Must be a cheap synchronous read** — see "Resolving reference targets" below. | `.present` renders normally and enables the affordances its `capabilities` allow; `.pending` renders with the block's stored label and offers nothing; `.unavailable` renders muted; `.missing` renders broken-link style. |
+| `resolveReference` | `(_ url: URL, in: Document) -> DocumentReference?` | Classifies an inline-link URL as a reference to a document it owns. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide document-creation vs link-toggling), and at the `OpenURLAction` interceptor (to decide internal-nav vs `.systemAction`). One classifier governs all three sites. | Return the host's `DocumentReference` for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
+| `openDocument` | `(_ reference: DocumentReference) -> Void` | User taps a document-link row, or clicks an inline `[text](url)` link the editor already classified as internal via `resolveReference`. | Host pushes the document on its navigation stack. External URLs never reach this method — the OpenURLAction site routes them to `.systemAction`. |
+| `createDocument` | `(title: String, requestedPath: String?, initialContent: [Block]?) async -> String?` | Cmd-K on a paragraph that's a single link, or Turn Into → Page (the @-mention flow never creates pages). `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |
+| `loadDocumentBlocks` | `(_ reference: DocumentReference) async -> [Block]?` | First step of Turn Into another block kind on a document-link row. Async so the host can read off MainActor. Paired with `inlineAndRetireDocument(_:)`. | Host returns the target document's blocks. nil makes the action a no-op. |
+| `inlineAndRetireDocument` | `(_ reference: DocumentReference, parent: Document) async -> Bool` | Second step of Turn Into another block kind on a document-link row: after the editor inlined the loaded blocks into the parent, ask the host to flush the parent and retire the source. Async so the parent's save lands before the source goes away. | true = source retired; false = abort (editor surfaces an orphan warning). |
+| `appendToDocument` | `(_ reference: DocumentReference, _ blocks: [Block]) async -> Bool` | User drops blocks onto a document-link row. Async so the host can sequence log-then-file durability before returning. | true = host wrote them (proceed with local removal). false = no-op. |
 | `moveDestination` | `(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination?` | "Move To" picker. Editor supplies pre-filtered legal in-doc candidates; host merges with the workspace page list, presents UI, returns the user's `MoveDestination` (`.page` or `.block`) or nil to cancel. | Async — editor `await`s the picker result at the call site. |
 | `navigateBack` | `() -> Void` | Cmd-[ in nav mode (or Cmd-[ in edit mode — that path commits live text first). | Host pops its navigation stack. |
 | `persistCommit` | `(changes: [DocumentChange], in: Document) -> Void` | Once per `Document.transaction` (the unified mutation entry point): structural edits via `EditorView.mutate(_:_:)`, typing commits via `BlockTextEditor.Coordinator.commitLiveText`, autotransforms, paste, move-to, and undo/redo all funnel through it. Called *synchronously* on the mutation-commit thread (the editor can't await mid-transaction). `changes` carries removed and inserted block snapshots plus stable-child parent-reference updates; it contains no storage hashes or journal operations. On undo the semantic before/after snapshots are inverted. Empty changes means a pure reorder/move — the host should still persist the new tree shape. | Host should treat the call as its unit of save, translating semantic snapshots into whatever persistence model it owns. The host typically schedules async work internally and awaits it via `flush(_:)`; the editor's sync hook stays synchronous. |
@@ -615,7 +521,7 @@ is one extension point. Only `persistCommit` and `flush` are mandatory.
   The host owns its store, wire format, journal, and deletion policy.
 - **No multi-page navigation.** The editor is single-page; the host
   manages the navigation stack and pushes/pops in response to
-  `openPage(pageID:)` / `navigateBack()`.
+  `openDocument(_:)` / `navigateBack()`.
 - **No sidebar, no @-mention list source, no history UI, no trash UI.**
   The host owns these surfaces.
 

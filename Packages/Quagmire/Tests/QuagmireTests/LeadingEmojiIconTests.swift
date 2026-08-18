@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Quagmire
 
-@Suite("Subpage leading-emoji icon")
+@Suite("DocumentLink leading-emoji icon")
 struct LeadingEmojiIconTests {
     @Test func extractsLeadingEmojiAndRest() {
         let result = leadingEmojiIcon(in: "👍 Emoji Page")

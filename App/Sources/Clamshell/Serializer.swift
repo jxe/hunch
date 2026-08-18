@@ -344,9 +344,13 @@ enum BlockSerializer {
             let raw = fence + "{template-button} " + templateLabel(label) + "\n" + inner + fence + "\n\n"
             return indentLines(raw, indent: depth)
 
-        case .subpage(let title, let path):
-            let displayTitle = titleForPath(path) ?? title
-            return prefix + "[" + displayTitle + "](" + path + ")\n\n"
+        case .documentLink(let label, let reference):
+            // The host's live title wins when it has one, so a renamed target
+            // heals every link to it on the next save of the linking document.
+            // Otherwise the authored label stands, marks and all.
+            let text = titleForPath(reference.rawValue).map { escapeMarkdownLinkText($0) }
+                ?? inlineString(label)
+            return prefix + "[" + text + "](" + reference.rawValue + ")\n\n"
 
         case .image(let source, let alt):
             return prefix + "![" + escapeMarkdownLinkText(alt) + "](" + source + ")\n\n"
@@ -399,8 +403,8 @@ enum BlockSerializer {
         return false
     }
 
-    private static func isSubpage(_ block: Block) -> Bool {
-        if case .subpage = block.kind { return true }
+    private static func isDocumentLink(_ block: Block) -> Bool {
+        if case .documentLink = block.kind { return true }
         return false
     }
 
@@ -444,7 +448,7 @@ enum BlockSerializer {
     }
 
     private static func canStartListBodyTight(_ block: Block) -> Bool {
-        isListItem(block) || isToggle(block) || isSubpage(block)
+        isListItem(block) || isToggle(block) || isDocumentLink(block)
     }
 
     /// Escape `]`, `\`, and newlines inside the alt text so the bracket pair

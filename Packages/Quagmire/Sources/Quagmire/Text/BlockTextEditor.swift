@@ -868,7 +868,7 @@ final class ContainedTextView: NSTextView {
                     // Carry the live text through the BlockKey: when the user typed
                     // into a freshly created row and presses Cmd-K, EditorView's
                     // `document.children` snapshot is stale within this event handler
-                    // (same pattern as the cmd-enter fix), so `convertBlockToSubpage`
+                    // (same pattern as the cmd-enter fix), so `convertBlockToDocument`
                     // can't recover the typed text from `document.blocks[i]`. Read
                     // it directly from the live NSTextView instead.
                     let preferred: String?

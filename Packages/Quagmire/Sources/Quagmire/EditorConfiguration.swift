@@ -36,5 +36,5 @@ struct EditorDiagnostics {
 
     var navkey: Logger { Logger(subsystem: subsystem, category: "navkey") }
     var mode: Logger { Logger(subsystem: subsystem, category: "mode") }
-    var subpage: Logger { Logger(subsystem: subsystem, category: "subpage") }
+    var documentLink: Logger { Logger(subsystem: subsystem, category: "documentLink") }
 }

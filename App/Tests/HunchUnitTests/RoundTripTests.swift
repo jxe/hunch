@@ -24,6 +24,76 @@ struct RoundTripTests {
         assertIdempotent("# Title\n\nA paragraph.\n")
     }
 
+    /// One document containing every construct the parser understands plus one
+    /// it does not, asserted byte-for-byte. This is the guard on the claim that
+    /// renaming the block model changed no on-disk syntax: if any of it drifts,
+    /// existing files in someone's workspace get rewritten the first time they
+    /// are opened.
+    ///
+    /// The consecutive list groups deliberately have no blank lines between
+    /// them: adjacent list items pack tight (see
+    /// `bulletAndNestedListSerializeTight`), so this is the canonical form, not
+    /// a concession.
+    @Test func aDocumentUsingEveryConstructRoundTripsByteForByte() {
+        let source = """
+        # Sample Page
+
+        A paragraph with **bold** and a [link](https://example.com).
+
+        [Child Page](Child-Page.md)
+
+        [Fragmented](Other.md#x7f3q2)
+
+        - bullet
+          - nested
+        1. first
+        1. second
+        - [ ] todo
+        - [x] done
+
+        > quote
+
+        ```swift
+        let x = 1
+        ```
+
+        | a | b |
+        | --- | --- |
+        | 1 | 2 |
+
+        #### Deep Heading
+
+        ##### Deeper
+
+        ###### Deepest
+
+        ---
+
+        ![alt text](Assets/img.png)
+
+        """
+        let serialized = BlockSerializer.serialize(BlockParser.parse(source))
+        #expect(
+            serialized.trimmingCharacters(in: .newlines) == source.trimmingCharacters(in: .newlines)
+        )
+        assertIdempotent(source)
+    }
+
+    @Test func aFormattedLinkLabelSurvives() {
+        // The parser used to read only direct text children of a link, so a
+        // formatted label produced an empty title and fell back to showing the
+        // raw path.
+        let source = "[**Bold Name**](Target.md)\n"
+        let blocks = BlockParser.parse(source)
+        guard case .documentLink(let label, let reference) = blocks.first?.kind else {
+            Issue.record("expected a document link, got \(String(describing: blocks.first?.kind))")
+            return
+        }
+        #expect(String(label.characters) == "Bold Name")
+        #expect(reference.rawValue == "Target.md")
+        #expect(BlockSerializer.serialize(blocks).contains("[**Bold Name**](Target.md)"))
+    }
+
     // MARK: - Stale link labels
 
     /// A subpage row stores the target's title at the time it was written, so
@@ -32,7 +102,7 @@ struct RoundTripTests {
     /// not, because it is filed under a hash derived from the block alone and
     /// has to serialize the same way every time.
     @Test func fullSerializationResolvesTheLiveTitle() {
-        let block = Block.subpage(title: "Old Name", pageID: "target.md")
+        let block = Block.documentLink(label: AttributedString("Old Name"), reference: DocumentReference("target.md"))
         let serialized = BlockSerializer.serialize(
             [block],
             resolvingSubpageTitle: { $0 == "target.md" ? "New Name" : nil }
@@ -41,13 +111,13 @@ struct RoundTripTests {
     }
 
     @Test func fullSerializationFallsBackToTheStoredTitleWhenUnresolved() {
-        let block = Block.subpage(title: "Old Name", pageID: "target.md")
+        let block = Block.documentLink(label: AttributedString("Old Name"), reference: DocumentReference("target.md"))
         let serialized = BlockSerializer.serialize([block], resolvingSubpageTitle: { _ in nil })
         #expect(serialized.contains("[Old Name](target.md)"))
     }
 
     @Test func atomicSnapshotKeepsTheStoredTitleForDeterminism() {
-        let block = Block.subpage(title: "Old Name", pageID: "target.md")
+        let block = Block.documentLink(label: AttributedString("Old Name"), reference: DocumentReference("target.md"))
         #expect(BlockSerializer.serializeAtomic(block).contains("[Old Name](target.md)"))
     }
 
@@ -694,7 +764,7 @@ struct RoundTripTests {
     @Test func bulletWithSubpageChildRoundTripsTree() {
         let tree = [Block.bullet(
             text: AttributedString("Foo bullet"),
-            children: [.subpage(title: "Subpage", pageID: "Subpage.md")]
+            children: [.documentLink(label: AttributedString("Subpage"), reference: DocumentReference("Subpage.md"))]
         )]
         let serialized = BlockSerializer.serialize(tree)
         let reparsed = BlockParser.parse(serialized)
@@ -705,11 +775,11 @@ struct RoundTripTests {
         }
         #expect(String(text.characters) == "Foo bullet")
         #expect(reparsed[0].children.count == 1)
-        guard case .subpage(_, let pageID) = reparsed[0].children[0].kind else {
+        guard case .documentLink(_, let pageID) = reparsed[0].children[0].kind else {
             Issue.record("expected .subpage child, got \(reparsed[0].children[0].kind)")
             return
         }
-        #expect(pageID == "Subpage.md")
+        #expect(pageID.rawValue == "Subpage.md")
     }
 
     @Test func bulletWithSubpageChildIdempotent() {
@@ -729,11 +799,11 @@ struct RoundTripTests {
         }
         #expect(String(text.characters) == "Foo bullet")
         #expect(blocks[0].children.count == 1)
-        guard case .subpage(_, let pageID) = blocks[0].children[0].kind else {
+        guard case .documentLink(_, let pageID) = blocks[0].children[0].kind else {
             Issue.record("expected .subpage child, got \(blocks[0].children[0].kind)")
             return
         }
-        #expect(pageID == "Subpage.md")
+        #expect(pageID.rawValue == "Subpage.md")
     }
 
     /// Numbered items have a 3-char marker (`1. `), so children indent to
@@ -741,7 +811,7 @@ struct RoundTripTests {
     @Test func numberedWithSubpageChildRoundTripsTree() {
         let tree = [Block.numbered(
             text: AttributedString("Foo"),
-            children: [.subpage(title: "Sub", pageID: "sub.md")]
+            children: [.documentLink(label: AttributedString("Sub"), reference: DocumentReference("sub.md"))]
         )]
         let reparsed = BlockParser.parse(BlockSerializer.serialize(tree))
         #expect(reparsed.count == 1)
@@ -750,8 +820,8 @@ struct RoundTripTests {
             return
         }
         #expect(reparsed[0].children.count == 1)
-        if case .subpage(_, let pageID) = reparsed[0].children[0].kind {
-            #expect(pageID == "sub.md")
+        if case .documentLink(_, let pageID) = reparsed[0].children[0].kind {
+            #expect(pageID.rawValue == "sub.md")
         } else {
             Issue.record("expected .subpage child")
         }
@@ -767,7 +837,7 @@ struct RoundTripTests {
         let tree = [Block.todo(
             text: AttributedString("Foo"),
             done: false,
-            children: [.subpage(title: "Sub", pageID: "sub.md")]
+            children: [.documentLink(label: AttributedString("Sub"), reference: DocumentReference("sub.md"))]
         )]
         let reparsed = BlockParser.parse(BlockSerializer.serialize(tree))
         #expect(reparsed.count == 1)
@@ -776,8 +846,8 @@ struct RoundTripTests {
             return
         }
         #expect(reparsed[0].children.count == 1)
-        if case .subpage(_, let pageID) = reparsed[0].children[0].kind {
-            #expect(pageID == "sub.md")
+        if case .documentLink(_, let pageID) = reparsed[0].children[0].kind {
+            #expect(pageID.rawValue == "sub.md")
         } else {
             Issue.record("expected .subpage child")
         }

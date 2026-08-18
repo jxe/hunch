@@ -19,7 +19,7 @@ struct PageLookupTests {
     // MARK: - Capabilities
 
     @Test func nothingIsPermittedOnAnUnresolvedOrBrokenTarget() {
-        for lookup in [PageLookup.pending, .missing, .unavailable] {
+        for lookup in [DocumentLookup.pending, .missing, .unavailable] {
             #expect(lookup.capabilities.isEmpty)
             #expect(!lookup.can(.navigate))
             #expect(!lookup.can(.receiveBlocks))
@@ -29,7 +29,7 @@ struct PageLookupTests {
     }
 
     @Test func aPresentTargetIsFullyCapableByDefault() {
-        let lookup = PageLookup.present(title: "Notes")
+        let lookup = DocumentLookup.present(title: "Notes")
         #expect(lookup.capabilities == .all)
         #expect(lookup.can(.navigate))
         #expect(lookup.can(.receiveBlocks))
@@ -38,24 +38,24 @@ struct PageLookupTests {
     }
 
     @Test func capabilitiesCanVaryPerTarget() {
-        let readOnly = PageLookup.present(PagePresentation(title: "Shared", capabilities: [.navigate]))
+        let readOnly = DocumentLookup.present(DocumentPresentation(title: "Shared", capabilities: [.navigate]))
         #expect(readOnly.can(.navigate))
         #expect(!readOnly.can(.receiveBlocks))
         #expect(!readOnly.can(.inline))
     }
 
     @Test func onlyMissingReportsMissing() {
-        #expect(PageLookup.missing.isMissing)
-        #expect(!PageLookup.pending.isMissing)
-        #expect(!PageLookup.unavailable.isMissing)
-        #expect(!PageLookup.present(title: "x").isMissing)
+        #expect(DocumentLookup.missing.isMissing)
+        #expect(!DocumentLookup.pending.isMissing)
+        #expect(!DocumentLookup.unavailable.isMissing)
+        #expect(!DocumentLookup.present(title: "x").isMissing)
     }
 
     // MARK: - Row presentation
 
     @Test func aPresentTargetShowsItsLiveTitle() {
-        let row = subpageRowPresentation(
-            storedTitle: "Old Name",
+        let row = documentLinkRowPresentation(
+            storedLabel: AttributedString("Old Name"),
             lookup: .present(title: "New Name")
         )
         #expect(row.title == "New Name")
@@ -64,7 +64,7 @@ struct PageLookupTests {
     }
 
     @Test func anUnresolvedTargetFallsBackToTheStoredLabelAndLooksOrdinary() {
-        let row = subpageRowPresentation(storedTitle: "Notes", lookup: .pending)
+        let row = documentLinkRowPresentation(storedLabel: AttributedString("Notes"), lookup: .pending)
         #expect(row.title == "Notes")
         #expect(!row.muted, "a cold cache must not make the document look broken")
         #expect(row.annotation == nil)
@@ -72,14 +72,14 @@ struct PageLookupTests {
     }
 
     @Test func anUnreachableTargetReadsAsDegradedNotGone() {
-        let row = subpageRowPresentation(storedTitle: "Notes", lookup: .unavailable)
+        let row = documentLinkRowPresentation(storedLabel: AttributedString("Notes"), lookup: .unavailable)
         #expect(row.muted)
         #expect(row.annotation == "(unavailable)")
         #expect(row.symbol != "doc.badge.exclamationmark", "it is not broken; nothing needs fixing")
     }
 
     @Test func aMissingTargetIsMarkedMissing() {
-        let row = subpageRowPresentation(storedTitle: "Notes", lookup: .missing)
+        let row = documentLinkRowPresentation(storedLabel: AttributedString("Notes"), lookup: .missing)
         #expect(row.muted)
         #expect(row.annotation == "(missing)")
         #expect(row.symbol == "doc.badge.exclamationmark")
@@ -87,16 +87,16 @@ struct PageLookupTests {
     }
 
     @Test func aHostSuppliedIconWinsOverOneDerivedFromTheTitle() {
-        let row = subpageRowPresentation(
-            storedTitle: "x",
-            lookup: .present(PagePresentation(title: "🍎 Apples", icon: "📕"))
+        let row = documentLinkRowPresentation(
+            storedLabel: AttributedString("x"),
+            lookup: .present(DocumentPresentation(title: "🍎 Apples", icon: "📕"))
         )
         #expect(row.emoji == "📕")
         #expect(row.title == "Apples")
     }
 
     @Test func aLeadingEmojiBecomesTheIconWhenTheHostHasNone() {
-        let row = subpageRowPresentation(storedTitle: "x", lookup: .present(title: "🍎 Apples"))
+        let row = documentLinkRowPresentation(storedLabel: AttributedString("x"), lookup: .present(title: "🍎 Apples"))
         #expect(row.emoji == "🍎")
         #expect(row.title == "Apples")
     }
@@ -104,55 +104,55 @@ struct PageLookupTests {
     // MARK: - Affordance gating
 
     @Test func navigationIsRefusedUnlessTheTargetSaysItCanBeOpened() {
-        for lookup in [PageLookup.pending, .missing, .unavailable] {
+        for lookup in [DocumentLookup.pending, .missing, .unavailable] {
             let host = CapabilityTestHost(lookup: lookup)
-            let link = Block.subpage(title: "T", pageID: "t.md")
+            let link = Block.documentLink(label: AttributedString("T"), reference: DocumentReference("t.md"))
             let doc = Document(id: DocumentID("d"), children: [link])
             let editor = EditorView(document: doc, state: EditorState(), host: host)
             editor.installUndoApply()
 
             // Handled-but-inert: the keypress is swallowed so it can't fall
             // through to something else, but no navigation happens.
-            #expect(editor.navigateIntoSubpage(link.id))
-            #expect(host.openedPages.isEmpty, "must not navigate into \(lookup)")
+            #expect(editor.navigateIntoDocumentLink(link.id))
+            #expect(host.openedDocuments.isEmpty, "must not navigate into \(lookup)")
         }
     }
 
     @Test func navigationWorksWhenTheTargetPermitsIt() {
         let host = CapabilityTestHost(lookup: .present(title: "T"))
-        let link = Block.subpage(title: "T", pageID: "t.md")
+        let link = Block.documentLink(label: AttributedString("T"), reference: DocumentReference("t.md"))
         let doc = Document(id: DocumentID("d"), children: [link])
         let editor = EditorView(document: doc, state: EditorState(), host: host)
         editor.installUndoApply()
 
-        #expect(editor.navigateIntoSubpage(link.id))
-        #expect(host.openedPages == ["t.md"])
+        #expect(editor.navigateIntoDocumentLink(link.id))
+        #expect(host.openedDocuments.map(\.rawValue) == ["t.md"])
     }
 
     @Test func navigationIsRefusedWhenTheTargetIsPresentButNotNavigable() {
         let host = CapabilityTestHost(
-            lookup: .present(PagePresentation(title: "T", capabilities: [.receiveBlocks]))
+            lookup: .present(DocumentPresentation(title: "T", capabilities: [.receiveBlocks]))
         )
-        let link = Block.subpage(title: "T", pageID: "t.md")
+        let link = Block.documentLink(label: AttributedString("T"), reference: DocumentReference("t.md"))
         let doc = Document(id: DocumentID("d"), children: [link])
         let editor = EditorView(document: doc, state: EditorState(), host: host)
         editor.installUndoApply()
 
-        #expect(editor.navigateIntoSubpage(link.id))
-        #expect(host.openedPages.isEmpty)
+        #expect(editor.navigateIntoDocumentLink(link.id))
+        #expect(host.openedDocuments.isEmpty)
     }
 
     @Test func inliningIsRefusedWhenTheTargetSaysSo() async {
         let host = CapabilityTestHost(
-            lookup: .present(PagePresentation(title: "T", capabilities: [.navigate]))
+            lookup: .present(DocumentPresentation(title: "T", capabilities: [.navigate]))
         )
         host.loadedBlocks = [.paragraph(text: AttributedString("body"))]
-        let link = Block.subpage(title: "T", pageID: "t.md")
+        let link = Block.documentLink(label: AttributedString("T"), reference: DocumentReference("t.md"))
         let doc = Document(id: DocumentID("d"), children: [link])
         let editor = EditorView(document: doc, state: EditorState(), host: host)
         editor.installUndoApply()
 
-        #expect(editor.convertSubpage(blockID: link.id, to: .toggle) == .ignored)
+        #expect(editor.convertDocumentLink(blockID: link.id, to: .toggle) == .ignored)
         #expect(!host.didLoad, "must not even read the target it isn't allowed to inline")
         #expect(doc.children.count == 1)
     }
@@ -160,12 +160,12 @@ struct PageLookupTests {
     @Test func inliningProceedsWhenTheTargetPermitsIt() async {
         let host = CapabilityTestHost(lookup: .present(title: "T"))
         host.loadedBlocks = [.paragraph(text: AttributedString("body"))]
-        let link = Block.subpage(title: "T", pageID: "t.md")
+        let link = Block.documentLink(label: AttributedString("T"), reference: DocumentReference("t.md"))
         let doc = Document(id: DocumentID("d"), children: [link])
         let editor = EditorView(document: doc, state: EditorState(), host: host)
         editor.installUndoApply()
 
-        #expect(editor.convertSubpage(blockID: link.id, to: .toggle) == .handled)
+        #expect(editor.convertDocumentLink(blockID: link.id, to: .toggle) == .handled)
         await host.awaitInlineCompletion()
         #expect(doc.children[0].children.count == 1)
     }
@@ -174,7 +174,7 @@ struct PageLookupTests {
 
     @Test func mentionMatchesArriveWithoutBlockingTyping() async {
         let host = CapabilityTestHost(lookup: .present(title: "T"))
-        host.suggestions = [MentionItem(id: "a.md", title: "Alpha")]
+        host.suggestions = [MentionItem(id: DocumentReference("a.md"), title: "Alpha")]
         let block = Block.paragraph(text: AttributedString("@al"))
         let doc = Document(id: DocumentID("d"), children: [block])
         let state = EditorState()
@@ -197,7 +197,7 @@ struct PageLookupTests {
             await Task.yield()
         }
 
-        #expect(state.mentionMenu?.matches.map(\.id) == ["a.md"])
+        #expect(state.mentionMenu?.matches.map(\.id.rawValue) == ["a.md"])
         #expect(state.mentionMenu?.isSearching == false)
     }
 
@@ -206,7 +206,7 @@ struct PageLookupTests {
             blockID: BlockID(),
             trigger: MentionTrigger(nsRange: NSRange(location: 0, length: 4), query: "beta"),
             selectedIndex: 0,
-            matches: [MentionItem(id: "b.md", title: "Beta")],
+            matches: [MentionItem(id: DocumentReference("b.md"), title: "Beta")],
             isSearching: false
         )
         // The guard the async path applies before writing results back.
@@ -232,10 +232,10 @@ struct PageLookupTests {
 
 @MainActor
 private final class CapabilityTestHost: EditorHost {
-    private let lookup: PageLookup
+    private let lookup: DocumentLookup
     var loadedBlocks: [Block] = []
     var suggestions: [MentionItem] = []
-    private(set) var openedPages: [String] = []
+    private(set) var openedDocuments: [DocumentReference] = []
     private(set) var didLoad = false
 
     private var inlineFinished: CheckedContinuation<Void, Never>?
@@ -243,22 +243,22 @@ private final class CapabilityTestHost: EditorHost {
     private var suggestFinished: CheckedContinuation<Void, Never>?
     private var suggestAlreadyFinished = false
 
-    init(lookup: PageLookup) { self.lookup = lookup }
+    init(lookup: DocumentLookup) { self.lookup = lookup }
 
-    var supportsPageCreation: Bool { true }
-    var supportsSubpageInlining: Bool { true }
+    var supportsDocumentCreation: Bool { true }
+    var supportsDocumentInlining: Bool { true }
     var supportsMoveDestinationPicker: Bool { true }
 
-    func lookupPage(_ pageID: String) -> PageLookup { lookup }
-    func openPage(pageID: String) { openedPages.append(pageID) }
-    func linkURL(forPageID pageID: String, in document: Document) -> URL? { URL(string: pageID) }
+    func lookupDocument(_ reference: DocumentReference) -> DocumentLookup { lookup }
+    func openDocument(_ reference: DocumentReference) { openedDocuments.append(reference) }
+    func linkURL(for reference: DocumentReference, in document: Document) -> URL? { URL(string: reference.rawValue) }
 
-    func loadPageBlocks(_ pageID: String) async -> [Block]? {
+    func loadDocumentBlocks(_ reference: DocumentReference) async -> [Block]? {
         didLoad = true
         return loadedBlocks
     }
 
-    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {
+    func inlineAndRetireDocument(_ reference: DocumentReference, parent: Document) async -> Bool {
         if let continuation = inlineFinished {
             inlineFinished = nil
             continuation.resume()
@@ -268,7 +268,7 @@ private final class CapabilityTestHost: EditorHost {
         return true
     }
 
-    func suggestPages(_ query: String, in document: Document) async -> [MentionItem] {
+    func suggestDocuments(_ query: String, in document: Document) async -> [MentionItem] {
         defer {
             if let continuation = suggestFinished {
                 suggestFinished = nil

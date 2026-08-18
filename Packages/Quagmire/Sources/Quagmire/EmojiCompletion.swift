@@ -261,15 +261,15 @@ func isEmojiCharacter(_ character: Character) -> Bool {
     }
 }
 
-/// Pure hit-test for the subpage marker column. Coordinates and row frame are
+/// Pure hit-test for the documentLink marker column. Coordinates and row frame are
 /// in the same page space; indentation moves the marker column right by 24pt.
-func hitsSubpageIconColumn(point: CGPoint, rowFrame: CGRect, depth: Int, theme: EditorTheme = .default) -> Bool {
+func hitsDocumentLinkIconColumn(point: CGPoint, rowFrame: CGRect, depth: Int, theme: EditorTheme = .default) -> Bool {
     let localX = point.x - rowFrame.minX
-    return hitsSubpageIconColumn(localX: localX, depth: depth, theme: theme)
+    return hitsDocumentLinkIconColumn(localX: localX, depth: depth, theme: theme)
         && point.y >= rowFrame.minY && point.y <= rowFrame.maxY
 }
 
-func hitsSubpageIconColumn(localX: CGFloat, depth: Int, theme: EditorTheme = .default) -> Bool {
+func hitsDocumentLinkIconColumn(localX: CGFloat, depth: Int, theme: EditorTheme = .default) -> Bool {
     let minX = CGFloat(depth) * theme.indentStep
     return localX >= minX && localX <= minX + theme.bulletMarkerColumnWidth
 }

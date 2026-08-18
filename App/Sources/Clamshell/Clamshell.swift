@@ -104,7 +104,7 @@ final class Clamshell {
     /// Per-URL title overlay, keyed by mtime so a stale entry is detected
     /// at access time (cached entry whose mtime no longer matches the file
     /// falls back to the filename-derived title). Populated on-demand by
-    /// `lookupPage` cache misses — never eagerly on rescan, because on
+    /// `lookupDocument` cache misses — never eagerly on rescan, because on
     /// iCloud each cold-cache read costs ~1s and 50× that would block the
     /// home page open for the better part of a minute.
     private var titleCache: [URL: CachedTitle] = [:] {
@@ -127,7 +127,7 @@ final class Clamshell {
     }
 
     /// Dedupe set for in-flight title warm tasks. Without this, every
-    /// SwiftUI re-render that calls `lookupPage` for a cold-cache URL
+    /// SwiftUI re-render that calls `lookupDocument` for a cold-cache URL
     /// would fire another fetch.
     @ObservationIgnored private var pendingTitleWarms: Set<URL> = []
 
@@ -577,7 +577,7 @@ final class Clamshell {
     /// mutating either invalidates Observation subscribers automatically.
     /// SwiftUI views observe this directly; the scan runs eagerly on
     /// workspace open and rescans fire on page-set changes. Title cache
-    /// is populated on-demand (see `lookupPage` / `requestTitleWarm`),
+    /// is populated on-demand (see `lookupDocument` / `requestTitleWarm`),
     /// not at scan time, so entries for un-warmed pages carry the
     /// filename-derived fallback title.
     var entries: [WorkspaceEntry] {
@@ -611,7 +611,7 @@ final class Clamshell {
     /// add). Does **not** warm the title cache: doing that eagerly on an
     /// iCloud workspace costs ~1s/file of cold-cache materialization, and
     /// 50× of that on MainActor stalls the home page open for the better
-    /// part of a minute. Titles populate lazily through `lookupPage`
+    /// part of a minute. Titles populate lazily through `lookupDocument`
     /// cache misses as subpage rows render. Result lands on the observable
     /// `entries` property — callers should react there.
     func rescan() throws {
@@ -647,10 +647,10 @@ final class Clamshell {
     /// been warmed for it yet — that case kicks an off-main warm so the next
     /// render returns the cached title through `@Observable`.
     ///
-    /// Synchronous by contract (see `EditorHost.lookupPage`): it is called
+    /// Synchronous by contract (see `EditorHost.lookupDocument`): it is called
     /// while building rows. Safe from a SwiftUI body because warm requests are
     /// deduped by URL.
-    func lookupPage(_ relativePath: String) -> PageLookup {
+    func lookupDocument(_ relativePath: String) -> DocumentLookup {
         guard let resolved = resolveSubpageTarget(relativePath) else { return .missing }
         let url = self.url(for: resolved)
         guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
@@ -668,7 +668,7 @@ final class Clamshell {
         // action. Hunch has one kind of target; the capability set exists for
         // hosts that don't. The row icon is derived from the title's leading
         // emoji rather than stored, so no `icon` is supplied here.
-        return .present(PagePresentation(title: title, capabilities: .all))
+        return .present(DocumentPresentation(title: title, capabilities: .all))
     }
 
     /// Filter + rank `entries` for any page-picker surface (search sheet,
@@ -1165,11 +1165,12 @@ final class Clamshell {
         var map: [String: String] = [:]
         func walk(_ blocks: [Block]) {
             for block in blocks {
-                if case .subpage(_, let pageID) = block.kind {
-                    if map[pageID] == nil,
-                       let rel = resolveSubpageTarget(pageID),
+                if case .documentLink(_, let reference) = block.kind {
+                    let key = reference.rawValue
+                    if map[key] == nil,
+                       let rel = resolveSubpageTarget(key),
                        let title = entry(at: rel)?.title {
-                        map[pageID] = title
+                        map[key] = title
                     }
                 }
                 if !block.children.isEmpty { walk(block.children) }
@@ -1250,7 +1251,7 @@ final class Clamshell {
     /// are created as needed. Refreshes `entries` and seeds the title
     /// cache so the new page shows up immediately in pickers / sidebar.
     @discardableResult
-    func createPage(
+    func createDocument(
         title: String,
         requestedPath: String?,
         initialContent: [Block]?

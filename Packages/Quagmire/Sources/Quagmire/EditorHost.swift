@@ -11,7 +11,7 @@ import SwiftUI
 /// Only what the editor actually gates is listed. Deleting the *row* is always
 /// allowed — it is this document's content — and whether deleting it should
 /// also trash the target is the host's policy, reported through
-/// `didDeleteSubpageLink`, so there is no `delete` capability here.
+/// `didDeleteDocumentLink`, so there is no `delete` capability here.
 public struct DocumentCapabilities: OptionSet, Hashable, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
@@ -31,7 +31,7 @@ public struct DocumentCapabilities: OptionSet, Hashable, Sendable {
 
 /// Everything the editor needs to draw a reference row and decide what it may
 /// offer, for a target that currently exists.
-public struct PagePresentation: Equatable, Hashable, Sendable {
+public struct DocumentPresentation: Equatable, Hashable, Sendable {
     /// The target's current title. Nil means "exists, title not resolved yet" —
     /// the row falls back to the label stored on the block.
     public var title: String?
@@ -49,11 +49,11 @@ public struct PagePresentation: Equatable, Hashable, Sendable {
 
 /// What the host knows about an opaque reference *right now*.
 ///
-/// Returned by `EditorHost.lookupPage(_:)`, which is called while building
+/// Returned by `EditorHost.lookupDocument(_:)`, which is called while building
 /// rows and must therefore be a cheap synchronous read of host-owned state.
-/// See the contract note on `lookupPage` — in particular why `.pending` exists
+/// See the contract note on `lookupDocument` — in particular why `.pending` exists
 /// and why making this async would be the wrong fix.
-public enum PageLookup: Equatable, Hashable, Sendable {
+public enum DocumentLookup: Equatable, Hashable, Sendable {
     /// Not resolved yet. A host reading from a cold cache or across a network
     /// returns this immediately and resolves in the background. The row renders
     /// with its stored label and offers nothing destructive until the answer
@@ -61,7 +61,7 @@ public enum PageLookup: Equatable, Hashable, Sendable {
     /// guessing either way is worse than saying so.
     case pending
     /// Exists and is reachable.
-    case present(PagePresentation)
+    case present(DocumentPresentation)
     /// Resolved, and the target is not there — trashed, renamed, never created.
     /// Rows render distinctly and don't navigate.
     case missing
@@ -71,10 +71,10 @@ public enum PageLookup: Equatable, Hashable, Sendable {
     case unavailable
 }
 
-extension PageLookup {
+extension DocumentLookup {
     /// Convenience for the common case: present, fully capable, no icon.
-    public static func present(title: String?) -> PageLookup {
-        .present(PagePresentation(title: title))
+    public static func present(title: String?) -> DocumentLookup {
+        .present(DocumentPresentation(title: title))
     }
 
     /// The resolved title if known; nil in every state that doesn't have one.
@@ -118,14 +118,14 @@ extension PageLookup {
 public protocol EditorHost: AnyObject {
     /// Whether the host can persist a page created by Turn Into → Page or
     /// Cmd-K. When false, the editor hides those creation affordances.
-    var supportsPageCreation: Bool { get }
+    var supportsDocumentCreation: Bool { get }
 
     /// Whether the host implements inlining *at all*. This is a floor, not the
     /// per-row answer: a host that returns true must still say, per target,
     /// whether that particular one can be inlined, via
-    /// `DocumentCapabilities.inline` on its `PageLookup`. Hosts with a uniform
+    /// `DocumentCapabilities.inline` on its `DocumentLookup`. Hosts with a uniform
     /// answer can return true here and `.all` capabilities everywhere.
-    var supportsSubpageInlining: Bool { get }
+    var supportsDocumentInlining: Bool { get }
 
     /// Whether the host can present the asynchronous destination picker used
     /// by "Move to". When false, the editor hides that action.
@@ -141,22 +141,22 @@ public protocol EditorHost: AnyObject {
     /// wait. The editor drives this from a cancellable task per keystroke and
     /// discards results whose query no longer matches what is on screen, so a
     /// slow answer can never overwrite a newer one.
-    func suggestPages(_ query: String, in document: Document) async -> [MentionItem]
+    func suggestDocuments(_ query: String, in document: Document) async -> [MentionItem]
 
-    /// Navigate to the workspace page identified by `pageID`. Called from
-    /// subpage-row taps and from the OpenURLAction interceptor after the
+    /// Navigate to the document `reference` names. Called from
+    /// documentLink-row taps and from the OpenURLAction interceptor after the
     /// editor has classified an inline `[text](url)` link as internal via
-    /// `resolvePageID(from:)`. External URLs never reach this method —
+    /// `resolveReference(from:)`. External URLs never reach this method —
     /// they fall through to the system handler at the OpenURLAction site.
-    func openPage(pageID: String)
+    func openDocument(_ reference: DocumentReference)
 
     /// Set the page-level icon for the referenced page. A host may represent
     /// the icon as the leading emoji of the page title or project
     /// this onto their own storage model.
-    func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool
+    func setDocumentIcon(_ emoji: String, for reference: DocumentReference) async -> Bool
 
     /// Resolve an opaque page id to what is currently known about it. Used by
-    /// inline-link and subpage rows for display, and to gate every affordance
+    /// inline-link and documentLink rows for display, and to gate every affordance
     /// that acts on the target.
     ///
     /// **This must be a cheap synchronous read of state the host already
@@ -175,51 +175,51 @@ public protocol EditorHost: AnyObject {
     ///   an un-deduped fetch per call is an infinite loop, not a cache miss.
     /// - **Be observation-tracked.** If completing the resolution doesn't
     ///   invalidate the view, the row stays `.pending` forever.
-    func lookupPage(_ pageID: String) -> PageLookup
+    func lookupDocument(_ reference: DocumentReference) -> DocumentLookup
 
-    /// A `.subpage` row was deleted from `document`. The editor has already
+    /// A `.documentLink` row was deleted from `document`. The editor has already
     /// committed the row removal when this fires; hosts can inspect the
     /// post-delete document and decide whether the now-unlinked target page
     /// should be offered for trashing.
-    func didDeleteSubpageLink(pageID: String, title: String, from document: Document)
+    func didDeleteDocumentLink(reference: DocumentReference, label: String, from document: Document)
 
     /// Classify a URL from an inline `[text](url)` link as an internal page
-    /// reference. Returns the host's pageID for that URL, or nil for
+    /// reference. Returns the host's reference for that URL, or nil for
     /// external URLs (and for any URL the host doesn't consider an internal
     /// page reference). The host owns the storage convention — file paths,
     /// UUIDs, database keys — so this is the single hook the editor uses
     /// at render time (inline-link decoration) and at Cmd-K-on-link time
-    /// (subpage creation from an existing link) to decide whether a URL
+    /// (documentLink creation from an existing link) to decide whether a URL
     /// names an internal page. Relative URLs resolve against `document` —
     /// the page whose text contains the link.
-    func resolvePageID(from url: URL, in document: Document) -> String?
+    func resolveReference(from url: URL, in document: Document) -> DocumentReference?
 
-    /// Build the inline-link URL that should be stored for `pageID` when
+    /// Build the inline-link URL that should be stored for `reference` when
     /// mentioning it from `document`. The editor treats page ids as opaque;
     /// hosts own whether persisted links are relative paths, file URLs, UUID
     /// URLs, or something else.
-    func linkURL(forPageID pageID: String, in document: Document) -> URL?
+    func linkURL(for reference: DocumentReference, in document: Document) -> URL?
 
     /// Persist a new page. `initialContent` is the body the editor wants the
     /// new page to start with (descendants of the source block); the host
-    /// serializes it and prepends a title heading. `requestedPath` is honored
-    /// as-is when non-nil (used by the editor for deterministic-id cases like
-    /// redo / preserved-id mention create); pass nil to let the host derive a
-    /// slug from `title`. Returns the host-assigned page id, or nil if
+    /// serializes it and prepends a title heading. `requestedReference` is honored
+    /// as-is when non-nil (used by the editor for deterministic cases like redo,
+    /// or Cmd-K on a link that already names a target); pass nil to let the
+    /// host choose where the document lives. Returns the host-assigned reference, or nil if
     /// creation failed. Async because the host does file I/O (and possibly
     /// a workspace rescan); the editor awaits inside a Task spawned from
     /// the key-handler.
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String?
+    func createDocument(title: String, requestedReference: DocumentReference?, initialContent: [Block]?) async -> DocumentReference?
 
-    /// Load the page at `pageID` and return its blocks. Nil → couldn't load,
+    /// Load the document at `reference` and return its blocks. Nil → couldn't load,
     /// the calling action becomes a no-op. Async because the host reads off
     /// disk; the editor awaits inside a Task spawned from the key-handler.
-    /// Paired with `inlineAndTrashPage(_:)` in the Convert flow — load
+    /// Paired with `inlineAndRetireDocument(_:)` in the Convert flow — load
     /// the blocks, inline them into the parent, then ask the host to
     /// flush+trash the source.
-    func loadPageBlocks(_ pageID: String) async -> [Block]?
+    func loadDocumentBlocks(_ reference: DocumentReference) async -> [Block]?
 
-    /// Companion to `loadPageBlocks(_:)`: after the editor has inlined the
+    /// Companion to `loadDocumentBlocks(_:)`: after the editor has inlined the
     /// loaded blocks into `parent`, the host flushes `parent` (so the
     /// inline is durable on disk) and then moves the source page to
     /// Trash. Returns `true` if the host trashed the file. Async so the
@@ -228,20 +228,20 @@ public protocol EditorHost: AnyObject {
     /// the file gone and the inlined copy unpersisted. `parent` is passed
     /// explicitly (not inferred from the host's "current page") because the
     /// user may have navigated away between the splice and this call.
-    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool
+    func inlineAndRetireDocument(_ reference: DocumentReference, parent: Document) async -> Bool
 
-    /// Append blocks to the end of the page at `pageID`. Returns `true` on
-    /// success. Used by drop-on-subpage to move or copy dragged blocks into a
+    /// Append blocks to the end of the document at `reference`. Returns `true` on
+    /// success. Used by drop-on-documentLink to move or copy dragged blocks into a
     /// child page.
     /// Async so the host can sequence log-then-file durability before returning —
     /// the editor's local-block-removal only fires on success.
-    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool
+    func appendToDocument(_ reference: DocumentReference, _ blocks: [Block]) async -> Bool
 
     /// Ask the host to present its picker for a "Move to" action. The editor
     /// passes the moving block ids plus a list of in-document destinations
-    /// (already filtered to legal drop targets); the host merges those with the
-    /// workspace page list, presents the picker, and resumes with the user's
-    /// pick (`.page(...)` for cross-page, `.block(...)` for in-doc) or `nil` if
+    /// (already filtered to legal drop targets); the host merges those with its own
+    /// document list, presents the picker, and resumes with the user's
+    /// pick (`.document(...)` for cross-document, `.block(...)` for in-doc) or `nil` if
     /// the user cancelled. Async so the editor's "Move to" call site reads as
     /// a single linear sequence instead of a callback bounced through host
     /// state.
@@ -315,20 +315,20 @@ public protocol EditorHost: AnyObject {
 }
 
 public extension EditorHost {
-    var supportsPageCreation: Bool { false }
-    var supportsSubpageInlining: Bool { false }
+    var supportsDocumentCreation: Bool { false }
+    var supportsDocumentInlining: Bool { false }
     var supportsMoveDestinationPicker: Bool { false }
-    func suggestPages(_ query: String, in document: Document) async -> [MentionItem] { [] }
-    func openPage(pageID: String) {}
-    func didDeleteSubpageLink(pageID: String, title: String, from document: Document) {}
-    func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool { false }
-    func lookupPage(_ pageID: String) -> PageLookup { .missing }
-    func resolvePageID(from url: URL, in document: Document) -> String? { nil }
-    func linkURL(forPageID pageID: String, in document: Document) -> URL? { nil }
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? { nil }
-    func loadPageBlocks(_ pageID: String) async -> [Block]? { nil }
-    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool { false }
-    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool { false }
+    func suggestDocuments(_ query: String, in document: Document) async -> [MentionItem] { [] }
+    func openDocument(_ reference: DocumentReference) {}
+    func didDeleteDocumentLink(reference: DocumentReference, label: String, from document: Document) {}
+    func setDocumentIcon(_ emoji: String, for reference: DocumentReference) async -> Bool { false }
+    func lookupDocument(_ reference: DocumentReference) -> DocumentLookup { .missing }
+    func resolveReference(from url: URL, in document: Document) -> DocumentReference? { nil }
+    func linkURL(for reference: DocumentReference, in document: Document) -> URL? { nil }
+    func createDocument(title: String, requestedReference: DocumentReference?, initialContent: [Block]?) async -> DocumentReference? { nil }
+    func loadDocumentBlocks(_ reference: DocumentReference) async -> [Block]? { nil }
+    func inlineAndRetireDocument(_ reference: DocumentReference, parent: Document) async -> Bool { false }
+    func appendToDocument(_ reference: DocumentReference, _ blocks: [Block]) async -> Bool { false }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {
@@ -355,8 +355,8 @@ private enum EditorPlainTextCodec {
                 lines.append(source)
             case .divider:
                 lines.append("---")
-            case .subpage(let title, _):
-                lines.append(title)
+            case .documentLink(let label, _):
+                lines.append(String(label.characters))
             case .image(let source, let alt):
                 lines.append(alt.isEmpty ? source : alt)
             case .unsupported(let payload, _):

@@ -28,7 +28,7 @@ struct LinkGraphTests {
 
     @Test func extractsSubpageInlineAndNestedLinksAndSkipsExternal() {
         let blocks: [Block] = [
-            .subpage(title: "B", pageID: "B.md"),
+            .documentLink(label: AttributedString("B"), reference: DocumentReference("B.md")),
             .paragraph(text: linked("see C", to: "C.md")),
             .toggle(title: AttributedString("more"), children: [
                 .paragraph(text: linked("deep", to: "sub/D.md"))

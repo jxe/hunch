@@ -940,7 +940,7 @@ public final class Document: @MainActor Identifiable {
     }
 
     /// Promote any orphan children of leaf blocks (paragraphs, code blocks,
-    /// dividers, subpages, images, quotes) to siblings just after the leaf.
+    /// dividers, document links, images, quotes) to siblings just after the leaf.
     /// Recursive — children are normalized before checking the parent's
     /// leaf-status, so a deeply-nested orphan bubbles up cleanly.
     private static func liftLeafOrphans(_ blocks: [Block]) -> [Block] {

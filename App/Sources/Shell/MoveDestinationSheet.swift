@@ -48,7 +48,7 @@ struct MoveDestinationSheet: View {
             ).map { entry in
                 let item = entry.asMentionItem(homeRelativePath: home)
                 return NativePickerItem(
-                    id: .page(item.id),
+                    id: .page(item.id.rawValue),
                     title: item.title,
                     subtitle: item.subtitle,
                     glyph: .page(isHome: item.isHome)
@@ -81,8 +81,8 @@ struct MoveDestinationSheet: View {
         switch id {
         case .block(let blockID):
             onActivate(.block(blockID))
-        case .page(let pageID):
-            onActivate(.page(pageID))
+        case .page(let relativePath):
+            onActivate(.document(DocumentReference(relativePath)))
         }
     }
 }

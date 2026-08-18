@@ -67,7 +67,7 @@ struct ContentView: View {
                         workspace: workspace,
                         excluding: nil,
                         onActivate: { item in
-                            window.navigateFromSearch(relativePath: item.id)
+                            window.navigateFromSearch(relativePath: item.id.rawValue)
                             window.showSearch = false
                         },
                         onSetHome: setHome,
@@ -82,7 +82,7 @@ struct ContentView: View {
                         title: "Add This Page to…",
                         onActivate: { item in
                             Task {
-                                if await window.appendCurrentPageLink(to: item.id) {
+                                if await window.appendCurrentPageLink(to: item.id.rawValue) {
                                     window.showAddToPageSearch = false
                                 }
                             }
@@ -272,13 +272,13 @@ struct ContentView: View {
     }
 
     private func setHome(_ item: MentionItem) {
-        if let entry = workspace.clamshell?.entry(at: item.id) {
+        if let entry = workspace.clamshell?.entry(at: item.id.rawValue) {
             workspace.clamshell?.setHome(relativePath: entry.relativePath)
         }
     }
 
     private func moveToTrash(_ item: MentionItem) {
-        if let entry = workspace.clamshell?.entry(at: item.id) {
+        if let entry = workspace.clamshell?.entry(at: item.id.rawValue) {
             Task { await window.moveToTrash(entry) }
         }
     }
@@ -842,7 +842,7 @@ private struct EmptyWorkspaceView: View {
                 }
                 .buttonStyle(.bordered)
                 Button {
-                    guard let path = workspace.createPage(title: "Untitled", requestedPath: nil, initialContent: nil) else { return }
+                    guard let path = workspace.createDocument(title: "Untitled", requestedPath: nil, initialContent: nil) else { return }
                     workspace.clamshell?.setHome(relativePath: path)
                 } label: {
                     Label("New page", systemImage: "plus")

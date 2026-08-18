@@ -236,14 +236,14 @@ struct BlockIdentityLifecycleTests {
             selectedIndex: 0
         )
 
-        editor.commitMention(MentionItem(id: "target.md", title: "Target"), menu: menu)
+        editor.commitMention(MentionItem(id: DocumentReference("target.md"), title: "Target"), menu: menu)
 
         #expect(doc.children.map(\.id) == [block.id])
-        if case .subpage(let title, let pageID) = doc.children[0].kind {
-            #expect(title == "Target")
-            #expect(pageID == "target.md")
+        if case .documentLink(let label, let reference) = doc.children[0].kind {
+            #expect(String(label.characters) == "Target")
+            #expect(reference.rawValue == "target.md")
         } else {
-            Issue.record("expected a subpage row, got \(doc.children[0].kind)")
+            Issue.record("expected a documentLink row, got \(doc.children[0].kind)")
         }
     }
 
@@ -257,7 +257,7 @@ struct BlockIdentityLifecycleTests {
             selectedIndex: 0
         )
 
-        editor.commitMention(MentionItem(id: "target.md", title: "Target"), menu: menu)
+        editor.commitMention(MentionItem(id: DocumentReference("target.md"), title: "Target"), menu: menu)
 
         #expect(doc.children.count == 2)
         #expect(doc.children[0].id == block.id)
@@ -274,7 +274,7 @@ struct BlockIdentityLifecycleTests {
             selectedIndex: 0
         )
 
-        editor.commitMention(MentionItem(id: "target.md", title: "Target"), menu: menu)
+        editor.commitMention(MentionItem(id: DocumentReference("target.md"), title: "Target"), menu: menu)
 
         #expect(doc.children.map(\.id) == [block.id])
         #expect(String(doc.children[0].text.characters) == "see Target")
@@ -356,11 +356,11 @@ struct BlockIdentityLifecycleTests {
             Block(id: sharedID, kind: .paragraph(text: AttributedString("loaded two")))
         ]
 
-        let link = Block.subpage(title: "Target", pageID: "target.md")
+        let link = Block.documentLink(label: AttributedString("Target"), reference: DocumentReference("target.md"))
         let doc = Document(id: DocumentID("t"), children: [link])
         let editor = Self.editor(doc, host: host)
 
-        #expect(editor.convertSubpage(blockID: link.id, to: .toggle) == .handled)
+        #expect(editor.convertDocumentLink(blockID: link.id, to: .toggle) == .handled)
         await host.awaitInlineCompletion()
 
         let all = Self.ids(doc.children)
@@ -428,15 +428,15 @@ private final class IdentityTestHost: EditorHost {
     private var inlineFinished: CheckedContinuation<Void, Never>?
     private var inlineAlreadyFinished = false
 
-    var supportsPageCreation: Bool { true }
-    var supportsSubpageInlining: Bool { true }
+    var supportsDocumentCreation: Bool { true }
+    var supportsDocumentInlining: Bool { true }
     var supportsMoveDestinationPicker: Bool { true }
 
-    func lookupPage(_ pageID: String) -> PageLookup { .present(title: nil) }
-    func linkURL(forPageID pageID: String, in document: Document) -> URL? { URL(string: pageID) }
-    func loadPageBlocks(_ pageID: String) async -> [Block]? { loadedBlocks }
+    func lookupDocument(_ reference: DocumentReference) -> DocumentLookup { .present(title: nil) }
+    func linkURL(for reference: DocumentReference, in document: Document) -> URL? { URL(string: reference.rawValue) }
+    func loadDocumentBlocks(_ reference: DocumentReference) async -> [Block]? { loadedBlocks }
 
-    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {
+    func inlineAndRetireDocument(_ reference: DocumentReference, parent: Document) async -> Bool {
         if let continuation = inlineFinished {
             inlineFinished = nil
             continuation.resume()

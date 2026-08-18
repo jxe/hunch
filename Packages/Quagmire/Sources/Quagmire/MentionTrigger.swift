@@ -58,9 +58,9 @@ func detectMentionTrigger(plain: String, cursor: Int) -> MentionTrigger? {
 }
 
 /// Whether a mention whose `@` starts at `triggerStart` should commit as a
-/// block-level subpage row. Real content before the `@` means inline mention;
+/// block-level documentLink row. Real content before the `@` means inline mention;
 /// only whitespace or a markdown-style row marker counts as line-leading.
-func mentionStartsSubpageBlock(plain: String, triggerStart: Int) -> Bool {
+func mentionStartsDocumentLinkBlock(plain: String, triggerStart: Int) -> Bool {
     guard triggerStart >= 0, triggerStart <= plain.count else { return false }
     let atIndex = plain.index(plain.startIndex, offsetBy: triggerStart)
     let prefix = String(plain[..<atIndex]).trimmingCharacters(in: .whitespaces)

@@ -87,15 +87,15 @@ struct EditorViewIndentTests {
 
 @MainActor
 private final class TestHost: EditorHost {
-    func suggestPages(_ query: String, in document: Document) -> [MentionItem] { [] }
-    func openPage(pageID: String) {}
-    func lookupPage(_ pageID: String) -> PageLookup { .present(title: nil) }
-    func resolvePageID(from url: URL, in document: Document) -> String? { nil }
-    func linkURL(forPageID pageID: String, in document: Document) -> URL? { URL(string: pageID) }
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? { nil }
-    func loadPageBlocks(_ pageID: String) async -> [Block]? { nil }
-    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool { true }
-    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool { true }
+    func suggestDocuments(_ query: String, in document: Document) -> [MentionItem] { [] }
+    func openDocument(_ reference: DocumentReference) {}
+    func lookupDocument(_ reference: DocumentReference) -> DocumentLookup { .present(title: nil) }
+    func resolveReference(from url: URL, in document: Document) -> DocumentReference? { nil }
+    func linkURL(for reference: DocumentReference, in document: Document) -> URL? { URL(string: reference.rawValue) }
+    func createDocument(title: String, requestedReference: DocumentReference?, initialContent: [Block]?) async -> DocumentReference? { nil }
+    func loadDocumentBlocks(_ reference: DocumentReference) async -> [Block]? { nil }
+    func inlineAndRetireDocument(_ reference: DocumentReference, parent: Document) async -> Bool { true }
+    func appendToDocument(_ reference: DocumentReference, _ blocks: [Block]) async -> Bool { true }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
     func navigateBack() {}
     func persistCommit(changes: [DocumentChange], in document: Document) {}

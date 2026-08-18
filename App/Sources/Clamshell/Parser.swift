@@ -757,10 +757,9 @@ enum BlockParser {
               let link = inlines.last as? Markdown.Link,
               let dest = link.destination, isSubpageDestination(dest)
         else { return nil }
-        let titleParts: [String] = Array(link.inlineChildren).compactMap { ($0 as? Markdown.Text)?.string }
-        let title = titleParts.joined()
+        let label = documentLinkLabel(link, fallback: dest)
         inlines.removeLast(2)
-        return .subpage(title: title.isEmpty ? dest : title, pageID: dest)
+        return .documentLink(label: label, reference: DocumentReference(dest))
     }
 
     /// A subpage destination is a `.md` path, optionally carrying a page-ID
@@ -788,9 +787,18 @@ enum BlockParser {
             }
         }
         guard let link, let dest = link.destination, isSubpageDestination(dest) else { return nil }
-        let titleParts: [String] = Array(link.inlineChildren).compactMap { ($0 as? Markdown.Text)?.string }
-        let title = titleParts.joined()
-        return .subpage(title: title.isEmpty ? dest : title, pageID: dest)
+        return .documentLink(label: documentLinkLabel(link, fallback: dest), reference: DocumentReference(dest))
+    }
+
+    /// The authored label of a document-link row, preserving inline marks.
+    ///
+    /// This used to take only direct `Markdown.Text` children, so `[**Bold**](x.md)`
+    /// produced an empty label and fell back to showing the raw path. Going
+    /// through `inlineToAttributed` keeps the marks, which round-trip back out
+    /// through the serializer.
+    private static func documentLinkLabel(_ link: Markdown.Link, fallback: String) -> AttributedString {
+        let label = inlineToAttributed(Array(link.inlineChildren))
+        return label.characters.isEmpty ? AttributedString(fallback) : label
     }
 
     // MARK: - Block image detection

@@ -55,7 +55,7 @@ extension EditorView {
             BlockRowPreview(
                 block: lift.block,
                 depth: 0,
-                pageLookups: resolvePageLookups(for: lift.block, host: host, in: document),
+                documentLookups: resolveDocumentLookups(for: lift.block, host: host, in: document),
                 theme: configuration.theme
             )
             .frame(width: size.width, height: size.height, alignment: .leading)
@@ -237,11 +237,11 @@ extension EditorView {
                 } else {
                     moveBlocks(ids: ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
                 }
-            case .intoSubpage(_, let path):
+            case .intoDocument(_, let reference):
                 if isCopy {
-                    Task { await copyBlocks(ids: ids, intoSubpagePath: path) }
+                    Task { await copyBlocks(ids: ids, intoDocument: reference) }
                 } else {
-                    Task { await moveBlocks(ids: ids, intoSubpagePath: path) }
+                    Task { await moveBlocks(ids: ids, intoDocument: reference) }
                 }
             }
         }
@@ -270,7 +270,7 @@ extension EditorView {
     fileprivate func resolveDropTarget(atY y: CGFloat, snapshot: [Block]) -> DropTarget {
         let liftIDs = state.reorderLift?.ids ?? []
         // Build the visible-flat layout once and use it for BOTH the hit-test
-        // (drop on subpage / closed parent) and the between-rows slot
+        // (drop on documentLink / closed parent) and the between-rows slot
         // resolver. Iterating the top-level snapshot directly would miss
         // nested rows; iterating the legacy flat preorder of `snapshot`
         // would double-count blocks that also live inside their parent's
@@ -282,19 +282,19 @@ extension EditorView {
         // stable, so a sustained drag does zero tree walks here.
         let (rows, _) = layoutCache.currentVisibleRows(snapshot: snapshot, isCollapsed: isCollapsedSection)
 
-        // Hit-test for "drop on closed parent" / "drop onto subpage". Edge
+        // Hit-test for "drop on closed parent" / "drop onto documentLink". Edge
         // band keeps the gap above/below the row reachable for between-rows
         // drops.
         let edgeBand: CGFloat = 6
         for row in rows where !liftIDs.contains(row.id) {
             guard let frame = layoutCache.reorderFrame(of: row.id) else { continue }
-            if case .subpage(let path) = row.kind,
+            if case .documentLink(let reference) = row.kind,
                y >= frame.minY && y <= frame.maxY {
                 // A target that can't take blocks isn't a drop target at all:
                 // fall through so the drop lands between rows instead of
                 // silently doing nothing on release.
-                guard host.lookupPage(path).can(.receiveBlocks) else { continue }
-                return .intoSubpage(row.id, path)
+                guard host.lookupDocument(reference).can(.receiveBlocks) else { continue }
+                return .intoDocument(row.id, reference)
             }
             guard y > frame.minY + edgeBand && y < frame.maxY - edgeBand else { continue }
             if isCollapsedSection(id: row.id, kind: row.kind) {
@@ -429,8 +429,8 @@ extension EditorView {
             moveBlocks(ids: payload.ids, to: path)
         case .asLastChildOf(let parentID):
             moveBlocks(ids: payload.ids, asChildrenOf: parentID, snapshot: snapshot, hidden: hidden)
-        case .intoSubpage(_, let path):
-            Task { await moveBlocks(ids: payload.ids, intoSubpagePath: path) }
+        case .intoDocument(_, let reference):
+            Task { await moveBlocks(ids: payload.ids, intoDocument: reference) }
         }
     }
 
@@ -438,7 +438,7 @@ extension EditorView {
     /// suppression keep this from machine-gunning when the drift gap's
     /// 260ms spring animation makes row frames jitter:
     /// 1. Dedupe on the full `DropTarget` (not just `.insertAt` position), so
-    ///    a brief detour through `.asLastChildOf` / `.intoSubpage` and back
+    ///    a brief detour through `.asLastChildOf` / `.intoDocument` and back
     ///    to the same `.insertAt` slot doesn't re-fire.
     /// 2. Minimum 60ms between fires — caps the rate when the resolver
     ///    genuinely flips between adjacent slots mid-animation (the
@@ -552,11 +552,11 @@ extension EditorView {
         state.setNavSelection(blocks: Set(ids), anchor: first, cursor: last)
     }
 
-    /// Drop-on-subpage / Move-to picker: append `ids` to the end of the
-    /// destination page (cross-document write via `appendToPage`) and
+    /// Drop-on-documentLink / Move-to picker: append `ids` to the end of the
+    /// destination page (cross-document write via `appendToDocument`) and
     /// remove them from this document. Tree shape and relative nesting are
     /// preserved verbatim — the destination receives the subtrees as-is.
-    func moveBlocks(ids: [BlockID], intoSubpagePath path: String) async {
+    func moveBlocks(ids: [BlockID], intoDocument reference: DocumentReference) async {
         let roots = document.selectionSubtreeRoots(Set(ids))
         let ordered = roots.sorted { (a, b) in
             (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
@@ -564,13 +564,13 @@ extension EditorView {
         let movingBlocks = ordered.compactMap { document.find($0) }
         guard !movingBlocks.isEmpty else { return }
 
-        guard await host.appendToPage(path, movingBlocks) else { return }
+        guard await host.appendToDocument(reference, movingBlocks) else { return }
 
         // Capture a cursor target near the source BEFORE removing the blocks,
         // so the nav cursor stays where the user moved from rather than
         // pointing at IDs that no longer exist in this document.
         let cursorTarget = nearestCursorAfterRemoval(of: ordered)
-        mutate("Move to Subpage") {
+        mutate("Move to DocumentLink") {
             for id in ordered {
                 document.removeSubtree(id)
             }
@@ -581,11 +581,11 @@ extension EditorView {
         showActionToast("Moved")
     }
 
-    /// Option-drop on a subpage: append fresh-ID copies to the destination
+    /// Option-drop on a documentLink: append fresh-ID copies to the destination
     /// page while leaving the source document untouched. As with a local
     /// duplicate, selecting both a parent and one of its descendants emits
     /// the parent subtree only once.
-    func copyBlocks(ids: [BlockID], intoSubpagePath path: String) async {
+    func copyBlocks(ids: [BlockID], intoDocument reference: DocumentReference) async {
         let roots = document.selectionSubtreeRoots(Set(ids))
         let ordered = roots.sorted { (a, b) in
             (document.documentOrder(of: a) ?? .max) < (document.documentOrder(of: b) ?? .max)
@@ -593,7 +593,7 @@ extension EditorView {
         let copies = ordered.compactMap { document.find($0)?.withFreshIDs() }
         guard !copies.isEmpty else { return }
 
-        guard await host.appendToPage(path, copies) else { return }
+        guard await host.appendToDocument(reference, copies) else { return }
         showActionToast("Copied")
     }
 }

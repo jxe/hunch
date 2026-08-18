@@ -2,9 +2,9 @@ import Foundation
 import Quagmire
 
 /// Seed content for the welcome page that's dropped into a fresh workspace.
-/// Returned as parsed `[Block]` so `Clamshell.createPage` can serialize it
+/// Returned as parsed `[Block]` so `Clamshell.createDocument` can serialize it
 /// uniformly with the rest of the writer pipeline. The `# Welcome to Hunch`
-/// heading is added by `createPage` from the `title` argument — don't repeat
+/// heading is added by `createDocument` from the `title` argument — don't repeat
 /// it here.
 func welcomeContentBlocks() -> [Block] {
     BlockParser.parse(welcomeMarkdown)

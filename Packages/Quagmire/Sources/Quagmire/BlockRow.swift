@@ -23,7 +23,7 @@ struct BlockRowModel: Equatable {
     let isSelectionHandleRow: Bool
     let accessibilityID: String
     let accessibilityLabelText: String
-    let pageLookups: [String: PageLookup]
+    let documentLookups: [String: DocumentLookup]
     let linkPreviews: [URL: LinkPreview]
 }
 
@@ -139,7 +139,7 @@ struct BlockRow: View, Equatable {
     var isSelectionHandleRow: Bool { model.isSelectionHandleRow }
     var accessibilityID: String { model.accessibilityID }
     var accessibilityLabelText: String { model.accessibilityLabelText }
-    var pageLookups: [String: PageLookup] { model.pageLookups }
+    var documentLookups: [String: DocumentLookup] { model.documentLookups }
     var linkPreviews: [URL: LinkPreview] { model.linkPreviews }
     var onBlockChange: (Block) -> Void { actions.onBlockChange }
     var onToggleTodo: (BlockID) -> Void { actions.onToggleTodo }
@@ -149,7 +149,7 @@ struct BlockRow: View, Equatable {
     var onLinkPreviewLoaded: (URL, LinkPreview) -> Void { actions.onLinkPreviewLoaded }
     var host: EditorHost { actions.host }
     var onTapOutsideText: () -> Void { actions.onTapOutsideText }
-    var onSubpageIconTap: () -> Void { actions.onSubpageIconTap }
+    var onDocumentLinkIconTap: () -> Void { actions.onDocumentLinkIconTap }
     var onActionMenuDismiss: () -> Void { actions.onActionMenuDismiss }
     var onCompletionMenuDismiss: () -> Void { actions.onCompletionMenuDismiss }
     var onIconPickerDismiss: () -> Void { actions.onIconPickerDismiss }
@@ -244,9 +244,9 @@ struct BlockRow: View, Equatable {
             // taps come through `MacPageGestureHost.onClickRow` instead).
             .gesture(
                 SpatialTapGesture().onEnded { value in
-                    if case .subpage = block.kind,
-                       hitsSubpageIconColumn(localX: value.location.x, depth: depth, theme: theme) {
-                        onSubpageIconTap()
+                    if case .documentLink = block.kind,
+                       hitsDocumentLinkIconColumn(localX: value.location.x, depth: depth, theme: theme) {
+                        onDocumentLinkIconTap()
                     } else {
                         onTapOutsideText()
                     }
@@ -323,8 +323,8 @@ struct BlockRow: View, Equatable {
         case .templateButton:
             templateButtonRow()
 
-        case .subpage(let title, let path):
-            subpageRow(storedTitle: title, lookup: pageLookups[path] ?? .pending)
+        case .documentLink(let label, let reference):
+            documentLinkRow(storedLabel: label, lookup: documentLookups[reference.rawValue] ?? .pending)
 
         case .image(let source, let alt):
             imageRow(source: source, alt: alt)
@@ -515,7 +515,7 @@ struct BlockRow: View, Equatable {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    InlineRenderer.swiftUIText(block.text, theme: theme, baseFont: theme.body(), resolvingPageTitle: { pageLookups[$0]?.title })
+                    InlineRenderer.swiftUIText(block.text, theme: theme, baseFont: theme.body(), resolvingPageTitle: { documentLookups[$0]?.title })
                         .font(theme.body())
                         .lineSpacing(theme.bodyLineSpacing)
                         .textRenderer(InlineCodeChipRenderer(theme: theme))
@@ -535,8 +535,8 @@ struct BlockRow: View, Equatable {
         .padding(.leading, CGFloat(depth) * theme.indentStep)
     }
 
-    private func subpageRow(storedTitle: String, lookup: PageLookup) -> some View {
-        subpageRowBody(storedTitle: storedTitle, lookup: lookup, depth: depth, theme: theme)
+    private func documentLinkRow(storedLabel: AttributedString, lookup: DocumentLookup) -> some View {
+        documentLinkRowBody(storedLabel: storedLabel, lookup: lookup, depth: depth, theme: theme)
             .overlay(alignment: .leading) {
                 Color.clear
                     .frame(width: theme.bulletMarkerColumnWidth)
@@ -598,7 +598,7 @@ struct BlockRow: View, Equatable {
                     block.text,
                     baseFont: font,
                     boldFont: theme.body(size: fontSize, weight: .semibold),
-                    pageLookups: pageLookups,
+                    documentLookups: documentLookups,
                     previews: linkPreviews,
                     theme: theme
                 )
@@ -630,7 +630,7 @@ struct BlockRowActions {
     let onLinkPreviewLoaded: (URL, LinkPreview) -> Void
     let host: EditorHost
     let onTapOutsideText: () -> Void
-    let onSubpageIconTap: () -> Void
+    let onDocumentLinkIconTap: () -> Void
     let onActionMenuDismiss: () -> Void
     let onCompletionMenuDismiss: () -> Void
     let onIconPickerDismiss: () -> Void
@@ -642,7 +642,7 @@ struct BlockRowActions {
 }
 
 /// A page title that begins with an emoji ("👍 Emoji Page") lends that
-/// emoji to its subpage-row icon; the rest becomes the label. Returns nil
+/// emoji to its documentLink-row icon; the rest becomes the label. Returns nil
 /// when there's no leading emoji, or when stripping it would leave an empty
 /// label (an emoji-only title renders normally instead of as a blank row).
 func leadingEmojiIcon(in title: String) -> (emoji: String, rest: String)? {
@@ -663,7 +663,7 @@ func leadingEmojiIcon(in title: String) -> (emoji: String, rest: String)? {
 /// one must not look gone — the first would be a lie about a target that is
 /// probably fine, the second an invitation to clean up something that still
 /// exists.
-struct SubpageRowPresentation: Equatable {
+struct DocumentLinkRowPresentation: Equatable {
     var title: String
     /// Emoji to draw in the marker column. Nil means draw `symbol` instead.
     var emoji: String?
@@ -674,10 +674,11 @@ struct SubpageRowPresentation: Equatable {
     var annotation: String?
 }
 
-func subpageRowPresentation(storedTitle: String, lookup: PageLookup) -> SubpageRowPresentation {
-    // The host's title wins when it has one; the block's stored label is the
-    // fallback, which is also all we have while a lookup is pending.
-    let title = lookup.title ?? storedTitle
+func documentLinkRowPresentation(storedLabel: AttributedString, lookup: DocumentLookup) -> DocumentLinkRowPresentation {
+    // The host's live title wins when it has one; the authored label is the
+    // fallback, and is all we have while a lookup is pending. Marks on the
+    // label are dropped here — the row draws a title, not rich text.
+    let title = lookup.title ?? String(storedLabel.characters)
     let derived = leadingEmojiIcon(in: title)
     let displayTitle = derived?.rest ?? title
     // A host with real icons supplies one; hosts without an icon concept leave
@@ -686,7 +687,7 @@ func subpageRowPresentation(storedTitle: String, lookup: PageLookup) -> SubpageR
 
     switch lookup {
     case .present:
-        return SubpageRowPresentation(
+        return DocumentLinkRowPresentation(
             title: displayTitle, emoji: emoji, symbol: "doc.text",
             muted: false, annotation: nil
         )
@@ -694,29 +695,29 @@ func subpageRowPresentation(storedTitle: String, lookup: PageLookup) -> SubpageR
         // Draw it as an ordinary row. We don't know anything is wrong, and
         // flagging every not-yet-resolved reference would make a cold cache
         // look like a broken document.
-        return SubpageRowPresentation(
+        return DocumentLinkRowPresentation(
             title: displayTitle, emoji: emoji, symbol: "doc.text",
             muted: false, annotation: nil
         )
     case .unavailable:
         // Reachable-in-principle, not right now. Muted so it reads as degraded,
         // but not the warning icon — nothing here needs fixing.
-        return SubpageRowPresentation(
+        return DocumentLinkRowPresentation(
             title: displayTitle, emoji: emoji, symbol: "doc.badge.ellipsis",
             muted: true, annotation: "(unavailable)"
         )
     case .missing:
-        return SubpageRowPresentation(
+        return DocumentLinkRowPresentation(
             title: displayTitle, emoji: nil, symbol: "doc.badge.exclamationmark",
             muted: true, annotation: "(missing)"
         )
     }
 }
 
-/// Shared subpage-row body (used by both the editing and preview render paths).
+/// Shared documentLink-row body (used by both the editing and preview render paths).
 @ViewBuilder
-func subpageRowBody(storedTitle: String, lookup: PageLookup, depth: Int, theme: EditorTheme) -> some View {
-    let presentation = subpageRowPresentation(storedTitle: storedTitle, lookup: lookup)
+func documentLinkRowBody(storedLabel: AttributedString, lookup: DocumentLookup, depth: Int, theme: EditorTheme) -> some View {
+    let presentation = documentLinkRowPresentation(storedLabel: storedLabel, lookup: lookup)
     HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
         Group {
             if let emoji = presentation.emoji {
@@ -724,7 +725,7 @@ func subpageRowBody(storedTitle: String, lookup: PageLookup, depth: Int, theme: 
                 // comparable weight; the fixed frame height below keeps the
                 // row from growing.
                 Text(emoji)
-                    .font(.system(size: theme.subpageEmojiIconSize))
+                    .font(.system(size: theme.documentLinkEmojiIconSize))
             } else {
                 Image(systemName: presentation.symbol)
                     .font(.system(size: theme.pageIconSize))
@@ -733,7 +734,7 @@ func subpageRowBody(storedTitle: String, lookup: PageLookup, depth: Int, theme: 
         }
         .frame(width: theme.bulletMarkerColumnWidth, height: theme.listMarkerFrameHeight, alignment: .trailing)
         .offset(x: theme.markerCenteringOffset(
-            markerWidth: presentation.emoji != nil ? theme.subpageEmojiIconAdvance : theme.pageIconSize
+            markerWidth: presentation.emoji != nil ? theme.documentLinkEmojiIconAdvance : theme.pageIconSize
         ))
         .alignmentGuide(.firstTextBaseline) { dimensions in
             dimensions[VerticalAlignment.center] + theme.bulletMarkerBaselineOffset
@@ -756,30 +757,30 @@ func subpageRowBody(storedTitle: String, lookup: PageLookup, depth: Int, theme: 
 }
 
 /// Pre-resolve every workspace-page reference this row needs to render: the
-/// subpage pageID for `.subpage` blocks plus every inline workspace-page link
+/// reference for `.documentLink` blocks plus every inline internal link
 /// URL inside the block's text. Inline-link URLs are classified by the host
-/// (`resolvePageID`); the editor doesn't bake in a storage
-/// convention. The result is the value `BlockRow` stores as `pageLookups`
+/// (`resolveReference`); the editor doesn't bake in a storage
+/// convention. The result is the value `BlockRow` stores as `documentLookups`
 /// and compares in `==`, so a rename or delete of any referenced page
 /// changes the map for the rows that mention it (and only those rows) —
 /// letting `.equatable()` short-circuit the rest while keeping link titles
-/// correct and broken-subpage indicators in sync.
+/// correct and broken-documentLink indicators in sync.
 ///
 /// Inline-link entries are keyed by `URL.absoluteString` (what the renderer
-/// matches against `run.link.absoluteString`); subpage entries are keyed by
-/// the block's stored pageID.
+/// matches against `run.link.absoluteString`); documentLink entries are keyed by
+/// the block's stored reference's raw value.
 @MainActor
-func resolvePageLookups(for block: Block, host: EditorHost, in document: Document) -> [String: PageLookup] {
-    var result: [String: PageLookup] = [:]
-    if case .subpage(_, let pageID) = block.kind {
-        result[pageID] = host.lookupPage(pageID)
+func resolveDocumentLookups(for block: Block, host: EditorHost, in document: Document) -> [String: DocumentLookup] {
+    var result: [String: DocumentLookup] = [:]
+    if case .documentLink(_, let reference) = block.kind {
+        result[reference.rawValue] = host.lookupDocument(reference)
     }
     for run in block.text.runs {
         guard let url = run.link, !isExternalLinkURL(url) else { continue }
-        guard let pageID = host.resolvePageID(from: url, in: document) else { continue }
+        guard let reference = host.resolveReference(from: url, in: document) else { continue }
         let key = url.absoluteString
         if result[key] == nil {
-            result[key] = host.lookupPage(pageID)
+            result[key] = host.lookupDocument(reference)
         }
     }
     return result
@@ -787,7 +788,7 @@ func resolvePageLookups(for block: Block, host: EditorHost, in document: Documen
 
 /// Walk an `AttributedString` and gather every `http`/`https` URL referenced
 /// by an inline `.link` run. Internal `.md` page links don't go through link
-/// previews — they have their own subpage-resolution path (`pageLookups`).
+/// previews — they have their own documentLink-resolution path (`documentLookups`).
 func collectExternalURLs(in text: AttributedString) -> Set<URL> {
     var set: Set<URL> = []
     for run in text.runs {
@@ -808,7 +809,7 @@ private func decoratedText(
     _ source: AttributedString,
     baseFont: Font,
     boldFont: Font,
-    pageLookups: [String: PageLookup],
+    documentLookups: [String: DocumentLookup],
     previews: [URL: LinkPreview],
     theme: EditorTheme
 ) -> Text {
@@ -825,7 +826,7 @@ private func decoratedText(
 
         var displayText = runText
         if let url = link {
-            if let resolved = pageLookups[url.absoluteString]?.title {
+            if let resolved = documentLookups[url.absoluteString]?.title {
                 displayText = resolved
             } else if isExternalLinkURL(url),
                       let preview = previews[url],
@@ -910,7 +911,7 @@ struct BlockRowPreview: View, Equatable {
     let isPageTitle: Bool
     let numberingIndex: Int?
     let isExpanded: Bool
-    let pageLookups: [String: PageLookup]
+    let documentLookups: [String: DocumentLookup]
     let linkPreviews: [URL: LinkPreview]
     let theme: EditorTheme
 
@@ -920,7 +921,7 @@ struct BlockRowPreview: View, Equatable {
         isPageTitle: Bool = false,
         numberingIndex: Int? = nil,
         isExpanded: Bool = false,
-        pageLookups: [String: PageLookup] = [:],
+        documentLookups: [String: DocumentLookup] = [:],
         linkPreviews: [URL: LinkPreview] = [:],
         theme: EditorTheme = .default
     ) {
@@ -929,7 +930,7 @@ struct BlockRowPreview: View, Equatable {
         self.isPageTitle = isPageTitle
         self.numberingIndex = numberingIndex
         self.isExpanded = isExpanded
-        self.pageLookups = pageLookups
+        self.documentLookups = documentLookups
         self.linkPreviews = linkPreviews
         self.theme = theme
     }
@@ -1050,7 +1051,7 @@ struct BlockRowPreview: View, Equatable {
                 HStack(spacing: 7) {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                    InlineRenderer.swiftUIText(block.text, theme: theme, baseFont: theme.body(), resolvingPageTitle: { pageLookups[$0]?.title })
+                    InlineRenderer.swiftUIText(block.text, theme: theme, baseFont: theme.body(), resolvingPageTitle: { documentLookups[$0]?.title })
                         .font(theme.body())
                         .lineSpacing(theme.bodyLineSpacing)
                         .textRenderer(InlineCodeChipRenderer(theme: theme))
@@ -1064,8 +1065,8 @@ struct BlockRowPreview: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, CGFloat(depth) * theme.indentStep)
 
-        case .subpage(let title, let path):
-            subpageRowBody(storedTitle: title, lookup: pageLookups[path] ?? .pending, depth: depth, theme: theme)
+        case .documentLink(let label, let reference):
+            documentLinkRowBody(storedLabel: label, lookup: documentLookups[reference.rawValue] ?? .pending, depth: depth, theme: theme)
 
         case .image(let source, let alt):
             ImageBlockView(source: source, alt: alt, theme: theme)
@@ -1095,7 +1096,7 @@ struct BlockRowPreview: View, Equatable {
                 block.text,
                 baseFont: font,
                 boldFont: theme.body(size: fontSize, weight: .semibold),
-                pageLookups: pageLookups,
+                documentLookups: documentLookups,
                 previews: linkPreviews,
                 theme: theme
             )

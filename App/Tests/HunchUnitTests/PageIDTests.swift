@@ -87,26 +87,26 @@ struct PageIDTests {
 
     @Test func subpageLinkWithFragmentParsesVerbatim() {
         let blocks = BlockParser.parse("[Some Page](Some-Page.md#x7f3q2)\n")
-        guard case .subpage(let title, let pageID) = blocks.first?.kind else {
+        guard case .documentLink(let title, let pageID) = blocks.first?.kind else {
             Issue.record("expected subpage, got \(String(describing: blocks.first?.kind))")
             return
         }
-        #expect(title == "Some Page")
-        #expect(pageID == "Some-Page.md#x7f3q2")
+        #expect(String(title.characters) == "Some Page")
+        #expect(pageID.rawValue == "Some-Page.md#x7f3q2")
     }
 
     @Test func plainSubpageLinkStillParses() {
         let blocks = BlockParser.parse("[Some Page](Some-Page.md)\n")
-        guard case .subpage(_, let pageID) = blocks.first?.kind else {
+        guard case .documentLink(_, let pageID) = blocks.first?.kind else {
             Issue.record("expected subpage")
             return
         }
-        #expect(pageID == "Some-Page.md")
+        #expect(pageID.rawValue == "Some-Page.md")
     }
 
     @Test func sectionAnchorFragmentIsNotASubpage() {
         let blocks = BlockParser.parse("[Doc](https://example.test/doc.md#introduction)\n")
-        if case .subpage = blocks.first?.kind {
+        if case .documentLink = blocks.first?.kind {
             // Old behavior: any dest ending in .md was a subpage; a non-ID
             // fragment keeps the suffix from matching, so this must stay a
             // paragraph with an inline link.
@@ -127,7 +127,7 @@ struct PageIDTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
-        let rel = try clamshell.createPage(title: "Fresh Page", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Fresh Page", requestedPath: nil, initialContent: nil)
         let text = try String(contentsOf: clamshell.url(for: rel), encoding: .utf8)
         let id = ClamshellPageEnvelope.parse(text).pageID
         #expect(id != nil)
@@ -170,7 +170,7 @@ struct PageIDTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        let rel = try clamshell.createPage(title: "Target", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Target", requestedPath: nil, initialContent: nil)
         let id = try #require(ClamshellPageEnvelope.parse(
             String(contentsOf: clamshell.url(for: rel), encoding: .utf8)
         ).pageID)
@@ -198,7 +198,7 @@ struct PageIDTests {
 
         // A new page reuses the old name: the fragment still names the
         // renamed page — ID beats path when they disagree.
-        _ = try clamshell.createPage(title: "Usurper", requestedPath: rel, initialContent: nil)
+        _ = try clamshell.createDocument(title: "Usurper", requestedPath: rel, initialContent: nil)
         #expect(clamshell.resolveSubpageTarget("\(rel)#\(id)") == newRel)
         #expect(clamshell.resolveSubpageTarget(rel) == rel, "fragment-less link follows the path")
     }
@@ -208,15 +208,15 @@ struct PageIDTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        let rel = try clamshell.createPage(title: "Unique Flower", requestedPath: nil, initialContent: nil)
-        _ = try clamshell.createPage(title: "Other", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Unique Flower", requestedPath: nil, initialContent: nil)
+        _ = try clamshell.createDocument(title: "Other", requestedPath: nil, initialContent: nil)
 
         #expect(clamshell.resolvePageTarget("stale-path.md", displayText: "Unique Flower") == rel)
         #expect(clamshell.resolvePageTarget("stale-path.md", displayText: "No Such Title") == "stale-path.md",
                 "no unique title match → keep the (broken) path")
 
         // Duplicate titles refuse to guess.
-        _ = try clamshell.createPage(title: "Unique Flower", requestedPath: "Dup.md", initialContent: nil)
+        _ = try clamshell.createDocument(title: "Unique Flower", requestedPath: "Dup.md", initialContent: nil)
         #expect(clamshell.resolvePageTarget("stale-path.md", displayText: "Unique Flower") == "stale-path.md")
     }
 
@@ -257,7 +257,7 @@ struct PageIDTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        let rel = try clamshell.createPage(title: "Bios", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Bios", requestedPath: nil, initialContent: nil)
         let id = try #require(ClamshellPageEnvelope.parse(
             String(contentsOf: clamshell.url(for: rel), encoding: .utf8)
         ).pageID)
@@ -295,7 +295,7 @@ struct PageIDTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        let rel = try clamshell.createPage(title: "Inline Target", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Inline Target", requestedPath: nil, initialContent: nil)
         let id = try #require(ClamshellPageEnvelope.parse(
             String(contentsOf: clamshell.url(for: rel), encoding: .utf8)
         ).pageID)

@@ -52,16 +52,16 @@ struct EditorViewToggleExpansionTests {
         #expect(state.expandedToggles.isEmpty)
     }
 
-    @Test func subpageTurnIntoToggleStartsClosed() async {
+    @Test func documentLinkTurnIntoToggleStartsClosed() async {
         let doc = Document(
             id: DocumentID("test"),
             children: [
-                .subpage(title: "Child", pageID: "child.md")
+                .documentLink(label: AttributedString("Child"), reference: DocumentReference("child.md"))
             ]
         )
         let state = EditorState()
         let id = doc.children[0].id
-        let host = TestHost(loadedPageBlocks: [
+        let host = TestHost(loadedDocumentBlocks: [
             .paragraph(text: AttributedString("body"))
         ])
         let editor = EditorView(document: doc, state: state, host: host)
@@ -77,7 +77,7 @@ struct EditorViewToggleExpansionTests {
         #expect(String(title.characters) == "Child")
         #expect(doc.children[0].children.count == 1)
         #expect(state.expandedToggles.isEmpty)
-        #expect(host.didInlineAndTrashPage)
+        #expect(host.didInlineAndRetireDocument)
     }
 
     @Test func optionArrowMoveDoesNotRevealCollapsedAncestor() {
@@ -172,9 +172,9 @@ struct EditorViewToggleExpansionTests {
         let editor = EditorView(document: doc, state: EditorState(), host: host)
         editor.installUndoApply()
 
-        await editor.moveBlocks(ids: [toggle.id, toggle.children[0].id], intoSubpagePath: "target.md")
+        await editor.moveBlocks(ids: [toggle.id, toggle.children[0].id], intoDocument: DocumentReference("target.md"))
 
-        #expect(host.appendedPageID == "target.md")
+        #expect(host.appendedReference?.rawValue == "target.md")
         #expect(host.appendedBlocks.map(\.id) == [toggle.id])
         #expect(host.appendedBlocks.first?.children.map(\.id) == [toggle.children[0].id])
         #expect(doc.children.isEmpty)
@@ -195,9 +195,9 @@ struct EditorViewToggleExpansionTests {
         let editor = EditorView(document: doc, state: state, host: host)
         editor.installUndoApply()
 
-        await editor.copyBlocks(ids: [toggle.id, child.id], intoSubpagePath: "target.md")
+        await editor.copyBlocks(ids: [toggle.id, child.id], intoDocument: DocumentReference("target.md"))
 
-        #expect(host.appendedPageID == "target.md")
+        #expect(host.appendedReference?.rawValue == "target.md")
         #expect(host.appendedBlocks.count == 1)
         #expect(host.appendedBlocks[0].id != toggle.id)
         #expect(host.appendedBlocks[0].kind == toggle.kind)
@@ -220,7 +220,7 @@ struct EditorViewToggleExpansionTests {
         let editor = EditorView(document: doc, state: state, host: host)
         editor.installUndoApply()
 
-        await editor.copyBlocks(ids: [block.id], intoSubpagePath: "target.md")
+        await editor.copyBlocks(ids: [block.id], intoDocument: DocumentReference("target.md"))
 
         #expect(doc.children == [block])
         #expect(state.actionToast == nil)
@@ -229,30 +229,30 @@ struct EditorViewToggleExpansionTests {
 
 @MainActor
 private final class TestHost: EditorHost {
-    var supportsSubpageInlining: Bool { true }
-    var loadedPageBlocks: [Block]?
-    var didInlineAndTrashPage = false
-    var appendedPageID: String?
+    var supportsDocumentInlining: Bool { true }
+    var loadedDocumentBlocks: [Block]?
+    var didInlineAndRetireDocument = false
+    var appendedReference: DocumentReference?
     var appendedBlocks: [Block] = []
     var appendSucceeds = true
 
-    init(loadedPageBlocks: [Block]? = nil) {
-        self.loadedPageBlocks = loadedPageBlocks
+    init(loadedDocumentBlocks: [Block]? = nil) {
+        self.loadedDocumentBlocks = loadedDocumentBlocks
     }
 
-    func suggestPages(_ query: String, in document: Document) -> [MentionItem] { [] }
-    func openPage(pageID: String) {}
-    func lookupPage(_ pageID: String) -> PageLookup { .present(title: nil) }
-    func resolvePageID(from url: URL, in document: Document) -> String? { nil }
-    func linkURL(forPageID pageID: String, in document: Document) -> URL? { URL(string: pageID) }
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? { nil }
-    func loadPageBlocks(_ pageID: String) async -> [Block]? { loadedPageBlocks }
-    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {
-        didInlineAndTrashPage = true
+    func suggestDocuments(_ query: String, in document: Document) -> [MentionItem] { [] }
+    func openDocument(_ reference: DocumentReference) {}
+    func lookupDocument(_ reference: DocumentReference) -> DocumentLookup { .present(title: nil) }
+    func resolveReference(from url: URL, in document: Document) -> DocumentReference? { nil }
+    func linkURL(for reference: DocumentReference, in document: Document) -> URL? { URL(string: reference.rawValue) }
+    func createDocument(title: String, requestedReference: DocumentReference?, initialContent: [Block]?) async -> DocumentReference? { nil }
+    func loadDocumentBlocks(_ reference: DocumentReference) async -> [Block]? { loadedDocumentBlocks }
+    func inlineAndRetireDocument(_ reference: DocumentReference, parent: Document) async -> Bool {
+        didInlineAndRetireDocument = true
         return true
     }
-    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool {
-        appendedPageID = pageID
+    func appendToDocument(_ reference: DocumentReference, _ blocks: [Block]) async -> Bool {
+        appendedReference = reference
         appendedBlocks = blocks
         return appendSucceeds
     }

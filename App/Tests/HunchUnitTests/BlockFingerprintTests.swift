@@ -18,7 +18,7 @@ struct BlockFingerprintTests {
             (.divider(), "002cd6bbb3f74bf5f437e8977197df4c8c6f3d0592a6c53abd9c2ed3f2c68c1c"),
             (.toggle(title: AttributedString("More")), "26b149ee07610f9cec030393594b62e4597e74838efc148fa9c1bcec313dc722"),
             (.templateButton(label: "Add item"), "48b77b628e2e8b4e64f293e1f1cbf04ef05092c0b5cfcd2b7f7ef1bb59df3924"),
-            (.subpage(title: "Child", pageID: "abc123"), "15ae2c173c8c33572907da954c9b7e817fdc6705992b4b1bd675c4fc46dedc89"),
+            (.documentLink(label: AttributedString("Child"), reference: DocumentReference("abc123")), "15ae2c173c8c33572907da954c9b7e817fdc6705992b4b1bd675c4fc46dedc89"),
             (.image(source: "Assets/photo.png", alt: "Alt text"), "c6756fec53b97770e04ef14599ba7858df3ed55ac28dd07fefda4760c59e117e")
         ]
 

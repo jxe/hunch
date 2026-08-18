@@ -189,7 +189,7 @@ struct MentionMenuState: Equatable, Sendable {
     /// Match candidates for the current `trigger.query`, capped at 8.
     /// Filled by the editor on every trigger change so subsequent body
     /// renders and keyboard handlers read from state instead of re-asking
-    /// the host — `EditorHost.suggestPages` may reach across a network.
+    /// the host — `EditorHost.suggestDocuments` may reach across a network.
     var matches: [MentionItem]
     /// A query is in flight. The previous query's `matches` stay on screen
     /// while it runs: replacing them with an empty list would flash "no
@@ -310,11 +310,11 @@ struct PinchPreviewState: Equatable, Sendable {
 /// Resolved drop target. `insertAt(DropPath)` is the between-rows form (parent
 /// id + position in that parent's children list). `asLastChildOf` is a
 /// distinct case because the UX is different — drop highlight lives on the
-/// parent row. `intoSubpage` is a cross-document move into a `.subpage`.
+/// parent row. `intoDocument` is a cross-document move into a `.documentLink`.
 enum DropTarget: Equatable, Sendable {
     case insertAt(DropPath)
     case asLastChildOf(BlockID)
-    case intoSubpage(BlockID, String)
+    case intoDocument(BlockID, DocumentReference)
 }
 
 // MARK: - Read accessors (computed)
@@ -383,10 +383,10 @@ extension EditorState {
         return nil
     }
     /// Drop-on-row view of `currentDropTarget` — the row id we're hovering
-    /// onto (closed parent or subpage); nil for between-rows targets.
+    /// onto (closed parent or documentLink); nil for between-rows targets.
     var dropOntoBlockID: BlockID? {
         switch currentDropTarget {
-        case .asLastChildOf(let id), .intoSubpage(let id, _): return id
+        case .asLastChildOf(let id), .intoDocument(let id, _): return id
         default: return nil
         }
     }

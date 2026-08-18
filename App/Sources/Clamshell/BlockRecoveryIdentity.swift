@@ -51,8 +51,11 @@ private enum BlockRecoveryHashing {
             return "toggle|t=\(normalize(title))"
         case .templateButton(let label):
             return "templateButton|l=\(normalizeRaw(label))"
-        case .subpage(let title, let pageID):
-            return "subpage|p=\(pageID)|t=\(normalizeRaw(title))"
+        case .documentLink(let label, let reference):
+            // Keeps the legacy "subpage|" tag: this string is hashed into the
+            // recovery log, so changing it would orphan every block already
+            // recorded under the old hash.
+            return "subpage|p=\(reference.rawValue)|t=\(normalize(label))"
         case .image(let source, let alt):
             return "image|s=\(source)|a=\(normalizeRaw(alt))"
         case .unsupported(let payload, _):

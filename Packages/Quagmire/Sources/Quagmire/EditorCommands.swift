@@ -37,7 +37,7 @@ public enum EditorAction: Sendable, Equatable {
     // Surfaces from the menu bar AND nav-mode keyboard. Same in both contexts.
     case openBlockActionMenu
     case openMoveTo
-    case toggleLinkOrSubpage
+    case toggleLinkOrDocument
     case toggleInlineMark(InlineMark)
     case indent
     case outdent
@@ -54,7 +54,7 @@ public enum EditorAction: Sendable, Equatable {
     case navigateBack
     case moveCursor(delta: Int)
     case extendSelection(delta: Int)
-    case enterEditOrOpenSubpage
+    case enterEditOrOpenDocument
     case navRightArrow
     case navLeftArrow
 }

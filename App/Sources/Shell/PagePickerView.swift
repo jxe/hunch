@@ -207,7 +207,7 @@ struct PageSearchSheet: View {
             contextActions: { item in
                 guard case .page(let id) = item.id else { return [] }
                 let mention = MentionItem(
-                    id: id,
+                    id: DocumentReference(id),
                     title: item.title,
                     subtitle: nil,
                     isHome: {
@@ -236,7 +236,7 @@ struct PageSearchSheet: View {
                 guard let clamshell = workspace.clamshell else { return }
                 let item = clamshell.entry(at: pageID)?
                     .asMentionItem(homeRelativePath: clamshell.homeRelativePath)
-                    ?? MentionItem(id: pageID, title: pageID)
+                    ?? MentionItem(id: DocumentReference(pageID), title: pageID)
                 onActivate(item)
             },
             onClose: onClose

@@ -39,8 +39,8 @@ extension EditorView {
                 Task { @MainActor in
                     let destination = await host.moveDestination(for: targetIDs, candidates: inDoc)
                     switch destination {
-                    case .page(let pageID):
-                        await moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
+                    case .document(let reference):
+                        await moveBlocks(ids: targetIDs, intoDocument: reference)
                     case .block(let parentID):
                         moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
                     case nil:
@@ -48,8 +48,8 @@ extension EditorView {
                     }
                 }
 
-            case .toggleLinkOrSubpage:
-                guard host.supportsPageCreation else { return }
+            case .toggleLinkOrDocument:
+                guard host.supportsDocumentCreation else { return }
                 guard let id = state.cursor, state.selection.count == 1 else { return }
                 // The Cmd-K menu shortcut wins over NSTextView's keyDown, so the
                 // live-text capture path in BlockTextEditor's keyDown never runs.
@@ -57,7 +57,7 @@ extension EditorView {
                 // directly from the live text view, so a freshly-typed row whose
                 // binding is still empty still gets its typed text used as the
                 // new page's title. The commit itself happens centrally in
-                // `mutate(...)` inside `convertBlockToSubpage`.
+                // `mutate(...)` inside `convertBlockToDocument`.
                 var preferred: String? = nil
                 #if os(macOS)
                 if let view = activeContainedTextView() {
@@ -70,7 +70,7 @@ extension EditorView {
                     }
                 }
                 #endif
-                _ = convertBlockToSubpage(blockID: id, preferredTitle: preferred)
+                _ = convertBlockToDocument(blockID: id, preferredTitle: preferred)
 
             case .toggleInlineMark(let mark):
                 #if os(macOS)
@@ -131,9 +131,9 @@ extension EditorView {
                 moveCursor(by: delta)
             case .extendSelection(let delta):
                 extendSelection(by: delta)
-            case .enterEditOrOpenSubpage:
+            case .enterEditOrOpenDocument:
                 if let id = state.cursor, state.selection.count == 1 {
-                    if navigateIntoSubpage(id) { return }
+                    if navigateIntoDocumentLink(id) { return }
                     transferFocus(to: .editor(id, initialCursor: nil))
                 }
             case .navRightArrow:

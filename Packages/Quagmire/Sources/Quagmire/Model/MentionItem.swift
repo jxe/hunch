@@ -1,25 +1,27 @@
 import Foundation
 
-/// A page candidate the host offers up when the user types `@` in the editor,
-/// and the row model for every page-list surface in the host (sidebar,
-/// square.stack sheet, move-to sheet, jump-to sheet).
+/// A document the host offers as a candidate when the user types `@`, and the
+/// row model for every document-list surface the host builds on top of it
+/// (search sheet, move-to sheet, jump-to sheet).
 ///
-/// `id` is opaque to the editor — it's whatever string the host uses to identify
-/// the page (a relative path, a UUID, a database key); the editor passes it back
-/// unchanged in `openPage(pageID:)`, `lookupPage(_:)`, etc.
+/// `id` is the host's opaque `DocumentReference`; the editor passes it back
+/// unchanged to `openDocument(_:)`, `lookupDocument(_:)`, and friends, and
+/// stores it on the `documentLink` row it creates.
 ///
-/// `subtitle` is shown beneath the title in the row when present — useful for
-/// disambiguating pages with identical titles (e.g. show the parent path).
+/// `title` is what to show *now*. Unlike the label stored on a block, this is
+/// not authored and not persisted — it is the host's current answer.
 ///
-/// `isHome` flags the workspace's home page so list surfaces can render a small
-/// house badge.
+/// `subtitle` is shown beneath the title when present — useful for
+/// disambiguating documents with identical titles (e.g. show the parent path).
+///
+/// `isHome` flags the workspace's root document so list surfaces can badge it.
 public struct MentionItem: Hashable, Sendable, Identifiable {
-    public let id: String
+    public let id: DocumentReference
     public let title: String
     public let subtitle: String?
     public let isHome: Bool
 
-    public init(id: String, title: String, subtitle: String? = nil, isHome: Bool = false) {
+    public init(id: DocumentReference, title: String, subtitle: String? = nil, isHome: Bool = false) {
         self.id = id
         self.title = title
         self.subtitle = subtitle

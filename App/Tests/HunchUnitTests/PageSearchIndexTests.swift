@@ -176,7 +176,7 @@ struct PageSearchIndexTests {
             .templateButton(label: "Template"),
             .code(source: "let value = 1"),
             .image(source: "Assets/image.png", alt: "Diagram alt"),
-            .subpage(title: "Child page", pageID: "Child.md"),
+            .documentLink(label: AttributedString("Child page"), reference: DocumentReference("Child.md")),
             .divider(),
         ]
 

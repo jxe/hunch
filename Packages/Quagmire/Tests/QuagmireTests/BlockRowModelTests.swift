@@ -8,7 +8,7 @@ struct BlockRowModelTests {
     private func model(
         block: Block = .paragraph(text: AttributedString("body")),
         isSelected: Bool = false,
-        pageLookups: [String: PageLookup] = [:],
+        documentLookups: [String: DocumentLookup] = [:],
         linkPreviews: [URL: LinkPreview] = [:]
     ) -> BlockRowModel {
         BlockRowModel(
@@ -31,7 +31,7 @@ struct BlockRowModelTests {
             isSelectionHandleRow: false,
             accessibilityID: "block-row-body",
             accessibilityLabelText: "Paragraph: body",
-            pageLookups: pageLookups,
+            documentLookups: documentLookups,
             linkPreviews: linkPreviews
         )
     }
@@ -40,9 +40,9 @@ struct BlockRowModelTests {
         let base = model()
         #expect(base != model(isSelected: true))
 
-        let pageBlock = Block.subpage(title: "Old", pageID: "child.md")
-        #expect(model(block: pageBlock, pageLookups: ["child.md": .present(title: "Child")])
-            != model(block: pageBlock, pageLookups: ["child.md": .missing]))
+        let pageBlock = Block.documentLink(label: AttributedString("Old"), reference: DocumentReference("child.md"))
+        #expect(model(block: pageBlock, documentLookups: ["child.md": .present(title: "Child")])
+            != model(block: pageBlock, documentLookups: ["child.md": .missing]))
 
         let url = URL(string: "https://example.com")!
         #expect(model(linkPreviews: [url: LinkPreview(url: url, title: "A", iconPNG: nil)])

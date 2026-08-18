@@ -39,7 +39,7 @@ extension EditorView {
 
         let query = trigger.query
         mentionSearch.run { [host, document, state] in
-            let matches = Array(await host.suggestPages(query, in: document).prefix(8))
+            let matches = Array(await host.suggestDocuments(query, in: document).prefix(8))
             guard !Task.isCancelled else { return }
             // The user has typed on, moved to another block, or dismissed the
             // menu while this was in flight. Applying now would show answers to
@@ -153,7 +153,7 @@ extension EditorView {
     }
 
     /// Commit the selected page mention. A line-leading mention becomes a
-    /// `.subpage` row; a mention with sentence content before it becomes an
+    /// `.documentLink` row; a mention with sentence content before it becomes an
     /// inline link in the existing text block.
     func commitMention(_ item: MentionItem, menu: MentionMenuState) {
         defer { state.closeMentionMenu() }
@@ -175,7 +175,7 @@ extension EditorView {
             return
         }
 
-        if !mentionStartsSubpageBlock(plain: plain, triggerStart: triggerStart) {
+        if !mentionStartsDocumentLinkBlock(plain: plain, triggerStart: triggerStart) {
             commitInlineMention(item, block: block, text: attr, triggerStart: triggerStart, triggerEnd: triggerEnd)
             return
         }
@@ -183,16 +183,20 @@ extension EditorView {
         let afterText = attributedSlice(attr, triggerEnd..<attr.characters.count)
 
         var replacements: [Block] = []
-        replacements.append(.subpage(
-            title: item.title,
-            pageID: item.id,
+        // The candidate's current title becomes the authored label. It is a
+        // starting point, not a binding: if the target is renamed later the
+        // host's live title takes over at render time and this stays as the
+        // fallback.
+        replacements.append(.documentLink(
+            label: AttributedString(item.title),
+            reference: item.id,
             id: block.id
         ))
         if !afterText.characters.isEmpty {
             replacements.append(.paragraph(text: afterText))
         }
 
-        mutate("Insert Page Link") {
+        mutate("Insert Document Link") {
             document.replaceSubtree(menu.blockID, with: replacements)
         }
 
@@ -202,7 +206,7 @@ extension EditorView {
     }
 
     private func commitInlineMention(_ item: MentionItem, block: Block, text: AttributedString, triggerStart: Int, triggerEnd: Int) {
-        guard let url = host.linkURL(forPageID: item.id, in: document) else { return }
+        guard let url = host.linkURL(for: item.id, in: document) else { return }
         let prefix = attributedSlice(text, 0..<triggerStart)
         var linked = AttributedString(item.title)
         linked.link = url
@@ -210,7 +214,7 @@ extension EditorView {
         let newText = prefix + linked + suffix
         let cursor = String((prefix + linked).characters).count
 
-        mutate("Insert Page Link") {
+        mutate("Insert Document Link") {
             document.setText(block.id, newText)
         }
 

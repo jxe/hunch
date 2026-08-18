@@ -8,7 +8,7 @@ import GameController
 // The 3-column grid that opens via Cmd-/ in nav mode (macOS), drag-handle tap
 // (macOS), or leading row swipe (iOS). Houses Turn Into (block-type swap),
 // Copy, and Indent/Outdent. The conversion methods (`convert`, `convertSingle`,
-// `convertBlockToSubpage`, `convertBlockToTemplate`, `convertSubpage`) live
+// `convertBlockToDocument`, `convertBlockToTemplate`, `convertDocumentLink`) live
 // here too — they're the actions the menu fires.
 
 enum BlockTurnInto: CaseIterable {
@@ -109,35 +109,35 @@ struct BlockIndentAction: Hashable {
 
 extension EditorView {
     @discardableResult
-    func convertBlockToSubpage(blockID: BlockID, preferredTitle: String?) -> KeyPress.Result {
-        guard host.supportsPageCreation else { return .ignored }
+    func convertBlockToDocument(blockID: BlockID, preferredTitle: String?) -> KeyPress.Result {
+        guard host.supportsDocumentCreation else { return .ignored }
         guard let block = document.find(blockID) else { return .ignored }
         guard !isStructuralBlock(block) else { return .ignored }
 
-        let existingLink = wholeBlockWorkspaceLink(in: block.text)
+        let existingLink = wholeBlockDocumentLink(in: block.text)
         let title = cleanedTitle(preferredTitle)
             ?? existingLink?.title
             ?? cleanedTitle(String(block.text.characters))
             ?? "Untitled"
-        let requestedPath = existingLink?.pageID
+        let requestedPath = existingLink?.reference
 
         // The block's children (the subtree under it) become the body of the
-        // new subpage. The host prepends a title heading + serializes; the
+        // new document. The host prepends a title heading + serializes; the
         // editor just hands over the body blocks (or nil when empty).
         let initialContent: [Block]? = block.children.isEmpty ? nil : block.children
 
-        // createPage is async (file I/O on the host side) — same pattern as
-        // convertSubpage: spawn a Task so the key handler returns
+        // createDocument is async (file I/O on the host side) — same pattern as
+        // convertDocumentLink: spawn a Task so the key handler returns
         // immediately, and report .handled optimistically (a failed
         // creation eats the keypress rather than falling through).
         Task { @MainActor in
-            guard let pageID = await host.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
+            guard let reference = await host.createDocument(title: title, requestedReference: requestedPath, initialContent: initialContent)
             else { return }
             // The block may have moved out from under us during the await.
             guard document.find(blockID) != nil else { return }
-            mutate("Create Subpage") {
+            mutate("Create Document") {
                 document.replaceSubtree(blockID, with: [
-                    .subpage(title: title, pageID: pageID, id: blockID)
+                    .documentLink(label: AttributedString(title), reference: reference, id: blockID)
                 ])
             }
             transferFocus(to: .nav(cursor: blockID))
@@ -170,7 +170,7 @@ extension EditorView {
     @discardableResult
     fileprivate func convertSingle(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
         if target == .page {
-            return convertBlockToSubpage(blockID: blockID, preferredTitle: nil)
+            return convertBlockToDocument(blockID: blockID, preferredTitle: nil)
         }
         if target == .template {
             return convertBlockToTemplate(blockID: blockID)
@@ -185,8 +185,8 @@ extension EditorView {
             state.expandedTemplates.remove(blockID)
             return .handled
         }
-        if case .subpage = block.kind {
-            return convertSubpage(blockID: blockID, to: target)
+        if case .documentLink = block.kind {
+            return convertDocumentLink(blockID: blockID, to: target)
         }
         guard let text = textForBlockTypeChange(block) else { return .ignored }
 
@@ -226,16 +226,17 @@ extension EditorView {
     }
 
     @discardableResult
-    func convertSubpage(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
-        guard host.supportsSubpageInlining else { return .ignored }
+    func convertDocumentLink(blockID: BlockID, to target: BlockTurnInto) -> KeyPress.Result {
+        guard host.supportsDocumentInlining else { return .ignored }
         guard target != .page else { return .ignored }
         guard let block = document.find(blockID),
-              case .subpage(let title, let path) = block.kind else { return .ignored }
+              case .documentLink(let label, let reference) = block.kind else { return .ignored }
+        let title = String(label.characters)
         // Per-target, not just per-host: this one may be read-only, gone, or
         // not resolved yet even where the host supports inlining in general.
         // Checked again here rather than trusting the menu, because the answer
         // can change between the menu opening and the command running.
-        guard host.lookupPage(path).can(.inline) else { return .ignored }
+        guard host.lookupDocument(reference).can(.inline) else { return .ignored }
         // Load + splice + trash in a Task so the key-handler returns
         // immediately. Order inside the Task: load → mutate → state-flags
         // → trash. The host force-saves the parent doc before trashing,
@@ -243,11 +244,11 @@ extension EditorView {
         // duplicate (file still in workspace, bullet on disk) rather
         // than data loss (file gone, bullet never persisted).
         Task { @MainActor in
-            guard let hostBlocks = await host.loadPageBlocks(path) else {
-                configuration.diagnostics.subpage.error("convertSubpage: loadPageBlocks returned nil — path=\(path, privacy: .public)")
+            guard let hostBlocks = await host.loadDocumentBlocks(reference) else {
+                configuration.diagnostics.documentLink.error("convertDocumentLink: loadDocumentBlocks returned nil — reference=\(reference.rawValue, privacy: .public)")
                 return
             }
-            // The subpage may have moved out from under us during the await.
+            // The documentLink may have moved out from under us during the await.
             guard document.find(blockID) != nil else { return }
             // Cross-document inline: these are copies landing in *this* document,
             // so they take fresh identity at the receiving boundary regardless of
@@ -255,13 +256,13 @@ extension EditorView {
             var loaded = hostBlocks.map { $0.withFreshIDs() }
             // Heading containment means the page's body lives as children of the
             // title H1, not as siblings. Replace the title heading with its
-            // children so the subpage's body survives the inline.
+            // children so the documentLink's body survives the inline.
             if let first = loaded.first,
                case .heading(.h1, let leadingText) = first.kind,
                String(leadingText.characters).trimmingCharacters(in: .whitespacesAndNewlines) == title {
                 loaded.replaceSubrange(0...0, with: first.children)
             }
-            // The subpage's loaded blocks become the children of the new container
+            // The documentLink's loaded blocks become the children of the new container
             // (toggle / templateButton / list item etc.). For non-container kinds
             // they're inlined as siblings after the converted block.
             let replacement = blockForTurnInto(target, id: blockID, text: AttributedString(title))
@@ -278,8 +279,8 @@ extension EditorView {
             } else {
                 state.expandedTemplates.remove(blockID)
             }
-            if !(await host.inlineAndTrashPage(path, parent: document)) {
-                configuration.diagnostics.subpage.error("convertSubpage: inlineAndTrashPage failed after mutation — orphan file at \(path, privacy: .public)")
+            if !(await host.inlineAndRetireDocument(reference, parent: document)) {
+                configuration.diagnostics.documentLink.error("convertDocumentLink: inlineAndRetireDocument failed after mutation — orphan document at \(reference.rawValue, privacy: .public)")
             }
         }
         return .handled
@@ -308,13 +309,13 @@ extension EditorView {
         case .divider:
             return .divider(id: id)
         case .page:
-            preconditionFailure("Page conversion creates a subpage file before replacing the block")
+            preconditionFailure("Page conversion creates a documentLink file before replacing the block")
         }
     }
 
     /// Extracts the text/title from a block whose type can be swapped for another
     /// text-bearing type without losing content. Returns nil for blocks that don't
-    /// carry user text (code/divider/subpage/image/unsupported).
+    /// carry user text (code/divider/documentLink/image/unsupported).
     func textForBlockTypeChange(_ block: Block) -> AttributedString? {
         switch block.kind {
         case .paragraph(let t),
@@ -328,7 +329,7 @@ extension EditorView {
             return AttributedString(label)
         case .todo(let t, _):
             return t
-        case .code, .divider, .subpage, .image, .unsupported:
+        case .code, .divider, .documentLink, .image, .unsupported:
             // Unsupported blocks are read-only by construction: converting one
             // would mean interpreting a payload only the host understands.
             return nil
@@ -349,7 +350,7 @@ extension EditorView {
             return label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .code(let source, _):
             return source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .divider, .subpage, .image, .unsupported:
+        case .divider, .documentLink, .image, .unsupported:
             return false
         }
     }
@@ -421,8 +422,8 @@ extension EditorView {
                                 Task { @MainActor in
                                     let destination = await host.moveDestination(for: targetIDs, candidates: inDoc)
                                     switch destination {
-                                    case .page(let pageID):
-                                        await moveBlocks(ids: targetIDs, intoSubpagePath: pageID)
+                                    case .document(let reference):
+                                        await moveBlocks(ids: targetIDs, intoDocument: reference)
                                     case .block(let parentID):
                                         moveBlocks(ids: targetIDs, asChildrenOf: parentID, snapshot: [], hidden: [])
                                     case nil:
@@ -580,15 +581,15 @@ extension EditorView {
 
     fileprivate func turnIntoTargets(for blocks: [Block]) -> [BlockTurnInto] {
         BlockTurnInto.allCases.filter { target in
-            if target == .page, !host.supportsPageCreation {
+            if target == .page, !host.supportsDocumentCreation {
                 return false
             }
             // Hide the whole Turn Into set for a reference row that cannot be
             // inlined, rather than offering commands that would no-op.
             if target != .page,
                blocks.contains(where: { block in
-                   guard case .subpage(_, let path) = block.kind else { return false }
-                   return !host.supportsSubpageInlining || !host.lookupPage(path).can(.inline)
+                   guard case .documentLink(_, let reference) = block.kind else { return false }
+                   return !host.supportsDocumentInlining || !host.lookupDocument(reference).can(.inline)
                }) {
                 return false
             }
@@ -633,7 +634,7 @@ extension EditorView {
             return .toggle
         case .templateButton:
             return .template
-        case .subpage:
+        case .documentLink:
             return .page
         case .quote, .code, .divider, .image, .unsupported:
             return nil
@@ -650,7 +651,7 @@ extension EditorView {
             return canReplaceEmptyBlockWithDivider(block)
         default:
             switch block.kind {
-            case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle, .templateButton, .subpage:
+            case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle, .templateButton, .documentLink:
                 return true
             case .code, .divider, .image, .unsupported:
                 return false
@@ -671,7 +672,7 @@ extension EditorView {
 
     func isStructuralBlock(_ block: Block) -> Bool {
         switch block.kind {
-        case .code, .divider, .subpage, .image, .unsupported:
+        case .code, .divider, .documentLink, .image, .unsupported:
             return true
         default:
             return false
@@ -685,34 +686,34 @@ extension EditorView {
     }
 
     /// If `text` is a single inline link pointing at a workspace page (and
-    /// nothing else but whitespace), return its `(linkText, pageID)`. The
-    /// host classifies the URL via `resolvePageID`; the editor
+    /// nothing else but whitespace), return its `(linkText, reference)`. The
+    /// host classifies the URL via `resolveReference`; the editor
     /// doesn't bake in a storage convention. Used by Cmd-K-on-link to turn
-    /// a `[Hello](some-page.md)` paragraph into a subpage block pointing
+    /// a `[Hello](some-page.md)` paragraph into a documentLink block pointing
     /// at `some-page.md`.
-    func wholeBlockWorkspaceLink(in text: AttributedString) -> (title: String, pageID: String)? {
+    func wholeBlockDocumentLink(in text: AttributedString) -> (title: String, reference: DocumentReference)? {
         var linkTitle = ""
-        var linkPageID: String?
+        var linkReference: DocumentReference?
         var hasNonLinkText = false
 
         for run in text.runs {
             let segment = String(text[run.range].characters)
             if let link = run.link {
-                guard let pageID = host.resolvePageID(from: link, in: document) else { return nil }
-                if let existing = linkPageID, existing != pageID {
+                guard let reference = host.resolveReference(from: link, in: document) else { return nil }
+                if let existing = linkReference, existing != reference {
                     return nil
                 }
-                linkPageID = pageID
+                linkReference = reference
                 linkTitle += segment
             } else if !segment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 hasNonLinkText = true
             }
         }
 
-        guard !hasNonLinkText, let linkPageID, let title = cleanedTitle(linkTitle) else {
+        guard !hasNonLinkText, let linkReference, let title = cleanedTitle(linkTitle) else {
             return nil
         }
-        return (title, linkPageID)
+        return (title, linkReference)
     }
 }
 

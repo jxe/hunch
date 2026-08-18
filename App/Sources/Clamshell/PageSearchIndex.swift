@@ -74,8 +74,8 @@ nonisolated func searchableText(in blocks: [Block]) -> String {
                 append(source)
             case .templateButton(let label):
                 append(label)
-            case .subpage(let title, _):
-                append(title)
+            case .documentLink(let label, _):
+                append(String(label.characters))
             case .image(_, let alt):
                 append(alt)
             case .unsupported(let payload, _):

@@ -111,7 +111,7 @@ public struct EditorView: View {
         let id: BlockID
     }
     @State var actionSheet: BlockActionSheet?
-    /// Subpage row whose marker anchors the page-icon picker.
+    /// DocumentLink row whose marker anchors the page-icon picker.
     @State var iconPickerBlockID: BlockID?
 
     /// Owns the in-flight `@`-mention query so a newer keystroke cancels the
@@ -214,10 +214,10 @@ public struct EditorView: View {
                     guard let row = visibleRowByID[id],
                           let frame = layoutCache.frame(of: id),
                           let block = document.find(id) else { return }
-                    if case .subpage(_, let pageID) = block.kind,
-                       host.lookupPage(pageID).can(.setIcon),
-                       hitsSubpageIconColumn(point: point, rowFrame: frame, depth: row.depth, theme: theme) {
-                        openPageIconPicker(for: id)
+                    if case .documentLink(_, let reference) = block.kind,
+                       host.lookupDocument(reference).can(.setIcon),
+                       hitsDocumentLinkIconColumn(point: point, rowFrame: frame, depth: row.depth, theme: theme) {
+                        openDocumentIconPicker(for: id)
                     } else {
                         handleRowClick(blockID: id)
                     }
@@ -387,14 +387,14 @@ public struct EditorView: View {
             }
             // Intercept inline `[text](path.md)` / `[text](https://…)` clicks
             // inside read-only `Text` rows. Editor classifies the URL via
-            // `resolvePageID` — same hook used at render time — and routes
-            // internal hits to `host.openPage`; external URLs fall through
+            // `resolveReference` — same hook used at render time — and routes
+            // internal hits to `host.openDocument`; external URLs fall through
             // to the system browser via `.systemAction`. Live-NSTextView
             // link taps are still owned by the underlying view's click
             // handling — this only catches read-only body text.
             .environment(\.openURL, OpenURLAction { [host, document] url in
-                guard let pageID = host.resolvePageID(from: url, in: document) else { return .systemAction }
-                host.openPage(pageID: pageID)
+                guard let reference = host.resolveReference(from: url, in: document) else { return .systemAction }
+                host.openDocument(reference)
                 return .handled
             })
             .onChange(of: state.currentDropTarget) { _, newValue in
@@ -561,8 +561,8 @@ public struct EditorView: View {
                     applyAutotransform(transform, remainingText: remainingText, blockID: block.id)
                 },
                 onOpenLink: { url in
-                    guard let pageID = host.resolvePageID(from: url, in: document) else { return false }
-                    host.openPage(pageID: pageID)
+                    guard let reference = host.resolveReference(from: url, in: document) else { return false }
+                    host.openDocument(reference)
                     return true
                 },
                 onCompletionTriggerChange: { trigger in
@@ -592,7 +592,7 @@ public struct EditorView: View {
             isSelectionHandleRow: isSelectionHandleRow(for: block.id),
             accessibilityID: accessibilityIdentifier(for: block),
             accessibilityLabelText: accessibilityLabel(for: block),
-            pageLookups: resolvePageLookups(for: block, host: host, in: document),
+            documentLookups: resolveDocumentLookups(for: block, host: host, in: document),
             linkPreviews: relevantLinkPreviews
         )
         let rowActions = BlockRowActions(
@@ -627,16 +627,16 @@ public struct EditorView: View {
             onLinkPreviewLoaded: { url, preview in linkPreviews[url] = preview },
             host: host,
             onTapOutsideText: {
-                if case .subpage = block.kind {
-                    _ = navigateIntoSubpage(block.id)
+                if case .documentLink = block.kind {
+                    _ = navigateIntoDocumentLink(block.id)
                     return
                 }
                 // Clicks outside the editable text region (markers, paddings) — no
                 // position info, cursor lands at end via the editor's default behavior.
                 transferFocus(to: .editor(block.id, initialCursor: nil))
             },
-            onSubpageIconTap: {
-                openPageIconPicker(for: block.id)
+            onDocumentLinkIconTap: {
+                openDocumentIconPicker(for: block.id)
             },
             onActionMenuDismiss: {
                 if actionSheet != nil { actionSheet = nil }
@@ -661,7 +661,7 @@ public struct EditorView: View {
             completionMenuContent: { AnyView(completionMenuContent()) },
             emojiPickerContent: {
                 AnyView(EditorEmojiPicker { emoji in
-                    selectPageIcon(emoji, fromSubpageBlock: block.id)
+                    selectDocumentIcon(emoji, fromDocumentLinkBlock: block.id)
                 })
             }
         )
@@ -747,8 +747,8 @@ public struct EditorView: View {
             return source
         case .divider:
             return ""
-        case .subpage(let title, _):
-            return title
+        case .documentLink(let label, _):
+            return String(label.characters)
         case .image(let source, let alt):
             return alt.isEmpty ? source : alt
         default:
@@ -778,8 +778,8 @@ public struct EditorView: View {
             return "Toggle"
         case .templateButton:
             return "Template button"
-        case .subpage:
-            return "Subpage"
+        case .documentLink:
+            return "DocumentLink"
         case .image:
             return "Image"
         case .unsupported(_, let display):
@@ -863,36 +863,36 @@ public struct EditorView: View {
     }
 
 
-    /// Same as the previous per-row `onTapOutsideText`: subpage rows
+    /// Same as the previous per-row `onTapOutsideText`: documentLink rows
     /// navigate; everything else enters edit mode at end-of-row.
     private func handleRowClick(blockID: BlockID) {
         guard let block = document.find(blockID) else { return }
-        if case .subpage = block.kind {
-            _ = navigateIntoSubpage(blockID)
+        if case .documentLink = block.kind {
+            _ = navigateIntoDocumentLink(blockID)
             return
         }
         transferFocus(to: .editor(blockID, initialCursor: nil))
     }
 
-    private func selectPageIcon(_ emoji: String, fromSubpageBlock blockID: BlockID) {
+    private func selectDocumentIcon(_ emoji: String, fromDocumentLinkBlock blockID: BlockID) {
         // Re-checked rather than trusted from when the picker opened: the
         // target can go missing, or go read-only, while it is up.
         guard let block = document.find(blockID),
-              case .subpage(_, let pageID) = block.kind,
-              host.lookupPage(pageID).can(.setIcon) else {
+              case .documentLink(_, let reference) = block.kind,
+              host.lookupDocument(reference).can(.setIcon) else {
             iconPickerBlockID = nil
             return
         }
         iconPickerBlockID = nil
         Task { @MainActor [host] in
-            _ = await host.setPageIcon(emoji, forPageID: pageID)
+            _ = await host.setDocumentIcon(emoji, for: reference)
         }
     }
 
-    private func openPageIconPicker(for blockID: BlockID) {
+    private func openDocumentIconPicker(for blockID: BlockID) {
         guard let block = document.find(blockID),
-              case .subpage(_, let pageID) = block.kind,
-              host.lookupPage(pageID).can(.setIcon) else { return }
+              case .documentLink(_, let reference) = block.kind,
+              host.lookupDocument(reference).can(.setIcon) else { return }
         transferFocus(to: .nav(cursor: blockID))
         iconPickerBlockID = blockID
     }
@@ -1011,7 +1011,7 @@ public struct EditorView: View {
         .init(key: "i", modifiers: .command, action: .toggleInlineMark(.italic)),
         .init(key: "s", modifiers: [.command, .shift], action: .toggleInlineMark(.strikethrough)),
         .init(key: "/", modifiers: .command, action: .openBlockActionMenu),
-        .init(key: "k", modifiers: .command, action: .toggleLinkOrSubpage),
+        .init(key: "k", modifiers: .command, action: .toggleLinkOrDocument),
         .init(key: .return, modifiers: .command, action: .newBlockBelow),
 
         // Delete (forward-delete + macOS backspace + iOS DEL)
@@ -1037,7 +1037,7 @@ public struct EditorView: View {
         .init(key: .rightArrow, modifiers: [], action: .navRightArrow),
 
         // Single keys
-        .init(key: .return, modifiers: [], action: .enterEditOrOpenSubpage),
+        .init(key: .return, modifiers: [], action: .enterEditOrOpenDocument),
         .init(key: .escape, modifiers: [], action: .escape),
     ]
 
@@ -1124,7 +1124,7 @@ public struct EditorView: View {
             // new row was the canonical bug.
             if let block = document.find(id) {
                 switch block.kind {
-                case .code, .divider, .subpage:
+                case .code, .divider, .documentLink:
                     transferFocus(to: .nav(cursor: id))
                     return
                 default:
@@ -1264,13 +1264,13 @@ public struct EditorView: View {
         pageFocusToken &+= 1
     }
 
-    /// Nav-mode →: check todos in the selection, otherwise enter a selected subpage
+    /// Nav-mode →: check todos in the selection, otherwise enter a selected documentLink
     /// or open the collapsible section under the cursor.
     @discardableResult
     func handleNavRightArrow() -> Bool {
         if setTodoDoneOnSelection(true) { return true }
         guard let id = state.cursor, state.selection.count == 1 else { return false }
-        if navigateIntoSubpage(id) { return true }
+        if navigateIntoDocumentLink(id) { return true }
         guard let block = document.find(id),
               isCollapsibleSection(block) else { return false }
         withAnimation(.easeInOut(duration: 0.15)) {
@@ -1313,7 +1313,7 @@ public struct EditorView: View {
     /// Toggle strikethrough across every text-bearing block the user has explicitly
     /// selected — parent rows only, never the implicit section children. If all of them
     /// are already fully struck, remove strikethrough; otherwise add it uniformly. Skips
-    /// blocks without an `AttributedString` body (code/divider/subpage) and template
+    /// blocks without an `AttributedString` body (code/divider/documentLink) and template
     /// buttons (whose `withText` flattens formatting). Returns `true` if it acted.
     func toggleStrikethroughOnSelection() -> Bool {
         toggleInlineMarkOnSelection(
@@ -1354,7 +1354,7 @@ public struct EditorView: View {
             switch block.kind {
             case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
                 return id
-            case .templateButton, .code, .divider, .subpage, .image, .unsupported:
+            case .templateButton, .code, .divider, .documentLink, .image, .unsupported:
                 return nil
             }
         }
@@ -1576,7 +1576,7 @@ public struct EditorView: View {
                     : .offset(0)
                 transferFocus(to: .editor(candidate.id, initialCursor: cursor))
                 return .handled
-            case .code, .divider, .subpage, .templateButton, .image, .unsupported:
+            case .code, .divider, .documentLink, .templateButton, .image, .unsupported:
                 i += delta
             }
         }
@@ -1781,7 +1781,7 @@ public struct EditorView: View {
             return
         }
 
-        let deletedSubpageLinks = subpageLinks(inSubtreesRootedAt: roots)
+        let deletedDocumentLinks = documentLinks(inSubtreesRootedAt: roots)
         let cursorTarget = nearestCursorAfterRemoval(of: roots)
         mutate(actionName) {
             // Bottom-up by depth to avoid stranding a child whose parent was
@@ -1799,19 +1799,19 @@ public struct EditorView: View {
         if let id = cursorTarget {
             setCursor(id)
         }
-        for link in deletedSubpageLinks {
-            host.didDeleteSubpageLink(pageID: link.pageID, title: link.title, from: document)
+        for link in deletedDocumentLinks {
+            host.didDeleteDocumentLink(reference: link.reference, label: link.label, from: document)
         }
     }
 
-    private func subpageLinks(inSubtreesRootedAt roots: [BlockID]) -> [(pageID: String, title: String)] {
-        var seen: Set<String> = []
-        var links: [(pageID: String, title: String)] = []
+    private func documentLinks(inSubtreesRootedAt roots: [BlockID]) -> [(reference: DocumentReference, label: String)] {
+        var seen: Set<DocumentReference> = []
+        var links: [(reference: DocumentReference, label: String)] = []
 
         func walk(_ block: Block) {
-            if case .subpage(let title, let pageID) = block.kind,
-               seen.insert(pageID).inserted {
-                links.append((pageID: pageID, title: title))
+            if case .documentLink(let label, let reference) = block.kind,
+               seen.insert(reference).inserted {
+                links.append((reference: reference, label: String(label.characters)))
             }
             for child in block.children {
                 walk(child)
@@ -2011,7 +2011,7 @@ public struct EditorView: View {
 
     private func handleEditorKey(_ key: BlockKey, blockID: BlockID) -> KeyPress.Result {
         // Sync live text into the binding before dispatching. Structural ops
-        // (splitBlock, deleteEmptyBlock, changeIndent, convertBlockToSubpage,
+        // (splitBlock, deleteEmptyBlock, changeIndent, convertBlockToDocument,
         // …) all read `block.text` from the model *before* invoking
         // `mutate(...)` and `mutate`'s own `flushActiveText` would fire
         // too late — the read would have already used the stale binding.
@@ -2031,7 +2031,7 @@ public struct EditorView: View {
             transferFocus(to: .nav(cursor: state.editingBlock))
             return .handled
         case .cmdK(let preferredTitle):
-            return convertBlockToSubpage(blockID: blockID, preferredTitle: preferredTitle)
+            return convertBlockToDocument(blockID: blockID, preferredTitle: preferredTitle)
         case .navigateBack:
             host.navigateBack()
             return .handled
@@ -2212,9 +2212,9 @@ public struct EditorView: View {
         return .handled
     }
 
-    func navigateIntoSubpage(_ blockID: BlockID) -> Bool {
+    func navigateIntoDocumentLink(_ blockID: BlockID) -> Bool {
         guard let block = document.find(blockID),
-              case .subpage(_, let path) = block.kind else {
+              case .documentLink(_, let path) = block.kind else {
             return false
         }
         // Silently swallow the action when the target can't be opened —
@@ -2222,9 +2222,9 @@ public struct EditorView: View {
         // it knows; navigating would wedge the nav stack on a load that is
         // going to fail. Swallowed rather than ignored so the keypress doesn't
         // fall through to something else.
-        guard host.lookupPage(path).can(.navigate) else { return true }
+        guard host.lookupDocument(path).can(.navigate) else { return true }
         transferFocus(to: .nav(cursor: blockID))
-        host.openPage(pageID: path)
+        host.openDocument(path)
         return true
     }
 
@@ -2266,7 +2266,7 @@ public struct EditorView: View {
         }
         DispatchQueue.main.async {
             switch focusKind {
-            case .code, .divider, .subpage:
+            case .code, .divider, .documentLink:
                 transferFocus(to: .nav(cursor: focusID))
             default:
                 transferFocus(to: .editor(focusID, initialCursor: nil))
@@ -2311,7 +2311,7 @@ public struct EditorView: View {
             return .todo(text: text, done: false)
         case .quote:
             return .quote(text: text)
-        case .heading, .paragraph, .toggle, .templateButton, .code, .divider, .subpage, .image, .unsupported:
+        case .heading, .paragraph, .toggle, .templateButton, .code, .divider, .documentLink, .image, .unsupported:
             return .paragraph(text: text)
         }
     }
@@ -2324,7 +2324,7 @@ public struct EditorView: View {
     ///    end). No-op if there's nothing to focus.
     /// 3. Non-empty paragraph → merge its text into the previous text-bearing block
     ///    (paragraph/heading/bullet/numbered/todo/quote/toggle). Cursor lands at the
-    ///    join point. If the previous block isn't text-bearing (code/divider/subpage/
+    ///    join point. If the previous block isn't text-bearing (code/divider/documentLink/
     ///    templateButton) we ignore — the user can navigate up and delete it
     ///    explicitly.
     /// Internal rather than private for the same reason as `splitBlock`: the
@@ -2387,7 +2387,7 @@ public struct EditorView: View {
         switch previous.kind {
         case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
             break
-        case .code, .divider, .subpage, .templateButton, .image, .unsupported:
+        case .code, .divider, .documentLink, .templateButton, .image, .unsupported:
             return .ignored
         }
         let previousLen = previous.text.characters.count

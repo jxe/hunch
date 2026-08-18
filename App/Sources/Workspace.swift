@@ -24,7 +24,7 @@ extension WorkspaceEntry {
     /// never leaks below the host surface.
     func asMentionItem(homeRelativePath: String?) -> MentionItem {
         MentionItem(
-            id: relativePath,
+            id: DocumentReference(relativePath),
             title: title,
             subtitle: nil,
             isHome: relativePath == homeRelativePath
@@ -260,7 +260,7 @@ final class Workspace {
         }
 
         // Empty folder — seed the welcome page and set it as home.
-        guard let path = createPage(
+        guard let path = createDocument(
             title: "Welcome to Hunch",
             requestedPath: nil,
             initialContent: welcomeContentBlocks()
@@ -392,10 +392,10 @@ final class Workspace {
     /// and routes the throw into `self.error`. Returns the created
     /// relative path or nil on failure.
     @discardableResult
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
+    func createDocument(title: String, requestedPath: String?, initialContent: [Block]?) -> String? {
         guard let clamshell else { return nil }
         do {
-            return try clamshell.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
+            return try clamshell.createDocument(title: title, requestedPath: requestedPath, initialContent: initialContent)
         } catch {
             self.error = "Failed to create page: \(error.localizedDescription)"
             return nil

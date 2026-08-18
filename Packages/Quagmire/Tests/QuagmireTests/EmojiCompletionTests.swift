@@ -107,10 +107,10 @@ struct EmojiCompletionTests {
         #expect(pageTitle("   ", settingEmoji: "🎉") == "🎉")
     }
 
-    @Test func subpageIconHitTestUsesOnlyIndentedMarkerColumn() {
+    @Test func documentLinkIconHitTestUsesOnlyIndentedMarkerColumn() {
         let frame = CGRect(x: 100, y: 20, width: 500, height: 28)
-        #expect(hitsSubpageIconColumn(point: CGPoint(x: 126, y: 30), rowFrame: frame, depth: 1))
-        #expect(!hitsSubpageIconColumn(point: CGPoint(x: 150, y: 30), rowFrame: frame, depth: 1))
-        #expect(!hitsSubpageIconColumn(point: CGPoint(x: 110, y: 30), rowFrame: frame, depth: 1))
+        #expect(hitsDocumentLinkIconColumn(point: CGPoint(x: 126, y: 30), rowFrame: frame, depth: 1))
+        #expect(!hitsDocumentLinkIconColumn(point: CGPoint(x: 150, y: 30), rowFrame: frame, depth: 1))
+        #expect(!hitsDocumentLinkIconColumn(point: CGPoint(x: 110, y: 30), rowFrame: frame, depth: 1))
     }
 }

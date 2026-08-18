@@ -1,10 +1,10 @@
 import Foundation
 
-/// Where the move-to picker can land moving blocks. Either another page in
-/// the workspace (host's opaque page id) or a heading/toggle in the current
-/// document (editor-supplied `BlockID`).
+/// Where the move-to picker can land moving blocks. Either another document
+/// (the host's opaque reference) or a heading/toggle in the current document
+/// (editor-supplied `BlockID`).
 public enum MoveDestination: Sendable, Hashable {
-    case page(String)
+    case document(DocumentReference)
     case block(BlockID)
 }
 

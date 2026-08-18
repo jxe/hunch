@@ -10,12 +10,12 @@ import UIKit
 //
 // Most methods forward to `workspace.clamshell` or to stateless helpers.
 // The ones that genuinely need per-window state — navigation, the move-to
-// picker, the multi-window splice for `appendToPage` — read
+// picker, the multi-window splice for `appendToDocument` — read
 // `openDocument` and the per-window navigation primitives directly.
 
 extension WorkspaceWindow: EditorHost {
-    var supportsPageCreation: Bool { true }
-    var supportsSubpageInlining: Bool { true }
+    var supportsDocumentCreation: Bool { true }
+    var supportsDocumentInlining: Bool { true }
     var supportsMoveDestinationPicker: Bool { true }
 
     // — Workspace-scoped forwarders —
@@ -24,7 +24,7 @@ extension WorkspaceWindow: EditorHost {
         HunchEditorActions.actions()
     }
 
-    func suggestPages(_ query: String, in document: Document) -> [MentionItem] {
+    func suggestDocuments(_ query: String, in document: Document) async -> [MentionItem] {
         guard let clamshell = workspace.clamshell,
               let pageURL = pageURL(for: document) else { return [] }
         let home = clamshell.homeRelativePath
@@ -32,14 +32,15 @@ extension WorkspaceWindow: EditorHost {
             .map { $0.asMentionItem(homeRelativePath: home) }
     }
 
-    func lookupPage(_ pageID: String) -> PageLookup {
-        workspace.clamshell?.lookupPage(pageID) ?? .missing
+    func lookupDocument(_ reference: DocumentReference) -> DocumentLookup {
+        workspace.clamshell?.lookupDocument(reference.rawValue) ?? .missing
     }
 
-    func didDeleteSubpageLink(pageID rawPageID: String, title: String, from document: Document) {
+    func didDeleteDocumentLink(reference: DocumentReference, label: String, from document: Document) {
+        let title = label
         guard let clamshell = workspace.clamshell,
               let sourceURL = pageURL(for: document),
-              let pageID = clamshell.resolveSubpageTarget(rawPageID),
+              let pageID = clamshell.resolveSubpageTarget(reference.rawValue),
               clamshell.entry(at: pageID) != nil else {
             return
         }
@@ -104,14 +105,15 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
-    func resolvePageID(from url: URL, in document: Document) -> String? {
+    func resolveReference(from url: URL, in document: Document) -> DocumentReference? {
         guard let pageURL = pageURL(for: document) else { return nil }
-        return workspace.clamshell?.pagePath(for: url, relativeTo: pageURL)
+        return workspace.clamshell?.pagePath(for: url, relativeTo: pageURL).map { DocumentReference($0) }
     }
 
-    func linkURL(forPageID pageID: String, in document: Document) -> URL? {
+    func linkURL(for reference: DocumentReference, in document: Document) -> URL? {
         guard let clamshell = workspace.clamshell,
               let pageURL = pageURL(for: document) else { return nil }
+        let pageID = reference.rawValue
         let (rawPath, destID) = ClamshellPageEnvelope.splitPageFragment(pageID)
         let rel = clamshell.resolvePageTarget(pageID) ?? rawPath
         let id = destID ?? clamshell.knownPageID(forRel: rel)
@@ -128,17 +130,26 @@ extension WorkspaceWindow: EditorHost {
         )
     }
 
-    func createPage(title: String, requestedPath: String?, initialContent: [Block]?) async -> String? {
-        workspace.createPage(title: title, requestedPath: requestedPath, initialContent: initialContent)
+    func createDocument(
+        title: String,
+        requestedReference: DocumentReference?,
+        initialContent: [Block]?
+    ) async -> DocumentReference? {
+        workspace.createDocument(
+            title: title,
+            requestedPath: requestedReference?.rawValue,
+            initialContent: initialContent
+        ).map { DocumentReference($0) }
     }
 
-    func loadPageBlocks(_ pageID: String) async -> [Block]? {
+    func loadDocumentBlocks(_ reference: DocumentReference) async -> [Block]? {
         guard let clamshell = workspace.clamshell else { return nil }
+        let pageID = reference.rawValue
         let page = clamshell.page(atPath: clamshell.resolvePageTarget(pageID) ?? pageID)
         do {
             return try await page.readBlocks()
         } catch {
-            Diag.subpage.error("loadPageBlocks(_:): read(\(page.url.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
+            Diag.subpage.error("loadDocumentBlocks(_:): read(\(page.url.path, privacy: .public)) threw: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -212,7 +223,7 @@ extension WorkspaceWindow: EditorHost {
         }
         return BlockSerializer.serialize(
             blocks,
-            resolvingSubpageTitle: { clamshell.lookupPage($0).title },
+            resolvingSubpageTitle: { clamshell.lookupDocument($0).title },
             consecutiveNumbering: true
         )
     }
@@ -224,13 +235,15 @@ extension WorkspaceWindow: EditorHost {
 
     // — Per-window navigation & durability —
 
-    func openPage(pageID: String) {
+    func openDocument(_ reference: DocumentReference) {
+        let pageID = reference.rawValue
         let resolved = workspace.clamshell?.resolvePageTarget(pageID) ?? pageID
         openSubpage(relativePath: resolved)
     }
 
-    func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool {
+    func setDocumentIcon(_ emoji: String, for reference: DocumentReference) async -> Bool {
         guard let clamshell = workspace.clamshell else { return false }
+        let pageID = reference.rawValue
         let relativePath = clamshell.resolvePageTarget(pageID) ?? pageID
         do {
             try await clamshell.page(atPath: relativePath).setIcon(emoji)
@@ -241,9 +254,10 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
-    func inlineAndTrashPage(_ pageID: String, parent: Document) async -> Bool {
+    func inlineAndRetireDocument(_ reference: DocumentReference, parent: Document) async -> Bool {
         guard let clamshell = workspace.clamshell,
               let parentSession = session(for: parent) else { return false }
+        let pageID = reference.rawValue
         do {
             try await clamshell.page(atPath: clamshell.resolvePageTarget(pageID) ?? pageID).trashAfterInlining(into: parentSession)
             return true
@@ -253,8 +267,9 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
-    func appendToPage(_ pageID: String, _ blocks: [Block]) async -> Bool {
+    func appendToDocument(_ reference: DocumentReference, _ blocks: [Block]) async -> Bool {
         guard !blocks.isEmpty, let clamshell = workspace.clamshell else { return false }
+        let pageID = reference.rawValue
         let rel = clamshell.resolvePageTarget(pageID) ?? pageID
         do {
             try await clamshell.page(atPath: rel).append(blocks)
@@ -274,7 +289,7 @@ extension WorkspaceWindow: EditorHost {
         let rel = clamshell.resolvePageTarget(pageID) ?? pageID
         guard sourcePageID != rel else { return false }
 
-        let linkBlock = Block.subpage(title: source.title, pageID: sourcePageID)
+        let linkBlock = Block.documentLink(label: AttributedString(source.title), reference: DocumentReference(sourcePageID))
         do {
             try await clamshell.page(atPath: rel).append([linkBlock])
             return true
@@ -291,7 +306,7 @@ extension WorkspaceWindow: EditorHost {
             return false
         }
 
-        let linkBlock = Block.subpage(title: source.title, pageID: sourcePageID)
+        let linkBlock = Block.documentLink(label: AttributedString(source.title), reference: DocumentReference(sourcePageID))
         let markdown = serializeBlocksForPasteboard([linkBlock])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !markdown.isEmpty else { return false }

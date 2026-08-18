@@ -140,7 +140,7 @@ latest-`(counter, deviceID)`-wins fold, so the union collapses them to
 the same intent at read time. The log just gets a little chattier on
 the rare full-doc-walk callers (conflict merge in
 `Page.resolveConflicts()`, subpage drops via
-`EditorHost.appendToPage`).
+`EditorHost.appendToDocument`).
 
 ### Journal
 
@@ -434,9 +434,9 @@ existing instance and build a new one.
 | Get a page | `page(at:)`, `page(atPath:)` → stable lightweight `Page`; `relativePath(of:)`, `url(for:)`, `pagePath(for:relativeTo:)` remain workspace path conversions. |
 | Page | `open(onEvent:)`, `readBlocks()`, `append(_:)`, `restore(_:)`, `resolveConflicts()`, `cloudSyncSnapshot()`, `compactThisDeviceLog()`, `trashAfterInlining(into:)`. Closed-page operations acquire the URL's canonical coordinator document transiently. |
 | Page session | `document`, `enqueueEditorChanges(_:)`, `flush()`, `close()`, `cloudSyncSnapshot()`, `compactThisDeviceLog()`. Multiple sessions for one URL share one canonical document and coordinator. |
-| Page list and search | `entries`, `entry(at:)`, `rescan()`, `lookupPage(_:)`, `pages(matching:excluding:filter:)` for synchronous title filtering, and async `searchPages(matching:limit:)` for full-text search. Search results carry an internal relative path, title, optional matching passage, modification date, and score; picker rows never display the path. |
+| Page list and search | `entries`, `entry(at:)`, `rescan()`, `lookupDocument(_:)`, `pages(matching:excluding:filter:)` for synchronous title filtering, and async `searchPages(matching:limit:)` for full-text search. Search results carry an internal relative path, title, optional matching passage, modification date, and score; picker rows never display the path. |
 | Workspace lifetime | `drain()` awaits all pending generations and shuts down every coordinator. Generic `Commit` construction and `commit(_:to:)` are engine-internal. |
-| Create | `createPage(title:requestedPath:initialContent:)` |
+| Create | `createDocument(title:requestedPath:initialContent:)` |
 | Trash | `moveToTrash(at:)`, `listTrashedPages()`, `restorePage(_:)` |
 | Recovery log | `listLostBlocks(filter:)`, `listPurgedBlocks(filter:since:)` |
 | Assets | `writeImage(_:)`, `resolveImage(source:)` |
@@ -461,10 +461,10 @@ docstrings in `Clamshell.swift`, `Clamshell+Reconcile.swift`, and
 **Title cache populates lazily.** `entries` carries a per-URL
 title overlay on top of the raw scan result — cached titles win,
 filename-derived fallback otherwise. The cache is **not** warmed at
-scan time. Instead, `lookupPage(_:)` cache misses spawn a single-URL
+scan time. Instead, `lookupDocument(_:)` cache misses spawn a single-URL
 off-MainActor warm (`requestTitleWarm`, deduped on
 `pendingTitleWarms`); when the read + parse lands, the cache write
-triggers an `@Observable` re-render and the next `lookupPage` returns
+triggers an `@Observable` re-render and the next `lookupDocument` returns
 the resolved title. The eager-sweep alternative (read every `.md` on
 rescan) costs ~1s/file on iCloud and dominated the workspace-open
 critical path. On-demand warm trades that for a per-subpage-row

@@ -45,7 +45,7 @@ struct NavKeyBindingTests {
     }
 
     @Test func cmdKMapsToToggleLink() {
-        #expect(EditorView.navAction(for: "k", modifiers: .command) == .toggleLinkOrSubpage)
+        #expect(EditorView.navAction(for: "k", modifiers: .command) == .toggleLinkOrDocument)
     }
 
     @Test func cmdReturnMapsToNewBlockBelow() {
@@ -53,7 +53,7 @@ struct NavKeyBindingTests {
     }
 
     @Test func plainReturnEntersEdit() {
-        #expect(EditorView.navAction(for: .return, modifiers: []) == .enterEditOrOpenSubpage)
+        #expect(EditorView.navAction(for: .return, modifiers: []) == .enterEditOrOpenDocument)
     }
 
     @Test func tabIndents() {

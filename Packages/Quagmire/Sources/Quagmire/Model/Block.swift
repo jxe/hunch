@@ -49,7 +49,20 @@ public enum BlockKind: Equatable, Sendable {
     case divider
     case toggle(title: AttributedString)
     case templateButton(label: String)
-    case subpage(title: String, pageID: String)
+    /// A block-level reference to another document, rendered as its own row.
+    ///
+    /// `label` is what the author wrote — the link text. `reference` is the
+    /// host's opaque handle to the target. The *displayed* title is neither of
+    /// these on its own: the host resolves the reference and may supply a live
+    /// title that wins over the label, which is how a renamed target updates
+    /// every row that points at it without rewriting any document. A host whose
+    /// labels are authored source returns no title and the label stands.
+    ///
+    /// What this deliberately does not hold: a path, a storage id the editor
+    /// understands, the target's cached title, whether it exists, or what may
+    /// be done with it. All of that is ephemeral and host-owned — see
+    /// `EditorHost.lookupDocument(_:)`.
+    case documentLink(label: AttributedString, reference: DocumentReference)
     case image(source: String, alt: String)
     /// Content this editor has no representation for, carried through
     /// untouched. `payload` is opaque to Quagmire — it never parses, rewrites,
@@ -131,8 +144,12 @@ public struct Block: Identifiable, Equatable, Sendable {
         Block(id: id, kind: .templateButton(label: label), children: children)
     }
 
-    public static func subpage(title: String, pageID: String, id: BlockID = BlockID()) -> Block {
-        Block(id: id, kind: .subpage(title: title, pageID: pageID))
+    public static func documentLink(
+        label: AttributedString,
+        reference: DocumentReference,
+        id: BlockID = BlockID()
+    ) -> Block {
+        Block(id: id, kind: .documentLink(label: label, reference: reference))
     }
 
     public static func image(source: String, alt: String, id: BlockID = BlockID()) -> Block {
@@ -145,7 +162,8 @@ public struct Block: Identifiable, Equatable, Sendable {
 
     // MARK: Text / mutation helpers
 
-    /// Body text for text-bearing kinds; empty for code/divider/subpage/image/unsupported.
+    /// Body text for text-bearing kinds; empty for code/divider/image/unsupported.
+    /// A document link projects its authored label.
     /// Toggle returns its title; templateButton returns its label as a plain `AttributedString`.
     public var text: AttributedString {
         switch kind {
@@ -160,13 +178,15 @@ public struct Block: Identifiable, Equatable, Sendable {
             return t
         case .templateButton(let label):
             return AttributedString(label)
-        case .code, .divider, .subpage, .image, .unsupported:
+        case .documentLink(let label, _):
+            return label
+        case .code, .divider, .image, .unsupported:
             return AttributedString()
         }
     }
 
     /// Returns a copy with text replaced. No-op for kinds without an
-    /// `AttributedString` body (code/divider/subpage/image/unsupported). Toggle replaces
+    /// `AttributedString` body (code/divider/image/unsupported). Toggle replaces
     /// its title; templateButton stringifies the label.
     public func withText(_ newText: AttributedString) -> Block {
         var copy = self
@@ -187,7 +207,9 @@ public struct Block: Identifiable, Equatable, Sendable {
             copy.kind = .toggle(title: newText)
         case .templateButton:
             copy.kind = .templateButton(label: String(newText.characters))
-        case .code, .divider, .subpage, .image, .unsupported:
+        case .documentLink(_, let reference):
+            copy.kind = .documentLink(label: newText, reference: reference)
+        case .code, .divider, .image, .unsupported:
             return self
         }
         return copy
@@ -214,13 +236,13 @@ public struct Block: Identifiable, Equatable, Sendable {
     // MARK: Containment rules (used by canDrop / canIndent / parser fold)
 
     /// Whether this block is structurally permitted to hold children. Leaves
-    /// (paragraph/quote/code/divider/subpage/image/unsupported) reject all children;
+    /// (paragraph/quote/code/divider/documentLink/image/unsupported) reject all children;
     /// containers accept by `canContain(_:)`.
     public var isContainer: Bool {
         switch kind {
         case .heading, .bullet, .numbered, .todo, .toggle, .templateButton:
             return true
-        case .paragraph, .quote, .code, .divider, .subpage, .image, .unsupported:
+        case .paragraph, .quote, .code, .divider, .documentLink, .image, .unsupported:
             return false
         }
     }
@@ -239,7 +261,7 @@ public struct Block: Identifiable, Equatable, Sendable {
             return true
         case .toggle, .templateButton, .bullet, .numbered, .todo:
             return true
-        case .paragraph, .quote, .code, .divider, .subpage, .image, .unsupported:
+        case .paragraph, .quote, .code, .divider, .documentLink, .image, .unsupported:
             return false
         }
     }
@@ -288,7 +310,7 @@ public extension Block {
         switch kind {
         case .bullet, .numbered, .todo, .toggle, .templateButton:
             return true
-        case .heading, .paragraph, .quote, .code, .divider, .subpage, .image, .unsupported:
+        case .heading, .paragraph, .quote, .code, .divider, .documentLink, .image, .unsupported:
             return false
         }
     }

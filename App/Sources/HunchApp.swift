@@ -300,7 +300,7 @@ private struct EditorBlockMenuItems: View {
             modifiers: [.command, .option],
             actionID: HunchEditorActions.polishTranscriptionID
         )
-        EditorCommandButton(title: "Create Page from Selected Block…", key: "k", action: .toggleLinkOrSubpage)
+        EditorCommandButton(title: "Create Page from Selected Block…", key: "k", action: .toggleLinkOrDocument)
         EditorCommandButton(title: "Insert Block Below", key: .return, action: .newBlockBelow)
         // ⇧⌘M to dodge the system Window > Minimize on plain ⌘M — that
         // collision made the shortcut not display in the menu and not fire

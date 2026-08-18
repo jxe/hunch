@@ -16,7 +16,7 @@ enum VisibleRowKind: Equatable {
     case divider
     case toggle
     case templateButton
-    case subpage(pageID: String)
+    case documentLink(reference: DocumentReference)
     case image
     case unsupported
 
@@ -42,8 +42,8 @@ enum VisibleRowKind: Equatable {
             self = .toggle
         case .templateButton:
             self = .templateButton
-        case .subpage(_, let pageID):
-            self = .subpage(pageID: pageID)
+        case .documentLink(_, let reference):
+            self = .documentLink(reference: reference)
         case .image:
             self = .image
         case .unsupported:

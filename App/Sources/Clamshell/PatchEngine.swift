@@ -584,7 +584,7 @@ enum PatchEngine {
         case .divider: return "divider"
         case .toggle: return "toggle"
         case .templateButton: return "templateButton"
-        case .subpage: return "subpage"
+        case .documentLink: return "documentLink"
         case .image: return "image"
         case .unsupported: return "unsupported"
         }
@@ -968,7 +968,7 @@ enum PatchEngine {
     }
 
     private enum RestoreIdentity: Hashable {
-        case subpage(pageID: String)
+        case documentLink(reference: String)
     }
 
     private static func restoreIdentities(_ blocks: [Block]) -> Set<RestoreIdentity> {
@@ -992,8 +992,8 @@ enum PatchEngine {
 
     private static func restoreIdentity(from block: Block) -> RestoreIdentity? {
         switch block.kind {
-        case .subpage(_, let pageID):
-            return .subpage(pageID: pageID)
+        case .documentLink(_, let reference):
+            return .documentLink(reference: reference.rawValue)
         case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .code, .divider, .toggle, .templateButton, .image, .unsupported:
             return nil
         }

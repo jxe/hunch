@@ -8,7 +8,15 @@ user-picked workspace folder.
 
 ## Repo shape
 
-- `Packages/Quagmire/` — single SwiftUI SPM package. The single-page editor:
+- `Packages/Quagmire/` — single SwiftUI SPM package. **Its public API is
+  storage-neutral: no "page", "subpage", or "pageID" anywhere.** A block-level
+  reference to another document is `BlockKind.documentLink(label:reference:)`
+  where `reference` is an opaque `DocumentReference`; the host resolves it
+  through `EditorHost.lookupDocument(_:)`, which returns
+  `pending`/`present`/`missing`/`unavailable` plus per-target
+  `DocumentCapabilities`. Hunch's own vocabulary (pages, subpages, `pageID` in
+  the recovery format) stays on the Hunch side of that boundary. The
+  single-page editor:
   `Block` / `Document` model, `EditorView`, `EditorState`, `BlockTextEditor`
   (NSTextView wrapper on macOS, plain TextEditor on iOS), block rendering,
   autotransforms (`# `, `- `, `> `, ` ``` `, `---`, `[]/[ ]`, `1. `, `" `),
@@ -34,9 +42,9 @@ user-picked workspace folder.
     `RecoveryLog` (per-device JSONL appender + cross-device read union;
     every write goes through one primitive, `apply(Patch, to:)`),
     and `TrashStore` privately and exposes a single API:
-    `entries / entry(at:) / rescan / lookupPage / pages(matching:) /
-    loadDocument(at:) / readBlocks(at:) / openPage / closePage /
-    enqueueCommit / commit / flush / drain / inlineAndTrash / createPage /
+    `entries / entry(at:) / rescan / lookupDocument / pages(matching:) /
+    loadDocument(at:) / readBlocks(at:) / openDocument / closePage /
+    enqueueCommit / commit / flush / drain / inlineAndTrash / createDocument /
     moveToTrash / listTrashedPages / restorePage / listLostBlocks /
     listPurgedBlocks / resolveConflictVersions / homeURL /
     homeRelativePath / isHome / setHome`, plus `relativePath(of:)`,
@@ -68,7 +76,7 @@ user-picked workspace folder.
     don't trigger spurious refolds. **Clamshell is `@Observable`**: `entries` and
     `homeRelativePath` are tracked properties; SwiftUI re-renders
     automatically when scan / title cache / home changes. The title
-    cache populates lazily through `lookupPage` cache misses
+    cache populates lazily through `lookupDocument` cache misses
     (`requestTitleWarm` off-MainActor, deduped on `pendingTitleWarms`)
     — never eagerly on rescan, because each iCloud cold-cache read
     costs ~1s and 50× of that would stall the home page open. Post-
@@ -120,7 +128,7 @@ user-picked workspace folder.
     picker), `RecoveryView` (unified "Recover" sheet over trash + lost
     blocks), `BannerView` (transient toast). There is no sidebar — page
     navigation goes through the search sheet (Cmd+P / iOS toolbar
-    magnifying-glass) or subpage rows.
+    magnifying-glass) or document-link rows.
   - `App/Sources/Workspace.swift` — `Workspace` (workspace-level model,
     one per app instance: clamshell handle, bookmark resolution,
     app-level UI state — `error` / `banner` — security-scoped URL,
@@ -132,22 +140,22 @@ user-picked workspace folder.
     conflict sweep (`resolveConflictsForClosedPages`) is deferred —
     `rescan()` no longer fires it; `WorkspaceWindow.handlePathChange`
     calls `scheduleConflictSweepIfNeeded()` after the first successful
-    `openPage` so the 49× `NSFileVersion` query doesn't race the
+    `openDocument` so the 49× `NSFileVersion` query doesn't race the
     home-page load. Cmd-R uses `rescan(includeConflictSweep: true)`.
   - `App/Sources/WorkspaceWindow.swift` — per-window navigation and
     edit-session state, AND the `EditorHost` implementation: `path: [URL]`
     (NavigationStack), `openDocument` (computed from a stored
-    `openPage: Clamshell.OpenPage?`), move-to request plumbing.
+    `openDocument: Clamshell.OpenPage?`), move-to request plumbing.
     `handlePathChange` is the choreography: drain prior page via
-    `clamshell.closePage(_:)`, then `await clamshell.openPage(at:)`
+    `clamshell.closePage(_:)`, then `await clamshell.openDocument(at:)`
     which returns the parsed Document + presenter handle (two
     presenters per page: one on the `.md`, one on `.history/<rel>/`
     so peer-log syncs trigger reconcile even without an accompanying
     `.md` change). The journal
-    fold (auto-restore of lost subtrees) is deferred — `openPage`
+    fold (auto-restore of lost subtrees) is deferred — `openDocument`
     spawns a background reconcile Task and surfaces any restores via
     `onEvent(.restored(count:))`, same as a presenter-wakeup restore.
-    The host methods (`openPage`, `persistCommit`, `flush`, …) live on the
+    The host methods (`openDocument`, `persistCommit`, `flush`, …) live on the
     same type and forward to `Clamshell`. The host's `persistCommit`
     conforms to `EditorHost`; it calls
     `session.enqueueEditorChanges(changes)` synchronously (the coordinator
@@ -220,22 +228,23 @@ assumes both inputs are stable.
 is the source of truth for what's open: `path == []` shows the home page,
 `path.last` is the visible doc, and a `.onChange(of: path)` calls
 `handlePathChange()` to flush the outgoing doc and load the new top.
-Subpage taps fire `host.openPage(pageID: path)` →
+Document-link taps fire `host.openDocument(_:)` →
 `window.openSubpage` and append to `path`, pushing deeper.
 Search-sheet activation (`window.navigateFromSearch`) pushes a single
 entry on top of home (or drains to root when the picked page *is*
 home). `window.goBack()` pops; on iOS this is also driven by
 edge-swipe-from-left, on macOS by the Cmd+[ menu and the system back
-chevron. Subpage rows are the existing render path: a paragraph that
+chevron. Document-link rows are the existing render path: a paragraph that
 is a single `.md` link is detected in `BlockParser` (Clamshell owns
-the `.md` convention) and rendered via `subpageRow` in `BlockRow.swift`.
+the `.md` convention), becomes a `.documentLink` block, and renders via
+`documentLinkRow` in `BlockRow.swift`.
 **Inline `[text](url)` clicks inside read-only body text** route
 through an `OpenURLAction` interceptor *inside* `EditorView` (so the
 editor owns its link routing). The editor classifies the URL via
-`host.resolvePageID(from:in:)` — the *same* hook used at render time (to
+`host.resolveReference(from:in:)` — the *same* hook used at render time (to
 decorate internal-vs-external inline links) and at Cmd-K-on-link time
-(to decide subpage-creation). Internal hits dispatch to
-`host.openPage(pageID:)`; external URLs fall through to the system
+(to decide document-creation). Internal hits dispatch to
+`host.openDocument(_:)`; external URLs fall through to the system
 handler via `OpenURLAction.systemAction`. One classifier, one source
 of truth; the editor is storage-agnostic about what counts as an
 internal page. The Hunch

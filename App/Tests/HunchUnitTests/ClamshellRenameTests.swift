@@ -54,7 +54,7 @@ struct ClamshellRenameTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        let rel = try clamshell.createPage(title: "Old Title", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Old Title", requestedPath: nil, initialContent: nil)
         #expect(rel == "Old-Title.md")
         let id = try pageID(of: rel, in: clamshell)
 
@@ -111,8 +111,8 @@ struct ClamshellRenameTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        _ = try clamshell.createPage(title: "Target", requestedPath: nil, initialContent: nil)
-        let rel = try clamshell.createPage(title: "Something", requestedPath: nil, initialContent: nil)
+        _ = try clamshell.createDocument(title: "Target", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Something", requestedPath: nil, initialContent: nil)
 
         let result = try await clamshell.renamePage(at: clamshell.url(for: rel), toMatchTitle: "Target")
         #expect(result.newRelativePath == "Target-2.md")
@@ -123,7 +123,7 @@ struct ClamshellRenameTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        let rel = try clamshell.createPage(title: "Stable", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Stable", requestedPath: nil, initialContent: nil)
         let before = try String(contentsOf: clamshell.url(for: rel), encoding: .utf8)
         let result = try await clamshell.renamePage(at: clamshell.url(for: rel), toMatchTitle: "Stable")
         #expect(result.newRelativePath == rel)
@@ -135,8 +135,8 @@ struct ClamshellRenameTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        _ = try clamshell.createPage(title: "Title", requestedPath: "Title.md", initialContent: nil)
-        _ = try clamshell.createPage(title: "Title", requestedPath: "Title-2.md", initialContent: nil)
+        _ = try clamshell.createDocument(title: "Title", requestedPath: "Title.md", initialContent: nil)
+        _ = try clamshell.createDocument(title: "Title", requestedPath: "Title-2.md", initialContent: nil)
 
         let result = try await clamshell.renamePage(at: clamshell.url(for: "Title-2.md"), toMatchTitle: "Title")
         #expect(result.newRelativePath == "Title-2.md", "own -N name is not a collision")
@@ -147,7 +147,7 @@ struct ClamshellRenameTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        _ = try clamshell.createPage(title: "hello world", requestedPath: nil, initialContent: nil)
+        _ = try clamshell.createDocument(title: "hello world", requestedPath: nil, initialContent: nil)
         let result = try await clamshell.renamePage(at: clamshell.url(for: "hello-world.md"), toMatchTitle: "Hello World")
         #expect(result.newRelativePath == "Hello-World.md")
 
@@ -161,7 +161,7 @@ struct ClamshellRenameTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        _ = try clamshell.createPage(title: "Nested", requestedPath: "sub/Nested.md", initialContent: nil)
+        _ = try clamshell.createDocument(title: "Nested", requestedPath: "sub/Nested.md", initialContent: nil)
         let result = try await clamshell.renamePage(at: clamshell.url(for: "sub/Nested.md"), toMatchTitle: "Renamed Deep")
         #expect(result.newRelativePath == "sub/Renamed-Deep.md")
         #expect(FileManager.default.fileExists(atPath: clamshell.url(for: "sub/Renamed-Deep.md").path))
@@ -172,7 +172,7 @@ struct ClamshellRenameTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        let rel = try clamshell.createPage(title: "Home", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Home", requestedPath: nil, initialContent: nil)
         clamshell.setHome(relativePath: rel)
         _ = try await clamshell.renamePage(at: clamshell.url(for: rel), toMatchTitle: "Sweet Home")
         #expect(clamshell.homeRelativePath == "Sweet-Home.md")
@@ -183,7 +183,7 @@ struct ClamshellRenameTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        let rel = try clamshell.createPage(title: "Busy", requestedPath: nil, initialContent: nil)
+        let rel = try clamshell.createDocument(title: "Busy", requestedPath: nil, initialContent: nil)
         let session = try await clamshell.page(atPath: rel).open(onEvent: { _ in })
         await #expect(throws: Clamshell.RenameError.pageOpenElsewhere) {
             try await clamshell.renamePage(at: clamshell.url(for: rel), toMatchTitle: "Other")
@@ -198,13 +198,13 @@ struct ClamshellRenameTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let clamshell = Clamshell(root: root)
 
-        _ = try clamshell.createPage(title: "B", requestedPath: "B.md", initialContent: nil)
+        _ = try clamshell.createDocument(title: "B", requestedPath: "B.md", initialContent: nil)
         let id = try pageID(of: "B.md", in: clamshell)
 
         // A links to B; a heal pass enriches the links with B's fragment.
         var inline = attr("see B")
         inline.link = URL(string: "B.md")
-        let blocks: [Block] = [.subpage(title: "B", pageID: "B.md"), .paragraph(text: inline)]
+        let blocks: [Block] = [.documentLink(label: AttributedString("B"), reference: DocumentReference("B.md")), .paragraph(text: inline)]
         let doc = Document(id: DocumentID("A"), children: blocks)
         let aURL = clamshell.url(for: "A.md")
         try await clamshell.commit(
@@ -218,20 +218,20 @@ struct ClamshellRenameTests {
         _ = try await clamshell.renamePage(at: clamshell.url(for: "B.md"), toMatchTitle: "Better Name")
 
         // Resolution is correct instantly, before any healing of A.
-        guard case .subpage(_, let staleDest) = doc.children[0].kind else {
+        guard case .documentLink(_, let staleDest) = doc.children[0].kind else {
             Issue.record("expected subpage")
             return
         }
-        #expect(staleDest == "B.md#\(id)")
-        #expect(clamshell.resolveSubpageTarget(staleDest) == "Better-Name.md")
-        if case .missing = clamshell.lookupPage(staleDest) {
+        #expect(staleDest.rawValue == "B.md#\(id)")
+        #expect(clamshell.resolveSubpageTarget(staleDest.rawValue) == "Better-Name.md")
+        if case .missing = clamshell.lookupDocument(staleDest.rawValue) {
             Issue.record("stale dest should still resolve to a present page")
         }
 
         // A's next quiet moment heals the bytes.
         #expect(await clamshell.healLinks(in: doc, at: aURL) == 2)
-        guard case .subpage(_, let healedDest) = doc.children[0].kind else { return }
-        #expect(healedDest == "Better-Name.md#\(id)")
+        guard case .documentLink(_, let healedDest) = doc.children[0].kind else { return }
+        #expect(healedDest.rawValue == "Better-Name.md#\(id)")
         let diskText = try String(contentsOf: aURL, encoding: .utf8)
         #expect(diskText.contains("Better-Name.md#\(id)"))
     }

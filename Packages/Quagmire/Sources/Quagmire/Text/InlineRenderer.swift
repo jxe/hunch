@@ -19,7 +19,7 @@ enum InlineRenderer {
             let link = run.link
             // pageTitle returns nil for any URL the caller doesn't consider
             // a workspace-page reference (the BlockRow caller pre-filters via
-            // `resolvePageLookups`, which consults the host's classifier);
+            // `resolveDocumentLookups`, which consults the host's classifier);
             // a non-nil result is the resolved title to display in place of
             // the raw link text.
             let display = link.flatMap { pageTitle($0.absoluteString) } ?? String(segment.characters)

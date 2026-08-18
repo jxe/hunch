@@ -99,11 +99,11 @@ nonisolated func outboundLinks(
     var targets: Set<String> = []
     func walk(_ blocks: [Block]) {
         for block in blocks {
-            if case .subpage(_, let pageID) = block.kind {
+            if case .documentLink(_, let reference) = block.kind {
                 // Normalize the verbatim destination (which may carry a
                 // page-ID fragment) to a live workspace-relative path so
                 // graph vertices stay comparable.
-                if let rel = classifySubpage(pageID) {
+                if let rel = classifySubpage(reference.rawValue) {
                     targets.insert(rel)
                 }
             }

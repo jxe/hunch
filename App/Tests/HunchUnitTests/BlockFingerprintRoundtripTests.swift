@@ -229,14 +229,14 @@ struct BlockFingerprintRoundtripTests {
 
     @Test func subpageSimple() {
         assertRoundTrip(
-            .subpage(title: "Other Page", pageID: "other.md"),
+            .documentLink(label: AttributedString("Other Page"), reference: DocumentReference("other.md")),
             "subpage simple"
         )
     }
 
     @Test func subpageNestedPath() {
         assertRoundTrip(
-            .subpage(title: "Nested", pageID: "folder/nested.md"),
+            .documentLink(label: AttributedString("Nested"), reference: DocumentReference("folder/nested.md")),
             "subpage nested path"
         )
     }

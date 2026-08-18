@@ -682,8 +682,8 @@ struct PatchEngineTests {
     }
 
     @Test func autoRestoreDoesNotDuplicateNestedSubpageWithSamePageID() {
-        let logged = Block.subpage(title: "Old title", pageID: "Projects/Thing.md")
-        let live = Block.subpage(title: "Current title", pageID: "Projects/Thing.md")
+        let logged = Block.documentLink(label: AttributedString("Old title"), reference: DocumentReference("Projects/Thing.md"))
+        let live = Block.documentLink(label: AttributedString("Current title"), reference: DocumentReference("Projects/Thing.md"))
         let section = Block.heading(level: .h2, text: attr("Section"), children: [live])
         let intent = PatchEngine.intent(from: journal(("dev-A", [addRecord(logged, counter: 1, t: 200)])))
 
@@ -699,8 +699,8 @@ struct PatchEngineTests {
 
     @MainActor
     @Test func autoRestorePrunesSubpageAlreadyPresentInsideRestoredSection() {
-        let loggedSubpage = Block.subpage(title: "Old title", pageID: "Projects/Thing.md")
-        let liveSubpage = Block.subpage(title: "Current title", pageID: "Projects/Thing.md")
+        let loggedSubpage = Block.documentLink(label: AttributedString("Old title"), reference: DocumentReference("Projects/Thing.md"))
+        let liveSubpage = Block.documentLink(label: AttributedString("Current title"), reference: DocumentReference("Projects/Thing.md"))
         let lostSection = Block.heading(level: .h2, text: attr("Lost"), children: [loggedSubpage])
         let currentSection = Block.heading(level: .h2, text: attr("Current"), children: [liveSubpage])
         let intent = PatchEngine.intent(from: journal(("dev-A", [
@@ -894,8 +894,8 @@ struct PatchEngineTests {
         var out: [String] = []
         func walk(_ blocks: [Block]) {
             for block in blocks {
-                if case .subpage(_, let pageID) = block.kind {
-                    out.append(pageID)
+                if case .documentLink(_, let reference) = block.kind {
+                    out.append(reference.rawValue)
                 }
                 walk(block.children)
             }

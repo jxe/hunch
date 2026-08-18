@@ -326,9 +326,13 @@ extension Clamshell {
             out.reserveCapacity(blocks.count)
             for block in blocks {
                 var healed = block
-                if case .subpage(let title, let dest) = block.kind,
-                   let canonical = await canonicalSubpageDest(dest, title: title) {
-                    healed = Block(id: block.id, kind: .subpage(title: title, pageID: canonical), children: block.children)
+                if case .documentLink(let label, let reference) = block.kind,
+                   let canonical = await canonicalSubpageDest(reference.rawValue, title: String(label.characters)) {
+                    healed = Block(
+                        id: block.id,
+                        kind: .documentLink(label: label, reference: DocumentReference(canonical)),
+                        children: block.children
+                    )
                     rewrittenCount += 1
                 } else {
                     var offsets: [(lower: Int, upper: Int, url: URL)] = []

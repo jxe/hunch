@@ -58,7 +58,7 @@ A SwiftUI block editor with **no opinion on serialization, persistence,
 or navigation**. The host owns three things per editing session:
 
 - a `Document` (a tree of `Block`s — paragraph, heading, list item,
-  toggle, code, image, subpage row, divider, template button);
+  toggle, code, image, document-link row, divider, template button);
 - an `EditorState` (volatile session state — selection, edit mode,
   in-flight gestures, expanded toggles, hover); and
 - an `EditorHost`-conforming object (file I/O, navigation, paste
@@ -84,8 +84,8 @@ recovery log, a `Trash/` directory, an `Assets/` directory, and a
 
 `Clamshell` is the umbrella type — one per open directory — that
 composes `FileStore`, `RecoveryLog`, and `TrashStore` privately and
-exposes a single API for the host (`entries`, `lookupPage`,
-`openPage`, `closePage`, `persistCommit`, `createPage`,
+exposes a single API for the host (`entries`, `lookupDocument`,
+`openDocument`, `closePage`, `persistCommit`, `createDocument`,
 `moveToTrash`, `restorePage`, `listLostBlocks`, …). The markdown
 parser/serializer (`Parser.swift`, `Serializer.swift`) and the
 reconciliation engine that heals divergence between the journal and
@@ -114,7 +114,7 @@ voice dictation, link previews, paste handling, drag-and-drop, the menu
 bar, and the iOS-specific gestures and Siri intents.
 
 There is no permanent sidebar — page navigation is via the search sheet
-(Cmd+P) or via subpage rows in the page body.
+(Cmd+P) or via document-link rows in the page body.
 
 Tests for this layer live in `App/Tests/HunchUnitTests/` and cover the
 parser/serializer + storage round-trips. The test target links against
