@@ -51,6 +51,17 @@ public enum BlockKind: Equatable, Sendable {
     case templateButton(label: String)
     case subpage(title: String, pageID: String)
     case image(source: String, alt: String)
+    /// Content this editor has no representation for, carried through
+    /// untouched. `payload` is opaque to Quagmire — it never parses, rewrites,
+    /// or interprets it; the host that produced it is the only thing that knows
+    /// what it means, and gets it back verbatim on serialization. `display` is
+    /// a short neutral label for the row ("Table", "HTML block").
+    ///
+    /// This is the alternative to silently degrading unknown content into a
+    /// paragraph of re-rendered text, which loses it on the next save. It is a
+    /// per-block value, not a document source snapshot: no ranges, no offsets,
+    /// nothing that has to be kept in sync as the document changes around it.
+    case unsupported(payload: String, display: String)
 }
 
 /// A node in the document tree. Identity is the immutable `BlockID`; the kind
@@ -128,9 +139,13 @@ public struct Block: Identifiable, Equatable, Sendable {
         Block(id: id, kind: .image(source: source, alt: alt))
     }
 
+    public static func unsupported(payload: String, display: String, id: BlockID = BlockID()) -> Block {
+        Block(id: id, kind: .unsupported(payload: payload, display: display))
+    }
+
     // MARK: Text / mutation helpers
 
-    /// Body text for text-bearing kinds; empty string for code/divider/subpage/image.
+    /// Body text for text-bearing kinds; empty for code/divider/subpage/image/unsupported.
     /// Toggle returns its title; templateButton returns its label as a plain `AttributedString`.
     public var text: AttributedString {
         switch kind {
@@ -145,13 +160,13 @@ public struct Block: Identifiable, Equatable, Sendable {
             return t
         case .templateButton(let label):
             return AttributedString(label)
-        case .code, .divider, .subpage, .image:
+        case .code, .divider, .subpage, .image, .unsupported:
             return AttributedString()
         }
     }
 
     /// Returns a copy with text replaced. No-op for kinds without an
-    /// `AttributedString` body (code/divider/subpage/image). Toggle replaces
+    /// `AttributedString` body (code/divider/subpage/image/unsupported). Toggle replaces
     /// its title; templateButton stringifies the label.
     public func withText(_ newText: AttributedString) -> Block {
         var copy = self
@@ -172,7 +187,7 @@ public struct Block: Identifiable, Equatable, Sendable {
             copy.kind = .toggle(title: newText)
         case .templateButton:
             copy.kind = .templateButton(label: String(newText.characters))
-        case .code, .divider, .subpage, .image:
+        case .code, .divider, .subpage, .image, .unsupported:
             return self
         }
         return copy
@@ -199,13 +214,13 @@ public struct Block: Identifiable, Equatable, Sendable {
     // MARK: Containment rules (used by canDrop / canIndent / parser fold)
 
     /// Whether this block is structurally permitted to hold children. Leaves
-    /// (paragraph/quote/code/divider/subpage/image) reject all children;
+    /// (paragraph/quote/code/divider/subpage/image/unsupported) reject all children;
     /// containers accept by `canContain(_:)`.
     public var isContainer: Bool {
         switch kind {
         case .heading, .bullet, .numbered, .todo, .toggle, .templateButton:
             return true
-        case .paragraph, .quote, .code, .divider, .subpage, .image:
+        case .paragraph, .quote, .code, .divider, .subpage, .image, .unsupported:
             return false
         }
     }
@@ -224,7 +239,7 @@ public struct Block: Identifiable, Equatable, Sendable {
             return true
         case .toggle, .templateButton, .bullet, .numbered, .todo:
             return true
-        case .paragraph, .quote, .code, .divider, .subpage, .image:
+        case .paragraph, .quote, .code, .divider, .subpage, .image, .unsupported:
             return false
         }
     }
@@ -273,7 +288,7 @@ public extension Block {
         switch kind {
         case .bullet, .numbered, .todo, .toggle, .templateButton:
             return true
-        case .heading, .paragraph, .quote, .code, .divider, .subpage, .image:
+        case .heading, .paragraph, .quote, .code, .divider, .subpage, .image, .unsupported:
             return false
         }
     }

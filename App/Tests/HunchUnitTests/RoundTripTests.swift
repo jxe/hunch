@@ -24,6 +24,88 @@ struct RoundTripTests {
         assertIdempotent("# Title\n\nA paragraph.\n")
     }
 
+    // MARK: - Content this editor has no model for
+
+    /// A table is not representable as blocks here, and used to be flattened
+    /// into a paragraph of re-rendered text — which the serializer then wrote
+    /// back as an escaped paragraph. Opening a document containing a table and
+    /// saving it destroyed the table.
+    @Test func tableSurvivesByteForByte() {
+        let table = "| a | b |\n| --- | --- |\n| 1 | 2 |"
+        let source = "# Title\n\n\(table)\n\ntrailing\n"
+
+        let blocks = BlockParser.parse(source)
+        let serialized = BlockSerializer.serialize(blocks)
+
+        #expect(serialized.contains(table), "the table must come back out exactly as it went in")
+        #expect(serialized.contains("trailing"))
+        assertIdempotent(source)
+    }
+
+    @Test func tableParsesAsAnUnsupportedBlockNotAParagraph() {
+        let blocks = BlockParser.parse("| a | b |\n| --- | --- |\n| 1 | 2 |\n")
+        #expect(blocks.count == 1)
+        guard case .unsupported(let payload, let display) = blocks[0].kind else {
+            Issue.record("expected .unsupported, got \(blocks[0].kind)")
+            return
+        }
+        #expect(payload == "| a | b |\n| --- | --- |\n| 1 | 2 |")
+        #expect(display == "Table")
+    }
+
+    /// The payload is the source slice, not `MarkupFormatter` output. A table
+    /// with ragged column padding proves the difference: reformatting would
+    /// align the pipes.
+    @Test func unsupportedPayloadIsSourceNotReformattedOutput() {
+        let ragged = "|a|bbbbbb|\n|-|-|\n|1|2|"
+        let blocks = BlockParser.parse(ragged + "\n")
+        guard case .unsupported(let payload, _) = blocks.first?.kind else {
+            Issue.record("expected .unsupported")
+            return
+        }
+        #expect(payload == ragged)
+    }
+
+    @Test func rawHTMLBlockSurvives() {
+        let html = "<figure class=\"x\">\n  <img src=\"a.png\">\n</figure>"
+        let source = "before\n\n\(html)\n\nafter\n"
+        let serialized = BlockSerializer.serialize(BlockParser.parse(source))
+        #expect(serialized.contains(html))
+        assertIdempotent(source)
+    }
+
+    /// The point of preserving it: editing an unrelated block must not disturb
+    /// the parts of the document this editor cannot represent.
+    @MainActor
+    @Test func tableSurvivesAnEditElsewhere() {
+        let table = "| a | b |\n| --- | --- |\n| 1 | 2 |"
+        let blocks = BlockParser.parse("# Title\n\n\(table)\n\nbody\n")
+
+        let document = Document(id: DocumentID("t"), children: blocks)
+        var bodyID: BlockID?
+        document.walk { block, _, _ in
+            if String(block.text.characters) == "body" { bodyID = block.id }
+        }
+        document.transaction(name: "edit") {
+            if let bodyID { document.setText(bodyID, AttributedString("body edited")) }
+        }
+
+        let serialized = BlockSerializer.serialize(document.children)
+        #expect(serialized.contains(table))
+        #expect(serialized.contains("body edited"))
+    }
+
+    /// Read-only, but a first-class block otherwise: it can be selected, moved,
+    /// and deleted like anything else, and it participates in the recovery log.
+    @Test func unsupportedBlockIsALeafThatAcceptsNoChildren() {
+        let block = Block.unsupported(payload: "| a |", display: "Table")
+        #expect(block.isLeaf)
+        #expect(!block.isContainer)
+        #expect(!block.canContain(.paragraph(text: AttributedString("x"))))
+        #expect(String(block.text.characters).isEmpty)
+        #expect(block.withText(AttributedString("nope")) == block, "text edits are a no-op")
+    }
+
     // MARK: - H4–H6 survive
 
     /// Every level cmark can emit must come back out at the depth it went in.

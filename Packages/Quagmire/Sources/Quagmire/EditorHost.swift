@@ -252,6 +252,12 @@ private enum EditorPlainTextCodec {
                 lines.append(title)
             case .image(let source, let alt):
                 lines.append(alt.isEmpty ? source : alt)
+            case .unsupported(let payload, _):
+                // Verbatim: this codec is the fallback for hosts that supply no
+                // pasteboard format of their own, and the payload is the only
+                // faithful thing we can put on the pasteboard for a block whose
+                // meaning we don't know.
+                lines.append(payload)
             }
             block.children.forEach(append)
         }

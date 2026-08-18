@@ -432,6 +432,8 @@ enum BlockSpacing {
         case .bullet, .numbered, .todo, .subpage, .toggle, .templateButton: return 2
         case .code: return 8
         case .paragraph, .quote, .divider, .image: return 0
+        // Unsupported blocks render as a fenced preview, same shape as code.
+        case .unsupported: return 8
         }
     }
 
@@ -454,6 +456,7 @@ enum BlockSpacing {
         case .code: return 8
         case .divider: return 12
         case .image: return 8
+        case .unsupported: return 8
         case .subpage, .bullet, .numbered, .todo, .toggle, .templateButton: return 1
         }
     }
@@ -471,6 +474,7 @@ enum BlockSpacing {
         case .code: return 8
         case .divider: return 12
         case .image: return 8
+        case .unsupported: return 8
         case .subpage, .bullet, .numbered, .todo, .toggle, .templateButton: return 0
         }
     }

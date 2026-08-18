@@ -78,6 +78,10 @@ nonisolated func searchableText(in blocks: [Block]) -> String {
                 append(title)
             case .image(_, let alt):
                 append(alt)
+            case .unsupported(let payload, _):
+                // Searchable: a table's cell text is exactly what someone
+                // looking for it would type, even though we can't edit it.
+                append(payload)
             case .divider:
                 break
             }

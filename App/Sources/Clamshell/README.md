@@ -749,3 +749,35 @@ append" — `NSFileCoordinator` handles that.
   hashes to find a live ancestor.
 - **No log compaction yet.** Logs grow unbounded. For ordinary usage
   they stay small.
+
+## Markdown fidelity: what survives a round trip
+
+The parser converts Markdown into Quagmire blocks and the serializer converts
+them back. Anything the block model can represent round-trips. Everything else
+falls into one of two groups, and the distinction is worth knowing before
+assuming a document is safe to open.
+
+**Carried through byte for byte**, as `BlockKind.unsupported`, with the payload
+taken from the original source via `Markup.range` (not `markup.format()`, which
+re-renders from the AST and normalises pipe alignment, emphasis delimiters,
+escaping, and wrapping):
+
+- tables
+- raw HTML blocks other than the legacy `<details>` toggle envelope
+- unrecognised block directives
+
+**Still lost**, because they dissolve before the converter sees them as a
+discrete block:
+
+| Construct | Why |
+|---|---|
+| Link reference definitions (`[b]: url`) | cmark resolves them at parse time and emits no node for the definition line, so there is nothing to carry. The link itself survives with its destination inlined. |
+| Footnotes (`[^1]`, `[^1]: …`) | swift-markdown's footnote extension is not enabled, so these parse as ordinary text and re-serialize as ordinary text. |
+| Nested block-quote depth (`>>`) | `convertBlock` flattens each child paragraph of a `BlockQuote` into a sibling `.quote`, so a quote inside a quote comes back out at one level. |
+| Inline constructs with no `InlineAttributes` equivalent (math spans, custom inline syntax) | The inline model is a closed set of attribute keys; anything else flattens to plain text. |
+| Setext headings (`Title\n=====`) | Re-emitted as ATX (`# Title`). Semantically identical, textually different. |
+
+These are known gaps, not oversights to be discovered later. Closing the first
+two would mean enabling more swift-markdown extensions and giving the block
+model somewhere to put the result; the third needs `.quote` to accept children.
+None of them are blocked on the editor package — they are all host-side.

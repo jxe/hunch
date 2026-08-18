@@ -18,6 +18,7 @@ enum VisibleRowKind: Equatable {
     case templateButton
     case subpage(pageID: String)
     case image
+    case unsupported
 
     init(_ kind: BlockKind) {
         switch kind {
@@ -45,6 +46,8 @@ enum VisibleRowKind: Equatable {
             self = .subpage(pageID: pageID)
         case .image:
             self = .image
+        case .unsupported:
+            self = .unsupported
         }
     }
 

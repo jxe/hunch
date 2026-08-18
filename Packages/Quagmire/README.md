@@ -266,6 +266,7 @@ public enum BlockKind: Equatable, Sendable {
     case templateButton(label: String)
     case subpage(title: String, pageID: String)
     case image(source: String, alt: String)
+    case unsupported(payload: String, display: String)
 }
 
 public enum HeadingLevel: Int, Comparable, Hashable, Sendable, CaseIterable {
@@ -277,6 +278,21 @@ public enum HeadingLevel: Int, Comparable, Hashable, Sendable, CaseIterable {
 ```
 
 - **`BlockID`** is a `UUID` wrapper (`Hashable`, `Codable`, `Sendable`).
+- **`unsupported` carries content this editor has no model for.** `payload` is
+  opaque — Quagmire never parses, rewrites, or interprets it, and hands it back
+  verbatim on serialization; `display` is a short neutral label for the row
+  ("Table", "HTML"). The row renders read-only and is otherwise a normal leaf
+  block: selectable, movable, deletable, undoable. Without it a host has two
+  options for content it can't model, and both lose it — drop it, or degrade it
+  into a paragraph that the serializer then escapes. This is a *per-block*
+  value: no ranges, no offsets, nothing that has to stay in sync as the
+  document changes around it, and no document-wide source tracker.
+
+  It is not a general escape hatch and does not make a format round-trip
+  lossless. It can only carry what the host's parser hands it as a discrete
+  block. Constructs that dissolve before that point — inline content with no
+  `InlineAttributes` equivalent, or syntax a parser resolves and discards —
+  are still lost, and a host should say so rather than imply otherwise.
 - **All six heading levels are representable; only three are authorable.**
   The creation UI (Turn Into, the `#`/`##`/`###` prefix transforms) offers
   H1–H3, matching Notion. H4–H6 exist so a document that already contains

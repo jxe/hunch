@@ -586,6 +586,7 @@ enum PatchEngine {
         case .templateButton: return "templateButton"
         case .subpage: return "subpage"
         case .image: return "image"
+        case .unsupported: return "unsupported"
         }
     }
 
@@ -993,7 +994,7 @@ enum PatchEngine {
         switch block.kind {
         case .subpage(_, let pageID):
             return .subpage(pageID: pageID)
-        case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .code, .divider, .toggle, .templateButton, .image:
+        case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .code, .divider, .toggle, .templateButton, .image, .unsupported:
             return nil
         }
     }

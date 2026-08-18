@@ -778,6 +778,8 @@ public struct EditorView: View {
             return "Subpage"
         case .image:
             return "Image"
+        case .unsupported(_, let display):
+            return display
         }
     }
 
@@ -1346,7 +1348,7 @@ public struct EditorView: View {
             switch block.kind {
             case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
                 return id
-            case .templateButton, .code, .divider, .subpage, .image:
+            case .templateButton, .code, .divider, .subpage, .image, .unsupported:
                 return nil
             }
         }
@@ -1568,7 +1570,7 @@ public struct EditorView: View {
                     : .offset(0)
                 transferFocus(to: .editor(candidate.id, initialCursor: cursor))
                 return .handled
-            case .code, .divider, .subpage, .templateButton, .image:
+            case .code, .divider, .subpage, .templateButton, .image, .unsupported:
                 i += delta
             }
         }
@@ -2301,7 +2303,7 @@ public struct EditorView: View {
             return .todo(text: text, done: false)
         case .quote:
             return .quote(text: text)
-        case .heading, .paragraph, .toggle, .templateButton, .code, .divider, .subpage, .image:
+        case .heading, .paragraph, .toggle, .templateButton, .code, .divider, .subpage, .image, .unsupported:
             return .paragraph(text: text)
         }
     }
@@ -2377,7 +2379,7 @@ public struct EditorView: View {
         switch previous.kind {
         case .paragraph, .heading, .bullet, .numbered, .todo, .quote, .toggle:
             break
-        case .code, .divider, .subpage, .templateButton, .image:
+        case .code, .divider, .subpage, .templateButton, .image, .unsupported:
             return .ignored
         }
         let previousLen = previous.text.characters.count

@@ -140,7 +140,7 @@ private extension Block {
         case .paragraph, .heading, .bullet, .numbered, .todo, .quote,
              .toggle, .templateButton:
             true
-        case .code, .divider, .subpage, .image:
+        case .code, .divider, .subpage, .image, .unsupported:
             false
         }
     }

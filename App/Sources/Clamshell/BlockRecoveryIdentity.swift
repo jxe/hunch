@@ -55,6 +55,11 @@ private enum BlockRecoveryHashing {
             return "subpage|p=\(pageID)|t=\(normalizeRaw(title))"
         case .image(let source, let alt):
             return "image|s=\(source)|a=\(normalizeRaw(alt))"
+        case .unsupported(let payload, _):
+            // Only the payload: `display` is a presentation label, and letting
+            // it into the hash would make two identical tables recover as
+            // different blocks if the label ever changed.
+            return "unsupported|p=\(normalizeRaw(payload))"
         }
     }
 

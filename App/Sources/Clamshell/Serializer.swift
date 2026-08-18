@@ -342,6 +342,14 @@ enum BlockSerializer {
 
         case .image(let source, let alt):
             return prefix + "![" + escapeMarkdownLinkText(alt) + "](" + source + ")\n\n"
+
+        case .unsupported(let payload, _):
+            // Verbatim, at this block's indent depth. The payload is the exact
+            // source slice the parser took, so a construct this editor has no
+            // model for (a table, a raw HTML block) comes back out byte for
+            // byte instead of being flattened into a paragraph and lost.
+            let body = payload.hasSuffix("\n") ? payload : payload + "\n"
+            return indentLines(body, indent: depth) + "\n"
         }
     }
 

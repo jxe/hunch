@@ -329,6 +329,9 @@ struct BlockRow: View, Equatable {
 
         case .image(let source, let alt):
             imageRow(source: source, alt: alt)
+
+        case .unsupported(let payload, let display):
+            unsupportedRow(payload: payload, display: display)
         }
     }
 
@@ -421,6 +424,31 @@ struct BlockRow: View, Equatable {
         }
         .padding(.horizontal, 16)
         .background(theme.codeBackground.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.leading, theme.nonListLeading(depth: depth))
+    }
+
+    /// Content this editor cannot represent, shown rather than hidden. The
+    /// payload is displayed verbatim and read-only; the label says what the
+    /// host called it, so the row reads as "there is a table here that this
+    /// editor won't let you edit" rather than as broken text.
+    private func unsupportedRow(payload: String, display: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(display)
+                .font(theme.mono(size: 11))
+                .foregroundStyle(theme.mutedForeground)
+                .padding(.bottom, 8)
+            Text(payload)
+                .font(theme.mono())
+                .foregroundStyle(theme.mutedForeground)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .background(theme.codeBackground.opacity(0.35))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(theme.dividerColor, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        )
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .padding(.leading, theme.nonListLeading(depth: depth))
     }
@@ -989,6 +1017,14 @@ struct BlockRowPreview: View, Equatable {
 
         case .image(let source, let alt):
             ImageBlockView(source: source, alt: alt, theme: theme)
+                .padding(.leading, theme.nonListLeading(depth: depth))
+
+        case .unsupported(_, let display):
+            // Drag preview: the label alone. A multi-line payload under the
+            // cursor would be unreadable at drag size.
+            Text(display)
+                .font(theme.mono(size: 11))
+                .foregroundStyle(theme.mutedForeground)
                 .padding(.leading, theme.nonListLeading(depth: depth))
         }
     }

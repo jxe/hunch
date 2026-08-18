@@ -309,7 +309,7 @@ extension EditorView {
 
     /// Extracts the text/title from a block whose type can be swapped for another
     /// text-bearing type without losing content. Returns nil for blocks that don't
-    /// carry user text (code/divider/subpage/image).
+    /// carry user text (code/divider/subpage/image/unsupported).
     func textForBlockTypeChange(_ block: Block) -> AttributedString? {
         switch block.kind {
         case .paragraph(let t),
@@ -323,7 +323,9 @@ extension EditorView {
             return AttributedString(label)
         case .todo(let t, _):
             return t
-        case .code, .divider, .subpage, .image:
+        case .code, .divider, .subpage, .image, .unsupported:
+            // Unsupported blocks are read-only by construction: converting one
+            // would mean interpreting a payload only the host understands.
             return nil
         }
     }
@@ -342,7 +344,7 @@ extension EditorView {
             return label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .code(let source, _):
             return source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .divider, .subpage, .image:
+        case .divider, .subpage, .image, .unsupported:
             return false
         }
     }
@@ -624,7 +626,7 @@ extension EditorView {
             return .template
         case .subpage:
             return .page
-        case .quote, .code, .divider, .image:
+        case .quote, .code, .divider, .image, .unsupported:
             return nil
         }
     }
@@ -641,7 +643,7 @@ extension EditorView {
             switch block.kind {
             case .paragraph, .bullet, .numbered, .todo, .quote, .heading, .toggle, .templateButton, .subpage:
                 return true
-            case .code, .divider, .image:
+            case .code, .divider, .image, .unsupported:
                 return false
             }
         }
@@ -660,7 +662,7 @@ extension EditorView {
 
     func isStructuralBlock(_ block: Block) -> Bool {
         switch block.kind {
-        case .code, .divider, .subpage, .image:
+        case .code, .divider, .subpage, .image, .unsupported:
             return true
         default:
             return false

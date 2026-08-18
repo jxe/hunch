@@ -24,9 +24,68 @@ enum BlockParser {
     }
 
     private static func parseMarkdown(_ source: String) -> [Block] {
-        let document = Markdown.Document(parsing: markingEmptyParagraphs(in: source), options: [.parseBlockDirectives])
+        // swift-markdown's `Markup.range` indexes into exactly the string handed
+        // to the parser, so the *marked* source is what an unsupported block's
+        // payload must be sliced from — not the caller's original.
+        let marked = markingEmptyParagraphs(in: source)
+        let document = Markdown.Document(parsing: marked, options: [.parseBlockDirectives])
         let children = Array(document.children)
-        return assemble(children).blocks
+        return assemble(children, source: SourceSlicer(marked)).blocks
+    }
+
+    /// Lets an unhandled node be carried through byte for byte.
+    ///
+    /// The alternative, and what this used to do, is `markup.format()` — but
+    /// that re-renders from the AST, normalising pipe alignment, emphasis
+    /// delimiters, escaping and wrapping. Round-tripping someone's table
+    /// through a reformatter is better than dropping it, and worse than not
+    /// touching it. `Markup.range` is populated during parsing and gives us the
+    /// third option.
+    ///
+    /// Slicing is by whole lines. Every construct that reaches the unsupported
+    /// path is block-level and line-aligned, and lines sidestep the question of
+    /// what a `SourceLocation` column counts.
+    struct SourceSlicer {
+        private let lines: [String]
+
+        init(_ source: String) {
+            lines = source.components(separatedBy: "\n")
+        }
+
+        /// The exact source of `markup`, or nil when it carries no range (a node
+        /// built programmatically rather than parsed).
+        func slice(_ markup: any Markup) -> String? {
+            guard let range = markup.range else { return nil }
+            let first = range.lowerBound.line - 1
+            // An end column of 1 means the range stops at the start of that
+            // line, so the line itself is not part of the node.
+            var last = range.upperBound.line - 1
+            if range.upperBound.column <= 1 { last -= 1 }
+            guard first >= 0, last >= first, last < lines.count else { return nil }
+            let slice = lines[first...last].joined(separator: "\n")
+            return slice.isEmpty ? nil : slice
+        }
+    }
+
+    /// Short neutral label for a node this editor has no model for. Shown on the
+    /// row so it reads as "there is a table here", not as broken text.
+    private static func unsupportedLabel(for markup: any Markup) -> String {
+        switch markup {
+        case is Table: return "Table"
+        case is HTMLBlock: return "HTML"
+        case let directive as BlockDirective: return "Directive: \(directive.name)"
+        case is BlockQuote: return "Block quote"
+        default: return String(describing: type(of: markup))
+        }
+    }
+
+    /// Wrap an unhandled node, preferring its exact source. Falls back to the
+    /// reformatted text when the node has no range, which keeps the content
+    /// rather than dropping it — the old behaviour, now only a fallback.
+    private static func unsupportedBlock(_ markup: any Markup, source: SourceSlicer) -> [Block] {
+        let payload = source.slice(markup) ?? markup.format()
+        guard !payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        return [.unsupported(payload: payload, display: unsupportedLabel(for: markup))]
     }
 
     private struct SourceLine {
@@ -430,7 +489,7 @@ enum BlockParser {
         return rootChildren
     }
 
-    private static func assemble(_ nodes: [any Markup]) -> (blocks: [Block], consumed: Int) {
+    private static func assemble(_ nodes: [any Markup], source: SourceSlicer) -> (blocks: [Block], consumed: Int) {
         var i = 0
         var out: [Block] = []
         while i < nodes.count {
@@ -452,12 +511,12 @@ enum BlockParser {
                     children.append(nodes[j])
                     j += 1
                 }
-                let inner = assemble(children).blocks
+                let inner = assemble(children, source: source).blocks
                 out.append(.toggle(title: title, children: inner))
                 i = j + 1   // skip past closing </details>
                 continue
             }
-            out.append(contentsOf: convertBlock(node))
+            out.append(contentsOf: convertBlock(node, source: source))
             i += 1
         }
         return (out, i)
@@ -484,7 +543,7 @@ enum BlockParser {
 
     // MARK: - Block conversion
 
-    private static func convertBlock(_ markup: any Markup) -> [Block] {
+    private static func convertBlock(_ markup: any Markup, source: SourceSlicer) -> [Block] {
         switch markup {
         case let heading as Heading:
             return [.heading(level: heading.level, text: inlineToAttributed(Array(heading.inlineChildren)))]
@@ -510,16 +569,16 @@ enum BlockParser {
                 if let p = child as? Paragraph {
                     out.append(.quote(text: inlineToAttributed(Array(p.inlineChildren))))
                 } else {
-                    out.append(contentsOf: convertBlock(child))
+                    out.append(contentsOf: convertBlock(child, source: source))
                 }
             }
             return out
 
         case let list as UnorderedList:
-            return convertList(list, ordered: false)
+            return convertList(list, ordered: false, source: source)
 
         case let list as OrderedList:
-            return convertList(list, ordered: true)
+            return convertList(list, ordered: true, source: source)
 
         case let codeBlock as CodeBlock:
             return [.code(source: codeBlock.code, language: codeBlock.language)]
@@ -527,10 +586,12 @@ enum BlockParser {
         case _ as ThematicBreak:
             return [.divider()]
 
-        case let html as HTMLBlock:
-            // Toggle HTML blocks (<details>) are handled by `assemble`; any HTMLBlock that reaches
-            // here is unrecognised — round-trip it as a paragraph of its raw source.
-            return [.paragraph(text: AttributedString(html.rawHTML))]
+        case is HTMLBlock:
+            // Toggle HTML blocks (<details>) are handled by `assemble`; any
+            // HTMLBlock reaching here is unrecognised, so it is carried through
+            // untouched rather than flattened into a paragraph of raw source
+            // that the serializer would then escape.
+            return unsupportedBlock(markup, source: source)
 
         case let directive as BlockDirective:
             if directive.name == "template-button" {
@@ -538,33 +599,32 @@ enum BlockParser {
                     .map(\.untrimmedText)
                     .joined(separator: "\n")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                let body = assemble(Array(directive.children)).blocks
+                let body = assemble(Array(directive.children), source: source).blocks
                 return [.templateButton(label: label, children: body)]
             }
-            return [.paragraph(text: AttributedString(directive.format()))]
+            return unsupportedBlock(markup, source: source)
 
         default:
-            // Tables, images-as-blocks, and other unsupported nodes fall back to plain text.
-            let plain = markup.format()
-            if plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return []
-            }
-            return [.paragraph(text: AttributedString(plain))]
+            // Tables and anything else this editor has no model for are carried
+            // through verbatim. Flattening them into a paragraph lost them on
+            // the next save, because the serializer has no way to tell a
+            // paragraph that happens to contain pipes from a table.
+            return unsupportedBlock(markup, source: source)
         }
     }
 
     // MARK: - Lists
 
-    private static func convertList(_ list: any ListItemContainer, ordered: Bool) -> [Block] {
+    private static func convertList(_ list: any ListItemContainer, ordered: Bool, source: SourceSlicer) -> [Block] {
         var out: [Block] = []
         for child in list.children {
             guard let item = child as? ListItem else { continue }
-            out.append(contentsOf: convertListItem(item, ordered: ordered))
+            out.append(contentsOf: convertListItem(item, ordered: ordered, source: source))
         }
         return out
     }
 
-    private static func convertListItem(_ item: ListItem, ordered: Bool) -> [Block] {
+    private static func convertListItem(_ item: ListItem, ordered: Bool, source: SourceSlicer) -> [Block] {
         // Extract leading paragraph text (the item's own line)
         var leadingText = AttributedString()
         var nested: [Block] = []
@@ -580,11 +640,11 @@ enum BlockParser {
                 }
                 leadingText = inlineToAttributed(inlines)
             } else if let nestedList = child as? UnorderedList {
-                nested.append(contentsOf: convertList(nestedList, ordered: false))
+                nested.append(contentsOf: convertList(nestedList, ordered: false, source: source))
             } else if let nestedList = child as? OrderedList {
-                nested.append(contentsOf: convertList(nestedList, ordered: true))
+                nested.append(contentsOf: convertList(nestedList, ordered: true, source: source))
             } else {
-                nested.append(contentsOf: convertBlock(child))
+                nested.append(contentsOf: convertBlock(child, source: source))
             }
         }
 
