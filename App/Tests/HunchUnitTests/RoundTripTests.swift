@@ -24,6 +24,60 @@ struct RoundTripTests {
         assertIdempotent("# Title\n\nA paragraph.\n")
     }
 
+    // MARK: - H4–H6 survive
+
+    /// Every level cmark can emit must come back out at the depth it went in.
+    /// Before HeadingLevel covered 1–6, an H4 parsed as H3 and the serializer
+    /// wrote `###` back — so opening a document with deep headings and touching
+    /// anything at all silently rewrote it.
+    @Test func allSixHeadingLevelsRoundTrip() {
+        let source = "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n"
+        let serialized = BlockSerializer.serialize(BlockParser.parse(source))
+        // Trailing blank lines are the serializer's normal block separator and
+        // are not what this test is about; the heading markers are.
+        #expect(
+            serialized.trimmingCharacters(in: .newlines) == source.trimmingCharacters(in: .newlines)
+        )
+        assertIdempotent(source)
+    }
+
+    @Test func deepHeadingLevelsParseAtTheirTrueDepth() {
+        let blocks = BlockParser.parse("#### Four\n\n##### Five\n\n###### Six\n")
+        // Heading containment nests them: H5 under H4, H6 under H5.
+        #expect(blocks.count == 1)
+        #expect(blocks[0].headingLevel == .h4)
+        #expect(blocks[0].children.first?.headingLevel == .h5)
+        #expect(blocks[0].children.first?.children.first?.headingLevel == .h6)
+    }
+
+    /// The point of preserving them: editing something else in the document
+    /// must not disturb the heading depths on the way back to disk.
+    @MainActor
+    @Test func deepHeadingsSurviveAnEditElsewhere() {
+        let source = "# Title\n\n#### Four\n\nbody\n"
+        var blocks = BlockParser.parse(source)
+
+        let document = Document(id: DocumentID("t"), children: blocks)
+        var bodyID: BlockID?
+        document.walk { block, _, _ in
+            if String(block.text.characters) == "body" { bodyID = block.id }
+        }
+        #expect(bodyID != nil)
+        document.transaction(name: "edit") {
+            if let bodyID { document.setText(bodyID, AttributedString("body edited")) }
+        }
+        blocks = document.children
+
+        let serialized = BlockSerializer.serialize(blocks)
+        #expect(serialized.contains("#### Four"))
+        #expect(!serialized.contains("\n### Four"))
+        #expect(serialized.contains("body edited"))
+    }
+
+    @Test func headingLevelSixNestsUnderFive() {
+        assertIdempotent("##### Five\n\n###### Six\n\nbody\n")
+    }
+
     @Test func bulletAndNestedList() {
         assertIdempotent("- one\n  - nested\n- two\n")
     }

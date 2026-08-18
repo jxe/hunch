@@ -339,9 +339,7 @@ struct BlockRow: View, Equatable {
 
     private func headingRow(level: HeadingLevel) -> some View {
         let size: CGFloat = (isPageTitle && level == .h1) ? theme.pageTitleSize
-                          : level == .h1 ? theme.h1Size
-                          : level == .h2 ? theme.h2Size
-                                         : theme.h3Size
+                                                          : theme.headingSize(level)
         let font = theme.body(size: size, weight: theme.headingWeight)
         return editableText(font: font, fontSize: size, bold: true, lineSpacing: theme.headingLineSpacing)
             .padding(.leading, theme.nonListLeading(depth: depth))
@@ -869,9 +867,7 @@ struct BlockRowPreview: View, Equatable {
 
         case .heading(let level, _):
             let size: CGFloat = (isPageTitle && level == .h1) ? theme.pageTitleSize
-                              : level == .h1 ? theme.h1Size
-                              : level == .h2 ? theme.h2Size
-                                             : theme.h3Size
+                                                              : theme.headingSize(level)
             let font = theme.body(size: size, weight: theme.headingWeight)
             text(font: font, fontSize: size, lineSpacing: theme.headingLineSpacing)
                 .padding(.leading, theme.nonListLeading(depth: depth))

@@ -601,10 +601,16 @@ extension EditorView {
         case .paragraph:
             return .paragraph
         case .heading(let level, _):
+            // H4–H6 are representable but not authorable, so like `.quote` and
+            // `.code` they have no Turn Into target: the menu shows no current
+            // selection, and picking H1/H2/H3 converts as usual. That loses the
+            // original depth, but only because the user asked for a different
+            // one — nothing rewrites it behind their back.
             switch level {
             case .h1: return .heading1
             case .h2: return .heading2
             case .h3: return .heading3
+            case .h4, .h5, .h6: return nil
             }
         case .bullet:
             return .bullet

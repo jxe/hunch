@@ -268,12 +268,24 @@ public enum BlockKind: Equatable, Sendable {
     case image(source: String, alt: String)
 }
 
-public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
-    case h1 = 1, h2 = 2, h3 = 3
+public enum HeadingLevel: Int, Comparable, Hashable, Sendable, CaseIterable {
+    case h1 = 1, h2 = 2, h3 = 3, h4 = 4, h5 = 5, h6 = 6
+
+    static let authorable: [HeadingLevel]   // [.h1, .h2, .h3]
+    var isAuthorable: Bool
 }
 ```
 
 - **`BlockID`** is a `UUID` wrapper (`Hashable`, `Codable`, `Sendable`).
+- **All six heading levels are representable; only three are authorable.**
+  The creation UI (Turn Into, the `#`/`##`/`###` prefix transforms) offers
+  H1–H3, matching Notion. H4–H6 exist so a document that already contains
+  them survives being opened and edited — they parse, nest, render, copy,
+  undo, and serialize at their true depth. A host whose format has deeper
+  headings does not lose them just because this editor won't create them.
+  `EditorTheme.headingSize(_:)` continues the type ramp down to body size for
+  H4–H6; there is no Notion reference for those, so they are deliberately
+  understated rather than invented.
 - **One static factory per kind**: `Block.paragraph(text:)`,
   `Block.heading(level:text:)`, `Block.bullet(text:)`, etc. Each takes
   optional `id:` and `children:` parameters; defaults are a fresh

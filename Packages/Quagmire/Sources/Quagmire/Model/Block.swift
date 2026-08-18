@@ -1,24 +1,34 @@
 import Foundation
 
-/// Heading levels are clamped to 1...3 (Notion-style; H4+ are rendered as
-/// paragraphs). Comparable so the heading-fold parser pass can use natural
-/// `top.level >= incoming.level` stack-pop comparisons.
-public enum HeadingLevel: Int, Comparable, Hashable, Sendable {
-    case h1 = 1, h2 = 2, h3 = 3
+/// All six Markdown heading levels are representable. Comparable so the
+/// heading-fold parser pass can use natural `top.level >= incoming.level`
+/// stack-pop comparisons.
+///
+/// Representable is not the same as offered: creation UI (the Turn Into menu,
+/// the `#`/`##`/`###` prefix transforms) deliberately stops at H3, matching
+/// Notion. H4–H6 exist so a document that already contains them survives being
+/// opened and edited. Before this, `clamped` folded 4–6 down to 3 and the
+/// serializer then wrote `###` back out, quietly rewriting the user's file the
+/// first time they touched it.
+public enum HeadingLevel: Int, Comparable, Hashable, Sendable, CaseIterable {
+    case h1 = 1, h2 = 2, h3 = 3, h4 = 4, h5 = 5, h6 = 6
 
     public init?(level: Int) {
-        switch level {
-        case 1: self = .h1
-        case 2: self = .h2
-        case 3: self = .h3
-        default: return nil
-        }
+        self.init(rawValue: level)
     }
 
-    /// Clamps any incoming integer to the supported range.
+    /// Clamps any incoming integer to the representable range. Only for callers
+    /// that genuinely have no level to preserve — a parser reading a real
+    /// document should use `init?(level:)` and treat nil as "not a heading",
+    /// so an out-of-range value fails loudly instead of silently becoming H1.
     public static func clamped(_ level: Int) -> HeadingLevel {
-        HeadingLevel(rawValue: max(1, min(3, level))) ?? .h1
+        HeadingLevel(rawValue: max(1, min(6, level))) ?? .h1
     }
+
+    /// The levels the creation UI offers. Everything else is preserve-only.
+    public static let authorable: [HeadingLevel] = [.h1, .h2, .h3]
+
+    public var isAuthorable: Bool { Self.authorable.contains(self) }
 
     public static func < (lhs: HeadingLevel, rhs: HeadingLevel) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -72,7 +82,8 @@ public struct Block: Identifiable, Equatable, Sendable {
     }
 
     /// Convenience that accepts a raw `Int` and clamps to `HeadingLevel`. Used
-    /// by parser/test sites that read levels from cmark.
+    /// by parser/test sites that read levels from cmark — every level cmark can
+    /// produce (1–6) now survives the conversion unchanged.
     public static func heading(level: Int, text: AttributedString, id: BlockID = BlockID(), children: [Block] = []) -> Block {
         Block(id: id, kind: .heading(level: HeadingLevel.clamped(level), text: text), children: children)
     }

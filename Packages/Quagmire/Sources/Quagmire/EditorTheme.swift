@@ -111,6 +111,9 @@ public struct EditorTheme: Equatable, Sendable {
         public var h1Size: CGFloat
         public var h2Size: CGFloat
         public var h3Size: CGFloat
+        public var h4Size: CGFloat
+        public var h5Size: CGFloat
+        public var h6Size: CGFloat
         public var inlineCodeSize: CGFloat
 
         public init(
@@ -123,6 +126,9 @@ public struct EditorTheme: Equatable, Sendable {
             h1Size: CGFloat = 30,
             h2Size: CGFloat = 24,
             h3Size: CGFloat = 20,
+            h4Size: CGFloat = 18,
+            h5Size: CGFloat = 17,
+            h6Size: CGFloat = 16,
             inlineCodeSize: CGFloat = 13.6
         ) {
             self.bodyFontFamily = bodyFontFamily
@@ -134,6 +140,9 @@ public struct EditorTheme: Equatable, Sendable {
             self.h1Size = h1Size
             self.h2Size = h2Size
             self.h3Size = h3Size
+            self.h4Size = h4Size
+            self.h5Size = h5Size
+            self.h6Size = h6Size
             self.inlineCodeSize = inlineCodeSize
         }
     }
@@ -259,6 +268,25 @@ public struct EditorTheme: Equatable, Sendable {
     var h2Size: CGFloat { typography.h2Size }
     /// `.notion-h3 { font-size: 1.25em }` → 20pt.
     var h3Size: CGFloat { typography.h3Size }
+    // Notion has no H4–H6, so there is no reference screenshot to match. These
+    // continue the ramp down toward body size (16pt) rather than inventing a
+    // new scale; H6 lands at body size and is distinguished only by weight.
+    // They exist to render imported documents faithfully, not to be authored.
+    var h4Size: CGFloat { typography.h4Size }
+    var h5Size: CGFloat { typography.h5Size }
+    var h6Size: CGFloat { typography.h6Size }
+
+    /// Point size for a heading at `level`, before the page-title override.
+    func headingSize(_ level: HeadingLevel) -> CGFloat {
+        switch level {
+        case .h1: return h1Size
+        case .h2: return h2Size
+        case .h3: return h3Size
+        case .h4: return h4Size
+        case .h5: return h5Size
+        case .h6: return h6Size
+        }
+    }
 
     // MARK: Page layout
     var maxContentWidth: CGFloat { layout.maxContentWidth }
@@ -418,6 +446,9 @@ enum BlockSpacing {
         case .heading(.h1): return 40
         case .heading(.h2): return 40
         case .heading(.h3): return 30
+        // H4–H6 are preserve-only and read as sub-sub-sections; they get the
+        // smallest heading margin rather than a new step per level.
+        case .heading(.h4), .heading(.h5), .heading(.h6): return 24
         case .paragraph: return 4
         case .quote: return 4
         case .code: return 8
