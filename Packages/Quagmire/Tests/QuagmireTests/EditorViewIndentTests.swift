@@ -86,7 +86,7 @@ struct EditorViewIndentTests {
 }
 
 @MainActor
-private final class TestHost: EditorHost {
+private final class TestHost: EditorHostDefaults {
     func suggestDocuments(_ query: String, in document: Document) -> [MentionItem] { [] }
     func openDocument(_ reference: DocumentReference) {}
     func lookupDocument(_ reference: DocumentReference) -> DocumentLookup { .present(title: nil) }

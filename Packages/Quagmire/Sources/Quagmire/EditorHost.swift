@@ -314,10 +314,31 @@ public protocol EditorHost: AnyObject {
     func blockActions(in document: Document) -> [EditorBlockAction]
 }
 
-public extension EditorHost {
+// MARK: - Opting out of a surface
+//
+// Every requirement above except the pasteboard codec is optional, but the
+// defaults deliberately do *not* live in `extension EditorHost`. If they did,
+// conformance would always succeed and there would be nothing left for the
+// compiler to check: a host that mistyped one signature would get an overload
+// rather than an override, the default would silently win, and the feature
+// would quietly do nothing. That is not hypothetical — it is how this file
+// came to have these markers.
+//
+// So a host says which surfaces it does not have, by name. Everything it does
+// claim is compile-checked, and a near miss produces the diagnostic you want:
+//
+//     error: type 'MyHost' does not conform to protocol 'EditorHost'
+//     note: candidate has non-matching type '(String) -> DocumentLookup'
+//
+// which points at the mistake instead of merely listing what is absent.
+
+/// No links to other documents: no reference rows, no `@`-mentions, no
+/// creating or inlining. A single-document editor conforms to this and is done.
+public protocol DocumentLinksUnsupported: EditorHost {}
+
+public extension DocumentLinksUnsupported {
     var supportsDocumentCreation: Bool { false }
     var supportsDocumentInlining: Bool { false }
-    var supportsMoveDestinationPicker: Bool { false }
     func suggestDocuments(_ query: String, in document: Document) async -> [MentionItem] { [] }
     func openDocument(_ reference: DocumentReference) {}
     func didDeleteDocumentLink(reference: DocumentReference, label: String, from document: Document) {}
@@ -329,18 +350,78 @@ public extension EditorHost {
     func loadDocumentBlocks(_ reference: DocumentReference) async -> [Block]? { nil }
     func inlineAndRetireDocument(_ reference: DocumentReference, parent: Document) async -> Bool { false }
     func appendToDocument(_ reference: DocumentReference, _ blocks: [Block]) async -> Bool { false }
+}
+
+/// No "Move to…" picker. The editor hides the action.
+public protocol MoveDestinationUnsupported: EditorHost {}
+
+public extension MoveDestinationUnsupported {
+    var supportsMoveDestinationPicker: Bool { false }
     func moveDestination(for blockIDs: [BlockID], candidates: [InDocMoveTarget]) async -> MoveDestination? { nil }
+}
+
+/// No navigation stack to pop.
+public protocol NavigationUnsupported: EditorHost {}
+
+public extension NavigationUnsupported {
     func navigateBack() {}
+}
+
+/// No image storage: pasted images are dropped and image blocks render as
+/// missing.
+public protocol ImagesUnsupported: EditorHost {}
+
+public extension ImagesUnsupported {
+    func saveImages(_ items: [PastedImage]) -> [String] { [] }
+    func imageURL(for source: String) -> URL? { nil }
+}
+
+/// No favicon/title fetching for external links.
+public protocol LinkPreviewsUnsupported: EditorHost {}
+
+public extension LinkPreviewsUnsupported {
+    func linkPreview(for url: URL) async -> LinkPreview? { nil }
+}
+
+/// No host-supplied actions on the block menu.
+public protocol BlockActionsUnsupported: EditorHost {}
+
+public extension BlockActionsUnsupported {
+    func blockActions(in document: Document) -> [EditorBlockAction] { [] }
+}
+
+/// Every optional surface at once, for a host that only persists.
+///
+/// ```swift
+/// final class MyHost: EditorHostDefaults {
+///     func persistCommit(changes: [DocumentChange], in document: Document) { … }
+///     func flush(_ document: Document) async { … }
+/// }
+/// ```
+///
+/// Reach for the individual markers instead as soon as the host implements
+/// anything: this one opts out of *everything*, so it would also swallow a
+/// typo in a method you did mean to provide.
+public typealias EditorHostDefaults = EditorHost
+    & DocumentLinksUnsupported
+    & MoveDestinationUnsupported
+    & NavigationUnsupported
+    & ImagesUnsupported
+    & LinkPreviewsUnsupported
+    & BlockActionsUnsupported
+
+// The pasteboard codec stays on `EditorHost` itself: unlike the rest, these
+// defaults do real work (a line-per-block plain-text codec) rather than
+// declining to. A host that wants markdown on the pasteboard overrides them; a
+// host that mistypes an override still gets working copy and paste, so there
+// is nothing here for an opt-out marker to protect.
+public extension EditorHost {
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {
         EditorPlainTextCodec.serialize(blocks)
     }
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? {
         EditorPlainTextCodec.parse(string)
     }
-    func saveImages(_ items: [PastedImage]) -> [String] { [] }
-    func linkPreview(for url: URL) async -> LinkPreview? { nil }
-    func imageURL(for source: String) -> URL? { nil }
-    func blockActions(in document: Document) -> [EditorBlockAction] { [] }
 }
 
 private enum EditorPlainTextCodec {

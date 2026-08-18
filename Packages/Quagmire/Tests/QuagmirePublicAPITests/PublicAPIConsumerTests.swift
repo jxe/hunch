@@ -3,7 +3,7 @@ import SwiftUI
 import Testing
 
 @MainActor
-private final class MinimalHost: EditorHost {
+private final class MinimalHost: EditorHostDefaults {
     func persistCommit(changes: [DocumentChange], in document: Document) {}
     func flush(_ document: Document) async {}
 }

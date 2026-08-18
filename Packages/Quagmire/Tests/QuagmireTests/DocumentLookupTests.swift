@@ -231,7 +231,7 @@ struct PageLookupTests {
 }
 
 @MainActor
-private final class CapabilityTestHost: EditorHost {
+private final class CapabilityTestHost: EditorHostDefaults {
     private let lookup: DocumentLookup
     var loadedBlocks: [Block] = []
     var suggestions: [MentionItem] = []

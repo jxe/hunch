@@ -225,10 +225,9 @@ to encode a file URL. `persistCommit` reports semantic block snapshots through
 Silently dropping the callback would leave a host with no persistence, so a
 non-persisting integration must provide explicit empty bodies for both methods.
 
-That's a working editor. Optional hooks have neutral defaults: copy and paste
-use a package-owned line-oriented plain-text codec; other unavailable reads,
-writes, navigation, and actions fail closed. Override each hook as the host adds
-the corresponding feature.
+That is not quite a working editor yet, because `EditorHost` has no blanket
+defaults — see "Opting out of a surface" below. The one-line version: conform to
+`EditorHostDefaults` and the snippet above compiles as written.
 
 **One `EditorView` per document.** The pair `(document, state)` is one
 editing session — the editor caches focus, undo, and gesture state
@@ -427,9 +426,51 @@ where the host wants to append new content while honoring undo.
 ## Host protocol
 
 Hosts conform to `EditorHost` (class-bound, `@MainActor`). Each method
-is one extension point. Only `persistCommit` and `flush` are mandatory.
+is one extension point. Only `persistCommit` and `flush` are mandatory — but
+the rest are not defaulted on `EditorHost` itself, so a host declares which
+surfaces it does without. See "Opting out of a surface".
 
-| Method | Requirement | Neutral default |
+### Opting out of a surface
+
+The defaults live on opt-in marker protocols rather than on `EditorHost`:
+
+| Marker | Opts out of |
+|---|---|
+| `DocumentLinksUnsupported` | reference rows, `@`-mentions, lookup, create, inline, append, icons |
+| `MoveDestinationUnsupported` | the "Move to…" picker |
+| `NavigationUnsupported` | `navigateBack` |
+| `ImagesUnsupported` | pasted-image storage and image resolution |
+| `LinkPreviewsUnsupported` | favicon/title fetching for external links |
+| `BlockActionsUnsupported` | host-supplied block-menu actions |
+
+`EditorHostDefaults` composes all six, for a host that only persists.
+
+This is deliberate, and the reason is worth stating plainly. If the defaults sat
+in `extension EditorHost`, conformance would always succeed and there would be
+nothing left for the compiler to check — a host that mistyped one signature
+would get an *overload* rather than an override, the default would silently win,
+and that feature would quietly do nothing with a clean build. During this
+package's own development an entire twenty-method host stopped conforming that
+way and the app still built.
+
+With the defaults behind markers, everything a host claims is checked, and a
+near miss produces the diagnostic you want rather than a mystery:
+
+```
+error: type 'MyHost' does not conform to protocol 'EditorHost'
+note: candidate has non-matching type '(String) -> DocumentLookup'
+```
+
+Prefer the individual markers over `EditorHostDefaults` as soon as the host
+implements anything: the composed alias opts out of *everything*, so it would
+also swallow a typo in a method you did mean to provide.
+
+The pasteboard codec is the exception and stays on `EditorHost`. Unlike the
+rest, its defaults do real work — a line-per-block plain-text codec — rather
+than declining to, so a mistyped override still leaves copy and paste working
+and there is nothing for a marker to protect.
+
+| Method | Requirement | Default, when its marker is adopted |
 |--------|-------------|-----------------|
 | `persistCommit` | Required | None; the host must explicitly own persistence. |
 | `flush` | Required | None; durability may never be silently weakened. |

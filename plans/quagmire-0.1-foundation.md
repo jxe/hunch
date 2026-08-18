@@ -774,13 +774,29 @@ Three deviations from the plan as written, each argued at the point it came up:
 
 Left for Milestone 7: extraction. Nothing here published, tagged, or pushed.
 
-### Known follow-up
+### Follow-up, now closed
 
-Every `EditorHost` requirement has a default implementation, which is what
-lets a host adopt with two methods. The cost is that a mistyped override is an
-overload, not an error, and the default silently wins. Mid-rename the entire
-Hunch host stopped conforming — twenty methods, still compiling, all answering
-`.missing`/`nil`/`false` — and the app built clean. `FullHost` in
-`QuagmirePublicAPITests` is now the tripwire, but it only guards hosts inside
-this repo. A published API might want something stronger (fewer defaults, or a
-documented conformance checklist).
+Every `EditorHost` requirement used to have a default implementation, which is
+what let a host adopt with two methods. The cost was that a mistyped override
+is an overload, not an error, and the default silently wins. Mid-rename the
+entire Hunch host stopped conforming — twenty methods, still compiling, all
+answering `.missing`/`nil`/`false` — and the app built clean.
+
+Fixed by moving the defaults off `EditorHost` onto six opt-in marker protocols
+(`DocumentLinksUnsupported`, `MoveDestinationUnsupported`,
+`NavigationUnsupported`, `ImagesUnsupported`, `LinkPreviewsUnsupported`,
+`BlockActionsUnsupported`), composed as `EditorHostDefaults` for a host that
+only persists. Hunch now conforms to bare `EditorHost` with no defaults
+available, so every one of its 24 methods is compile-checked. Verified by
+mistyping one signature: previously a clean build, now
+
+```
+error: type 'WorkspaceWindow' does not conform to protocol 'EditorHost'
+note: candidate has non-matching type '(String) -> DocumentLookup'
+```
+
+The pasteboard codec stays on `EditorHost`: its defaults do real work rather
+than decline to, so a mistyped override still leaves copy and paste functional.
+
+Worth doing before extraction rather than after — tightening conformance
+requirements is a breaking change once there are hosts you do not control.

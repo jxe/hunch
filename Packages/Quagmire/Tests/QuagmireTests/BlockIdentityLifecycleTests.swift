@@ -423,7 +423,7 @@ struct BlockIdentityLifecycleTests {
 // MARK: - Test host
 
 @MainActor
-private final class IdentityTestHost: EditorHost {
+private final class IdentityTestHost: EditorHostDefaults {
     var loadedBlocks: [Block] = []
     private var inlineFinished: CheckedContinuation<Void, Never>?
     private var inlineAlreadyFinished = false

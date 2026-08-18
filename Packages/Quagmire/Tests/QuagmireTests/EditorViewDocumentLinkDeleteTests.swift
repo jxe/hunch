@@ -71,7 +71,7 @@ struct EditorViewDocumentLinkDeleteTests {
 }
 
 @MainActor
-private final class RecordingHost: EditorHost {
+private final class RecordingHost: EditorHostDefaults {
     struct DeletedLink {
         let reference: DocumentReference
         let label: String

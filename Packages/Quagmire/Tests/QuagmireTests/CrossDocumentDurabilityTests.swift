@@ -188,7 +188,7 @@ struct CrossDocumentDurabilityTests {
 
 /// A host whose every cross-document operation can be made to fail.
 @MainActor
-private final class FailureHost: EditorHost {
+private final class FailureHost: EditorHostDefaults {
     var createSucceeds = true
     var retireSucceeds = true
     var appendSucceeds = true

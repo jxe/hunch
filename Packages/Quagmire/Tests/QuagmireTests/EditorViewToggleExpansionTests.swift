@@ -228,7 +228,7 @@ struct EditorViewToggleExpansionTests {
 }
 
 @MainActor
-private final class TestHost: EditorHost {
+private final class TestHost: EditorHostDefaults {
     var supportsDocumentInlining: Bool { true }
     var loadedDocumentBlocks: [Block]?
     var didInlineAndRetireDocument = false
