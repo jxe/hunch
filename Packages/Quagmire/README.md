@@ -384,6 +384,62 @@ public final class Document: Identifiable {
 }
 ```
 
+### Resolving reference targets
+
+`lookupPage(_:)` answers four things, and the two that aren't "here it is" or
+"it's gone" are the ones that make this usable by a host that isn't a folder of
+local files:
+
+```swift
+enum PageLookup {
+    case pending                    // not resolved yet
+    case present(PagePresentation)  // exists and reachable
+    case missing                    // resolved, and it's gone
+    case unavailable                // exists, not reachable right now
+}
+
+struct PagePresentation {
+    var title: String?              // nil = exists, title not resolved yet
+    var icon: String?               // nil = derive one from the title
+    var capabilities: DocumentCapabilities
+}
+
+struct DocumentCapabilities: OptionSet {
+    static let navigate, receiveBlocks, inline, setIcon: DocumentCapabilities
+    static let all: DocumentCapabilities
+}
+```
+
+**It is synchronous, and that is deliberate.** It is called while building rows,
+and its result is stored on the row and compared in `==` so `.equatable()` can
+skip re-rendering rows whose references did not change. Making it `async` would
+remove that gating and re-render the document every time a reference resolved.
+
+A host that cannot answer synchronously returns `.pending`, resolves in the
+background, and publishes the answer into observation-tracked state. SwiftUI
+re-renders, the next call returns `.present`, and the row updates — with no
+document mutation, no commit, and nothing entering the undo stack. Two
+obligations come with that, and both are load-bearing:
+
+- **Dedupe the background work.** This is called from a view body. An
+  un-deduped fetch per call is an infinite loop, not a cache miss.
+- **Be observation-tracked.** If completing the resolution doesn't invalidate
+  the view, the row stays `.pending` forever.
+
+`.pending` and `.unavailable` are not `.missing`, and the editor renders them
+differently on purpose. An unresolved reference is probably fine and must not
+look broken; an unreachable one still exists and must not invite the user to
+clean it up. Both expose no capabilities, so nothing destructive is offered
+against a target whose state is unknown.
+
+**Capabilities are per-target.** A host may hold a mix — pages you own and pages
+shared read-only, local files and ones behind a network that is down. The editor
+hides or disables an affordance before its first mutation rather than letting
+the user try and fail. Hosts with a uniform answer return `.all` and forget
+about it. There is no `delete` capability: deleting the *row* is always allowed
+because it is this document's content, and whether that should also delete the
+target is host policy, reported through `didDeleteSubpageLink`.
+
 - **`children` is `internal(set)`.** Mutations funnel through
   `transaction(name:_:)` (or its primitives `mutate` / `setText` /
   `insertSubtree` / `replaceSubtree`) so undo and heading containment
@@ -496,8 +552,8 @@ is one extension point. Only `persistCommit` and `flush` are mandatory.
 
 | Method | Signature | When it fires | Return semantics |
 |--------|-----------|---------------|------------------|
-| `suggestPages` | `(_ query: String, in: Document) -> [MentionItem]` | While the @-mention popover is visible, on every render. The query is whatever the user has typed after `@`. | Up to 8 items shown; host owns ranking/filtering. Empty array shows "No matching pages". |
-| `lookupPage` | `(_ pageID: String) -> PageLookup` | Whenever a subpage row needs to know if its target exists and what to display (rendering a `.subpage` block, an inline page link, an @-mention popover row). | `.missing` renders broken-link style and disables tap-to-navigate; `.present(title: nil)` falls back to the cached `title` on the Block / MentionItem; `.present(title: "…")` shows the resolved title. |
+| `suggestPages` | `(_ query: String, in: Document) async -> [MentionItem]` | Once per @-mention trigger change, in a task the next keystroke cancels. May be slow — the menu stays up showing the previous query's rows while it runs. | Up to 8 items shown; host owns ranking/filtering. Results are discarded if the query moved on. Empty array shows "No matching pages", but only once the search has finished. |
+| `lookupPage` | `(_ pageID: String) -> PageLookup` | While building any row that references a target. **Must be a cheap synchronous read** — see "Resolving reference targets" below. | `.present` renders normally and enables the affordances its `capabilities` allow; `.pending` renders with the block's stored label and offers nothing; `.unavailable` renders muted; `.missing` renders broken-link style. |
 | `resolvePageID` | `(_ url: URL, in: Document) -> String?` | Classifies an inline-link URL as an internal page reference. Called at render time for every inline `[text](url)` link (to decide internal-vs-external decoration), at Cmd-K-on-link time (to decide subpage-creation vs link-toggling), and at the `OpenURLAction` interceptor (to decide internal-nav vs `.systemAction`). One classifier governs all three sites. | Return the host's pageID for the URL, or nil for external/unrelated URLs. Host owns the storage convention (file path, UUID, etc.) — the editor never inspects URL contents. |
 | `openPage` | `(pageID: String) -> Void` | User taps a subpage row, or clicks an inline `[text](url)` link the editor already classified as internal via `resolvePageID`. | Host pushes the page on its navigation stack. External URLs never reach this method — the OpenURLAction site routes them to `.systemAction`. |
 | `createPage` | `(title: String, requestedPath: String?, initialContent: [Block]?) async -> String?` | Cmd-K on a paragraph that's a single link, or Turn Into → Page (the @-mention flow never creates pages). `initialContent` is the source block's tree-descendants when present. | Host persists a new page (prepending a title heading + serializing `initialContent`), returns the assigned id, or nil if creation failed (editor treats the action as a no-op — do not synthesize a fake id). |

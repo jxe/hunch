@@ -231,6 +231,11 @@ extension EditorView {
         guard target != .page else { return .ignored }
         guard let block = document.find(blockID),
               case .subpage(let title, let path) = block.kind else { return .ignored }
+        // Per-target, not just per-host: this one may be read-only, gone, or
+        // not resolved yet even where the host supports inlining in general.
+        // Checked again here rather than trusting the menu, because the answer
+        // can change between the menu opening and the command running.
+        guard host.lookupPage(path).can(.inline) else { return .ignored }
         // Load + splice + trash in a Task so the key-handler returns
         // immediately. Order inside the Task: load → mutate → state-flags
         // → trash. The host force-saves the parent doc before trashing,
@@ -578,9 +583,13 @@ extension EditorView {
             if target == .page, !host.supportsPageCreation {
                 return false
             }
+            // Hide the whole Turn Into set for a reference row that cannot be
+            // inlined, rather than offering commands that would no-op.
             if target != .page,
-               !host.supportsSubpageInlining,
-               blocks.contains(where: { if case .subpage = $0.kind { true } else { false } }) {
+               blocks.contains(where: { block in
+                   guard case .subpage(_, let path) = block.kind else { return false }
+                   return !host.supportsSubpageInlining || !host.lookupPage(path).can(.inline)
+               }) {
                 return false
             }
             if target == .template, blocks.count > 1 {

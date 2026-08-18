@@ -24,6 +24,33 @@ struct RoundTripTests {
         assertIdempotent("# Title\n\nA paragraph.\n")
     }
 
+    // MARK: - Stale link labels
+
+    /// A subpage row stores the target's title at the time it was written, so
+    /// it goes stale when the target is renamed. Full-page serialization
+    /// resolves the live title; the atomic recovery snapshot deliberately does
+    /// not, because it is filed under a hash derived from the block alone and
+    /// has to serialize the same way every time.
+    @Test func fullSerializationResolvesTheLiveTitle() {
+        let block = Block.subpage(title: "Old Name", pageID: "target.md")
+        let serialized = BlockSerializer.serialize(
+            [block],
+            resolvingSubpageTitle: { $0 == "target.md" ? "New Name" : nil }
+        )
+        #expect(serialized.contains("[New Name](target.md)"))
+    }
+
+    @Test func fullSerializationFallsBackToTheStoredTitleWhenUnresolved() {
+        let block = Block.subpage(title: "Old Name", pageID: "target.md")
+        let serialized = BlockSerializer.serialize([block], resolvingSubpageTitle: { _ in nil })
+        #expect(serialized.contains("[Old Name](target.md)"))
+    }
+
+    @Test func atomicSnapshotKeepsTheStoredTitleForDeterminism() {
+        let block = Block.subpage(title: "Old Name", pageID: "target.md")
+        #expect(BlockSerializer.serializeAtomic(block).contains("[Old Name](target.md)"))
+    }
+
     // MARK: - Content this editor has no model for
 
     /// A table is not representable as blocks here, and used to be flattened

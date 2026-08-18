@@ -82,4 +82,20 @@ struct MentionTriggerTests {
         #expect(!mentionStartsSubpageBlock(plain: "(@foo", triggerStart: 1))
         #expect(!mentionStartsSubpageBlock(plain: "see - @foo", triggerStart: 6))
     }
+
+    // MARK: - Deep heading prefixes
+
+    /// H4–H6 are representable, so a mention typed after one of their markers
+    /// is line-leading like any other. Missing these meant `#### @page` created
+    /// an inline link inside a heading instead of a reference row.
+    @Test func mentionAfterADeepHeadingMarkerIsLineLeading() {
+        #expect(mentionStartsSubpageBlock(plain: "#### @", triggerStart: 5))
+        #expect(mentionStartsSubpageBlock(plain: "##### @", triggerStart: 6))
+        #expect(mentionStartsSubpageBlock(plain: "###### @", triggerStart: 7))
+    }
+
+    @Test func mentionAfterSevenHashesIsNotLineLeading() {
+        // Not a heading marker in Markdown, so it is ordinary text.
+        #expect(!mentionStartsSubpageBlock(plain: "####### @", triggerStart: 8))
+    }
 }

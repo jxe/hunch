@@ -550,12 +550,21 @@ sweeps.
 
 - `DocumentPresentation` with the four states from the boundary section.
 - `DocumentCapabilities` as a closed `OptionSet`: `navigate`, `receiveBlocks`,
-  `inline`, `setIcon`, `delete`. Replaces the per-target uses of
+  `inline`, `setIcon`. Replaces the per-target uses of
   `supportsSubpageInlining`; document creation and the move picker stay global.
-  `pending` and `missing` expose no destructive action and do not navigate.
-- `requestPresentation(for:)` — non-blocking warm hook called from `.task` for
-  references rendered `pending`. Hunch forwards to the existing
-  `requestTitleWarm` path.
+  `pending`, `missing`, and `unavailable` expose nothing at all.
+  `delete` was dropped: deleting the row is always allowed (it is this
+  document's content) and whether that should also delete the target is host
+  policy reported through the deletion callback, so the editor never gates on
+  it. Only what the editor actually gates is in the set.
+- ~~`requestPresentation(for:)` warm hook~~ — **dropped during implementation.**
+  A separate hook would be a second mechanism doing what `lookupPage` already
+  does: Hunch's implementation kicks a deduped background warm as a side effect
+  of a cache miss and publishes through `@Observable`, and that pattern works
+  for a remote host too. What was actually missing was a state to return while
+  the warm runs. So `.pending` plus a documented contract — cheap sync read,
+  deduped background work, observation-tracked host — rather than a hook every
+  host would have to implement alongside the lookup it already has.
 - `suggestDocuments` becomes `async`, driven by `.task(id: query)` with
   cancellation and a searching state in the mention menu.
 - `MentionTrigger.swift:60-72` gains `####`, `#####`, `######`.

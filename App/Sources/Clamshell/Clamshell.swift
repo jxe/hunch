@@ -633,21 +633,42 @@ final class Clamshell {
         return entryIndex?[relativePath]
     }
 
-    /// Existence + cached title for a `*.md` page id. `.missing` when the
-    /// file isn't on disk; `.present(title: nil)` when the title cache
-    /// hasn't been warmed for the URL yet — that case kicks an off-main
-    /// warm so the next render returns the cached title via @Observable.
-    /// Safe to call from a SwiftUI body: warm requests are deduped by URL.
+    /// What is currently known about a `*.md` page id.
+    ///
+    /// `.missing` when the file isn't on disk. `.unavailable` when it exists in
+    /// the workspace but can't be written right now — an iCloud page that
+    /// hasn't been downloaded, or one we lack permission for. That distinction
+    /// is load-bearing: an undownloaded page is not gone, so the row must not
+    /// read as broken and nothing should offer to trash it, but the actions
+    /// that would write to it have to be off before the user tries. Without
+    /// this they failed at write time with an error banner instead.
+    ///
+    /// `.present(title: nil)` when the file is fine but the title cache hasn't
+    /// been warmed for it yet — that case kicks an off-main warm so the next
+    /// render returns the cached title through `@Observable`.
+    ///
+    /// Synchronous by contract (see `EditorHost.lookupPage`): it is called
+    /// while building rows. Safe from a SwiftUI body because warm requests are
+    /// deduped by URL.
     func lookupPage(_ relativePath: String) -> PageLookup {
         guard let resolved = resolveSubpageTarget(relativePath) else { return .missing }
         let url = self.url(for: resolved)
         guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        guard files.isLocallyWritable(url) else { return .unavailable }
+
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        let title: String?
         if let cached = titleCache[url], cached.modificationDate == mtime {
-            return .present(title: cached.title)
+            title = cached.title
+        } else {
+            requestTitleWarm(at: url, mtime: mtime)
+            title = nil
         }
-        requestTitleWarm(at: url, mtime: mtime)
-        return .present(title: nil)
+        // Every locally-writable Markdown page in the workspace supports every
+        // action. Hunch has one kind of target; the capability set exists for
+        // hosts that don't. The row icon is derived from the title's leading
+        // emoji rather than stored, so no `icon` is supplied here.
+        return .present(PagePresentation(title: title, capabilities: .all))
     }
 
     /// Filter + rank `entries` for any page-picker surface (search sheet,

@@ -290,6 +290,10 @@ extension EditorView {
             guard let frame = layoutCache.reorderFrame(of: row.id) else { continue }
             if case .subpage(let path) = row.kind,
                y >= frame.minY && y <= frame.maxY {
+                // A target that can't take blocks isn't a drop target at all:
+                // fall through so the drop lands between rows instead of
+                // silently doing nothing on release.
+                guard host.lookupPage(path).can(.receiveBlocks) else { continue }
                 return .intoSubpage(row.id, path)
             }
             guard y > frame.minY + edgeBand && y < frame.maxY - edgeBand else { continue }

@@ -1,26 +1,107 @@
 import Foundation
 import SwiftUI
 
-/// Existence + title resolution for an opaque host-defined page id.
-/// Returned by `EditorHost.lookupPage(_:)`. The three states a page can be in:
-///   - `.missing` — page not on disk (trashed, renamed, or never created).
-///     Subpage rows render distinctly and don't navigate on tap.
-///   - `.present(title: "…")` — page exists and the host has its title cached.
-///   - `.present(title: nil)` — page exists but the host hasn't resolved the
-///     title yet (cache miss). Render normally; call sites fall back to the
-///     block-stored title.
+/// What the editor is allowed to do with a particular reference target.
+///
+/// Per-target, not per-host. A host may hold a mix: pages you own and pages
+/// shared read-only, local files and ones behind a network that is currently
+/// down. The editor hides or disables an affordance *before* its first
+/// mutation rather than letting the user try and fail.
+///
+/// Only what the editor actually gates is listed. Deleting the *row* is always
+/// allowed — it is this document's content — and whether deleting it should
+/// also trash the target is the host's policy, reported through
+/// `didDeleteSubpageLink`, so there is no `delete` capability here.
+public struct DocumentCapabilities: OptionSet, Hashable, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    /// Open the target. Gates row taps, Return, and right-arrow.
+    public static let navigate = DocumentCapabilities(rawValue: 1 << 0)
+    /// Accept blocks moved or copied onto the row.
+    public static let receiveBlocks = DocumentCapabilities(rawValue: 1 << 1)
+    /// Load the target's content into this document and retire the target.
+    /// Gates Turn Into on a reference row.
+    public static let inline = DocumentCapabilities(rawValue: 1 << 2)
+    /// Set the target's icon from the row's icon picker.
+    public static let setIcon = DocumentCapabilities(rawValue: 1 << 3)
+
+    public static let all: DocumentCapabilities = [.navigate, .receiveBlocks, .inline, .setIcon]
+}
+
+/// Everything the editor needs to draw a reference row and decide what it may
+/// offer, for a target that currently exists.
+public struct PagePresentation: Equatable, Hashable, Sendable {
+    /// The target's current title. Nil means "exists, title not resolved yet" —
+    /// the row falls back to the label stored on the block.
+    public var title: String?
+    /// A leading emoji or short glyph for the row. Hosts with no icon concept
+    /// leave this nil; the row derives one from the title instead.
+    public var icon: String?
+    public var capabilities: DocumentCapabilities
+
+    public init(title: String? = nil, icon: String? = nil, capabilities: DocumentCapabilities = .all) {
+        self.title = title
+        self.icon = icon
+        self.capabilities = capabilities
+    }
+}
+
+/// What the host knows about an opaque reference *right now*.
+///
+/// Returned by `EditorHost.lookupPage(_:)`, which is called while building
+/// rows and must therefore be a cheap synchronous read of host-owned state.
+/// See the contract note on `lookupPage` — in particular why `.pending` exists
+/// and why making this async would be the wrong fix.
 public enum PageLookup: Equatable, Hashable, Sendable {
+    /// Not resolved yet. A host reading from a cold cache or across a network
+    /// returns this immediately and resolves in the background. The row renders
+    /// with its stored label and offers nothing destructive until the answer
+    /// arrives — an unresolved reference is not the same as a broken one, and
+    /// guessing either way is worse than saying so.
+    case pending
+    /// Exists and is reachable.
+    case present(PagePresentation)
+    /// Resolved, and the target is not there — trashed, renamed, never created.
+    /// Rows render distinctly and don't navigate.
     case missing
-    case present(title: String?)
+    /// Exists, but cannot be reached right now: offline, or permission denied.
+    /// Distinct from `.missing` because the target is not gone, so the row must
+    /// not read as broken and nothing should offer to clean it up.
+    case unavailable
 }
 
 extension PageLookup {
-    /// The resolved page title if known; nil for `.missing` and for
-    /// `.present` whose title hasn't been cached yet.
+    /// Convenience for the common case: present, fully capable, no icon.
+    public static func present(title: String?) -> PageLookup {
+        .present(PagePresentation(title: title))
+    }
+
+    /// The resolved title if known; nil in every state that doesn't have one.
     public var title: String? {
-        if case .present(let t) = self { return t }
+        if case .present(let presentation) = self { return presentation.title }
         return nil
     }
+
+    public var icon: String? {
+        if case .present(let presentation) = self { return presentation.icon }
+        return nil
+    }
+
+    /// Nothing is permitted on a target that is missing, unreachable, or not
+    /// yet resolved.
+    public var capabilities: DocumentCapabilities {
+        if case .present(let presentation) = self { return presentation.capabilities }
+        return []
+    }
+
+    public func can(_ capability: DocumentCapabilities) -> Bool {
+        capabilities.contains(capability)
+    }
+
+    /// True only when the host has resolved the target and it is gone. A
+    /// `.pending` or `.unavailable` reference is not missing, and rows must not
+    /// render it as broken.
     public var isMissing: Bool {
         if case .missing = self { return true }
         return false
@@ -39,8 +120,11 @@ public protocol EditorHost: AnyObject {
     /// Cmd-K. When false, the editor hides those creation affordances.
     var supportsPageCreation: Bool { get }
 
-    /// Whether the host can load, inline, durably save, and trash an existing
-    /// subpage. When false, a subpage row cannot be turned into another type.
+    /// Whether the host implements inlining *at all*. This is a floor, not the
+    /// per-row answer: a host that returns true must still say, per target,
+    /// whether that particular one can be inlined, via
+    /// `DocumentCapabilities.inline` on its `PageLookup`. Hosts with a uniform
+    /// answer can return true here and `.all` capabilities everywhere.
     var supportsSubpageInlining: Bool { get }
 
     /// Whether the host can present the asynchronous destination picker used
@@ -51,7 +135,13 @@ public protocol EditorHost: AnyObject {
     /// the first 8 results; host owns filtering/ranking. `document` is the
     /// page the mention is being typed into — hosts typically exclude it
     /// from the candidate pool.
-    func suggestPages(_ query: String, in document: Document) -> [MentionItem]
+    ///
+    /// Async because a host may have to search across a network to answer, and
+    /// the mention menu is not on the row-rendering hot path, so it can simply
+    /// wait. The editor drives this from a cancellable task per keystroke and
+    /// discards results whose query no longer matches what is on screen, so a
+    /// slow answer can never overwrite a newer one.
+    func suggestPages(_ query: String, in document: Document) async -> [MentionItem]
 
     /// Navigate to the workspace page identified by `pageID`. Called from
     /// subpage-row taps and from the OpenURLAction interceptor after the
@@ -65,9 +155,26 @@ public protocol EditorHost: AnyObject {
     /// this onto their own storage model.
     func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool
 
-    /// Resolve an opaque page id to its existence + title. Used by inline-link
-    /// and subpage rows for display, and by the editor to gate navigation
-    /// into broken subpage rows.
+    /// Resolve an opaque page id to what is currently known about it. Used by
+    /// inline-link and subpage rows for display, and to gate every affordance
+    /// that acts on the target.
+    ///
+    /// **This must be a cheap synchronous read of state the host already
+    /// holds.** It is called while building rows, and its result is stored on
+    /// the row and compared in `==` so `.equatable()` can skip re-rendering
+    /// rows whose references did not change. Making it `async` would remove
+    /// that gating and re-render the document on every resolution.
+    ///
+    /// A host that cannot answer synchronously — a cold cache, a network —
+    /// returns `.pending`, starts resolving in the background, and publishes
+    /// the answer into observation-tracked state. SwiftUI re-renders, the next
+    /// call returns `.present`, and the row updates without any document
+    /// mutation. Two obligations come with that:
+    ///
+    /// - **Dedupe the background work.** This is called from a view body, so
+    ///   an un-deduped fetch per call is an infinite loop, not a cache miss.
+    /// - **Be observation-tracked.** If completing the resolution doesn't
+    ///   invalidate the view, the row stays `.pending` forever.
     func lookupPage(_ pageID: String) -> PageLookup
 
     /// A `.subpage` row was deleted from `document`. The editor has already
@@ -211,7 +318,7 @@ public extension EditorHost {
     var supportsPageCreation: Bool { false }
     var supportsSubpageInlining: Bool { false }
     var supportsMoveDestinationPicker: Bool { false }
-    func suggestPages(_ query: String, in document: Document) -> [MentionItem] { [] }
+    func suggestPages(_ query: String, in document: Document) async -> [MentionItem] { [] }
     func openPage(pageID: String) {}
     func didDeleteSubpageLink(pageID: String, title: String, from document: Document) {}
     func setPageIcon(_ emoji: String, forPageID pageID: String) async -> Bool { false }

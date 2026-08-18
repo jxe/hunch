@@ -14,22 +14,47 @@ extension EditorView {
         }
     }
 
+    /// Open (or update) the mention menu for this trigger, then ask the host
+    /// for candidates.
+    ///
+    /// The menu goes up synchronously so typing never waits on the host. The
+    /// previous query's matches stay visible while the new query runs — a host
+    /// that answers over a network would otherwise blank the list between every
+    /// keystroke. Results are applied only if the menu is still open on the
+    /// same block with the same query, so a slow answer cannot overwrite a
+    /// newer one, and the in-flight query is cancelled when a newer one starts.
     private func handleMentionTriggerChange(_ trigger: MentionTrigger, blockID: BlockID) {
-        // Snapshot match candidates once per trigger change. Body renders and
-        // keyboard handlers read from `menu.matches` instead of re-querying
-        // the host on every pass.
-        let matches = Array(host.suggestPages(trigger.query, in: document).prefix(8))
         if var existing = state.mentionMenu, existing.blockID == blockID {
             existing.trigger = trigger
-            existing.matches = matches
-            if matches.isEmpty {
-                existing.selectedIndex = 0
-            } else if existing.selectedIndex >= matches.count {
-                existing.selectedIndex = matches.count - 1
-            }
+            existing.isSearching = true
             state.setMentionMenu(existing)
         } else {
-            state.setMentionMenu(MentionMenuState(blockID: blockID, trigger: trigger, selectedIndex: 0, matches: matches))
+            state.setMentionMenu(MentionMenuState(
+                blockID: blockID,
+                trigger: trigger,
+                selectedIndex: 0,
+                isSearching: true
+            ))
+        }
+
+        let query = trigger.query
+        mentionSearch.run { [host, document, state] in
+            let matches = Array(await host.suggestPages(query, in: document).prefix(8))
+            guard !Task.isCancelled else { return }
+            // The user has typed on, moved to another block, or dismissed the
+            // menu while this was in flight. Applying now would show answers to
+            // a question that is no longer on screen.
+            guard var menu = state.mentionMenu,
+                  menu.blockID == blockID,
+                  menu.trigger.query == query else { return }
+            menu.matches = matches
+            menu.isSearching = false
+            if matches.isEmpty {
+                menu.selectedIndex = 0
+            } else if menu.selectedIndex >= matches.count {
+                menu.selectedIndex = matches.count - 1
+            }
+            state.setMentionMenu(menu)
         }
     }
 
@@ -213,7 +238,11 @@ extension EditorView {
             .accessibilityHidden(true)
 
             if matches.isEmpty {
-                Text("No matching pages")
+                // "Searching…" only while there is genuinely nothing to show.
+                // Once a previous query's rows are on screen they stay there
+                // until the new answer replaces them, so a slow host reads as
+                // slightly stale rather than as flickering.
+                Text(state.mentionMenu?.isSearching == true ? "Searching…" : "No matching pages")
                     .font(configuration.theme.body(size: 12))
                     .foregroundStyle(configuration.theme.mutedForeground)
                     .padding(.horizontal, 12)

@@ -48,8 +48,24 @@ extension WorkspaceWindow: EditorHost {
         let sourceBlocksAfterDelete = document.children
 
         Task { @MainActor [weak self, pageID, title, sourcePageID, sourceURL, sourceBlocksAfterDelete] in
-            guard let self,
-                  let clamshell = self.workspace.clamshell,
+            guard let self else { return }
+
+            // Make the deletion durable before acting on it. The prompt can end
+            // with the target in Trash, and trashing a page because nothing
+            // links to it any more is only sound once "nothing links to it" is
+            // true on disk. Otherwise a crash between the two leaves the target
+            // trashed and the link that justified trashing it still in the
+            // file. Same invariant `trashAfterInlining` enforces by flushing
+            // the parent before it moves the source page — this path had the
+            // same shape and none of the protection.
+            //
+            // It also makes the reachability question well-posed: the link
+            // graph is read from disk, so asking it about a page whose latest
+            // edit is still in memory compares two different versions of the
+            // workspace.
+            await self.flush(document)
+
+            guard let clamshell = self.workspace.clamshell,
                   clamshell.entry(at: pageID) != nil else {
                 return
             }
@@ -187,7 +203,18 @@ extension WorkspaceWindow: EditorHost {
     // — Stateless app conventions —
 
     func serializeBlocksForPasteboard(_ blocks: [Block]) -> String {
-        BlockSerializer.serialize(blocks, consecutiveNumbering: true)
+        // Resolve subpage titles against the live workspace. The title stored
+        // on the block is a cache that only refreshes when its own page is
+        // saved, so copying a link to a page renamed since could paste the old
+        // name. `serializeAtomic` deliberately does *not* do this — see there.
+        guard let clamshell = workspace.clamshell else {
+            return BlockSerializer.serialize(blocks, consecutiveNumbering: true)
+        }
+        return BlockSerializer.serialize(
+            blocks,
+            resolvingSubpageTitle: { clamshell.lookupPage($0).title },
+            consecutiveNumbering: true
+        )
     }
 
     func parseBlocksFromPasteboard(_ string: String) -> [Block]? {

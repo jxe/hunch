@@ -65,7 +65,8 @@ func mentionStartsSubpageBlock(plain: String, triggerStart: Int) -> Bool {
     let atIndex = plain.index(plain.startIndex, offsetBy: triggerStart)
     let prefix = String(plain[..<atIndex]).trimmingCharacters(in: .whitespaces)
     if prefix.isEmpty { return true }
-    if ["-", "*", ">", "\"", "\u{201C}", "[]", "[ ]", "#", "##", "###"].contains(prefix) {
+    if ["-", "*", ">", "\"", "\u{201C}", "[]", "[ ]",
+        "#", "##", "###", "####", "#####", "######"].contains(prefix) {
         return true
     }
     return prefix.range(of: #"^\d+\.$"#, options: .regularExpression) != nil

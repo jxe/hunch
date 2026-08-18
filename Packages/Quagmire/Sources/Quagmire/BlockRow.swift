@@ -324,8 +324,7 @@ struct BlockRow: View, Equatable {
             templateButtonRow()
 
         case .subpage(let title, let path):
-            let lookup = pageLookups[path]
-            subpageRow(title: lookup?.title ?? title, missing: lookup?.isMissing == true)
+            subpageRow(storedTitle: title, lookup: pageLookups[path] ?? .pending)
 
         case .image(let source, let alt):
             imageRow(source: source, alt: alt)
@@ -536,8 +535,8 @@ struct BlockRow: View, Equatable {
         .padding(.leading, CGFloat(depth) * theme.indentStep)
     }
 
-    private func subpageRow(title: String, missing: Bool) -> some View {
-        subpageRowBody(title: title, missing: missing, depth: depth, theme: theme)
+    private func subpageRow(storedTitle: String, lookup: PageLookup) -> some View {
+        subpageRowBody(storedTitle: storedTitle, lookup: lookup, depth: depth, theme: theme)
             .overlay(alignment: .leading) {
                 Color.clear
                     .frame(width: theme.bulletMarkerColumnWidth)
@@ -655,41 +654,97 @@ func leadingEmojiIcon(in title: String) -> (emoji: String, rest: String)? {
     return (String(first), rest)
 }
 
-/// Shared subpage-row body (used by both the editing and preview render
-/// paths). A leading emoji in the title becomes the row icon in place of
-/// the generic `doc.text`; a missing target keeps its warning icon.
+/// Everything a reference row needs to draw itself, resolved once from the
+/// block's stored label and whatever the host currently knows about the target.
+///
+/// Split out from the view so the four lookup states can be reasoned about (and
+/// tested) in one place. The interesting cases are the ones that aren't
+/// "present": an unresolved reference must not look broken, and an unreachable
+/// one must not look gone — the first would be a lie about a target that is
+/// probably fine, the second an invitation to clean up something that still
+/// exists.
+struct SubpageRowPresentation: Equatable {
+    var title: String
+    /// Emoji to draw in the marker column. Nil means draw `symbol` instead.
+    var emoji: String?
+    var symbol: String
+    var muted: Bool
+    /// Trailing parenthetical, e.g. "(missing)". Nil when the row needs no
+    /// explanation.
+    var annotation: String?
+}
+
+func subpageRowPresentation(storedTitle: String, lookup: PageLookup) -> SubpageRowPresentation {
+    // The host's title wins when it has one; the block's stored label is the
+    // fallback, which is also all we have while a lookup is pending.
+    let title = lookup.title ?? storedTitle
+    let derived = leadingEmojiIcon(in: title)
+    let displayTitle = derived?.rest ?? title
+    // A host with real icons supplies one; hosts without an icon concept leave
+    // it nil and we fall back to a leading emoji in the title.
+    let emoji = lookup.icon ?? derived?.emoji
+
+    switch lookup {
+    case .present:
+        return SubpageRowPresentation(
+            title: displayTitle, emoji: emoji, symbol: "doc.text",
+            muted: false, annotation: nil
+        )
+    case .pending:
+        // Draw it as an ordinary row. We don't know anything is wrong, and
+        // flagging every not-yet-resolved reference would make a cold cache
+        // look like a broken document.
+        return SubpageRowPresentation(
+            title: displayTitle, emoji: emoji, symbol: "doc.text",
+            muted: false, annotation: nil
+        )
+    case .unavailable:
+        // Reachable-in-principle, not right now. Muted so it reads as degraded,
+        // but not the warning icon — nothing here needs fixing.
+        return SubpageRowPresentation(
+            title: displayTitle, emoji: emoji, symbol: "doc.badge.ellipsis",
+            muted: true, annotation: "(unavailable)"
+        )
+    case .missing:
+        return SubpageRowPresentation(
+            title: displayTitle, emoji: nil, symbol: "doc.badge.exclamationmark",
+            muted: true, annotation: "(missing)"
+        )
+    }
+}
+
+/// Shared subpage-row body (used by both the editing and preview render paths).
 @ViewBuilder
-func subpageRowBody(title: String, missing: Bool, depth: Int, theme: EditorTheme) -> some View {
-    let icon = missing ? nil : leadingEmojiIcon(in: title)
-    let displayTitle = leadingEmojiIcon(in: title)?.rest ?? title
+func subpageRowBody(storedTitle: String, lookup: PageLookup, depth: Int, theme: EditorTheme) -> some View {
+    let presentation = subpageRowPresentation(storedTitle: storedTitle, lookup: lookup)
     HStack(alignment: .firstTextBaseline, spacing: theme.listMarkerGap) {
         Group {
-            if let icon {
+            if let emoji = presentation.emoji {
                 // Slightly larger than the SF Symbol so the emoji reads at a
                 // comparable weight; the fixed frame height below keeps the
                 // row from growing.
-                Text(icon.emoji)
+                Text(emoji)
                     .font(.system(size: theme.subpageEmojiIconSize))
             } else {
-                Image(systemName: missing ? "doc.badge.exclamationmark" : "doc.text")
+                Image(systemName: presentation.symbol)
                     .font(.system(size: theme.pageIconSize))
                     .foregroundStyle(theme.mutedForeground)
             }
         }
         .frame(width: theme.bulletMarkerColumnWidth, height: theme.listMarkerFrameHeight, alignment: .trailing)
         .offset(x: theme.markerCenteringOffset(
-            markerWidth: icon != nil ? theme.subpageEmojiIconAdvance : theme.pageIconSize
+            markerWidth: presentation.emoji != nil ? theme.subpageEmojiIconAdvance : theme.pageIconSize
         ))
         .alignmentGuide(.firstTextBaseline) { dimensions in
             dimensions[VerticalAlignment.center] + theme.bulletMarkerBaselineOffset
         }
         HStack(spacing: 6) {
-            Text(displayTitle)
+            Text(presentation.title)
                 .font(theme.body(weight: .semibold))
-                .foregroundStyle(missing ? theme.mutedForeground : theme.foreground)
+                .foregroundStyle(presentation.muted ? theme.mutedForeground : theme.foreground)
                 .lineSpacing(theme.bodyLineSpacing)
-            if missing {
-                Text("(missing)")
+            if let annotation = presentation.annotation {
+                Text(annotation)
                     .font(theme.body())
                     .foregroundStyle(theme.mutedForeground)
             }
@@ -1010,10 +1065,7 @@ struct BlockRowPreview: View, Equatable {
             .padding(.leading, CGFloat(depth) * theme.indentStep)
 
         case .subpage(let title, let path):
-            let lookup = pageLookups[path]
-            let displayTitle = lookup?.title ?? title
-            let missing = lookup?.isMissing == true
-            subpageRowBody(title: displayTitle, missing: missing, depth: depth, theme: theme)
+            subpageRowBody(storedTitle: title, lookup: pageLookups[path] ?? .pending, depth: depth, theme: theme)
 
         case .image(let source, let alt):
             ImageBlockView(source: source, alt: alt, theme: theme)

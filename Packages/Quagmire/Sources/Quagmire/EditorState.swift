@@ -189,16 +189,30 @@ struct MentionMenuState: Equatable, Sendable {
     /// Match candidates for the current `trigger.query`, capped at 8.
     /// Filled by the editor on every trigger change so subsequent body
     /// renders and keyboard handlers read from state instead of re-asking
-    /// the host (`EditorHost.suggestPages` walks the workspace page list
-    /// and isn't free).
+    /// the host — `EditorHost.suggestPages` may reach across a network.
     var matches: [MentionItem]
+    /// A query is in flight. The previous query's `matches` stay on screen
+    /// while it runs: replacing them with an empty list would flash "no
+    /// results" between every keystroke on a host that answers slowly.
+    var isSearching: Bool
 
-    init(blockID: BlockID, trigger: MentionTrigger, selectedIndex: Int, matches: [MentionItem] = []) {
+    init(
+        blockID: BlockID,
+        trigger: MentionTrigger,
+        selectedIndex: Int,
+        matches: [MentionItem] = [],
+        isSearching: Bool = false
+    ) {
         self.blockID = blockID
         self.trigger = trigger
         self.selectedIndex = selectedIndex
         self.matches = matches
+        self.isSearching = isSearching
     }
+
+    /// Whether the menu has nothing to show and nothing on the way — the only
+    /// state in which "No pages" is the truth rather than a race.
+    var isDefinitivelyEmpty: Bool { matches.isEmpty && !isSearching }
 }
 
 struct EmojiMenuState: Equatable, Sendable {

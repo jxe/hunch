@@ -226,6 +226,14 @@ enum BlockSerializer {
     /// holds just `▸ Title`, a heading just `# Heading`, etc. Restoration
     /// reattaches the block as a child of whatever ancestor is still live;
     /// orphaned descendants are restored separately.
+    ///
+    /// Deliberately resolves no live titles (`titleForPath` stays nil-returning,
+    /// so a subpage row keeps the title stored on the block). This snapshot is
+    /// filed in the recovery log under a hash derived from the block alone; if
+    /// the same block serialized differently depending on whether some other
+    /// page's title cache happened to be warm, the stored markdown would drift
+    /// away from the hash identifying it. Stale but deterministic is the
+    /// property that matters here. The pasteboard makes the opposite trade.
     static func serializeAtomic(_ block: Block) -> String {
         // Full-page serialization represents an empty paragraph as spacing
         // between neighboring blocks. An isolated recovery-log snapshot has

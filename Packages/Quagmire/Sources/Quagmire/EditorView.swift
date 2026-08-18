@@ -113,6 +113,10 @@ public struct EditorView: View {
     @State var actionSheet: BlockActionSheet?
     /// Subpage row whose marker anchors the page-icon picker.
     @State var iconPickerBlockID: BlockID?
+
+    /// Owns the in-flight `@`-mention query so a newer keystroke cancels the
+    /// previous one. See `MentionSearch`.
+    @State var mentionSearch = MentionSearch()
     /// One host action may run at a time. The task is retained so leaving the
     /// editor cancels its lifetime before an async result can touch the page.
     @State var runningBlockActionID: String?
@@ -211,7 +215,7 @@ public struct EditorView: View {
                           let frame = layoutCache.frame(of: id),
                           let block = document.find(id) else { return }
                     if case .subpage(_, let pageID) = block.kind,
-                       !host.lookupPage(pageID).isMissing,
+                       host.lookupPage(pageID).can(.setIcon),
                        hitsSubpageIconColumn(point: point, rowFrame: frame, depth: row.depth, theme: theme) {
                         openPageIconPicker(for: id)
                     } else {
@@ -871,9 +875,11 @@ public struct EditorView: View {
     }
 
     private func selectPageIcon(_ emoji: String, fromSubpageBlock blockID: BlockID) {
+        // Re-checked rather than trusted from when the picker opened: the
+        // target can go missing, or go read-only, while it is up.
         guard let block = document.find(blockID),
               case .subpage(_, let pageID) = block.kind,
-              !host.lookupPage(pageID).isMissing else {
+              host.lookupPage(pageID).can(.setIcon) else {
             iconPickerBlockID = nil
             return
         }
@@ -886,7 +892,7 @@ public struct EditorView: View {
     private func openPageIconPicker(for blockID: BlockID) {
         guard let block = document.find(blockID),
               case .subpage(_, let pageID) = block.kind,
-              !host.lookupPage(pageID).isMissing else { return }
+              host.lookupPage(pageID).can(.setIcon) else { return }
         transferFocus(to: .nav(cursor: blockID))
         iconPickerBlockID = blockID
     }
@@ -2211,10 +2217,12 @@ public struct EditorView: View {
               case .subpage(_, let path) = block.kind else {
             return false
         }
-        // Silently swallow the action if the target file is gone. The row
-        // already renders in its broken state; navigating would wedge the
-        // nav stack on a load that's going to fail.
-        guard !host.lookupPage(path).isMissing else { return true }
+        // Silently swallow the action when the target can't be opened —
+        // gone, unreachable, or not resolved yet. The row already shows what
+        // it knows; navigating would wedge the nav stack on a load that is
+        // going to fail. Swallowed rather than ignored so the keypress doesn't
+        // fall through to something else.
+        guard host.lookupPage(path).can(.navigate) else { return true }
         transferFocus(to: .nav(cursor: blockID))
         host.openPage(pageID: path)
         return true
