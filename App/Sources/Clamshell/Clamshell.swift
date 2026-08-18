@@ -1719,7 +1719,12 @@ extension Clamshell.Page {
                 after = [.heading(level: .h1, text: AttributedString(title), children: before)]
             }
             guard after != before else { return }
-            document.replaceChildrenFromSystemMutation(after)
+            // Reconciled: the common branch rewrites one H1's text in place and
+            // every other block keeps its id, so an open editor keeps its undo
+            // history. The no-H1 branch above reparents the whole body under a
+            // new heading, which is not rebasable — that one degrades to a
+            // wholesale replacement on its own.
+            document.replaceChildrenReconciled(after)
             let changes = RecoveryChangeDiff.derive(pre: before, post: after)
             try await owner.commit(.fromEditorChanges(changes), to: document, at: url)
         }
@@ -1734,7 +1739,11 @@ extension Clamshell.Page {
 
         let coordinator = owner.coordinator(for: url)
         try await coordinator.withTransientDocument { document in
-            document.replaceChildrenFromSystemMutation(document.children + blocks)
+            // Reconciled: a pure append. If this page is open in another window
+            // its editor keeps selection, cursor, and undo — dropping the undo
+            // stack of a document the user is working in because a *different*
+            // window added a block to it is not acceptable.
+            document.replaceChildrenReconciled(document.children + blocks)
             try await owner.commit(
                 Commit(logEntries: Patch.adds(from: blocks).entries),
                 to: document,

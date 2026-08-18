@@ -446,12 +446,6 @@ against the current host (see the BlockID contract above).
 
 **Verify**: `swift test --package-path Packages/Quagmire` → green.
 
-Known pre-existing flake, unrelated to this work: `DocumentUndoControllerTests`
-`macTextChangesCommitAfterCheckpointDelay` fails roughly one full-suite run in
-three (timing-based, 750ms typing checkpoint starved under parallel execution)
-and passes reliably under `--filter`. Reproduced at `4c35f37` before any change
-here. Do not let it block a stage; fix it separately.
-
 ### Step 2: Split the system-replacement seam
 
 In `Model/Document.swift`:
@@ -464,9 +458,21 @@ In `Model/Document.swift`:
 - Correct the `didReplaceChildren` doc comment (`:80-83`).
 - Document both rows in `Packages/Quagmire/README.md`.
 
-Migrate the three ID-preserving Hunch call sites (`Clamshell.swift:1722`,
-`Clamshell.swift:1737`, `Clamshell+Reconcile.swift:364`) to the reconciled path.
-Leave `Clamshell+Presenter.swift:225` (external reload) on the clearing path.
+Migrate the three ID-preserving Hunch call sites (`Clamshell.swift:1722`
+`setIcon`, `Clamshell.swift:1737` `append`, `Clamshell+Reconcile.swift:364`
+link healing) to the reconciled path. Leave `Clamshell+Presenter.swift:225`
+(external reload) and `Clamshell.swift:1798` (conflict merge) on the clearing
+path.
+
+`setIcon`'s no-H1 branch wraps the existing body under a new heading, which
+reparents blocks that already existed. That is not expressible as a rebase, so
+it degrades to a wholesale replacement on its own — no special-casing needed at
+the call site, and the degradation is asserted by a test.
+
+While here: `DocumentUndoControllerTests.macTextChangesCommitAfterCheckpointDelay`
+slept a fixed 850ms against a 750ms checkpoint, which flaked under load and
+became a hard failure once this stage's tests were added. It now polls with a
+deadline.
 
 **Verify**: package tests, plus Hunch macOS tests — `ClamshellSavingTests`,
 `PageCoordinatorTests`, and `RecoveryLogTests` already exercise these call

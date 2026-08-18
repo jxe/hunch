@@ -164,6 +164,43 @@ struct PageCoordinatorTests {
         #expect(mdText.contains("shared canonical"))
     }
 
+    /// A second window appending to a page the user has open is a system
+    /// splice, not a reload: every existing block keeps its id. The open
+    /// editor must keep its undo history — a peer adding a block is not a
+    /// reason to throw away work the user could still want to take back.
+    @Test func appendingToAnOpenPagePreservesItsUndoHistory() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        let url = clamshell.url(for: "p.md")
+        try "# P\n\nseed\n".write(to: url, atomically: true, encoding: .utf8)
+        let open = try await clamshell.page(at: url).open { _ in }
+        defer { Task { try? await open.close() } }
+
+        let document = open.document
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+        document.undoManager = undoManager
+
+        let seed = document.children[0].children[0]
+        document.transaction(name: "type") {
+            document.setText(seed.id, attr("seed edited"))
+        }
+        #expect(undoManager.canUndo)
+
+        try await clamshell.page(at: url).append([.paragraph(text: attr("from another window"))])
+
+        #expect(undoManager.canUndo, "the append must not clear the open editor's undo stack")
+
+        undoManager.undo()
+
+        let text = document.children.flatMap { [$0] + $0.children }
+            .map { String($0.text.characters) }
+        #expect(text.contains("seed"), "undo restores the user's edit")
+        #expect(text.contains("from another window"), "undo must not erase the appended block")
+    }
+
     /// Teardown contract: `drain()` awaits unawaited commits and tears
     /// down remaining live pages, so an owner that drains before dropping
     /// its reference can never lose in-flight work.

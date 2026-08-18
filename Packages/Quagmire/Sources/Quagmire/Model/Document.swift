@@ -77,12 +77,18 @@ public final class Document: @MainActor Identifiable {
     @ObservationIgnored
     public var didCommitTransaction: (([DocumentChange]) -> Void)?
 
-    /// Editor-supplied hook fired after a system replacement swaps the tree
-    /// wholesale (external-edit reloads, conflict merges). Fresh parse →
-    /// fresh BlockIDs, so the editor needs to revalidate `EditorState`
-    /// against the new id set. Set by `EditorView` on mount.
+    /// Editor-supplied hook fired after a system replacement swaps the tree.
+    /// Set by `EditorView` on mount.
+    ///
+    /// The argument says how the new tree relates to the old one, because the
+    /// two cases are genuinely different and the editor should not treat them
+    /// alike. `.wholesale` is a fresh parse: nothing about the previous id set
+    /// survives, so selection and cursor have to be revalidated and any pending
+    /// typing checkpoint is stale. `.reconciled` is a splice into the existing
+    /// tree — surviving blocks kept their ids and their parents, so editor
+    /// state is still meaningful and undo was rebased rather than discarded.
     @ObservationIgnored
-    public var didReplaceChildren: (() -> Void)?
+    public var didReplaceChildren: ((DocumentReplacement) -> Void)?
 
     @ObservationIgnored
     private var editorHookSets: [UUID: EditorHooks] = [:]
@@ -90,10 +96,28 @@ public final class Document: @MainActor Identifiable {
     @ObservationIgnored
     private var transactionUndoManagerOverride: UndoManager?
 
+    /// Every outstanding undo entry's pre-mutation tree, reachable so a
+    /// reconciled system replacement can rebase it (see `SystemDelta`). The
+    /// boxes are owned by the closures registered with `UndoManager`; when it
+    /// drops an entry the box deallocates and the weak slot empties, so this
+    /// never keeps a tree alive past its undo entry.
+    @ObservationIgnored
+    private var pendingUndoSnapshots: [WeakUndoSnapshot] = []
+
+    private struct WeakUndoSnapshot {
+        weak var box: UndoTreeSnapshot?
+    }
+
+    /// Live snapshot boxes, for tests asserting the registry does not grow
+    /// past the undo entries that own its contents.
+    var outstandingUndoSnapshotCount: Int {
+        pendingUndoSnapshots.reduce(0) { $0 + ($1.box == nil ? 0 : 1) }
+    }
+
     struct EditorHooks {
         var preMutation: () -> Void
         var didCommitTransaction: ([DocumentChange]) -> Void
-        var didReplaceChildren: () -> Void
+        var didReplaceChildren: (DocumentReplacement) -> Void
     }
 
     /// Coalesce window — same `coalesceKey` within this interval is folded into
@@ -195,8 +219,14 @@ public final class Document: @MainActor Identifiable {
             // `didCommitTransaction` with the resulting diff. UndoManager
             // tracks the undo/redo direction and routes each newly-registered
             // entry onto the right stack.
+            // Boxed rather than captured directly so a later reconciled
+            // system replacement can rebase this snapshot instead of the whole
+            // stack being thrown away. See `SystemDelta`.
+            let snapshot = UndoTreeSnapshot(before)
+            pendingUndoSnapshots.removeAll { $0.box == nil }
+            pendingUndoSnapshots.append(WeakUndoSnapshot(box: snapshot))
             undoManager.registerUndo(withTarget: self) { doc in
-                doc.transaction(name: name) { doc.children = before }
+                doc.transaction(name: name) { doc.children = snapshot.blocks }
             }
             undoManager.setActionName(name)
             lastTransactionKey = coalesceKey
@@ -257,31 +287,74 @@ public final class Document: @MainActor Identifiable {
     }
 
     /// Bulk-replace the entire children list with a new tree. Bypasses undo
-    /// and the `preMutation` hook — intended for non-user operations like
-    /// conflict-resolution merges and external-edit reloads where the new
-    /// content is the authoritative state. Clears the parent cache via the
-    /// `children` setter's `didSet`. Fires `didReplaceChildren` so the editor
-    /// can revalidate selection / cursor against the new BlockID set, and
-    /// breaks coalescing so the next user transaction starts a fresh undo
-    /// entry (a disk-driven swap shouldn't fold into the prior burst).
+    /// and the `preMutation` hook — intended for non-user operations where the
+    /// new content is the authoritative state. Clears the parent cache via the
+    /// `children` setter's `didSet`, fires `didReplaceChildren(.wholesale)` so
+    /// the editor can revalidate selection / cursor against the new BlockID
+    /// set, and breaks coalescing so the next user transaction starts a fresh
+    /// undo entry (a disk-driven swap shouldn't fold into the prior burst).
     func replaceChildren(_ newChildren: [Block]) {
         children = newChildren
         lastTransactionKey = nil
         lastTransactionTime = nil
-        // Undo snapshots are whole-tree states. Once disk or other host-owned
-        // system work replaces the tree, replaying an older snapshot would
-        // erase externally-arrived blocks and incorrectly report their hashes
-        // as user-authored removals to the recovery journal.
+        // Undo snapshots are whole-tree states. Once a fresh parse replaces the
+        // tree, replaying an older snapshot would erase externally-arrived
+        // blocks and incorrectly report their hashes as user-authored removals
+        // to the recovery journal. `replaceChildrenReconciled` is the path for
+        // system changes that *can* be described well enough to keep undo.
         undoManager?.removeAllActions()
-        didReplaceChildren?()
+        pendingUndoSnapshots.removeAll()
+        notifyReplacement(.wholesale)
+    }
+
+    /// Bulk-replace with a tree the host built by splicing into this one,
+    /// reusing the existing `BlockID`s for every block that survived.
+    ///
+    /// This is the path for system changes that are not fresh parses: another
+    /// window appending blocks, a peer's journal restoring a subtree, a backend
+    /// returning a completed document on save. Those arrive routinely — a
+    /// backend whose writes come back changed would hit this on every keystroke
+    /// burst — so throwing the user's undo history away each time is not an
+    /// option.
+    ///
+    /// Instead the change is described as a `SystemDelta` and applied to every
+    /// outstanding undo snapshot, so undoing restores the user's tree *plus*
+    /// whatever the system contributed since. Returns `.reconciled` when that
+    /// worked. When the change reparents a block that already existed the delta
+    /// cannot be expressed, and this degrades to `replaceChildren` and returns
+    /// `.wholesale` — correct, just lossier for undo.
+    @discardableResult
+    public func replaceChildrenReconciled(_ newChildren: [Block]) -> DocumentReplacement {
+        guard let delta = SystemDelta(from: children, to: newChildren) else {
+            replaceChildren(newChildren)
+            return .wholesale
+        }
+        if !delta.isEmpty {
+            for slot in pendingUndoSnapshots {
+                guard let box = slot.box else { continue }
+                box.blocks = delta.rebase(box.blocks)
+            }
+        }
+        pendingUndoSnapshots.removeAll { $0.box == nil }
+        children = newChildren
+        // Still break coalescing: the next thing the user types should open its
+        // own undo entry rather than folding into a burst that predates this.
+        lastTransactionKey = nil
+        lastTransactionTime = nil
+        notifyReplacement(.reconciled)
+        return .reconciled
+    }
+
+    private func notifyReplacement(_ replacement: DocumentReplacement) {
+        didReplaceChildren?(replacement)
         for hooks in editorHookSets.values {
-            hooks.didReplaceChildren()
+            hooks.didReplaceChildren(replacement)
         }
     }
 
     /// Bulk-replace after an external writer changed the backing document.
     /// Bypasses undo and transaction emission; the new parsed tree is the
-    /// authoritative disk state.
+    /// authoritative disk state, and its ids are fresh.
     public func replaceChildrenFromExternalReload(_ newChildren: [Block]) {
         replaceChildren(newChildren)
     }
@@ -294,7 +367,8 @@ public final class Document: @MainActor Identifiable {
     }
 
     /// Bulk-replace after host-owned system work has already handled
-    /// persistence/logging separately. Prefer `transaction` for user actions.
+    /// persistence/logging separately. Prefer `transaction` for user actions,
+    /// and `replaceChildrenReconciled` when the new tree reuses this one's ids.
     public func replaceChildrenFromSystemMutation(_ newChildren: [Block]) {
         replaceChildren(newChildren)
     }

@@ -345,16 +345,46 @@ public final class Document: Identifiable {
     public weak var undoManager: UndoManager?
     public var preMutation: (() -> Void)?                       // flush in-flight NSTextView text before snapshot
     public var didCommitTransaction: (([DocumentChange]) -> Void)? // fires after every transaction (forward / undo / redo) with semantic snapshots
-    public var didReplaceChildren: (() -> Void)?                // revalidate selection after system replacements swap the tree wholesale
+    public var didReplaceChildren: ((DocumentReplacement) -> Void)? // fires after a system replacement, saying how it relates to the old tree
+
+    // System replacement (bypasses undo, `preMutation`, and change emission)
+    @discardableResult
+    public func replaceChildrenReconciled(_ newChildren: [Block]) -> DocumentReplacement
+    public func replaceChildrenFromExternalReload(_ newChildren: [Block])
+    public func replaceChildrenFromConflictResolution(_ newChildren: [Block])
+    public func replaceChildrenFromSystemMutation(_ newChildren: [Block])
 }
 ```
 
 - **`children` is `internal(set)`.** Mutations funnel through
   `transaction(name:_:)` (or its primitives `mutate` / `setText` /
   `insertSubtree` / `replaceSubtree`) so undo and heading containment
-  are applied uniformly. For bulk non-undoable replacement (conflict
-  resolution, reload, reconcile-style system mutation), use the narrowly
-  named replacement helper for that path.
+  are applied uniformly. For bulk non-authored replacement, use the narrowly
+  named replacement helper for that path — and see below, because which one
+  you pick has real consequences for the user.
+
+### Replacing the tree from outside the editor
+
+A host replaces a document's tree for two different reasons, and the editor
+needs to be told which:
+
+- **`replaceChildrenReconciled(_:)`** — you built the new tree by splicing into
+  the current one, so surviving blocks kept their `BlockID`s and their parents.
+  Another window appended blocks; a peer's journal restored a subtree; your
+  backend returned a completed document on save. Outstanding undo entries are
+  *rebased* against your change rather than discarded, so undoing restores the
+  user's tree plus whatever you contributed. Returns `.reconciled` when that
+  worked, or `.wholesale` when your tree reparented a block that already
+  existed — that case can't be expressed as a rebase, so it degrades honestly.
+- **`replaceChildrenFromExternalReload(_:)` / `…FromConflictResolution(_:)` /
+  `…FromSystemMutation(_:)`** — a fresh parse or a merge result. Nothing about
+  the old id set survives, so the undo stack is discarded.
+
+Reach for the reconciled variant whenever your ids survive. A backend whose
+writes routinely come back changed — one that completes or normalizes a
+document server-side — would otherwise clear the user's undo history on every
+save, which makes the editor unusable. Undo entries are whole-tree snapshots;
+reconciling is what keeps that design honest under a live backend.
 - **`title` is derived.** No stored field, no risk of drift after children
   mutate — pulled from the first top-level H1, then `fallbackTitle`, then
   `"Untitled"`.

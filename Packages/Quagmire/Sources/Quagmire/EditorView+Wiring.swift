@@ -212,11 +212,19 @@ extension EditorView {
                 state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
                 layoutCache.invalidateStructure()
             },
-            didReplaceChildren: {
-                undoController.cancelActiveTextCheckpoint?()
+            didReplaceChildren: { replacement in
+                // Only a wholesale swap invalidates in-flight typing: the block
+                // being edited may not exist any more, so a checkpoint timer
+                // firing afterwards would recommit text into a tree that never
+                // had it. A reconciled splice leaves the edited block where it
+                // was, and cancelling there would silently drop the user's
+                // pending undo checkpoint every time a peer appended a block.
+                if replacement == .wholesale {
+                    undoController.cancelActiveTextCheckpoint?()
+                }
                 var validIDs: Set<BlockID> = []
                 document.walk { block, _, _ in validIDs.insert(block.id) }
-                configuration.diagnostics.mode.debug("document children replaced — revalidating state against \(validIDs.count, privacy: .public) blocks")
+                configuration.diagnostics.mode.debug("document children replaced (\(String(describing: replacement), privacy: .public)) — revalidating state against \(validIDs.count, privacy: .public) blocks")
                 state.revalidate(against: validIDs, fallbackCursor: document.children.first?.id)
                 layoutCache.invalidateStructure()
             }

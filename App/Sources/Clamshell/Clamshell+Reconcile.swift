@@ -361,7 +361,9 @@ extension Clamshell {
 
         let post = await heal(pre)
         guard rewrittenCount > 0 else { return 0 }
-        doc.replaceChildrenFromSystemMutation(post)
+        // Reconciled: link healing rewrites block text in place. Ids and tree
+        // shape are untouched, so an open editor's undo history survives.
+        doc.replaceChildrenReconciled(post)
         let changes = RecoveryChangeDiff.derive(pre: pre, post: post)
         do {
             try await commit(.fromEditorChanges(changes), to: doc, at: pageURL)

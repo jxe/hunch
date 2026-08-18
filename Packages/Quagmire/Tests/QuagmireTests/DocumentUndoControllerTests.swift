@@ -59,7 +59,16 @@ struct DocumentUndoControllerTests {
         coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
         #expect(plainText(document) == "alpha")
 
-        try await Task.sleep(for: .milliseconds(850))
+        // The checkpoint is a wall-clock timer that resumes on the MainActor.
+        // Poll for the commit rather than sleeping a fixed margin past
+        // `typingCheckpointDelay`: when the rest of the suite is running
+        // concurrently the continuation can be resumed well after its nominal
+        // deadline, and a fixed sleep turns that scheduling delay into a flake.
+        // The deadline still fails the test if the checkpoint never fires.
+        let deadline = ContinuousClock.now + .seconds(5)
+        while plainText(document) != "alpha beta", ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
         #expect(plainText(document) == "alpha beta")
 
         controller.undo()
