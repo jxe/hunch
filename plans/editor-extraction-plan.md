@@ -737,6 +737,17 @@ extraction and first release.
 
 ## Milestone 7 — Extract, publish, and switch Hunch
 
+**Additional dependency (2026-08-18):** Do not begin this milestone until
+[`quagmire-0.1-foundation.md`](quagmire-0.1-foundation.md) is DONE. That plan
+changes Quagmire and Hunch together while the package is local so the first
+published `0.1.0` has the neutral `documentLink` row, H1–H6 representation,
+unsupported fallback, tested BlockID lifecycle, and a host boundary a
+network-backed backend can actually conform to (per-reference presentation with
+a `pending` state and warm hook, per-target capabilities, async mention
+suggestions, and a system-replacement seam that does not clear undo on an
+ID-preserving splice). There is no intermediate public Hunch-specific API and no
+planned immediate corrective `0.2.0`.
+
 ### Goal
 
 Preserve the named package’s history, publish a tested `0.1.0`, and make Hunch
