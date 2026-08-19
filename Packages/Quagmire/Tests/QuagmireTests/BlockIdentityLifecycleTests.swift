@@ -4,7 +4,7 @@ import Testing
 @testable import Quagmire
 
 /// Executable form of the BlockID lifecycle contract documented in
-/// `Packages/Quagmire/README.md` and `plans/quagmire-0.1-foundation.md`.
+/// `Packages/Quagmire/README.md`.
 ///
 /// `BlockID` is *editor* identity, scoped to one live `Document`. It is not
 /// storage identity: nothing here promises an id survives a process restart,

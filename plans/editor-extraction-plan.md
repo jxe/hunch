@@ -161,7 +161,7 @@ contention. The executor may choose a unique path under `/tmp`.
 | Hunch macOS tests | `xcodebuild test -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -derivedDataPath /tmp/hunch-editor-plan-macos CODE_SIGNING_ALLOWED=NO` | Exit 0; Hunch unit tests pass |
 | Hunch macOS build | `xcodebuild build -project Hunch.xcodeproj -scheme Hunch -destination 'platform=macOS' -derivedDataPath /tmp/hunch-editor-plan-macos-build CODE_SIGNING_ALLOWED=NO` | Exit 0 |
 | Hunch iOS build | `xcodebuild build -project Hunch.xcodeproj -scheme Hunch -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/hunch-editor-plan-ios CODE_SIGNING_ALLOWED=NO` | Exit 0 |
-| Focused iOS UI tests | Use the existing `HunchUITests` scheme with `-only-testing:` for `HunchDragAndDropUITests`, `HunchEditScrollUITests`, and `HunchSplitKeyboardUITests` on the installed iOS 27 simulator only | No new failures beyond those recorded in `plans/editor-extraction-baseline.md` |
+| Focused iOS UI tests | Use the existing `HunchUITests` scheme with `-only-testing:` for `HunchDragAndDropUITests`, `HunchEditScrollUITests`, and `HunchSplitKeyboardUITests` on the installed iOS 27 simulator only | No new failures beyond those recorded in `plans/records/editor-extraction-baseline.md` |
 
 If `xcodegen generate` changes `Hunch.xcodeproj/project.pbxproj`, include the
 generated change when it is a consequence of an intentional `project.yml`
@@ -647,7 +647,7 @@ dependency declarations.
 
 The selected name is **Quagmire**. Consumers write `import Quagmire`; the
 standalone repository slug is `quagmire`. The research and accepted tradeoffs
-are recorded in `plans/editor-name-landscape.md`.
+are recorded in `plans/records/editor-name-landscape.md`.
 
 Apply these conventions:
 
@@ -671,7 +671,7 @@ remains.
 ### Work
 
 1. Record the selected `Quagmire` identity and its accepted collision tradeoffs
-   from `plans/editor-name-landscape.md` in the package documentation.
+   from `plans/records/editor-name-landscape.md` in the package documentation.
 2. Rename the package directory, Swift package, library product, module, source
    and test targets, imports, logging defaults, and local dependency references
    consistently. Regenerate the tracked Xcode project. Keep public type names
@@ -737,16 +737,16 @@ extraction and first release.
 
 ## Milestone 7 — Extract, publish, and switch Hunch
 
-**Additional dependency (2026-08-18):** Do not begin this milestone until
-[`quagmire-0.1-foundation.md`](quagmire-0.1-foundation.md) is DONE. That plan
-changes Quagmire and Hunch together while the package is local so the first
-published `0.1.0` has the neutral `documentLink` row, H1–H6 representation,
-unsupported fallback, tested BlockID lifecycle, and a host boundary a
-network-backed backend can actually conform to (per-reference presentation with
-a `pending` state and warm hook, per-target capabilities, async mention
-suggestions, and a system-replacement seam that does not clear undo on an
-ID-preserving splice). There is no intermediate public Hunch-specific API and no
-planned immediate corrective `0.2.0`.
+**Foundation dependency satisfied (2026-08-18):** The local Quagmire/Hunch
+foundation is complete, including review follow-ups through Hunch commit
+`ef37cc6`. The first published `0.1.0` therefore starts with one neutral
+`documentLink` row, H1–H6 representation, unsupported/raw fallback, tested
+BlockID lifecycle, per-reference observed presentation with a `pending` state,
+per-target capabilities, async mention suggestions, and a system-replacement
+seam that preserves undo for safe ID-preserving splices. Hunch migrated at the
+same time and retains its former subpage-row behavior through the new type.
+There is no intermediate public Hunch-specific API and no planned immediate
+corrective `0.2.0`.
 
 ### Goal
 

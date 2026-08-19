@@ -65,9 +65,10 @@ private final class FullHost: EditorHost {
 @Suite("Public API consumer")
 struct PublicAPIConsumerTests {
 
-    /// Each assertion here fails if the matching `FullHost` method stops
-    /// satisfying its requirement — because then the default answers instead,
-    /// and the default is deliberately the opposite value.
+    /// These assertions catch a future blanket `EditorHost` default absorbing
+    /// a mistyped `FullHost` implementation. With the current bare protocol
+    /// conformance, that mistake is already a compile error; if a blanket
+    /// default is reintroduced, its deliberately opposite value fails here.
     @MainActor
     @Test func everyOverrideActuallySatisfiesItsRequirement() async {
         let document = Document(id: DocumentID("d"), children: [.paragraph(text: AttributedString("x"))])
