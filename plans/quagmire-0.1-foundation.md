@@ -774,6 +774,33 @@ Three deviations from the plan as written, each argued at the point it came up:
 
 Left for Milestone 7: extraction. Nothing here published, tagged, or pushed.
 
+### Review findings, closed
+
+An external review after the fact caught three things, all real:
+
+1. **`SystemDelta` refused reparenting but not reordering.** A system change
+   that only reorders surviving siblings produced an *empty* delta — nothing to
+   rebase — so snapshots kept the old order and the next undo quietly reverted
+   the reorder. Reproduced at root and nested level, then fixed by comparing the
+   surviving-sibling sequence per scope and refusing (`.wholesale`) when it
+   differs. Refused rather than modelled, for the same reason as reparenting:
+   applying "the system moved B before A" to a snapshot containing neither is a
+   guess. Bounded by tests proving insertion and removal *between* survivors
+   still reconcile.
+2. **Two promised failure/observation tests were missing.** The package test for
+   inline-then-retire only made the combined host call return false, which says
+   nothing about the flush-before-Trash order inside `trashAfterInlining`. Added
+   an app-level test that makes the parent's directory unwritable so the flush
+   genuinely throws, and asserts the source is not trashed — verified
+   non-vacuous by changing `try` to `try?`, which trashes it. Also added the
+   `.pending → .present` test the Step 6 verify called for: same lookup call,
+   new answer, row updates, no commit and no tree mutation, and the warm is
+   deduped.
+3. **Release docs carried stale signatures.** The `createDocument` row still
+   read `requestedPath: String? -> String?` and `moveDestination` still said
+   `.page`. Fixed, along with a `FullHost` comment still describing the
+   blanket-default design.
+
 ### Follow-up, now closed
 
 Every `EditorHost` requirement used to have a default implementation, which is

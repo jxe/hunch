@@ -56,6 +56,24 @@ struct SystemDelta {
             if newIndex.parent[id] != oldParent { return nil }
         }
 
+        // Nor may surviving siblings change their order relative to each other.
+        // Insertions and removals are fine — those are what this type is for —
+        // so the comparison drops anything that arrived or left and asks
+        // whether what remains still reads the same way.
+        //
+        // A reorder is refused rather than modelled. Applying "the system moved
+        // B before A" to a snapshot that may contain neither is the same guess
+        // reparenting asks for. Left unrefused it is the more dangerous of the
+        // two, because a pure reorder produces an *empty* delta: nothing to
+        // rebase, snapshots left holding the old order, and the next undo
+        // quietly reverting a change the user never made.
+        for (scope, oldSiblings) in oldIndex.siblings {
+            guard let newSiblings = newIndex.siblings[scope] else { continue }
+            let oldSurvivors = oldSiblings.filter { newIndex.byID[$0] != nil }
+            let newSurvivors = newSiblings.filter { oldIndex.byID[$0] != nil }
+            if oldSurvivors != newSurvivors { return nil }
+        }
+
         var removed: Set<BlockID> = []
         for (id, _) in oldIndex.byID where newIndex.byID[id] == nil {
             // Only record roots — removing a root takes its descendants along.
@@ -187,9 +205,12 @@ private struct TreeIndex {
     /// Present for every indexed block; the value is nil at root level, so this
     /// is read as `parent[id] ?? nil` when a plain optional is wanted.
     var parent: [BlockID: BlockID?] = [:]
+    /// Child ids in order, per scope. The nil key is the root list.
+    var siblings: [BlockID?: [BlockID]] = [:]
 
     init(_ blocks: [Block]) {
         func walk(_ blocks: [Block], parent parentID: BlockID?) {
+            siblings[parentID] = blocks.map(\.id)
             for block in blocks {
                 byID[block.id] = block
                 parent[block.id] = parentID

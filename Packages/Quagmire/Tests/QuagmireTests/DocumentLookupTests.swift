@@ -101,6 +101,43 @@ struct PageLookupTests {
         #expect(row.title == "Apples")
     }
 
+    // MARK: - Resolving after the fact
+
+    /// The contract that makes a synchronous lookup usable by a host that
+    /// cannot answer synchronously: return `.pending`, resolve in the
+    /// background, and let the *next* read pick up the answer. The row updates
+    /// without the document being touched — no commit, nothing on the undo
+    /// stack, and no authored change for the host to persist.
+    @Test func aWarmedLookupChangesTheRowWithoutMutatingTheDocument() {
+        let host = ResolvingTestHost()
+        let link = Block.documentLink(label: AttributedString("Stored Label"), reference: DocumentReference("t.md"))
+        let doc = Document(id: DocumentID("d"), children: [link])
+        var commits = 0
+        doc.didCommitTransaction = { _ in commits += 1 }
+        let childrenBefore = doc.children
+
+        // First read: nothing known yet, so the row shows the authored label.
+        let cold = resolveDocumentLookups(for: link, host: host, in: doc)
+        #expect(cold["t.md"] == .pending)
+        #expect(documentLinkRowPresentation(storedLabel: link.text, lookup: cold["t.md"]!).title == "Stored Label")
+        #expect(host.warmRequests == 1, "the miss kicks exactly one warm")
+
+        // A second read before the warm lands must not kick another: this is
+        // called from a view body, so an un-deduped fetch is a spin, not a miss.
+        _ = resolveDocumentLookups(for: link, host: host, in: doc)
+        #expect(host.warmRequests == 1)
+
+        host.completeWarm(title: "Live Title")
+
+        // Same call, same block, new answer — the row now shows the live title.
+        let warm = resolveDocumentLookups(for: link, host: host, in: doc)
+        #expect(warm["t.md"]?.title == "Live Title")
+        #expect(documentLinkRowPresentation(storedLabel: link.text, lookup: warm["t.md"]!).title == "Live Title")
+
+        #expect(commits == 0, "resolving a reference is not an edit")
+        #expect(doc.children == childrenBefore, "and must not touch the tree")
+    }
+
     // MARK: - Affordance gating
 
     @Test func navigationIsRefusedUnlessTheTargetSaysItCanBeOpened() {
@@ -292,4 +329,27 @@ private final class CapabilityTestHost: EditorHostDefaults {
         if suggestAlreadyFinished { suggestAlreadyFinished = false; return }
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in suggestFinished = c }
     }
+}
+
+
+/// Answers `.pending` until warmed, the way a host reading across a network
+/// has to. Counts warm requests so the dedupe obligation is checked too.
+@MainActor
+private final class ResolvingTestHost: EditorHostDefaults {
+    private var resolved: String?
+    private(set) var warmRequests = 0
+
+    func lookupDocument(_ reference: DocumentReference) -> DocumentLookup {
+        guard let resolved else {
+            // Deduped: a real host guards this on a set of in-flight requests.
+            if warmRequests == 0 { warmRequests += 1 }
+            return .pending
+        }
+        return .present(title: resolved)
+    }
+
+    func completeWarm(title: String) { resolved = title }
+
+    func persistCommit(changes: [DocumentChange], in document: Document) {}
+    func flush(_ document: Document) async {}
 }

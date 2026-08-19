@@ -8,16 +8,19 @@ private final class MinimalHost: EditorHostDefaults {
     func flush(_ document: Document) async {}
 }
 
-/// A host that overrides every requirement, each answering distinguishably from
-/// the protocol default.
+/// A host implementing every requirement, each answering distinguishably from
+/// the default its opt-out marker would supply.
 ///
-/// Every `EditorHost` requirement has a default implementation, which is what
-/// lets a host adopt the protocol with two methods. The cost is that a
-/// *mistyped* override is not an error — it is an overload, and the default
-/// silently wins. Get one signature wrong and the editor quietly loses that
-/// capability with nothing to show for it at build time. This suite is the
-/// tripwire: if a signature in the protocol changes without this file changing
-/// with it, the corresponding assertion below fails.
+/// Deliberately conforms to bare `EditorHost` and adopts no markers, so there
+/// is nothing to fall back on: if a requirement's signature changes and this
+/// file is not updated with it, *this file stops compiling* and names the
+/// method. That is the primary guarantee here, and it is stronger than any
+/// assertion — the checks below then serve as a second line, pinning what each
+/// default is so a change to one is visible rather than absorbed.
+///
+/// The wider hazard this guards is described in the README under "Opting out
+/// of a surface": defaults on the protocol itself make a mistyped override an
+/// overload rather than an error, and the default silently wins.
 @MainActor
 private final class FullHost: EditorHost {
     var supportsDocumentCreation: Bool { true }

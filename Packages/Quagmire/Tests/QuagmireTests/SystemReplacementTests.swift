@@ -161,6 +161,67 @@ struct SystemReplacementTests {
         #expect(String(doc.children[0].children[0].text.characters) == "body")
     }
 
+    // MARK: - Reordering
+
+    @Test func aSystemReorderIsNotUndoneByAnUnrelatedUndo() {
+        let a = Block.paragraph(text: AttributedString("a"))
+        let b = Block.paragraph(text: AttributedString("b"))
+        let (doc, undoManager) = Self.undoableDocument([a, b])
+
+        doc.transaction(name: "edit") {
+            doc.setText(a.id, AttributedString("edited"))
+        }
+        // A peer reordered the siblings. Nothing was added or removed, so the
+        // delta would be empty — which is exactly why this has to be refused
+        // rather than treated as a no-op change.
+        #expect(doc.replaceChildrenReconciled([doc.children[1], doc.children[0]]) == .wholesale)
+        #expect(doc.children.map(\.id) == [b.id, a.id])
+        #expect(!undoManager.canUndo, "refusing means the undo stack goes, not the reorder")
+
+        undoManager.undo()
+
+        #expect(doc.children.map(\.id) == [b.id, a.id],
+                "undoing a text edit must not also undo the system's reorder")
+    }
+
+    @Test func aNestedSystemReorderIsNotUndoneEither() {
+        let x = Block.bullet(text: AttributedString("x"))
+        let y = Block.bullet(text: AttributedString("y"))
+        let parent = Block.bullet(text: AttributedString("parent"), children: [x, y])
+        let (doc, undoManager) = Self.undoableDocument([parent])
+
+        doc.transaction(name: "edit") {
+            doc.setText(x.id, AttributedString("edited"))
+        }
+        #expect(doc.replaceChildrenReconciled([parent.withChildren([y, x])]) == .wholesale)
+        #expect(doc.children[0].children.map(\.id) == [y.id, x.id])
+
+        undoManager.undo()
+
+        #expect(doc.children[0].children.map(\.id) == [y.id, x.id],
+                "same rule one level down")
+    }
+
+    @Test func insertingBetweenSurvivorsIsStillReconciled() {
+        let a = Block.paragraph(text: AttributedString("a"))
+        let c = Block.paragraph(text: AttributedString("c"))
+        let (doc, _) = Self.undoableDocument([a, c])
+        let b = Block.paragraph(text: AttributedString("b"))
+
+        // Survivor order (a before c) is unchanged, so the arrival of b between
+        // them is an ordinary insertion, not a reorder.
+        #expect(doc.replaceChildrenReconciled([a, b, c]) == .reconciled)
+    }
+
+    @Test func removingBetweenSurvivorsIsStillReconciled() {
+        let a = Block.paragraph(text: AttributedString("a"))
+        let b = Block.paragraph(text: AttributedString("b"))
+        let c = Block.paragraph(text: AttributedString("c"))
+        let (doc, _) = Self.undoableDocument([a, b, c])
+
+        #expect(doc.replaceChildrenReconciled([a, c]) == .reconciled)
+    }
+
     // MARK: - Degrading honestly
 
     @Test func reparentingIsNotRebasableAndFallsBackToWholesale() {

@@ -23,6 +23,54 @@ struct ClamshellSavingTests {
 
     private func attr(_ s: String) -> AttributedString { AttributedString(s) }
 
+    /// `trashAfterInlining` must flush the parent before it moves the source to
+    /// Trash. If the flush throws, the Trash move has to be unreachable —
+    /// otherwise a crash-free failure still deletes the source while the copy
+    /// that replaced it was never written.
+    ///
+    /// The package-level test for this only makes the whole host call return
+    /// false, which says nothing about the order of the two steps inside it.
+    /// This one fails the flush for real and checks the source is still there.
+    @Test func aFailedParentFlushLeavesTheSourceUntrashed() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        // Parent lives in its own directory so it can be made unwritable
+        // without also blocking the Trash move — otherwise the source would
+        // survive for the wrong reason and the test would prove nothing.
+        let subdir = root.appendingPathComponent("Sub", isDirectory: true)
+        try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
+        let parentURL = subdir.appendingPathComponent("Parent.md")
+        try "# Parent\n\nbody\n".write(to: parentURL, atomically: true, encoding: .utf8)
+
+        let childURL = clamshell.url(for: "Child.md")
+        try "# Child\n\nchild body\n".write(to: childURL, atomically: true, encoding: .utf8)
+
+        let parentSession = try await clamshell.page(at: parentURL).open { _ in }
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: subdir.path)
+            Task { try? await parentSession.close() }
+        }
+
+        // Queue a write, then take away the ability to perform it.
+        let inlined = Block.paragraph(text: attr("inlined body"))
+        parentSession.document.replaceChildrenReconciled(parentSession.document.children + [inlined])
+        parentSession.enqueueEditorChanges([.inserted(block: inlined, parent: nil)])
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: subdir.path)
+
+        var flushFailed = false
+        do {
+            try await clamshell.page(at: childURL).trashAfterInlining(into: parentSession)
+        } catch {
+            flushFailed = true
+        }
+
+        #expect(flushFailed, "the unwritable parent must surface its failure")
+        #expect(FileManager.default.fileExists(atPath: childURL.path),
+                "the source must not be trashed when the copy of its content never landed")
+    }
+
     /// User types in a paragraph block, then commits (blur / navigation / etc.).
     /// The transaction diff produces a `(.remove(old), .insert(new))` op pair.
     /// After flush, the journal must tombstone the old hash and mark the new
