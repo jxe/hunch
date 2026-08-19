@@ -363,8 +363,12 @@ needs to be told which:
   backend returned a completed document on save. Outstanding undo entries are
   *rebased* against your change rather than discarded, so undoing restores the
   user's tree plus whatever you contributed. Returns `.reconciled` when that
-  worked, or `.wholesale` when your tree reparented a block that already
-  existed — that case can't be expressed as a rebase, so it degrades honestly.
+  worked, or `.wholesale` when it couldn't. Two shapes can't be expressed as a
+  rebase and degrade honestly instead: **reparenting** a block that already
+  existed, and **reordering** surviving siblings. Both would require guessing
+  where a moved block belongs in a stale snapshot that may not contain its new
+  neighbours. Insertions, removals, and in-place value changes — the shapes a
+  backend actually produces — all reconcile.
 - **`replaceChildrenFromExternalReload(_:)` / `…FromConflictResolution(_:)` /
   `…FromSystemMutation(_:)`** — a fresh parse or a merge result. Nothing about
   the old id set survives, so the undo stack is discarded.

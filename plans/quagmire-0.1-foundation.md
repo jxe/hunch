@@ -787,7 +787,8 @@ An external review after the fact caught three things, all real:
    applying "the system moved B before A" to a snapshot containing neither is a
    guess. Bounded by tests proving insertion and removal *between* survivors
    still reconcile.
-2. **Two promised failure/observation tests were missing.** The package test for
+2. **Two promised failure/observation tests were missing.** *(The
+   `.pending → .present` half needed a second pass — see below.)* The package test for
    inline-then-retire only made the combined host call return false, which says
    nothing about the flush-before-Trash order inside `trashAfterInlining`. Added
    an app-level test that makes the parent's directory unwritable so the flush
@@ -800,6 +801,17 @@ An external review after the fact caught three things, all real:
    read `requestedPath: String? -> String?` and `moveDestination` still said
    `.page`. Fixed, along with a `FullHost` comment still describing the
    blanket-default design.
+
+A follow-up review then caught that the `.pending → .present` test proved only
+half its contract: it re-read the lookup manually after warming, which a host
+publishing into untracked storage would also pass — while leaving a real UI
+pending forever, because nothing ever asks again. The test now drives the read
+through `withObservationTracking` and asserts the warm fires it *before*
+checking the new value at all; making the host's resolution
+`@ObservationIgnored` fails it. Two doc remnants from the same review: the
+`.wholesale` reasons omitted reordering, and `FullHost`'s comment still
+described a marker default answering for it when bare conformance means a
+signature change is a compile error instead.
 
 ### Follow-up, now closed
 

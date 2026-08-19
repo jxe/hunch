@@ -104,11 +104,17 @@ struct PageLookupTests {
     // MARK: - Resolving after the fact
 
     /// The contract that makes a synchronous lookup usable by a host that
-    /// cannot answer synchronously: return `.pending`, resolve in the
-    /// background, and let the *next* read pick up the answer. The row updates
-    /// without the document being touched — no commit, nothing on the undo
-    /// stack, and no authored change for the host to persist.
-    @Test func aWarmedLookupChangesTheRowWithoutMutatingTheDocument() {
+    /// cannot answer synchronously, in full: return `.pending`, resolve in the
+    /// background, and — crucially — *invalidate whatever read the pending
+    /// answer* so the row is asked again.
+    ///
+    /// The invalidation half is the part worth testing. A host that resolves
+    /// correctly but publishes into untracked storage passes every check about
+    /// return values while leaving a real UI pending forever, because nothing
+    /// ever asks a second time. So this drives the read through
+    /// `withObservationTracking` — which is what SwiftUI does underneath — and
+    /// asserts the warm fires it before checking the new answer at all.
+    @Test func completingAWarmInvalidatesWhateverReadThePendingAnswer() {
         let host = ResolvingTestHost()
         let link = Block.documentLink(label: AttributedString("Stored Label"), reference: DocumentReference("t.md"))
         let doc = Document(id: DocumentID("d"), children: [link])
@@ -116,20 +122,32 @@ struct PageLookupTests {
         doc.didCommitTransaction = { _ in commits += 1 }
         let childrenBefore = doc.children
 
-        // First read: nothing known yet, so the row shows the authored label.
-        let cold = resolveDocumentLookups(for: link, host: host, in: doc)
+        // `onChange` is `@Sendable`, so the flag lives in a box. It fires
+        // synchronously on the mutating thread, which here is this one.
+        let invalidation = InvalidationFlag()
+        var cold: [String: DocumentLookup] = [:]
+        withObservationTracking {
+            // The editor's real read path, not `lookupDocument` directly: the
+            // dependency has to be registered by what actually builds the row.
+            cold = resolveDocumentLookups(for: link, host: host, in: doc)
+        } onChange: {
+            invalidation.fired = true
+        }
+
         #expect(cold["t.md"] == .pending)
         #expect(documentLinkRowPresentation(storedLabel: link.text, lookup: cold["t.md"]!).title == "Stored Label")
         #expect(host.warmRequests == 1, "the miss kicks exactly one warm")
+        #expect(!invalidation.fired, "nothing has resolved yet")
 
-        // A second read before the warm lands must not kick another: this is
-        // called from a view body, so an un-deduped fetch is a spin, not a miss.
+        // A second read before the warm lands must not kick another: this runs
+        // in a view body, so an un-deduped fetch is a spin, not a miss.
         _ = resolveDocumentLookups(for: link, host: host, in: doc)
         #expect(host.warmRequests == 1)
 
         host.completeWarm(title: "Live Title")
 
-        // Same call, same block, new answer — the row now shows the live title.
+        #expect(invalidation.fired, "completing the warm must invalidate the read, or the row never asks again")
+
         let warm = resolveDocumentLookups(for: link, host: host, in: doc)
         #expect(warm["t.md"]?.title == "Live Title")
         #expect(documentLinkRowPresentation(storedLabel: link.text, lookup: warm["t.md"]!).title == "Live Title")
@@ -332,12 +350,23 @@ private final class CapabilityTestHost: EditorHostDefaults {
 }
 
 
+/// Records that an observation fired, from the `@Sendable` `onChange` closure.
+private final class InvalidationFlag: @unchecked Sendable {
+    var fired = false
+}
+
 /// Answers `.pending` until warmed, the way a host reading across a network
-/// has to. Counts warm requests so the dedupe obligation is checked too.
+/// has to — and `@Observable`, the way the contract requires, so that
+/// completing the warm invalidates readers instead of just changing an answer
+/// nobody asks for again. `Clamshell` is `@Observable` for exactly this reason.
 @MainActor
+@Observable
 private final class ResolvingTestHost: EditorHostDefaults {
     private var resolved: String?
-    private(set) var warmRequests = 0
+
+    /// Not observed: bookkeeping about the warm must not itself invalidate
+    /// readers, or every lookup would schedule another render.
+    @ObservationIgnored private(set) var warmRequests = 0
 
     func lookupDocument(_ reference: DocumentReference) -> DocumentLookup {
         guard let resolved else {

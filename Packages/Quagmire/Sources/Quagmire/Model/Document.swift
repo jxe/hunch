@@ -320,9 +320,11 @@ public final class Document: @MainActor Identifiable {
     /// Instead the change is described as a `SystemDelta` and applied to every
     /// outstanding undo snapshot, so undoing restores the user's tree *plus*
     /// whatever the system contributed since. Returns `.reconciled` when that
-    /// worked. When the change reparents a block that already existed the delta
-    /// cannot be expressed, and this degrades to `replaceChildren` and returns
-    /// `.wholesale` — correct, just lossier for undo.
+    /// worked. Two shapes cannot be expressed as a rebase — reparenting a block
+    /// that already existed, and reordering surviving siblings — and those
+    /// degrade to `replaceChildren` and return `.wholesale`: correct, just
+    /// lossier for undo. See `SystemDelta` for why they are refused rather than
+    /// guessed at.
     @discardableResult
     public func replaceChildrenReconciled(_ newChildren: [Block]) -> DocumentReplacement {
         guard let delta = SystemDelta(from: children, to: newChildren) else {

@@ -8,19 +8,22 @@ private final class MinimalHost: EditorHostDefaults {
     func flush(_ document: Document) async {}
 }
 
-/// A host implementing every requirement, each answering distinguishably from
-/// the default its opt-out marker would supply.
+/// A host implementing every `EditorHost` requirement, each answering
+/// distinguishably from the value an opt-out marker would supply.
 ///
-/// Deliberately conforms to bare `EditorHost` and adopts no markers, so there
-/// is nothing to fall back on: if a requirement's signature changes and this
-/// file is not updated with it, *this file stops compiling* and names the
-/// method. That is the primary guarantee here, and it is stronger than any
-/// assertion — the checks below then serve as a second line, pinning what each
-/// default is so a change to one is visible rather than absorbed.
+/// It conforms to bare `EditorHost` and adopts no markers, so nothing here can
+/// fall back on anything: get a signature wrong and *this file stops
+/// compiling*, naming the method. That is the guarantee, and no assertion is
+/// needed to get it.
 ///
-/// The wider hazard this guards is described in the README under "Opting out
-/// of a surface": defaults on the protocol itself make a mistyped override an
-/// overload rather than an error, and the default silently wins.
+/// So what are the assertions for? They guard the design rather than this
+/// file. The hazard described in the README under "Opting out of a surface" is
+/// that defaults living on `EditorHost` itself make a mistyped override an
+/// overload rather than an error. If someone reintroduces a blanket
+/// `extension EditorHost` default, the compile-time check silently stops
+/// working — this host would keep building with a wrong signature, and the
+/// default would answer. The checks below are what notices, because each
+/// distinguishable answer would revert to a neutral one.
 @MainActor
 private final class FullHost: EditorHost {
     var supportsDocumentCreation: Bool { true }
