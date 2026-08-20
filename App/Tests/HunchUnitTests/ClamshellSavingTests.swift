@@ -383,6 +383,31 @@ struct ClamshellSavingTests {
         }
     }
 
+    @Test func appendBlocksKeepsDestinationTitleInMergedEntriesCache() async throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clamshell = Clamshell(root: root)
+
+        let relativePath = try clamshell.createDocument(
+            title: "Human Title",
+            requestedPath: "machine-name.md",
+            initialContent: nil
+        )
+        #expect(clamshell.entry(at: relativePath)?.title == "Human Title")
+        let before = clamshell.entry(at: relativePath)?.modificationDate
+
+        try await clamshell.page(atPath: relativePath).append([
+            .paragraph(text: attr("dropped body"))
+        ])
+
+        let entry = try #require(clamshell.entry(at: relativePath))
+        #expect(entry.title == "Human Title",
+                "a content-only save must not make the merged page list reject its cached title")
+        #expect(entry.modificationDate != before,
+                "the merged page entry should advance to the saved file's timestamp")
+        #expect(clamshell.lookupDocument(relativePath).title == "Human Title")
+    }
+
     @Test func appendBlocksMutatesLiveDestinationPage() async throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

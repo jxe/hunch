@@ -178,16 +178,16 @@ struct ContentView: View {
             Text(workspace.error ?? "")
         }
         .overlay(alignment: .top) {
-            if let banner = workspace.banner {
+            if let banner = presentedBanner {
                 BannerView(banner: banner) {
-                    if workspace.banner?.id == banner.id { workspace.banner = nil }
+                    dismissPresentedBanner(banner)
                 }
                 .padding(.horizontal, 16)
                 .frame(maxWidth: 480)
                 .allowsHitTesting(true)
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: workspace.banner?.id)
+        .animation(.easeInOut(duration: 0.2), value: presentedBanner?.id)
         #if os(iOS)
         .onChange(of: quickActions.iconPickerRequestID, initial: true) { _, _ in
             if quickActions.consumeIconPickerRequest() {
@@ -196,6 +196,22 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showIconPicker) { IconPickerView() }
         #endif
+    }
+
+    /// Workspace failures and reconcile results take precedence, but a
+    /// persistent page action remains underneath and can reappear after the
+    /// transient workspace banner dismisses.
+    private var presentedBanner: Workspace.Banner? {
+        workspace.banner ?? window.pageBanner
+    }
+
+    private func dismissPresentedBanner(_ banner: Workspace.Banner) {
+        if workspace.banner?.id == banner.id {
+            workspace.banner = nil
+        }
+        if window.pageBanner?.id == banner.id {
+            window.pageBanner = nil
+        }
     }
 
     /// NavigationStack root: the home page editor when home is set and loaded;

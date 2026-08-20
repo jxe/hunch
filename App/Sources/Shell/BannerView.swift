@@ -1,11 +1,9 @@
 import SwiftUI
 
 /// Transient informational banner overlaid at the top of the editor window.
-/// Bound to `Workspace.banner`; clears the source when its 4s timer expires
-/// or when the user taps it. Last-write-wins across windows — multiple
-/// banners arriving in quick succession look like one banner whose text
-/// changes (the `.id(banner.id)` modifier restarts the timer on each
-/// distinct event).
+/// Its owner supplies dismissal, so the same surface can present either a
+/// workspace-scoped event or a page-scoped action. The `.id(banner.id)`
+/// modifier at the call site restarts the timer for each distinct event.
 struct BannerView: View {
     let banner: Workspace.Banner
     let onDismiss: () -> Void

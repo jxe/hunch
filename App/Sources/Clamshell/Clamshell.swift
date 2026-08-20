@@ -768,17 +768,37 @@ final class Clamshell {
 
     // MARK: - Title cache
 
-    /// Update the cache with this document's title + mtime. Returns true
-    /// when the cached title for the URL actually changed (so
-    /// `postSaveBookkeeping` knows when to fire a rescan).
-    @discardableResult
-    private func refreshTitleCache(url: URL, title: String, modificationDate: Date?) -> Bool {
+    /// Update the cache with this document's title + mtime.
+    private func refreshTitleCache(url: URL, title: String, modificationDate: Date?) {
         let previous = titleCache[url]
-        let titleChanged = previous?.title != title
-        if titleChanged || previous?.modificationDate != modificationDate {
+        if previous?.title != title || previous?.modificationDate != modificationDate {
             titleCache[url] = CachedTitle(title: title, modificationDate: modificationDate)
         }
-        return titleChanged
+    }
+
+    /// Keep the scan half of the merged `entries` surface on the same mtime as
+    /// the title-cache half after an in-process save. A full rescan on every
+    /// keystroke would be wasteful, but leaving the old scan timestamp makes
+    /// `entries` reject the freshly cached title and fall back to the filename
+    /// indefinitely. Returns false only when the page was not in the last scan
+    /// (for example, a direct commit that also created the file).
+    @discardableResult
+    private func refreshScannedEntry(url: URL, modificationDate: Date?) -> Bool {
+        let key = url.standardizedFileURL
+        guard let index = scanResult.firstIndex(where: { $0.url.standardizedFileURL == key }) else {
+            return false
+        }
+        let prior = scanResult[index]
+        let mtime = modificationDate ?? prior.modificationDate
+        guard prior.modificationDate != mtime else { return true }
+        scanResult[index] = WorkspaceEntry(
+            url: prior.url,
+            relativePath: prior.relativePath,
+            title: prior.title,
+            modificationDate: mtime
+        )
+        scanResult.sort { $0.modificationDate > $1.modificationDate }
+        return true
     }
 
     /// Fire-and-forget single-URL title warm. Reads + parses off MainActor
@@ -1190,7 +1210,8 @@ final class Clamshell {
             from: children,
             fallback: url.deletingPathExtension().lastPathComponent
         )
-        let titleChanged = refreshTitleCache(url: url, title: title, modificationDate: modificationDate)
+        refreshTitleCache(url: url, title: title, modificationDate: modificationDate)
+        let refreshedScannedEntry = refreshScannedEntry(url: url, modificationDate: modificationDate)
         // Refresh the reconcile watermark so this save (new `.md` mtime,
         // grown own-log) doesn't trigger a useless refold on next open.
         // We logged the records via `apply(_:to:)` and just wrote the
@@ -1207,16 +1228,16 @@ final class Clamshell {
             body: searchableText(in: children)
         )
         Task { [searchIndex] in await searchIndex.upsert(indexedPage) }
-        if titleChanged {
-            // Title overlay changed → entries' surface mtime is now stale.
-            // A scan picks up the new mtime for this URL; subscribers
-            // re-render through the entries computed.
+        if !refreshedScannedEntry {
+            // The page was not in the prior scan (a direct commit may also be
+            // its creation boundary), so an in-memory metadata patch cannot
+            // add it to the page set.
             try? rescan()
         }
         // Patch the link graph from the saved page's in-memory blocks (cheap,
-        // no disk read). When `titleChanged` already invalidated via rescan,
-        // this no-ops; otherwise it keeps backlinks/orphans current after a
-        // link edit without a full re-read.
+        // no disk read). A fallback rescan above invalidates it, so this then
+        // no-ops; otherwise it keeps backlinks/orphans current after a link
+        // edit without a full re-read.
         refreshLinkGraph(forSavedURL: url, children: children)
     }
     nonisolated private static func readCoordinated(_ url: URL) -> String? {

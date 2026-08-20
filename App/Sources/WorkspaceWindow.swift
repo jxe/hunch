@@ -45,6 +45,11 @@ final class WorkspaceWindow {
     var showAddToPageSearch: Bool = false
     var recoveryFilter: RecoveryListFilter?
     var pendingSubpageTrashPrompt: SubpageTrashPrompt?
+    /// Notification whose meaning is tied to the currently mounted page.
+    /// Unlike `Workspace.banner`, this is per-window and is discarded with
+    /// the page session so navigation cannot carry an obsolete action onto a
+    /// different page.
+    var pageBanner: Workspace.Banner?
 
     struct MoveRequest: Identifiable {
         let id = UUID()
@@ -311,6 +316,7 @@ final class WorkspaceWindow {
         stopCloudSyncPolling()
         pageSession = nil
         cloudSyncSnapshot = nil
+        pageBanner = nil
         dismissedRenameSuggestions.removeAll()
     }
 
@@ -400,7 +406,7 @@ final class WorkspaceWindow {
         let key = renameSuggestionKey(rel: rel, proposed: proposed)
         guard !dismissedRenameSuggestions.contains(key) else { return }
         let name = (proposed as NSString).lastPathComponent
-        workspace.banner = Workspace.Banner(
+        pageBanner = Workspace.Banner(
             message: "Rename file to \"\(name)\" to match its title?",
             systemImage: "pencil",
             dismissAfter: nil,

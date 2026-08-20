@@ -470,8 +470,10 @@ rescan) costs ~1s/file on iCloud and dominated the workspace-open
 critical path. On-demand warm trades that for a per-subpage-row
 warm-up on first render — search-sheet rows for un-warmed pages
 display the filename until clicked or rendered. Save-time
-`postSaveBookkeeping` (`refreshTitleCache(from:)`) updates the cache
-from the live `Document` directly — no disk read.
+`postSaveBookkeeping` updates the cache from the live `Document` directly
+and advances the matching scanned entry's mtime in memory, keeping both
+halves of the merged `entries` surface coherent without a disk read or a
+full rescan on every edit.
 
 **Full-text search is local and disposable.** Each workspace gets a
 SQLite FTS5 database under Application Support rather than inside the
@@ -590,8 +592,10 @@ triggering work — for blur, scenePhase backgrounding, and navigation
 away. `drain()` is terminal teardown: it awaits every pending generation
 and shuts down remaining coordinators; the owner must hold the Clamshell
 strongly until it returns (see `Workspace.switchWorkspace`).
-Post-save bookkeeping (mtime refresh, title cache, page rescan) fires
-internally on every successful commit.
+Post-save bookkeeping (mtime refresh, title cache, scanned-entry metadata,
+and search/link-index updates) fires internally on every successful commit.
+A full page rescan is only needed when the saved URL was absent from the
+prior scan.
 
 **Editor mutations stream as semantic changes.** Every `Document.transaction`
 (forward and undo/redo) derives a pre→post `[DocumentChange]` diff and fires

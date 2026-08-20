@@ -25,4 +25,19 @@ struct BannerTests {
         let c = Workspace.Banner.Action(label: "Undo", handler: {})
         #expect(a.action != c)
     }
+
+    @Test func pageBannerIsClearedWithThePageWithoutClearingWorkspaceBanner() {
+        let workspace = Workspace()
+        let window = WorkspaceWindow(workspace: workspace)
+        window.pageBanner = Workspace.Banner(message: "Rename this page?", dismissAfter: nil)
+        workspace.banner = Workspace.Banner(message: "Workspace event")
+
+        // The same session-clearing path runs for back navigation, direct
+        // path changes, and workspace reset. No mounted workspace is needed
+        // here: the ownership invariant is synchronous.
+        window.handlePathChange()
+
+        #expect(window.pageBanner == nil)
+        #expect(workspace.banner?.message == "Workspace event")
+    }
 }
