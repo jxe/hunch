@@ -9,10 +9,6 @@ import Darwin
 import Security
 #endif
 
-extension Notification.Name {
-    static let hunchEscapeKeyDown = Notification.Name("hunch.escapeKeyDown")
-}
-
 @main
 struct HunchApp: App {
     @State private var workspace = Workspace()
@@ -25,7 +21,6 @@ struct HunchApp: App {
         #if os(macOS)
         SingleInstanceGuard.activateExistingInstanceAndExitIfNeeded()
         StartupDiagnostics.logLaunchIdentity()
-        EscapeKeyMonitor.install()
         #endif
         FontRegistration.registerInter()
     }
@@ -214,24 +209,6 @@ private enum SingleInstanceGuard {
         guard let existing else { return }
         existing.activate(options: [.activateAllWindows])
         exit(0)
-    }
-}
-
-@MainActor
-private enum EscapeKeyMonitor {
-    private static var monitor: Any?
-
-    static func install() {
-        guard monitor == nil else { return }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
-                  event.keyCode == 53,
-                  NSApp.keyWindow?.styleMask.contains(.fullScreen) == true else {
-                return event
-            }
-            NotificationCenter.default.post(name: .hunchEscapeKeyDown, object: nil)
-            return nil
-        }
     }
 }
 

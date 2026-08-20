@@ -57,7 +57,9 @@ public struct EditorView: View {
     /// can ask "is the active editor for this block?" and call `makeFirstResponder`
     /// synchronously instead of waiting for the NSTextView's own async self-grab.
     @State var macActiveTextView = MacActiveTextView()
-    @State var macShiftTabMonitor: Any?
+    /// Intercepts keys that AppKit handles before SwiftUI or NSTextView can apply
+    /// the editor's meaning: Shift-Tab focus traversal and fullscreen Escape.
+    @State var macKeyMonitor: Any?
     #endif
     #if os(iOS)
     /// One-tick overlap during inter-block focus transfer: when `state.sessionState` flips
@@ -364,7 +366,7 @@ public struct EditorView: View {
                 installUndoApply()
                 wireEditorCommands()
                 #if os(macOS)
-                installShiftTabMonitor()
+                installMacKeyMonitor()
                 #endif
             }
             .onDisappear {
@@ -382,7 +384,7 @@ public struct EditorView: View {
                 }
                 state.onStructureChange = nil
                 #if os(macOS)
-                removeShiftTabMonitor()
+                removeMacKeyMonitor()
                 #endif
             }
             // Intercept inline `[text](path.md)` / `[text](https://…)` clicks
@@ -461,25 +463,45 @@ public struct EditorView: View {
     }
 
     #if os(macOS)
-    private func installShiftTabMonitor() {
-        guard macShiftTabMonitor == nil else { return }
-        macShiftTabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let isShiftTab =
-                event.keyCode == 48 &&
-                modifiers.contains(.shift) &&
-                modifiers.subtracting([.shift, .capsLock]).isEmpty
-            guard isShiftTab else { return event }
-            guard pageFocused || state.editingBlock != nil else { return event }
-            editorCommands.perform(.outdent)
+    static func monitoredMacAction(
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags,
+        isFullscreen: Bool
+    ) -> EditorAction? {
+        let deviceModifiers = modifiers.intersection(.deviceIndependentFlagsMask)
+        let isShiftTab =
+            keyCode == 48 &&
+            deviceModifiers.contains(.shift) &&
+            deviceModifiers.subtracting([.shift, .capsLock]).isEmpty
+        if isShiftTab { return .outdent }
+
+        let isFullscreenEscape =
+            keyCode == 53 &&
+            deviceModifiers.subtracting(.capsLock).isEmpty &&
+            isFullscreen
+        return isFullscreenEscape ? .escape : nil
+    }
+
+    private func installMacKeyMonitor() {
+        guard macKeyMonitor == nil else { return }
+        macKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard let action = Self.monitoredMacAction(
+                keyCode: event.keyCode,
+                modifiers: event.modifierFlags,
+                isFullscreen: NSApp.keyWindow?.styleMask.contains(.fullScreen) == true
+            ) else { return event }
+            guard pageFocused || state.editingBlock != nil || (action == .escape && actionSheet != nil) else {
+                return event
+            }
+            editorCommands.perform(action)
             return nil
         }
     }
 
-    private func removeShiftTabMonitor() {
-        if let monitor = macShiftTabMonitor {
+    private func removeMacKeyMonitor() {
+        if let monitor = macKeyMonitor {
             NSEvent.removeMonitor(monitor)
-            macShiftTabMonitor = nil
+            macKeyMonitor = nil
         }
     }
     #endif

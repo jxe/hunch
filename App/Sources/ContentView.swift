@@ -11,7 +11,6 @@ struct ContentView: View {
     @State private var recordingSession = VoiceRecordingSession()
     @State private var renameSuggestionTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
-    @FocusedValue(\.editorCommands) private var editorCommands
     #if os(iOS)
     @Bindable var quickActions: QuickActionRouter
     @State private var showIconPicker = false
@@ -157,9 +156,6 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: VoiceRecordingLaunchRequest.notificationName)) { _ in
             forwardPendingVoiceRecording()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .hunchEscapeKeyDown)) { _ in
-            editorCommands?.perform(.escape)
         }
         .alert("Recording", isPresented: recordingErrorBinding) {
             Button("OK") { recordingSession.errorMessage = nil }

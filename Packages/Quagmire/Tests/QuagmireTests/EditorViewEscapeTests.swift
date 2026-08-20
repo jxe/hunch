@@ -1,6 +1,9 @@
 import Foundation
 import Testing
 @testable import Quagmire
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor
 @Suite("EditorView Escape behavior")
@@ -22,6 +25,18 @@ struct EditorViewEscapeTests {
         #expect(state.selection == [block.id])
         #expect(state.cursor == block.id)
     }
+
+    #if os(macOS)
+    @Test func localMonitorInterceptsEscapeOnlyInFullscreen() {
+        #expect(EditorView.monitoredMacAction(keyCode: 53, modifiers: [], isFullscreen: true) == .escape)
+        #expect(EditorView.monitoredMacAction(keyCode: 53, modifiers: [], isFullscreen: false) == nil)
+        #expect(EditorView.monitoredMacAction(keyCode: 53, modifiers: .command, isFullscreen: true) == nil)
+    }
+
+    @Test func localMonitorStillInterceptsShiftTabForOutdent() {
+        #expect(EditorView.monitoredMacAction(keyCode: 48, modifiers: .shift, isFullscreen: false) == .outdent)
+    }
+    #endif
 }
 
 @MainActor
