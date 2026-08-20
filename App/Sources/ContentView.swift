@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var recordingSession = VoiceRecordingSession()
     @State private var renameSuggestionTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
+    @FocusedValue(\.editorCommands) private var editorCommands
     #if os(iOS)
     @Bindable var quickActions: QuickActionRouter
     @State private var showIconPicker = false
@@ -156,6 +157,9 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: VoiceRecordingLaunchRequest.notificationName)) { _ in
             forwardPendingVoiceRecording()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .hunchEscapeKeyDown)) { _ in
+            editorCommands?.perform(.escape)
         }
         .alert("Recording", isPresented: recordingErrorBinding) {
             Button("OK") { recordingSession.errorMessage = nil }
@@ -336,7 +340,6 @@ private struct EditorPage: View {
 
     @State private var editorState = EditorState()
     @FocusedValue(\.documentUndoController) private var undoController
-    @FocusedValue(\.editorCommands) private var editorCommands
 
     var body: some View {
         Group {
@@ -363,9 +366,6 @@ private struct EditorPage: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(HunchStyle.background)
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .hunchEscapeKeyDown)) { _ in
-            editorCommands?.perform(.escape)
         }
         .toolbar {
             #if os(iOS)

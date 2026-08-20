@@ -456,11 +456,8 @@ public struct EditorView: View {
             actionSheet = nil
             return
         }
-        if state.editingBlock != nil {
-            transferFocus(to: .nav(cursor: state.editingBlock))
-            return
-        }
-        clearCursor()
+        guard let editingBlock = state.editingBlock else { return }
+        transferFocus(to: .nav(cursor: editingBlock))
     }
 
     #if os(macOS)
