@@ -142,23 +142,18 @@ struct RecoveryView: View {
 
     private var list: some View {
         let pages = entries.filter { if case .deletedPage = $0 { return true } else { return false } }
-        let lost = entries.filter { if case .lostBlock = $0 { return true } else { return false } }
-        let purged = entries.filter { if case .purgedBlock = $0 { return true } else { return false } }
+        let blocks = entries.filter { if case .deletedPage = $0 { return false } else { return true } }
+        let hasDeletedBlocks = blocks.contains(where: \.isPurged)
         return List(selection: $selection) {
             if !pages.isEmpty {
                 Section("Pages") {
                     ForEach(pages) { entry in row(for: entry).tag(entry.id) }
                 }
             }
-            if !lost.isEmpty {
-                Section("Lost") {
-                    ForEach(lost) { entry in row(for: entry).tag(entry.id) }
-                }
-            }
-            if !purged.isEmpty || showAllPurged {
-                Section("Deleted on purpose") {
-                    ForEach(purged) { entry in row(for: entry).tag(entry.id) }
-                    if !showAllPurged {
+            if !blocks.isEmpty || showAllPurged {
+                Section("Blocks") {
+                    ForEach(blocks) { entry in row(for: entry).tag(entry.id) }
+                    if hasDeletedBlocks && !showAllPurged {
                         Button("Show older") { showAllPurged = true }
                             .buttonStyle(.borderless)
                             .font(HunchStyle.body(size: 12))
@@ -238,7 +233,14 @@ struct RecoveryView: View {
     }
 
     private func secondaryLine(for entry: RecoverableEntry) -> String {
-        entry.sourcePath
+        switch entry {
+        case .deletedPage:
+            return entry.sourcePath
+        case .lostBlock:
+            return "Lost · \(entry.sourcePath)"
+        case .purgedBlock:
+            return "Deleted · \(entry.sourcePath)"
+        }
     }
 
     private func restoreMessage(for entry: RecoverableEntry) -> String {
