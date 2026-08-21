@@ -350,6 +350,13 @@ query never competes with the home-page open for MainActor. Cmd-R's
 `Workspace.rescan(includeConflictSweep: true)` forces the sweep
 synchronously for user-driven reloads.
 
+The current device's recovery log is handled more conservatively. When its
+iCloud status reports a conflict, the status snapshot compares each alternate's
+exact non-empty JSONL records with the canonical log. An alternate is marked
+resolved only when every record is already present in the canonical file;
+unreadable or divergent alternates remain unresolved and visible in the sync
+status UI.
+
 ### Known weakness: stale parent metadata
 
 A block's `p` records the parent observed *the first time this device

@@ -14,6 +14,18 @@ struct RecoveryLogTests {
 
     private func attr(_ s: String) -> AttributedString { AttributedString(s) }
 
+    @Test func redundantConflictAlternateRequiresEveryExactRecord() {
+        let first = #"{"c":1,"h":"a","op":"add"}"#
+        let second = #"{"c":2,"h":"b","op":"purge"}"#
+        let third = #"{"c":3,"h":"c","op":"observe"}"#
+        let canonical = [first, second, third].joined(separator: "\n") + "\n"
+
+        #expect(RecoveryLog.conflictAlternateIsRedundant(first + "\n", canonical: canonical))
+        #expect(RecoveryLog.conflictAlternateIsRedundant(second + "\n" + first + "\n", canonical: canonical))
+        #expect(!RecoveryLog.conflictAlternateIsRedundant(first + "\n" + #"{"c":4,"h":"unique","op":"add"}"# + "\n", canonical: canonical))
+        #expect(!RecoveryLog.conflictAlternateIsRedundant(#"{"op":"add","h":"a","c":1}"# + "\n", canonical: canonical))
+    }
+
     private func deviceLogURL(workspace: URL, page rel: String, deviceID: String) -> URL {
         workspace
             .appendingPathComponent(RecoveryLog.directoryName, isDirectory: true)

@@ -378,7 +378,11 @@ final class Clamshell {
             if values.ubiquitousItemIsExcludedFromSync == true {
                 return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: "Excluded from iCloud sync", byteCount: byteCount)
             }
-            if values.ubiquitousItemHasUnresolvedConflicts == true {
+            var hasUnresolvedConflicts = values.ubiquitousItemHasUnresolvedConflicts == true
+            if hasUnresolvedConflicts, target.kind == .thisDeviceLog {
+                hasUnresolvedConflicts = Self.resolveRedundantLogConflicts(at: target.url) > 0
+            }
+            if hasUnresolvedConflicts {
                 return CloudSyncItemSnapshot(target: target, exists: true, status: .error, detail: "Unresolved iCloud conflict", byteCount: byteCount)
             }
             if let error = values.ubiquitousItemUploadingError ?? values.ubiquitousItemDownloadingError {
@@ -1248,6 +1252,36 @@ final class Clamshell {
             out = try? String(contentsOf: coordinatedURL, encoding: .utf8)
         }
         return out
+    }
+
+    /// Resolve only recovery-log alternates whose exact JSONL records are all
+    /// already present in the canonical file. A divergent or unreadable
+    /// alternate remains unresolved and therefore visible in iCloud status.
+    nonisolated private static func resolveRedundantLogConflicts(at url: URL) -> Int {
+        let alternates = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        guard !alternates.isEmpty else { return 0 }
+        guard let canonical = readCoordinated(url) else { return alternates.count }
+
+        var resolvedCount = 0
+        for alternate in alternates {
+            guard let alternateText = readCoordinated(alternate.url),
+                  RecoveryLog.conflictAlternateIsRedundant(alternateText, canonical: canonical) else {
+                continue
+            }
+            alternate.isResolved = true
+            do {
+                try alternate.remove()
+                resolvedCount += 1
+            } catch {
+                Diag.log.error("redundant log conflict cleanup failed file=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        let remaining = NSFileVersion.unresolvedConflictVersionsOfItem(at: url)?.count ?? 0
+        if resolvedCount > 0 {
+            Diag.log.log("redundant log conflicts resolved file=\(url.lastPathComponent, privacy: .public) resolved=\(resolvedCount, privacy: .public) remaining=\(remaining, privacy: .public)")
+        }
+        return remaining
     }
 
     nonisolated private static func markAlternatesResolved(_ alternates: [NSFileVersion]) {

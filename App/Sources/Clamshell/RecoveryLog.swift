@@ -46,6 +46,22 @@ actor RecoveryLog {
     private static let logExtension = "jsonl"
     private static let purgedSnapshotRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
 
+    /// Whether an iCloud conflict alternate contributes no records beyond
+    /// those already present in the canonical log. Comparison is deliberately
+    /// byte-exact per non-empty JSONL line: equivalent-but-differently-encoded
+    /// or unreadable records stay unresolved rather than risking history loss.
+    nonisolated static func conflictAlternateIsRedundant(
+        _ alternate: String,
+        canonical: String
+    ) -> Bool {
+        let canonicalRecords = Set(
+            canonical.split(separator: "\n", omittingEmptySubsequences: true)
+        )
+        return alternate
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .allSatisfy { canonicalRecords.contains($0) }
+    }
+
     nonisolated private let workspaceRoot: URL
     nonisolated private let store: FileStore
     nonisolated private let deviceID: String
