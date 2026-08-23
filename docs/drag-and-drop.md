@@ -16,17 +16,17 @@ What's **deliberately not** in the design: shadows, card treatments, rotation, p
 
 ## Drop slot resolution (shared)
 
-Both platforms resolve the candidate insertion index the same way: `ReorderDropResolver.insertionIndex(forY:rowFrames:previousIndex:hysteresis:)` ([ReorderDropResolver.swift](../Packages/Quagmire/Sources/Quagmire/ReorderDropResolver.swift)).
+Both platforms resolve the candidate insertion index the same way: `ReorderDropResolver.insertionIndex(forY:rowFrames:previousIndex:hysteresis:)` ([ReorderDropResolver.swift](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/ReorderDropResolver.swift)).
 
 It maps the pointer's y-coordinate to a slot by counting how many rows have a midY above it, with a 10pt hysteresis band so a pointer hovering near a row boundary doesn't oscillate between two slots. Row geometry is held in `RowSurfaceLayoutCache`: row body heights are measured directly, while before-row spacing, pinch gaps, and reorder gaps are modeled as empty top gaps outside the row frame. `beginReorderFrameSnapshot()` freezes destination frames in document-local coordinates when the lift begins. The visual gap may then change live layout without moving the target being tested; `reorderFrame(of:)` applies the current page origin so the snapshot still tracks autoscroll. `endReorderFrameSnapshot()` clears the snapshot on both drop and cancellation. This also keeps a finger hovering in blank space from resolving as though it were over the row below.
 
 Earlier iterations used per-slot `.dropDestination` / `isTargeted` callbacks — those produced a "buzzing" pattern where opening a gap shifted hit-testing, which closed the gap, which shifted hit-testing back. Resolving against live cumulative frames had the quieter version of the same feedback: opening the 42pt gap pushed the intended destination below the pointer and made downward drops land one slot early. The page-level resolver against frozen frames fixes both cases.
 
-Tests live in [ReorderDropResolverTests.swift](../Packages/Quagmire/Tests/QuagmireTests/ReorderDropResolverTests.swift). Add coverage there before touching hover math.
+Tests live in [ReorderDropResolverTests.swift](https://github.com/jxe/quagmire/blob/0.1.0/Tests/QuagmireTests/ReorderDropResolverTests.swift). Add coverage there before touching hover math.
 
 ## iOS
 
-**Gesture** — `UILongPressGestureRecognizer` attached at the page level via `IOSPageReorderGestureBridge` (a `UIViewRepresentable` defined in [EditorView+Gestures.swift](../Packages/Quagmire/Sources/Quagmire/EditorView+Gestures.swift), placed inside the `ScrollView`'s content). It walks up to the host `UIScrollView` at `didMoveToWindow`, adds its recognizer there, and calls `panGestureRecognizer.require(toFail: lp)`. Configuration: `minimumPressDuration = 0.5`, `allowableMovement = 8`, `cancelsTouchesInView = false`. UIKit-level coordination is what makes scroll work: a fast vertical drag exceeds `allowableMovement` before the timer fires → long-press fails → pan recognizer (which was waiting) wins → page scrolls. A deliberate hold within 8pt for 0.5s → long-press fires → pan never starts → reorder begins.
+**Gesture** — `UILongPressGestureRecognizer` attached at the page level via `IOSPageReorderGestureBridge` (a `UIViewRepresentable` defined in [EditorView+Gestures.swift](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/EditorView%2BGestures.swift), placed inside the `ScrollView`'s content). It walks up to the host `UIScrollView` at `didMoveToWindow`, adds its recognizer there, and calls `panGestureRecognizer.require(toFail: lp)`. Configuration: `minimumPressDuration = 0.5`, `allowableMovement = 8`, `cancelsTouchesInView = false`. UIKit-level coordination is what makes scroll work: a fast vertical drag exceeds `allowableMovement` before the timer fires → long-press fails → pan recognizer (which was waiting) wins → page scrolls. A deliberate hold within 8pt for 0.5s → long-press fires → pan never starts → reorder begins.
 
 Two SwiftUI gesture experiments were tried first and abandoned:
 1. `LongPressGesture(0.34, 36).sequenced(before: DragGesture(0))` — once `LongPressGesture` fires, SwiftUI's system gesture gate stalls subsequent events for ~1.9s and blocks `ScrollView` pan, stranding the row dimmed.
@@ -46,7 +46,7 @@ Only UIKit-level `require(toFail:)` lets pan and long-press coexist correctly.
 
 ## macOS
 
-**Gesture** — `DragGesture(minimumDistance: 4, coordinateSpace: .named(PageHoverCoordinateSpace.name))` attached as a page-level `simultaneousGesture` by [PageGestureHost.swift](../Packages/Quagmire/Sources/Quagmire/PageGestureHost.swift). The 4pt threshold lets click-without-drag flow through to text cursor positioning, while movement that started in the leading gutter begins reorder. The gesture is gated off while `isEditing` is true so the editor's own selection drag isn't shadowed.
+**Gesture** — `DragGesture(minimumDistance: 4, coordinateSpace: .named(PageHoverCoordinateSpace.name))` attached as a page-level `simultaneousGesture` by [PageGestureHost.swift](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/PageGestureHost.swift). The 4pt threshold lets click-without-drag flow through to text cursor positioning, while movement that started in the leading gutter begins reorder. The gesture is gated off while `isEditing` is true so the editor's own selection drag isn't shadowed.
 
 The handle itself is visual-only on macOS; the page-level gesture hit-tests `value.startLocation` against `BlockLayoutCache.blockIDAtHandlePoint(_:gutterWidth:)`. That keeps the gesture mounted on the stable scroll container (so LazyVStack recycling cannot cancel it mid-drag) without letting row-body vertical drags become reorder/autoscroll.
 

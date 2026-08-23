@@ -14,7 +14,7 @@ User-confirmed: list-scoped vocabulary; trailing-chip rendering; one container, 
 
 ### Model — two new `Block` cases
 
-In [Block.swift](../Packages/Quagmire/Sources/Quagmire/Model/Block.swift):
+In [Block.swift](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/Model/Block.swift):
 
 ```swift
 case classifiedList(id: BlockID = BlockID(), indent: Int = 0)
@@ -92,7 +92,7 @@ In [Parser.swift](../App/Sources/Clamshell/Parser.swift), add a `:::list` arm ne
 3. The `divider` itself stays in the model as a real `divider` block (rendered as a thin horizontal line — see "rendering" below).
 4. After the divider: every `bullet` at `containerIndent+1` becomes a `classifiedRow`, with trailing `#field:value` tags split off into the structured `tags` array (validated against the parsed vocab).
 
-Add to [Document.swift](../Packages/Quagmire/Sources/Quagmire/Model/Document.swift): a `vocab(forRow rowID:) -> [VocabField]?` helper that walks back from a `classifiedRow` to its parent `classifiedList` and reads the vocab by walking forward through the body's pre-divider bullets. Renderer + tag picker call this. `VocabField` is a derived value (`{key: String, values: [String]}`), not stored on the container.
+Add to [Document.swift](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/Model/Document.swift): a `vocab(forRow rowID:) -> [VocabField]?` helper that walks back from a `classifiedRow` to its parent `classifiedList` and reads the vocab by walking forward through the body's pre-divider bullets. Renderer + tag picker call this. `VocabField` is a derived value (`{key: String, values: [String]}`), not stored on the container.
 
 ### Serializer
 
@@ -100,7 +100,7 @@ In [Serializer.swift](../App/Sources/Clamshell/Serializer.swift), `classifiedLis
 
 ### Rendering
 
-Add to the switch in [BlockRow.swift](../Packages/Quagmire/Sources/Quagmire/BlockRow.swift):
+Add to the switch in [BlockRow.swift](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/BlockRow.swift):
 
 - `classifiedListRow(indent:)` — a small "List" header pill at `containerIndent`. Compact, no editable text. Works like the templateButton header — just a visual marker that something below it is owned.
 - `classifiedRow(text:, tags:, indent:)` — same structure as `bulletRow` (bullet circle + editable text), with **trailing chips inside the same `HStack(alignment: .firstTextBaseline)`** so vertical alignment doesn't drift on wrap. Layout: `circle | editableText | Spacer(minLength: 8) | chips`. Chips need an `.alignmentGuide(.firstTextBaseline)` matching the bullet marker's offset — mirror the existing `bulletMarkerBaselineOffset` pattern. **This is the trickiest piece of UI.** Chip styling: small rounded-rect pill, color-coded per field key (hash → palette).
@@ -111,7 +111,7 @@ The divider in the body renders as the existing thin horizontal line — visuall
 
 ### Tag picker overlay
 
-Promote to a new `Overlay` variant in [EditorState.swift](../Packages/Quagmire/Sources/Quagmire/EditorState.swift) — **not** ambient state. Mirrors `MentionMenuState` exactly (it's the same "modal popover anchored to a block" pattern).
+Promote to a new `Overlay` variant in [EditorState.swift](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/EditorState.swift) — **not** ambient state. Mirrors `MentionMenuState` exactly (it's the same "modal popover anchored to a block" pattern).
 
 ```swift
 public enum Overlay: Equatable, Sendable {
@@ -144,7 +144,7 @@ The same logic runs at parse time (matches the disk → model conversion) and in
 
 ### Creation surface — deferred
 
-No autotransform. v1 doesn't specify an entry point in this plan; the next iteration adds it via the existing "Turn into" menu (see [EditorView+TurnInto.swift](../Packages/Quagmire/Sources/Quagmire/EditorView+TurnInto.swift)) — "Turn into → Classified list" wraps the current block in a `classifiedList` container with an empty vocab and one empty row.
+No autotransform. v1 doesn't specify an entry point in this plan; the next iteration adds it via the existing "Turn into" menu (see [EditorView+TurnInto.swift](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/EditorView%2BTurnInto.swift)) — "Turn into → Classified list" wraps the current block in a `classifiedList` container with an empty vocab and one empty row.
 
 ## Implementation order
 

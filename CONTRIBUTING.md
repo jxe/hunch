@@ -10,11 +10,11 @@ tend to be local. This doc points you at the layer you want.
 - [`xcodegen`](https://github.com/yonaskolb/XcodeGen) for the project file
 - Swift 6.2 toolchain (ships with Xcode 26)
 
-The repo is two products in one workspace:
+The project has two products:
 
 - a **multiplatform Swift app** (`Hunch.app`) targeting iOS 26 and macOS 26;
-- a **standalone SwiftPM package** (`Packages/Quagmire/`) the app depends on
-  and that's reusable in other hosts.
+- the separately versioned **[Quagmire](https://github.com/jxe/quagmire)**
+  SwiftPM package, which Hunch consumes at an exact released version.
 
 Third-party dependencies are intentionally small:
 [swift-markdown](https://github.com/swiftlang/swift-markdown) parses and
@@ -24,13 +24,14 @@ provides the editor's emoji picker.
 ## Build & test
 
 ```sh
-# 1. Quagmire package — tests live here; keep them green before pushing UI changes
-swift test --package-path Packages/Quagmire
-
-# 2. Generate the tracked Xcode project (don't hand-edit .xcodeproj)
+# 1. Generate the tracked Xcode project (don't hand-edit .xcodeproj)
 xcodegen generate --spec project.yml --project .
 
-# 3. Build for macOS or iOS Simulator
+# 2. Run Hunch's hosted unit tests
+xcodebuild test -project Hunch.xcodeproj -scheme Hunch \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+
+# 3. Build for macOS or the iOS Simulator
 xcodebuild -project Hunch.xcodeproj -scheme Hunch \
   -destination 'platform=macOS' -configuration Debug build
 xcodebuild -project Hunch.xcodeproj -scheme Hunch \
@@ -52,7 +53,7 @@ project rather than dragging it into Xcode by hand.
 
 The codebase splits into three layers, in increasing host-specificity:
 
-### 1. `Packages/Quagmire/` — the reusable block editor
+### 1. Quagmire — the reusable block editor
 
 A SwiftUI block editor with **no opinion on serialization, persistence,
 or navigation**. The host owns three things per editing session:
@@ -70,10 +71,17 @@ prefix autotransforms (`# `, `- `, `> `, `[] `, `" `, etc.), @-mention
 detection, inline-mark `AttributedStringKey`s. The package's tests cover
 the autotransform / mention / reorder / mutation layer and bundled resources;
 a separate normal-import target compiles the minimal public host contract. Keep
-`swift test --package-path Packages/Quagmire` green.
+`swift test` green in a Quagmire checkout when changing editor behavior.
 
-Deeper docs: **[Packages/Quagmire/README.md](Packages/Quagmire/README.md)** —
+Deeper docs: **[Quagmire's README](https://github.com/jxe/quagmire)** —
 embedding contract, full feature list, the `EditorHost` protocol surface.
+
+Hunch's `project.yml` pins Quagmire exactly. For coordinated changes, clone
+Quagmire beside Hunch and use Xcode's local package override, or temporarily
+change the package entry to `path: ../quagmire` and regenerate the project.
+Keep that override uncommitted. Land and tag the Quagmire change first, then
+restore the remote URL, bump `exactVersion`, regenerate, and commit the Hunch
+dependency update separately.
 
 ### 2. `App/Sources/Clamshell/` — the storage format & engine
 
@@ -145,6 +153,7 @@ contributor wading into the editor internals.
 The visual target is Notion's typography from before the March 2026 redesign.
 Reference screenshots live under `References/typography/`; reusable defaults
 and layout values live in
-`Packages/Quagmire/Sources/Quagmire/EditorTheme.swift`, while Hunch's explicit
-Inter-based treatment lives in `App/Sources/Shell/HunchStyle.swift`. Don't
-sprinkle magic numbers into `BlockRow.swift`.
+[Quagmire's `EditorTheme.swift`](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/EditorTheme.swift),
+while Hunch's explicit Inter-based treatment lives in
+`App/Sources/Shell/HunchStyle.swift`. Don't sprinkle host-side magic numbers
+that belong in Quagmire's renderer.

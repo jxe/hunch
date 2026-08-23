@@ -153,9 +153,9 @@ You can read the code, fork it, audit your own data layer, and ship patches. Lic
 
 ## Under the hood
 
-Hunch is built on two reusable pieces, both documented in this repo:
+Hunch is built on two reusable pieces:
 
-- **[Quagmire](Packages/Quagmire/README.md)** — a SwiftUI block editor (paragraphs, headings, lists, toggles, code, inline marks, autotransforms, drag-reorder, @-mentions) with no opinion on storage, navigation, or serialization. Drop it into any iOS 26 / macOS 26 app and wire up an `EditorHost`.
+- **[Quagmire](https://github.com/jxe/quagmire)** — a separately versioned SwiftUI block editor (paragraphs, headings, lists, toggles, code, inline marks, autotransforms, drag-reorder, @-mentions) with no opinion on storage, navigation, or serialization. Hunch consumes the exact `0.1.0` release.
 - **[Clamshell](App/Sources/Clamshell/README.md)** — Hunch's on-disk format and storage engine: a folder of `.md`, a per-device append-only recovery log, trash, and assets. Durable, portable, iCloud-friendly, recoverable.
 
 Want to build, hack on, or send a patch? See [CONTRIBUTING.md](CONTRIBUTING.md).

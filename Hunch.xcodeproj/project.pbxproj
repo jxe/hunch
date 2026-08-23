@@ -162,7 +162,6 @@
 		BEC23F7F5FF43096C7D9EF57 /* IconPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconPickerView.swift; sourceTree = "<group>"; };
 		C0C39100C0D7F622F1275216 /* PageSearchIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageSearchIndexTests.swift; sourceTree = "<group>"; };
 		C1F5BE0CAA148514A9635C33 /* LinkHealingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkHealingTests.swift; sourceTree = "<group>"; };
-		C3672484485A687B244D33A7 /* Quagmire */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Quagmire; path = Packages/Quagmire; sourceTree = SOURCE_ROOT; };
 		C40C5869BF914FA61B2FEC5D /* FileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileStore.swift; sourceTree = "<group>"; };
 		C4608B6FE43942A156484E8F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C60B591D585995CB7097A0DC /* InterVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = InterVariable.ttf; sourceTree = "<group>"; };
@@ -222,14 +221,6 @@
 				BB06989CF639A9718BA05F49 /* UITests */,
 			);
 			path = App;
-			sourceTree = "<group>";
-		};
-		45052CB1F3C2EF60EC156E3F /* Packages */ = {
-			isa = PBXGroup;
-			children = (
-				C3672484485A687B244D33A7 /* Quagmire */,
-			);
-			path = Packages;
 			sourceTree = "<group>";
 		};
 		573EDB9EE7E75299C1A6A1A7 /* Shell */ = {
@@ -334,7 +325,6 @@
 			isa = PBXGroup;
 			children = (
 				2EC8AA975A1550CA885671E2 /* App */,
-				45052CB1F3C2EF60EC156E3F /* Packages */,
 				18FB1936CA21EFF812E44785 /* Frameworks */,
 				AE7FCC9B148E4A8C802B7877 /* Products */,
 			);
@@ -480,8 +470,8 @@
 			mainGroup = AF1CA979945882445ECFBEA1;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				390EA6DACFB9DEDBD0C92846 /* XCRemoteSwiftPackageReference "quagmire" */,
 				60E69A3442B3A4A214239625 /* XCRemoteSwiftPackageReference "swift-markdown" */,
-				DE37F3055AA9E20729D9C135 /* XCLocalSwiftPackageReference "Packages/Quagmire" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AE7FCC9B148E4A8C802B7877 /* Products */;
@@ -930,14 +920,15 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		DE37F3055AA9E20729D9C135 /* XCLocalSwiftPackageReference "Packages/Quagmire" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = Packages/Quagmire;
-		};
-/* End XCLocalSwiftPackageReference section */
-
 /* Begin XCRemoteSwiftPackageReference section */
+		390EA6DACFB9DEDBD0C92846 /* XCRemoteSwiftPackageReference "quagmire" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/jxe/quagmire.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.1.0;
+			};
+		};
 		60E69A3442B3A4A214239625 /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/swiftlang/swift-markdown.git";
@@ -951,6 +942,7 @@
 /* Begin XCSwiftPackageProductDependency section */
 		13E4833111DE8C6F8C90900C /* Quagmire */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = 390EA6DACFB9DEDBD0C92846 /* XCRemoteSwiftPackageReference "quagmire" */;
 			productName = Quagmire;
 		};
 		60D4D0042A0050D48AF58979 /* Markdown */ = {

@@ -61,9 +61,9 @@ hunch://<uuid>/Page.md               # other workspace, page
 hunch://<uuid>/Page.md#abc123def4567890   # other workspace, specific block
 ```
 
-The fragment is the **16-char BlockFingerprint prefix** — already minted
-by `Packages/Quagmire/Sources/Quagmire/BlockFingerprint.swift` and used in the
-recovery log. Same hash, used for a new purpose. Properties:
+The fragment is the **16-char recovery-hash prefix** — minted by
+`App/Sources/Clamshell/BlockRecoveryIdentity.swift` and used in the recovery
+log. Same hash, used for a new purpose. Properties:
 
 - Stable as long as the block content is unchanged. Edit the block → hash
   changes → the saved link breaks (graceful fallback below).
@@ -386,7 +386,7 @@ the workspace switcher dropdown / page tab area) and on a block row.
 | NavigationStack remount on frame change | `App/Sources/ContentView.swift` (NavigationStack `.id(activeFrame.clamshell.id)`, host env = `activeFrame`) |
 | File menu + commands (incl. Copy Link to Page / Block) | `App/Sources/HunchApp.swift` |
 | Workspace switcher toolbar | `App/Sources/ContentView.swift` (top-leading toolbar item) |
-| Block link keybinding wiring | `Packages/Quagmire/Sources/Quagmire/EditorView+Wiring.swift` (Cmd+Option+Shift+L) + new `EditorAction.copyLinkToSelectedBlock` |
+| Block link keybinding wiring | Quagmire's `Sources/Quagmire/EditorView+Wiring.swift` (Cmd+Option+Shift+L) + new `EditorAction.copyLinkToSelectedBlock`; develop through a local package override and release it before bumping Hunch |
 | New: locate-workspace sheet | `App/Sources/Shell/LocateWorkspaceSheet.swift` |
 | New: `PageRef` parser (uuid + path + #hash) | `App/Sources/Clamshell/Clamshell.swift` (inline next to existing pageID helpers) |
 
@@ -457,7 +457,7 @@ the workspace switcher dropdown / page tab area) and on a block row.
     `pageID(for:relativeTo:)` classifying `hunch://` URLs correctly with and
     without fragments. Also cover `BlockParser.detectSubpage` rejecting
     fragment-bearing links.
-14. **SPM Editor tests**: `swift test --package-path Packages/Quagmire` should
-    still be green. The `EditorAction.copyLinkToSelectedBlock` addition is
-    one new enum case + one dispatch arm — likely no test surface to update
-    inside the package, but verify.
+14. **Quagmire tests**: `swift test` in the Quagmire repository should still be
+    green. The `EditorAction.copyLinkToSelectedBlock` addition is one new enum
+    case + one dispatch arm — likely no test surface to update inside the
+    package, but verify, tag it, then bump Hunch's exact dependency separately.

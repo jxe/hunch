@@ -7,4 +7,5 @@ of the Quagmire extraction. They are records, not active executor plans.
 - `editor-extraction-milestones-3-4.md` — Milestones 3–4
 - `editor-extraction-milestone-5.md` — Milestone 5
 - `editor-extraction-milestone-6.md` — Milestone 6
+- `editor-extraction-milestone-7.md` — Milestone 7 and completed extraction
 - `editor-name-landscape.md` — Quagmire naming research and decision

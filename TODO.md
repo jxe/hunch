@@ -80,10 +80,10 @@ Fixtures with Notion references: `rfc_prompt`, `notion_page_example`,
 `blog_post_draft`, `ai_for_docs`. Capture-only: `headings_and_bullets`.
 
 Only touch
-[Packages/Quagmire/Sources/Quagmire/EditorTheme.swift](Packages/Quagmire/Sources/Quagmire/EditorTheme.swift)
+[Quagmire's `EditorTheme.swift`](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/EditorTheme.swift)
 (the `EditorTheme` value and the `BlockSpacing` enum) unless the renderer has a
 real bug. Don't add magic numbers to
-[BlockRow.swift](Packages/Quagmire/Sources/Quagmire/BlockRow.swift).
+[`BlockRow.swift`](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/BlockRow.swift).
 
 The `console-` prefixes in `/tmp/console-fixture/` and
 `/tmp/console-screenshots/` are residual — fine to leave but can be

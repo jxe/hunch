@@ -8,7 +8,8 @@ user-picked workspace folder.
 
 ## Repo shape
 
-- `Packages/Quagmire/` — single SwiftUI SPM package. **Its public API is
+- [Quagmire](https://github.com/jxe/quagmire) — a separately versioned SwiftUI
+  SPM package, pinned exactly in `project.yml`. **Its public API is
   storage-neutral: no "page", "subpage", or "pageID" anywhere.** A block-level
   reference to another document is `BlockKind.documentLink(label:reference:)`
   where `reference` is an opaque `DocumentReference`; the host resolves it
@@ -23,8 +24,8 @@ user-picked workspace folder.
   @-mention detection, inline-mark `AttributedStringKey`s. **No
   swift-markdown dep.** Operates on the in-memory `Document` only — the
   host is responsible for serialization, persistence, navigation, and
-  multi-page operations. SPM tests live here. See
-  `Packages/Quagmire/README.md` for the embedding contract.
+  multi-page operations. SPM tests and the embedding contract live in the
+  Quagmire repository.
 - `App/Sources/` — Hunch.app target. `HunchApp` (root, owns `Workspace`),
   `ContentView` (one per `WindowGroup` body, owns a `WorkspaceWindow`),
   `Workspace.swift` / `WorkspaceWindow.swift` (the host model — see below;
@@ -186,11 +187,11 @@ user-picked workspace folder.
 ## Build & test
 
 The full build / test loop lives in [CONTRIBUTING.md](CONTRIBUTING.md). The
-short version: `swift test --package-path Packages/Quagmire` for the SPM
-tests; `xcodegen generate --spec project.yml --project .` to refresh the
-tracked Xcode project (don't hand-edit it); `xcodebuild … -scheme
-Hunch -destination 'platform=macOS'` to build, then `./scripts/run.sh` to
-launch the freshest macOS build.
+short version: `xcodegen generate --spec project.yml --project .` refreshes the
+tracked Xcode project (don't hand-edit it); `xcodebuild … -scheme Hunch
+-destination 'platform=macOS'` tests or builds Hunch, then `./scripts/run.sh`
+launches the freshest macOS build. Run `swift test` in a sibling Quagmire
+checkout when changing editor behavior.
 
 ## Architecture you need to know to make changes
 
@@ -274,8 +275,8 @@ from font symbolic traits on round-trip back, because that's what
 NSTextView mutates during edits. Cmd-B/I/E/Shift-S toggle marks on the
 selection.
 
-**Markdown autotransforms.** Pure detection in
-`Packages/Quagmire/Sources/Quagmire/Autotransforms.swift`;
+**Markdown autotransforms.** Pure detection lives in Quagmire's
+`Sources/Quagmire/Autotransforms.swift`;
 replacement blocks via `BlockTransform.apply(to:)`; spliced into the
 document by `EditorView.applyAutotransform`. Prefix triggers (`# `, `## `, `### `, `- `,
 `* `, `1. `, `[] `, `[ ] `, `> ` for toggle, `" ` for quote) fire from
@@ -421,14 +422,14 @@ tail -f /tmp/console.log
 ```
 
 Sprinkle `print("[CLI] ...")` at suspect transitions (state setters,
-focus changes, key handlers, lifecycle hooks). Strip them before
-committing: `grep -rn '\[CLI\]' Packages/Quagmire App`. `print()` may
-buffer when stdout isn't a tty.
+focus changes, key handlers, lifecycle hooks). Strip them before committing:
+`rg -n '\[CLI\]' App` in Hunch and the same search in a Quagmire checkout.
+`print()` may buffer when stdout isn't a tty.
 
 For diagnostics that need to outlive a single debug session — and to read
 state from a build the user is running directly (no `> /tmp/console.log`
-redirect) — use the `Diag.*` loggers (`Packages/Quagmire/.../Diag.swift`,
-`App/Sources/Diag.swift`). They're `os.Logger` keyed to subsystem
+redirect) — use the `Diag.*` loggers in Quagmire and
+`App/Sources/Diag.swift`. They're `os.Logger` keyed to subsystem
 `org.nxhx.Hunch` with categories `navkey` / `mode` / `subpage` / `speech`.
 **Do not use `NSLog` for new diagnostics** — its message bodies land as
 `<private>` in the unified log (Apple redacts dynamic string args by
@@ -454,6 +455,6 @@ Xcode tools that earn their keep:
 - Prefer editing existing files over adding new ones.
 - Comments explain *why*, never *what*. Skip them when the code is clear.
 - Don't add CHANGELOG.md, TROUBLESHOOTING.md, etc. unless asked.
-- Keep `swift test --package-path Packages/Quagmire` green before committing
-  UI changes — the autotransform / mention / reorder / mutation layer is
-  load-bearing and the only test surface inside the package.
+- Keep `swift test` green in the Quagmire repository before tagging editor UI
+  changes. Use a local package override while developing, then tag Quagmire and
+  make a separate exact-version bump in Hunch.
