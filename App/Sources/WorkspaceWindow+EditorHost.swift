@@ -183,23 +183,20 @@ extension WorkspaceWindow: EditorHost {
         }
     }
 
-    func saveImages(_ items: [PastedImage]) -> [String] {
-        guard let clamshell = workspace.clamshell else { return [] }
+    func saveImages(_ items: [PastedImage], in document: Document) async -> [String] {
+        guard let clamshell = workspace.clamshell,
+              pageURL(for: document) != nil else { return [] }
         var paths: [String] = []
-        var failures: [String] = []
         paths.reserveCapacity(items.count)
         for item in items {
             do {
                 paths.append(try clamshell.writeImage(item))
             } catch {
-                failures.append(error.localizedDescription)
+                // Quagmire maps returned paths positionally to the pasted
+                // items, so partial success must always be a durable prefix.
+                workspace.error = "Failed to save pasted image: \(error.localizedDescription)"
+                break
             }
-        }
-        if !failures.isEmpty {
-            let summary = failures.count == 1
-                ? "Failed to save pasted image: \(failures[0])"
-                : "Failed to save \(failures.count) pasted images: \(failures.joined(separator: "; "))"
-            workspace.error = summary
         }
         return paths
     }
@@ -208,8 +205,10 @@ extension WorkspaceWindow: EditorHost {
         await workspace.linkPreviewService.preview(for: url)
     }
 
-    func imageURL(for source: String) -> URL? {
-        workspace.clamshell?.resolveImage(source: source)
+    func imageResource(for source: String, in document: Document) async -> EditorImageResource? {
+        guard pageURL(for: document) != nil,
+              let url = workspace.clamshell?.resolveImage(source: source) else { return nil }
+        return .file(url)
     }
 
     // — Stateless app conventions —
@@ -280,6 +279,9 @@ extension WorkspaceWindow: EditorHost {
             return false
         }
     }
+
+    // Hunch's flat workspace does not assign physical hierarchy to links.
+    func relocateDocument(_ reference: DocumentReference, from document: Document) async -> Bool { false }
 
     func appendCurrentPageLink(to pageID: String) async -> Bool {
         guard let source = openDocument,

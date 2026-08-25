@@ -893,7 +893,7 @@
 			repositoryURL = "https://github.com/jxe/quagmire.git";
 			requirement = {
 				kind = exactVersion;
-				version = 0.2.0;
+				version = 0.3.0;
 			};
 		};
 		60E69A3442B3A4A214239625 /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
