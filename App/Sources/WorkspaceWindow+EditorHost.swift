@@ -1,5 +1,6 @@
 import Foundation
 import Quagmire
+import QuagmireExtras
 #if os(macOS)
 import AppKit
 #elseif os(iOS)
@@ -21,7 +22,7 @@ extension WorkspaceWindow: EditorHost {
     // — Workspace-scoped forwarders —
 
     func blockActions(in document: Document) -> [EditorBlockAction] {
-        HunchEditorActions.actions()
+        TranscriptPolishingActions.actions()
     }
 
     func suggestDocuments(_ query: String, in document: Document) async -> [MentionItem] {

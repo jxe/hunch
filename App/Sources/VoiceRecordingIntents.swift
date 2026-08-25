@@ -1,19 +1,9 @@
 import AppIntents
-import Quagmire
+import QuagmireExtras
 
-struct StartVoiceRecordingIntent: AppIntent {
-    static let title: LocalizedStringResource = "Start Voice Recording"
-    static let description = IntentDescription("Open Hunch and start recording audio for the Home page.")
-    static let supportedModes: IntentModes = .foreground(.immediate)
-    static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
-    static let openAppWhenRun = true
-
-    func perform() async throws -> some IntentResult {
-        await VoiceRecordingLaunchRequest.requestStart()
-        return .result()
-    }
-}
-
+/// App Shortcuts providers must be declared in the application target for
+/// Xcode's metadata extractor to discover them. The intent and launch handoff
+/// remain reusable in QuagmireExtras; Xcode requires this metadata to be literal.
 struct HunchAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(

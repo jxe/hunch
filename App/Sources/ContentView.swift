@@ -1,5 +1,6 @@
 import SwiftUI
 import Quagmire
+import QuagmireExtras
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
@@ -8,7 +9,7 @@ import AppKit
 struct ContentView: View {
     @Bindable var workspace: Workspace
     @State private var window: WorkspaceWindow
-    @State private var recordingSession = VoiceRecordingSession()
+    @State private var recordingSession: HunchVoiceRecordingSession
     @State private var renameSuggestionTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
@@ -18,14 +19,18 @@ struct ContentView: View {
 
     #if os(iOS)
     init(workspace: Workspace, quickActions: QuickActionRouter) {
+        let window = WorkspaceWindow(workspace: workspace)
         self.workspace = workspace
         self.quickActions = quickActions
-        _window = State(initialValue: WorkspaceWindow(workspace: workspace))
+        _window = State(initialValue: window)
+        _recordingSession = State(initialValue: HunchVoice.makeSession(window: window))
     }
     #else
     init(workspace: Workspace) {
+        let window = WorkspaceWindow(workspace: workspace)
         self.workspace = workspace
-        _window = State(initialValue: WorkspaceWindow(workspace: workspace))
+        _window = State(initialValue: window)
+        _recordingSession = State(initialValue: HunchVoice.makeSession(window: window))
     }
     #endif
 
@@ -164,7 +169,7 @@ struct ContentView: View {
         }
         .alert("Recover Recording?", isPresented: recordingRecoveryBinding) {
             Button("Transcribe and Add") {
-                Task { await recordingSession.recoverPendingRecording(using: window) }
+                Task { await recordingSession.recoverPendingRecording() }
             }
             Button("Later", role: .cancel) {
                 recordingSession.deferPendingRecovery()
@@ -269,10 +274,16 @@ struct ContentView: View {
         // an intent can post while SwiftUI is updating this view hierarchy.
         Task { @MainActor in
             guard let homePageID = workspace.homeRelativePath else {
-                recordingSession.reportMissingHome()
+                recordingSession.reportError(
+                    "Set a Home page before starting a recording from a Shortcut or the Action Button."
+                )
                 return
             }
-            await recordingSession.toggleFromShortcut(homePageID: homePageID, window: window)
+            await HunchVoice.toggleFromShortcut(
+                session: recordingSession,
+                homePageID: homePageID,
+                window: window
+            )
         }
     }
 
@@ -332,7 +343,7 @@ private struct EditorPage: View {
     let url: URL
     @Bindable var workspace: Workspace
     @Bindable var window: WorkspaceWindow
-    let recordingSession: VoiceRecordingSession
+    let recordingSession: HunchVoiceRecordingSession
 
     @State private var editorState = EditorState()
     @FocusedValue(\.documentUndoController) private var undoController
@@ -401,11 +412,13 @@ private struct EditorPage: View {
             }
             #endif
             ToolbarItem(placement: .primaryAction) {
-                RecordingButton(
-                    editorState: editorState,
-                    recordingSession: recordingSession,
-                    window: window
-                )
+                VoiceRecordingButton(session: recordingSession) {
+                    await HunchVoice.startFromToolbar(
+                        session: recordingSession,
+                        editorState: editorState,
+                        window: window
+                    )
+                }
             }
         }
     }

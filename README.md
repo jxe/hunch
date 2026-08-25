@@ -43,7 +43,7 @@ Paste from the clipboard, drop one in from Finder, drag a screenshot off the des
 
 ### 🎙️  Voice dictation, with a Siri shortcut
 
-Mic button in the page toolbar on both macOS and iOS — press to speak, get text inserted at the cursor (or appended as a paragraph when nothing's focused). On iOS, a Siri intent (`VoiceRecordingIntents`) means you can wire dictation into the Action Button or a Shortcut and capture into the current page hands-free.
+Mic button in the page toolbar on both macOS and iOS — press to speak, get text inserted at the cursor (or appended as a paragraph when nothing's focused). On iOS, the reusable `QuagmireExtras` voice intent means you can wire dictation into the Action Button or a Shortcut and capture into the current page hands-free.
 
 When Apple's on-device language model is available, select one or more
 transcript blocks and choose **Polish** to clean up their wording without
@@ -155,7 +155,7 @@ You can read the code, fork it, audit your own data layer, and ship patches. Lic
 
 Hunch is built on two reusable pieces:
 
-- **[Quagmire](https://github.com/jxe/quagmire)** — a separately versioned SwiftUI block editor (paragraphs, headings, lists, toggles, code, inline marks, autotransforms, drag-reorder, @-mentions) with no opinion on storage, navigation, or serialization. Hunch consumes the exact `0.1.0` release.
+- **[Quagmire](https://github.com/jxe/quagmire)** — a separately versioned SwiftUI block editor (paragraphs, headings, lists, toggles, code, inline marks, autotransforms, drag-reorder, @-mentions) with no opinion on storage, navigation, or serialization. Its optional `QuagmireExtras` product supplies the shared external-link previews, voice recording and recovery, App Intent, and transcript-polishing policy. Hunch consumes the exact `0.2.0` release.
 - **[Clamshell](App/Sources/Clamshell/README.md)** — Hunch's on-disk format and storage engine: a folder of `.md`, a per-device append-only recovery log, trash, and assets. Durable, portable, iCloud-friendly, recoverable.
 
 Want to build, hack on, or send a patch? See [CONTRIBUTING.md](CONTRIBUTING.md).

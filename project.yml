@@ -23,7 +23,7 @@ settings:
 packages:
   Quagmire:
     url: https://github.com/jxe/quagmire.git
-    exactVersion: 0.1.0
+    exactVersion: 0.2.0
   swift-markdown:
     url: https://github.com/swiftlang/swift-markdown.git
     version: 0.8.0
@@ -37,6 +37,8 @@ targets:
       - path: App/Resources
     dependencies:
       - package: Quagmire
+      - package: Quagmire
+        product: QuagmireExtras
       - package: swift-markdown
         product: Markdown
       - sdk: libsqlite3.tbd

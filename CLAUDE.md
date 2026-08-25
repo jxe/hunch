@@ -191,7 +191,7 @@ short version: `xcodegen generate --spec project.yml --project .` refreshes the
 tracked Xcode project (don't hand-edit it); `xcodebuild … -scheme Hunch
 -destination 'platform=macOS'` tests or builds Hunch, then `./scripts/run.sh`
 launches the freshest macOS build. Run `swift test` in a sibling Quagmire
-checkout when changing editor behavior.
+checkout when changing editor or `QuagmireExtras` behavior.
 
 ## Architecture you need to know to make changes
 

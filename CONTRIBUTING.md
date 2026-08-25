@@ -153,7 +153,7 @@ contributor wading into the editor internals.
 The visual target is Notion's typography from before the March 2026 redesign.
 Reference screenshots live under `References/typography/`; reusable defaults
 and layout values live in
-[Quagmire's `EditorTheme.swift`](https://github.com/jxe/quagmire/blob/0.1.0/Sources/Quagmire/EditorTheme.swift),
+[Quagmire's `EditorTheme.swift`](https://github.com/jxe/quagmire/blob/0.2.0/Sources/Quagmire/EditorTheme.swift),
 while Hunch's explicit Inter-based treatment lives in
 `App/Sources/Shell/HunchStyle.swift`. Don't sprinkle host-side magic numbers
 that belong in Quagmire's renderer.

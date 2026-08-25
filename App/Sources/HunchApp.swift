@@ -1,5 +1,6 @@
 import SwiftUI
 import Quagmire
+import QuagmireExtras
 #if os(iOS)
 import UIKit
 #endif
@@ -275,7 +276,7 @@ private struct EditorBlockMenuItems: View {
             title: "Polish Transcription",
             key: "p",
             modifiers: [.command, .option],
-            actionID: HunchEditorActions.polishTranscriptionID
+            actionID: TranscriptPolishingActions.polishTranscriptID
         )
         EditorCommandButton(title: "Create Page from Selected Block…", key: "k", action: .toggleLinkOrDocument)
         EditorCommandButton(title: "Insert Block Below", key: .return, action: .newBlockBelow)

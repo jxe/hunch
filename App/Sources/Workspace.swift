@@ -1,5 +1,19 @@
 import Foundation
 import Quagmire
+import QuagmireExtras
+
+private func hunchLinkPreviewCacheDirectory() -> URL {
+    let fileManager = FileManager.default
+    let support = (try? fileManager.url(
+        for: .applicationSupportDirectory,
+        in: .userDomainMask,
+        appropriateFor: nil,
+        create: true
+    )) ?? fileManager.temporaryDirectory
+    return support
+        .appendingPathComponent("Hunch", isDirectory: true)
+        .appendingPathComponent("LinkPreviews", isDirectory: true)
+}
 
 struct WorkspaceEntry: Identifiable, Sendable, Hashable {
     let url: URL
@@ -129,7 +143,9 @@ final class Workspace {
 
     /// Shared across every editor mounted in this workspace — the disk cache
     /// is a per-device asset that has nothing to do with which page is open.
-    let linkPreviewService = LinkPreviewService()
+    let linkPreviewService = LinkPreviewService(
+        cacheDirectory: hunchLinkPreviewCacheDirectory()
+    )
 
     private var accessedWorkspaceURL: URL?
 
